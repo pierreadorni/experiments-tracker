@@ -1,0 +1,13 @@
+# Working in this repository
+
+- Read docs/install.md, docs/agent-install.md, docs/architecture.md and docs/operations.md. Complete an isolated synthetic demo before live setup; distinguish synthetic demonstration from scientific research.
+- Future brief-driven experiments use execution contract 3 / plan schema 3: bounded declared-source copies per attempt, direct output references, explicit reuse with rationale, metrics before independent figures and working report versions. Do not reintroduce scientific data hashing, recursive inventories, dependency freezes, a final validation barrier or completion cleanup. Historical/demo contracts retain their semantics.
+- SQLite on retained local disk owns execution; D1/R2 hold commands and published views. Keep user commands, events, outbox updates and readiness transitions transactional and idempotent.
+- Persist job/action/transfer intents before dispatch. Never retry uncertain submissions or turns without establishing the saved outcome. Reconcile exact identities.
+- Use generated local configuration and one ownership lock. Do not touch unrelated Slurm jobs or research checkouts. Live resources come from fresh cluster capabilities within Slurm authorization and optional owner limits. The three short CPU jobs/no-GPU envelope and fixed recipe apply only to legacy/demo contracts.
+- Managed ChatGPT authentication only: no API-billed fallback, purchased quota or credential extraction. Admission requires fresh explicit permission and quota windows. Ask the owner before the first live experiment.
+- Keep credentials in ignored protected files or runtime secrets, never source, argv, URLs, logs or browser storage. An executor credential cannot authorize a browser user. Keep hosting owner-private and D1 production migrations append-only. Register your own Site; never reuse another installation's identity.
+- Run make setup from locked manifests and source checks on Node 24. Run make check in an isolated checkout when an owner serves this checkout's web/dist. Python subprocess tests must run outside sandboxes whose NSS isolation changes subprocess behavior.
+- Browser smoke uses demo state and creates a synthetic experiment. Actual Slurm, managed runtime, private hosting and physical phone access need separate acceptance evidence.
+- Inspect the portability map before adapting saved acacia/jean-zay context identifiers or the site-specific remote scheduler policy. Preserve historical records.
+- Do not install a permanent service until host policy and local-disk retention are established. Keep adaptations and validation reviewable; do not publish local operations records.

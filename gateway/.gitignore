@@ -1,0 +1,9 @@
+node_modules/
+dist/
+src/generated-assets.ts
+.wrangler/
+.sites-runtime/
+.env*
+!.env.example
+web/node_modules/
+web/dist/

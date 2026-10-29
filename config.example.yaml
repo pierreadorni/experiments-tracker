@@ -1,0 +1,61 @@
+# Future brief-driven experiments use execution contract 3; saved contracts remain historical.
+# No strict-reproducibility toggle applies to the new execution path.
+# Reference only. `experimenttracker init` generates runnable absolute paths without placeholders.
+schema_version: 1
+executor_id: my-executor
+mode: demo
+state_dir: /YOUR/LOCAL/DISK/experimenttracker
+job_output_root: /YOUR/CHECKOUT/.local/demo-outputs
+backup_dir: /YOUR/CHECKOUT/.local/demo-backups
+recipe_dir: /YOUR/CHECKOUT/recipes/toy_compare
+web_dir: /YOUR/CHECKOUT/web/dist
+api_token_file: /YOUR/CHECKOUT/.local/api-token
+host: 127.0.0.1
+port: 8765
+scheduler_seconds: 30
+# New projects can also be added from the app; this directory holds newly created folders.
+projects_root: /YOUR/CHECKOUT/.local/projects
+# Optional seeded working folders; selected folders are writable for new runs.
+projects:
+  - id: test-project
+    name: Test project
+codex:
+  executable: /YOUR/CHECKOUT/tools/codex/node_modules/.bin/codex
+  expected_version: 0.160.1
+  model: null
+  turn_timeout_seconds: 1800  # inactivity, refreshed by real progress
+  turn_max_seconds: null    # optional owner ceiling per turn
+  max_agent_turns: null     # optional total dispatched turns per experiment
+  max_sessions: 1          # independent experiment sessions, sharing quota admission
+  identical_error_limit: 3
+  monitor_interval_seconds: 900  # backend checks; healthy compute makes no model calls
+  monitor_stall_seconds: 900     # sustained stale telemetry, with fresh scheduler state
+  monitor_max_turns_per_job: 2   # diagnostics only; zero disables them
+  session_timeout_seconds: 120
+  interrupt_grace_seconds: 30
+  rpc_timeout_seconds: 30
+quota:
+  five_hour_min_remaining: 25
+  weekly_min_remaining: 10
+  recovery_remaining: [30, 15]
+  snapshot_max_age_seconds: 60
+  bucket: codex
+slurm:
+  partition: YOUR_AUTHORIZED_PARTITION
+  account: null
+  qos: null
+  cpus_per_job: 1
+  memory_mb_per_job: 1024
+  walltime_minutes_per_job: 5
+  # Defaults above/below are fallbacks, not limits on live agent-selected resources.
+  max_jobs_per_experiment: null
+  max_repairs_per_experiment: null  # output corrections do not consume this cap
+  max_concurrent_jobs: 1           # executor-wide; null removes this cap
+  gpus_per_job: 0
+  # Omitted/null limits use Slurm's account/partition authorization.
+  limits: {}
+gateway:
+  url: null
+  credential_file: null
+  sites_credential_file: null
+  poll_seconds: 5

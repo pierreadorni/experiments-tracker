@@ -1,0 +1,1 @@
+ALTER TABLE `projections` ADD `deleted_at` real;

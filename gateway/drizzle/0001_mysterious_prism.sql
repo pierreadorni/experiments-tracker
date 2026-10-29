@@ -1,0 +1,1 @@
+ALTER TABLE `commands` ADD `error` text;
