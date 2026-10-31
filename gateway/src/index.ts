@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { maintenanceRoute } from './maintenance';
 import { assets } from './generated-assets';
 import {
   pushConfigured,
@@ -151,6 +152,7 @@ const actionSchema = z
       'resume_new_compute',
       'summarize_title',
       'retry_agent',
+      'cancel',
     ]),
   })
   .strict();
@@ -754,6 +756,17 @@ async function enqueue(env: Env, kind: string, payload: Record<string, unknown>,
         409,
         'Agent retry requires a held session or confirmed failed agent/compute work',
       );
+    if (kind === 'action' && payload.action === 'cancel') {
+      const owner = await first(
+        env,
+        'SELECT payload FROM executor_status WHERE id=?',
+        env.EXECUTOR_ID,
+      );
+      if (!owner || !JSON.parse(String(owner.payload)).experiment_cancellation)
+        throw new HttpError(409, 'Install the executor update to enable cancellation');
+      if (exp.phase === 'complete')
+        throw new HttpError(409, 'A completed experiment cannot be cancelled');
+    }
     if (kind === 'discuss' && exp.phase !== 'complete')
       throw new HttpError(409, 'Discussion is available when the experiment is complete');
     if (
@@ -773,6 +786,7 @@ async function enqueue(env: Env, kind: string, payload: Record<string, unknown>,
       );
     if (kind === 'delete') {
       if (
+        ['cancellation_pending', 'cancellation_unconfirmed'].includes(exp.hold_reason) ||
         !['complete', 'failed', 'cancelled'].includes(exp.phase) ||
         exp.jobs?.some((job: any) => ['submitting', 'submitted'].includes(job.state)) ||
         exp.report_versions?.some((report: any) =>
@@ -903,7 +917,8 @@ async function publish(env: Env, value: z.infer<typeof publishSchema>) {
       throw new HttpError(409, 'Event identity is immutable');
     if (
       new Set(exp.artifacts.map((a) => a.id)).size !== exp.artifacts.length ||
-      new Set(exp.artifacts.map((a) => a.name)).size !== exp.artifacts.length
+      (exp.contract?.execution_contract !== 3 &&
+        new Set(exp.artifacts.map((a) => a.name)).size !== exp.artifacts.length)
     )
       throw new HttpError(422, 'Artifact identities and names must be unique');
     const existing = await first(
@@ -1431,6 +1446,8 @@ async function route(request: Request, env: Env): Promise<Response> {
   }
   const machine = p.startsWith('/api/executor/');
   await authorize(request, env, machine);
+  const maintenance = await maintenanceRoute(request, env, p);
+  if (maintenance) return maintenance;
   const memoryPath = p.match(/^\/api\/projects\/([^/]+)\/knowledge(?:\/reports\/(\d+))?$/);
   if (memoryPath) {
     const pid = projectId.parse(memoryPath[1]);

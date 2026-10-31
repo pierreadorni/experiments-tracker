@@ -122,18 +122,23 @@ async def test_project_turn_has_actual_working_directory_and_write_grant(tmp_pat
 
     agent = CodexAgent.__new__(CodexAgent)
     agent.server = Server()
-    outputs, project = tmp_path / "outputs", tmp_path / "project"
+    outputs, project, work = tmp_path / "outputs", tmp_path / "project", tmp_path / "work"
     schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
     assert (
         await agent.begin(
-            "thread", "Implement the brief", schema, workspace=outputs, project_workspace=project
+            "thread",
+            "Implement the brief",
+            schema,
+            workspace=outputs,
+            project_workspace=project,
+            additional_writable_roots=[work],
         )
         == "saved-project-turn"
     )
     method, params = calls[0]
     assert method == "turn/start"
     assert params["cwd"] == str(project)
-    assert params["sandboxPolicy"]["writableRoots"] == [str(outputs), str(project)]
+    assert params["sandboxPolicy"]["writableRoots"] == [str(outputs), str(project), str(work)]
 
 
 @pytest.mark.parametrize("error_type", ["rejected", "transport", "invalid"])

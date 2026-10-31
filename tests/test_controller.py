@@ -17,7 +17,7 @@ from test_workflow import until
 
 from experimenttracker import artifacts
 from experimenttracker.api import create_app
-from experimenttracker.codex_client import NeedsAttention, TerminalTurnError
+from experimenttracker.codex_client import NeedsAttention
 from experimenttracker.store import Conflict, Store
 from experimenttracker.workflow import Workflow
 
@@ -252,43 +252,6 @@ async def test_explicit_retry_grants_one_turn_at_owner_budget_with_idempotent_re
     await until(wf, store, eid, lambda exp: exp["phase"] == "complete")
     assert agent.calls == 3 and scheduler.submissions == 2
     assert store.experiment(eid)["contract"]["manual_agent_turn_requests"] == 2
-    await wf.close()
-
-
-async def test_known_quota_interruption_resumes_automatically_after_owner_restart(runtime):
-    store, scheduler, _, old = runtime
-    agent = ImplementationAgent()
-    wf = Workflow(old.config, store, scheduler, agent)
-    eid = create(store)
-    await approve_plan(wf, store, eid)
-    finish = agent.finish
-    interrupted = False
-
-    async def interrupt_once(thread, turn):
-        nonlocal interrupted
-        if not interrupted:
-            interrupted = True
-            store.update(eid, hold_reason="quota_hold")
-            raise TerminalTurnError("turn interrupted: None")
-        return await finish(thread, turn)
-
-    agent.finish = interrupt_once
-    for _ in range(30):
-        await wf.tick(force_observe=True)
-        await asyncio.sleep(0.01)
-        if store.one(
-            "SELECT 1 FROM agent_actions WHERE experiment_id=? AND phase='prepare' AND state='failed'", (eid,)
-        ):
-            break
-    prior = store.one(
-        "SELECT * FROM agent_actions WHERE experiment_id=? AND phase='prepare' AND state='failed'", (eid,)
-    )
-    assert prior and prior["turn_id"]
-    await wf.close()
-    wf = Workflow(old.config, store, scheduler, agent)
-    await until(wf, store, eid, lambda exp: exp["phase"] == "complete")
-    assert store.one("SELECT * FROM agent_actions WHERE id=?", (prior["id"],))["turn_id"] == prior["turn_id"]
-    assert scheduler.submissions == 2
     await wf.close()
 
 

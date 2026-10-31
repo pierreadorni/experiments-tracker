@@ -34,7 +34,7 @@ from .store import Conflict
 log = logging.getLogger(__name__)
 
 
-def create_app(config, *, components=None):
+def create_app(config, *, components=None, config_path=None, current_release=None):
     token = config.api_token_file.read_text().strip()
     if len(token) < 32:
         raise ValueError("API token must contain at least 32 characters")
@@ -42,6 +42,9 @@ def create_app(config, *, components=None):
     @asynccontextmanager
     async def lifespan(app):
         lock, store, workflow = components or runtime(config)
+        from .maintenance import Maintenance
+
+        workflow.maintenance = Maintenance(config, store, config_path=config_path, current=current_release)
         app.state.store = store
         app.state.workflow = workflow
         app.state.last_tick = None
@@ -61,6 +64,7 @@ def create_app(config, *, components=None):
                     await workflow.tick()
                     app.state.last_tick = time.time()
                     app.state.last_tick_error = None
+                    workflow.maintenance.launch()
                 except Exception:
                     app.state.last_tick_error = "executor loop failed; inspect daemon logs"
                     log.exception("executor loop failed")
@@ -77,6 +81,8 @@ def create_app(config, *, components=None):
                     store,
                     status_provider=workflow_status,
                 )
+                bridge.maintenance_provider = lambda: workflow.maintenance
+                bridge.maintenance_workflow = workflow
                 bridge_task = asyncio.create_task(bridge.run())
             yield
         finally:
@@ -180,6 +186,61 @@ def create_app(config, *, components=None):
             "executor_id": config.executor_id,
             "gateway_configured": bool(config.gateway.url),
         }
+
+    from .maintenance import InstallCommand, ReleaseUpdate, StepUpdate, blockers, identities
+
+    @app.get("/api/maintenance", dependencies=[Depends(authorize)])
+    async def maintenance_status():
+        return {"schema_version": 1, **app.state.workflow.maintenance.status(app.state.workflow)}
+
+    @app.post("/api/maintenance/install", dependencies=[Depends(authorize)], status_code=202)
+    async def maintenance_install(body: InstallCommand):
+        try:
+            return app.state.workflow.maintenance.install(body)
+        except Conflict as exc:
+            raise HTTPException(409, str(exc)) from None
+
+    @app.post("/api/maintenance/releases", dependencies=[Depends(authorize)])
+    async def maintenance_release(body: ReleaseUpdate):
+        try:
+            await asyncio.to_thread(app.state.workflow.maintenance.register, body)
+            return {"schema_version": 1, "accepted": body.commit_id}
+        except (ValueError, OSError) as exc:
+            raise HTTPException(
+                409, "Release registration failed; inspect local release and test receipt"
+            ) from exc
+
+    @app.get("/api/maintenance/internal", dependencies=[Depends(authorize)])
+    async def maintenance_internal():
+        return {
+            "schema_version": 1,
+            "maintenance": app.state.workflow.maintenance.status(app.state.workflow),
+            "boot_id": app.state.workflow.maintenance.boot_id,
+            "config_identity": app.state.workflow.maintenance.config_identity,
+            "last_tick": app.state.last_tick,
+            "started_at": app.state.started_at,
+            "executor_error": app.state.last_tick_error,
+            "agent_ready": app.state.workflow.agent_ready,
+            "identities": identities(store()),
+        }
+
+    @app.post("/api/maintenance/step", dependencies=[Depends(authorize)])
+    async def maintenance_step(body: StepUpdate):
+        try:
+            app.state.workflow.maintenance.step(body)
+            return {"schema_version": 1, "accepted": str(body.request_id)}
+        except Conflict as exc:
+            raise HTTPException(409, str(exc)) from None
+
+    @app.post("/api/maintenance/stop", dependencies=[Depends(authorize)])
+    async def maintenance_stop(body: InstallCommand):
+        op = store().one("SELECT * FROM maintenance WHERE request_id=?", (str(body.request_id),))
+        if not op or op["release_id"] != body.release_id or op["state"] != "restarting":
+            raise HTTPException(409, "No matching authorized restart")
+        if blockers(app.state.workflow) or not getattr(app.state, "request_shutdown", None):
+            raise HTTPException(409, "Executor is not at a safe shutdown boundary")
+        app.state.request_shutdown()
+        return {"schema_version": 1, "accepted": str(body.request_id)}
 
     @app.post("/api/projects", dependencies=[Depends(authorize)], status_code=202)
     async def create_project(body: CreateProject):

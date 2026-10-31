@@ -242,14 +242,22 @@ class GatewayClient:
             raise
 
     async def upload_artifacts(self):
-        # Only current, registered evidence is eligible. Superseded repair bytes
-        # are retained locally for diagnosis, not uploaded into the current report.
+        # The newest acknowledged full projection establishes metadata registration.
+        # Replay only acknowledges revisions below a delivered full projection, so
+        # the maximum delivered revision always contains acknowledged metadata.
         rows = self.store.rows(
             "SELECT a.* FROM artifacts a JOIN experiments x ON x.id=a.experiment_id "
-            "JOIN events e ON e.experiment_id=x.id AND e.revision=x.revision "
-            "JOIN outbox o ON o.id=e.id WHERE a.local_valid=1 AND a.remote_published=0 "
-            "AND x.deleted_at IS NULL AND a.evidence_revision=x.evidence_revision "
-            "AND o.delivered_at IS NOT NULL ORDER BY a.rowid",
+            "JOIN events e ON e.experiment_id=x.id AND e.revision=("
+            "SELECT MAX(e2.revision) FROM events e2 JOIN outbox o2 ON o2.id=e2.id "
+            "WHERE e2.experiment_id=x.id AND o2.delivered_at IS NOT NULL) "
+            "JOIN outbox o ON o.id=e.id "
+            "WHERE a.local_valid=1 AND a.remote_published=0 "
+            "AND x.deleted_at IS NULL AND x.phase!='cancelled' "
+            "AND (json_extract(x.contract,'$.execution_contract')=3 OR a.evidence_revision=x.evidence_revision) "
+            "AND EXISTS (SELECT 1 FROM json_each(o.payload,'$.experiment.artifacts') j "
+            "WHERE json_extract(j.value,'$.id')=a.id "
+            "AND json_extract(j.value,'$.sha256')=a.sha256 "
+            "AND json_extract(j.value,'$.size')=a.size) ORDER BY a.rowid",
         )
         attempts = 0
         for row in rows:
@@ -493,6 +501,55 @@ class GatewayClient:
                     (time.time(), row["project_id"], row["revision"]),
                 )
 
+    async def maintenance(self):
+        from .maintenance import InstallCommand
+
+        manager = self.maintenance_provider() if getattr(self, "maintenance_provider", None) else None
+        if manager is None:
+            return
+        response = await self.request("GET", "/api/executor/maintenance-commands")
+        commands = response.get("commands", [])
+        if not isinstance(commands, list) or len(commands) > 20:
+            raise ValueError("invalid maintenance command batch")
+        for row in commands:
+            command = InstallCommand.model_validate(row)
+            wire = encode(command.model_dump(mode="json"))
+            prior = self.store.one(
+                "SELECT * FROM rejected_gateway_commands WHERE request_id=?", (str(command.request_id),)
+            )
+            try:
+                if prior:
+                    if prior["kind"] != "maintenance" or prior["payload"] != wire:
+                        raise ValueError("maintenance request identity conflicts with a saved rejection")
+                    raise Conflict(prior["error"])
+                manager.install(command)
+                state, error = "accepted", None
+            except Conflict as exc:
+                state, error = "rejected", str(exc)[:1000]
+                with self.store.tx() as db:
+                    db.execute(
+                        "INSERT OR IGNORE INTO rejected_gateway_commands VALUES(?,?,?,?,?,?)",
+                        (str(command.request_id), "", "maintenance", wire, error, time.time()),
+                    )
+            receipt = await self.request(
+                "POST",
+                "/api/executor/maintenance-commands",
+                json={
+                    "schema_version": 1,
+                    "request_id": str(command.request_id),
+                    "release_id": command.release_id,
+                    "state": state,
+                    "error": error,
+                },
+            )
+            if receipt.get("accepted") != str(command.request_id):
+                raise ValueError("maintenance acknowledgement identity mismatch")
+        await self.request(
+            "POST",
+            "/api/executor/maintenance",
+            json=manager.status(getattr(self, "maintenance_workflow", None)),
+        )
+
     async def once(self):
         async def publication():
             await self.isolated("projections", self.publish_outbox)
@@ -505,6 +562,7 @@ class GatewayClient:
             self.isolated("project_memory", self.project_memory),
             self.isolated("project_settings", self.project_settings_commands),
             self.isolated("commands", self.commands),
+            self.isolated("maintenance", self.maintenance),
             self.isolated("heartbeat", self.heartbeat),
             publication(),
         )

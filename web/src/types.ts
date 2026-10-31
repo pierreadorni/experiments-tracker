@@ -8,8 +8,15 @@ export type Artifact = {
   local_valid: boolean;
   remote_published: boolean;
 };
-export type Stage = { id: string; state: string; error: string | null; updated_at: number };
+export type Stage = {
+  attempt?: number;
+  id: string;
+  state: string;
+  error: string | null;
+  updated_at: number;
+};
 export type Job = {
+  attempt?: number;
   tensorboard?: {
     scalar: { tag: string; points: [number, number][] } | null;
     image: { tag: string; step: number; wall_time: number; src: string } | null;
@@ -121,6 +128,7 @@ export type Experiment = {
       id: string;
       title: string;
       summary?: string;
+      executor?: 'agent' | 'slurm';
       resources?: string | Record<string, unknown> | null;
       needs?: string[] | null;
     }[];
@@ -227,6 +235,7 @@ export type ModelOption = {
   default_effort: string;
 };
 export type Status = {
+  experiment_cancellation?: boolean;
   quota_reserve?: { five_hour_percent: number; weekly_percent: number };
   compute_policy?: {
     agent_selected_resources: boolean;

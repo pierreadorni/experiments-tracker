@@ -113,6 +113,7 @@ async def serve_http(config, app, max_seconds):
 
     timer = asyncio.create_task(stop_at_deadline()) if max_seconds is not None else None
     try:
+        app.state.request_shutdown = lambda: setattr(server, "should_exit", True)
         await server.serve()
     finally:
         if timer:
@@ -180,6 +181,7 @@ def main():
     run.add_argument("--max-seconds", type=int, default=900)
     serve = sub.add_parser("serve", help="run the single owning daemon and loopback API")
     serve.add_argument("--max-seconds", type=int, default=None)
+    serve.add_argument("--release", help="exact tested software release to serve")
     present = sub.add_parser(
         "present", help="queue a versioned report from saved evidence; no training or model calls"
     )
@@ -238,7 +240,16 @@ def main():
 
         if args.max_seconds is not None and args.max_seconds < 1:
             raise ValueError("max-seconds must be positive")
-        app = create_app(config)
+        if args.release:
+            from .maintenance import release_root, verify_release
+
+            verify_release(config, args.release)
+            root = release_root(config, args.release)
+            if Path(__file__).resolve().parents[2] != root.resolve():
+                raise ValueError("start a tested release with its own Python and source directory")
+            config.web_dir = root / "web/dist"
+            config.recipe_dir = root / "recipes/toy_compare"
+        app = create_app(config, config_path=args.config.resolve(), current_release=args.release)
         asyncio.run(serve_http(config, app, args.max_seconds))
     elif args.command == "reconcile":
         asyncio.run(

@@ -39,7 +39,7 @@ Database backups do not include scientific files, attempt folders, Codex convers
 
 Inspect running/paused work, pending commands, job/action/transfer intents and publication before selecting a restart boundary. Take a fresh online backup and retain the previous source/build identity. Build and run `make check` in an isolated checkout if the owner serves the current `web/dist`.
 
-Migrations occur under ownership. SQLite schema 20 supports contract 3; old binaries cannot necessarily reopen upgraded state. Preserve historical saved contracts. Deploy backward-compatible gateway changes before activating incompatible new projections. D1 production migrations are append-only. A source checkout rollback is not a database rollback: prefer a compatible forward fix, or explicitly approve a stopped-writer restore and reconcile all external effects.
+Migrations occur under ownership. SQLite schema 21 adds owner-authorized software maintenance to contract 3; old binaries cannot necessarily reopen upgraded state. Preserve historical saved contracts. Deploy backward-compatible gateway changes before activating incompatible new projections. D1 production migrations are append-only. A source checkout rollback is not a database rollback: prefer a compatible forward fix, or explicitly approve a stopped-writer restore and reconcile all external effects.
 
 Do not install a permanent supervisor until host policy and local-disk retention are confirmed. Keep service secrets out of unit command arguments, logs and browser storage.
 
@@ -50,3 +50,23 @@ Use loopback directly or an SSH tunnel. Hosted access must be private HTTPS with
 ## Development checks
 
 `make setup` installs locked manifests. `make check` runs Python lint/format/tests, frontend checks, gateway build/types and real local Miniflare D1/R2 tests. Run Python subprocess tests outside restrictive agent sandboxes if NSS isolation prevents user/SSH resolution. These tests need no live scheduler or account credentials. Synthetic browser smoke scripts create demo experiments with mocked scheduler/model boundaries.
+
+## Prepare updates without agent polling
+
+A maintenance-enabled owner exposes Application updates in Executor & quota. After
+committing changes, start a one-shot background preparation process:
+
+```sh
+.venv/bin/python -m experimenttracker.maintenance prepare \
+  --config /absolute/path/to/config.local.yaml --commit FULL_COMMIT_SHA \
+  --summary 'Describe the update' --detach
+```
+
+It installs locked dependencies and runs `make check` in a separate software release
+folder, then advertises the result. The browser owner can authorize backup,
+graceful restart and exact identity recovery later; Slurm jobs survive. Unknown
+launch outcomes or failed recovery hold new dispatch for operator inspection.
+There is no automatic restore or permanent service. The original executor needs
+one authorized bootstrap restart to load this capability; hosted gateways also
+need append-only migration `0008_executor_maintenance.sql`. Gateway code still
+uses the installation's normal private hosting deployment workflow.

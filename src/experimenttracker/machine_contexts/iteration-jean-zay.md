@@ -6,6 +6,14 @@ service belongs on Jean Zay. Use fresh capabilities and authorized account, QoS,
 partition, hardware, runtime and task resources. Busy nodes may queue; down or
 drained nodes are not usable. Nested scheduler submission is prohibited.
 
+Bounded model checks and light preparation may use executor:agent, resources:null
+and an implementation instruction. These stages run on acacia with interactive
+fix/retest tool calls, never as Jean Zay jobs. Heavy preparation/training uses
+executor:slurm and a remote script. A needs dependency may gate readiness without
+consuming files: set input_output_ids:[] for such a gate before remote training.
+Consumed cross-host files require explicit authorized transfer. Local GPU access
+is subject to acacia runtime/host permission, independently of remote allocation.
+
 Set the project remote base (absolute or $WORK/, $SCRATCH/, $HOME/) using
 set_project_execution before submission. For execution contract 3, the backend
 stages only declared small sources in a private folder for each exact attempt;

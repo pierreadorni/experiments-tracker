@@ -4,6 +4,13 @@ The acacia owner retains SQLite, managed ChatGPT inference and ownership. Choose
 stage resources using fresh cluster capabilities and Slurm authorization; optional
 owner limits also apply. Never submit outside the backend or change unrelated jobs.
 
+Choose executor:agent with resources:null for bounded model checks, quick inference
+and light preparation. Its instruction guides an interactive shell/tool loop that
+fixes and retests errors within the same turn. Declared outputs gate dependent
+work. Sustained compute and training use executor:slurm with resources. Local GPU
+use still requires actual runtime/host authorization. Working-source corrections
+are captured by dependent attempts at dispatch; submitted source copies stay fixed.
+
 Implement in the selected isolated checkout and stable experiment workspace.
 Declare the small executable source files and project files actually needed,
 including package helpers and __init__.py. The backend copies only these files

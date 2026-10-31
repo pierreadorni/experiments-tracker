@@ -131,6 +131,7 @@ class ActionCommand(StrictModel):
         "resume_new_compute",
         "summarize_title",
         "retry_agent",
+        "cancel",
     ]
 
 
@@ -215,6 +216,8 @@ class TensorBoardDisplay(StrictModel):
 class ComputeStage(StrictModel):
     id: str = Field(pattern=r"^[a-z][a-z0-9_]{0,47}$")
     title: str = Field(min_length=1, max_length=200)
+    executor: Literal["slurm", "agent"] = "slurm"
+    instruction: str | None = Field(default=None, min_length=1, max_length=4000)
     outputs: list[str] = Field(default_factory=list, max_length=100)
     resources: JobResources | None = None
     script: str | None = None
@@ -237,13 +240,22 @@ class PlannedStage(StrictModel):
     id: str = Field(pattern=r"^[a-z][a-z0-9_]{0,47}$")
     title: str = Field(min_length=1, max_length=200)
     summary: str = Field(min_length=1, max_length=1000)
-    resources: JobResources
+    executor: Literal["slurm", "agent"] = "slurm"
+    resources: JobResources | None = None
     needs: list[str] | None = Field(default=None, max_length=256)
 
 
 def stage_dependencies(stages, schema_version):
     """Return the frozen graph; version 1 keeps its historical ordered chain."""
     ids = [stage.id for stage in stages]
+    for stage in stages:
+        if isinstance(stage, PlannedStage) and stage.executor == "slurm" and stage.resources is None:
+            raise ValueError("planned Slurm stages require resources")
+        if stage.executor == "agent":
+            if schema_version != 3 or stage.resources is not None:
+                raise ValueError("agent stages require schema 3 and no Slurm resources")
+            if isinstance(stage, ComputeStage) and (not stage.instruction or stage.script):
+                raise ValueError("agent stages require an instruction and cannot declare a Slurm script")
     if len(ids) != len(set(ids)) or set(ids) & {"plan", "prepare", "validate", "interpret", "publish"}:
         raise ValueError("stage identities must be unique and non-reserved")
     if schema_version == 1:
@@ -338,6 +350,10 @@ class ResearchPlan(StrictModel):
         return self
 
 
+class AgentStageResult(StrictModel):
+    summary: str = Field(min_length=1, max_length=4000)
+
+
 class Implementation(StrictModel):
     schema_version: Literal[1, 2, 3] = 1
     title: str | None = Field(default=None, min_length=1, max_length=100)
@@ -369,7 +385,10 @@ class Implementation(StrictModel):
         parameters = json.loads(self.parameters_json)
         if not isinstance(parameters, dict):
             raise ValueError("parameters_json must encode an object")
-        if any(not stage.script for stage in self.stages) and "recipe.py" not in self.files:
+        if (
+            any(stage.executor == "slurm" and not stage.script for stage in self.stages)
+            and "recipe.py" not in self.files
+        ):
             raise ValueError("stages without a shell script require recipe.py")
         if any(
             stage.script and (stage.script not in self.files or not stage.script.endswith((".sh", ".sbatch")))

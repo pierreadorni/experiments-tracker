@@ -14,6 +14,7 @@ from pydantic import Field, model_validator
 from . import artifacts
 from .codex_client import RpcRejected, TerminalTurnError
 from .config import StrictModel
+from .maintenance import blocked
 from .store import Conflict, encode
 
 WEEK = 7 * 86400
@@ -751,6 +752,8 @@ class ProjectSupervisor:
         wf, memory, agent = self.workflow, self.memory, self.workflow.agent
         try:
             decision = await wf.refresh_quota()
+            if blocked(wf.store):
+                return
             if not decision.admitted or (row["origin"] == "weekly" and not self.plenty(decision)):
                 memory.state(row["id"], "waiting", hold_reason="quota_hold")
                 return
@@ -768,6 +771,8 @@ class ProjectSupervisor:
             thread, _ = await agent.session(
                 None, workspace, writable=False, model=model, approval_policy="never"
             )
+            if blocked(wf.store):
+                return
             memory.state(row["id"], "dispatching", thread_id=thread)
             turn = await agent.begin(thread, prompt, KnowledgeReply.model_json_schema(), effort=effort)
             memory.state(row["id"], "running", turn_id=turn)

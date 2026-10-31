@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   stageSummary,
+  stageJob,
   jobTiming,
   observationTime,
   stageTitle,
@@ -405,4 +406,56 @@ test('iteration dependencies describe input availability without a validation ba
     jobs: [],
   };
   assert.match(stageSummary(sample, stage), /Waiting for outputs from evaluate/);
+});
+
+test('agent stages show turn activity and reconciliation without a scheduler job', () => {
+  const check = { id: 'model_check', state: 'running' };
+  const base = {
+    ...exp,
+    stages: [check],
+    jobs: [],
+    agent_actions: [{ phase: 'agent:model_check', state: 'running' }],
+    stage_activity: [{ stage_id: 'model_check', summary: 'Fixing the tiny forward check' }],
+  };
+  assert.equal(stageSummary(base, check), 'Fixing the tiny forward check');
+  assert.equal(
+    stageSummary(
+      { ...base, agent_actions: [{ phase: 'agent:model_check', state: 'uncertain' }] },
+      check,
+    ),
+    'Waiting for turn reconciliation',
+  );
+  assert.equal(
+    stageSummary(
+      { ...base, agent_actions: [{ phase: 'agent:model_check', state: 'completed' }] },
+      check,
+    ),
+    'Checking agent output',
+  );
+});
+
+test('repair timeline selects the current attempt regardless of job array order', () => {
+  const currentStage = { ...stage, attempt: 4 };
+  const failed = { ...job, attempt: 1, state: 'failed', scheduler_state: 'FAILED' };
+  const running = { ...job, attempt: 4, created_at: 200, scheduler_state: 'RUNNING', job_id: '99' };
+  for (const jobs of [
+    [failed, running],
+    [running, failed],
+  ]) {
+    const repaired = { ...exp, jobs };
+    assert.equal(stageJob(repaired, currentStage), running);
+    assert.equal(stageSummary(repaired, currentStage), 'Job “fit” running');
+    assert.equal(stageIndicator(repaired, currentStage), 'running');
+  }
+  const pending = { ...currentStage, state: 'pending' };
+  const awaitingRetry = { ...exp, jobs: [failed] };
+  assert.equal(stageJob(awaitingRetry, pending), undefined);
+  assert.equal(stageIndicator(awaitingRetry, pending), 'pending');
+  assert.notEqual(stageSummary(awaitingRetry, pending), 'Job “fit” failed');
+  const reused = {
+    ...exp,
+    contract: { reused_job_intents: [job.intent_id] },
+    jobs: [{ ...job, attempt: 1, state: 'complete' }],
+  };
+  assert.equal(stageJob(reused, { ...currentStage, state: 'complete' }), reused.jobs[0]);
 });

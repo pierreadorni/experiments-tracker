@@ -540,3 +540,65 @@ async def test_project_memory_lost_ack_and_rejected_receipts_are_durable(config,
     assert store.one("SELECT delivered_at FROM project_memory_events")["delivered_at"]
     assert Knowledge(store).view("test-project")["messages"][0]["text"] == "What next?"
     await client.close()
+
+
+@pytest.mark.parametrize("execution_contract", [None, 3])
+async def test_upload_uses_acknowledged_metadata_during_revision_churn(
+    config, runtime, tmp_path, execution_contract
+):
+    from experimenttracker import artifacts
+
+    store, _, _, workflow = runtime
+    eid = publication_experiment(store)
+    if execution_contract:
+        from experimenttracker.store import encode
+
+        contract = {**store.experiment(eid)["contract"], "execution_contract": execution_contract}
+        with store.tx() as db:
+            db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(contract), eid))
+            store.emit(db, eid, "contract_fixture_loaded")
+    root = workflow.root(eid)
+    root.mkdir(parents=True)
+    (root / "known.json").write_text("{}")
+    artifacts.register(store, eid, "evaluate", root, ["known.json"])
+    revision = store.experiment(eid)["revision"]
+    artifacts.register(store, eid, "evaluate", root, ["known.json"])
+    assert store.experiment(eid)["revision"] == revision
+    (root / "known.json").write_text('{"changed":true}')
+    with pytest.raises(ValueError, match="immutable"):
+        artifacts.register(store, eid, "evaluate", root, ["known.json"])
+    assert store.experiment(eid)["revision"] == revision
+    (root / "known.json").write_text("{}")
+    uploads = []
+
+    async def handler(request):
+        if request.method == "PUT":
+            identity = request.url.path.rsplit("/", 1)[1]
+            row = store.one("SELECT * FROM artifacts WHERE id=?", (identity,))
+            uploads.append(row["name"])
+            return httpx.Response(
+                200,
+                json={
+                    "schema_version": 1,
+                    "artifact_id": identity,
+                    "available": True,
+                    "sha256": row["sha256"],
+                    "size": row["size"],
+                },
+            )
+        body = json.loads(request.content)
+        items = body.get("messages", body.get("events", []))
+        # Progress can commit while the gateway acknowledges the older projection.
+        store.update(eid, error="new progress")
+        return httpx.Response(200, json={"schema_version": 1, "accepted": [x["event_id"] for x in items]})
+
+    client = publication_client(config, store, tmp_path, handler)
+    await client.publish_outbox()
+    (root / "new.json").write_text("{}")
+    artifacts.register(store, eid, "evaluate", root, ["new.json"])
+    await client.upload_artifacts()
+    assert uploads == ["known.json"]
+    await client.publish_outbox()
+    await client.upload_artifacts()
+    assert uploads == ["known.json", "new.json"]
+    await client.close()

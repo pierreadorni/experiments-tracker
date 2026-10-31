@@ -1,6 +1,7 @@
 """Short SSH commands and resumable transfers; workflow authority stays on acacia."""
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import re
@@ -18,6 +19,10 @@ from .store import encode
 
 class AdmissionPending(ResourceUnavailable):
     """The cluster's current submission count/quota holds an otherwise saved request."""
+
+
+class TransferCancelled(RuntimeError):
+    """Local transfer work was stopped by an experiment cancellation."""
 
 
 class TransferPending(RuntimeError):
@@ -249,7 +254,11 @@ class RemoteSlurmScheduler(SlurmScheduler):
         return {**await super().discover(), "execution_context": "jean-zay"}
 
     async def transfer(self, direction, operation, *, identity=None):
+        if self.store.experiment(self.exp["id"])["phase"] == "cancelled":
+            raise TransferCancelled("Experiment cancelled")
         layout = await self.resolve()
+        if self.store.experiment(self.exp["id"])["phase"] == "cancelled":
+            raise TransferCancelled("Experiment cancelled")
         payload = {"settings": self.settings.model_dump(), "layout": layout}
         identity = identity or str(uuid4())
         with self.store.tx() as db:
@@ -261,17 +270,32 @@ class RemoteSlurmScheduler(SlurmScheduler):
                 (identity, self.exp["id"], direction, encode(payload), time.time()),
             )
         try:
-            result = await operation()
+            task = asyncio.create_task(operation())
+            try:
+                while True:
+                    done, _ = await asyncio.wait({task}, timeout=0.1)
+                    if self.store.experiment(self.exp["id"])["phase"] == "cancelled":
+                        raise TransferCancelled("Experiment cancelled")
+                    if done:
+                        result = task.result()
+                        break
+            finally:
+                if not task.done():
+                    task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+        except TransferCancelled:
+            raise
         except Exception as exc:
             with self.store.tx() as db:
                 db.execute(
-                    "UPDATE execution_transfers SET state='pending',result=?,updated_at=? WHERE id=?",
+                    "UPDATE execution_transfers SET state='pending',result=?,updated_at=? WHERE id=? AND state!='cancelled'",
                     (str(exc)[:2000], time.time(), identity),
                 )
             raise TransferPending(f"Jean Zay {direction} transfer pending: {exc}") from exc
         with self.store.tx() as db:
             db.execute(
-                "UPDATE execution_transfers SET state='complete',result=NULL,updated_at=? WHERE id=?",
+                "UPDATE execution_transfers SET state='complete',result=NULL,updated_at=? WHERE id=? AND state!='cancelled'",
                 (time.time(), identity),
             )
         return result

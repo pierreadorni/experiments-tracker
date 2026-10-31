@@ -328,7 +328,17 @@ class CodexAgent:
             result = await self.server.rpc("thread/start", params)
         return result["thread"]["id"], result.get("model")
 
-    async def begin(self, thread_id, prompt, schema, *, workspace=None, effort="low", project_workspace=None):
+    async def begin(
+        self,
+        thread_id,
+        prompt,
+        schema,
+        *,
+        workspace=None,
+        effort="low",
+        project_workspace=None,
+        additional_writable_roots=(),
+    ):
         self.active = (thread_id, None)
         result = await self.server.rpc(
             "turn/start",
@@ -343,7 +353,8 @@ class CodexAgent:
                         "sandboxPolicy": {
                             "type": "workspaceWrite",
                             "writableRoots": [str(workspace)]
-                            + ([str(project_workspace)] if project_workspace else []),
+                            + ([str(project_workspace)] if project_workspace else [])
+                            + [str(root) for root in additional_writable_roots],
                             "networkAccess": True,
                             "excludeSlashTmp": True,
                             "excludeTmpdirEnvVar": True,

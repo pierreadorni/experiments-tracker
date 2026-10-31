@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import { sqliteTable, text, integer, real, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 export const projections = sqliteTable('projections', {
@@ -188,3 +189,25 @@ export const projectMemoryReports = sqliteTable('project_memory_reports', {
   version: integer('version').notNull(),
   payload: text('payload').notNull(),
 });
+
+export const maintenanceStatus = sqliteTable('maintenance_status', {
+  executorId: text('executor_id').primaryKey(),
+  payload: text('payload').notNull(),
+  observedAt: real('observed_at').notNull(),
+});
+export const maintenanceCommands = sqliteTable(
+  'maintenance_commands',
+  {
+    requestId: text('request_id').primaryKey(),
+    executorId: text('executor_id').notNull(),
+    releaseId: text('release_id').notNull(),
+    state: text('state').notNull().default('pending'),
+    error: text('error'),
+    receivedAt: real('received_at').notNull(),
+  },
+  (t) => [
+    uniqueIndex('one_pending_maintenance')
+      .on(t.executorId)
+      .where(sql`${t.state} = 'pending'`),
+  ],
+);

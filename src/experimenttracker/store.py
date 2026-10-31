@@ -81,7 +81,7 @@ class Store:
         reader.db = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, check_same_thread=False)
         reader.db.row_factory = sqlite3.Row
         version = reader.db.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-        if version not in (12, 13, 14, 15, 16, 17, 18, 19, 20):
+        if version not in (12, 13, 14, 15, 16, 17, 18, 19, 20, 21):
             reader.close()
             raise RuntimeError("start the owner to migrate this database before detailed inspection")
         return reader
@@ -379,7 +379,20 @@ class Store:
                     PRIMARY KEY(experiment_id,stage_id))""")
                 db.execute("INSERT INTO schema_version VALUES(20)")
             version = 20
-        if version != 20:
+        if version == 20:
+            with self.tx() as db:
+                db.execute("""CREATE TABLE releases(
+                    commit_id TEXT PRIMARY KEY, summary TEXT NOT NULL, state TEXT NOT NULL,
+                    receipt TEXT, error TEXT, updated_at REAL NOT NULL)""")
+                db.execute("""CREATE TABLE maintenance(
+                    request_id TEXT PRIMARY KEY, release_id TEXT NOT NULL REFERENCES releases(commit_id),
+                    state TEXT NOT NULL, error TEXT, detail TEXT NOT NULL DEFAULT '{}',
+                    created_at REAL NOT NULL, updated_at REAL NOT NULL)""")
+                db.execute("""CREATE UNIQUE INDEX one_maintenance ON maintenance((1))
+                    WHERE state NOT IN ('complete','failed','cancelled')""")
+                db.execute("INSERT INTO schema_version VALUES(21)")
+            version = 21
+        if version != 21:
             raise RuntimeError("unsupported database schema version")
 
     def continue_action(self, action, *, request_id=None, feedback=None, _db=None):
@@ -486,6 +499,12 @@ class Store:
             result[name] = self.rows(
                 f"SELECT * FROM {table} WHERE experiment_id=?" + condition + ordering, (eid,)
             )
+        # Agent attempts share producer bookkeeping, but are not scheduler jobs.
+        result["jobs"] = [
+            j
+            for j in result["jobs"]
+            if json.loads(j.get("execution_manifest") or "{}").get("executor") != "agent"
+        ]
         if (
             result["snapshot"]
             and result["snapshot"].get("expected_outputs")
@@ -623,6 +642,9 @@ class Store:
         previous = self.one("SELECT * FROM experiments WHERE id=?", (eid,))
         if not previous:
             raise KeyError(eid)
+        # Async work may finish after a cancellation command committed.
+        if previous["phase"] == "cancelled" and kind != "cancellation_status":
+            return
         if all(previous[k] == v for k, v in fields.items()):
             return
         with self.tx() as db:
@@ -671,6 +693,8 @@ class Store:
 
     def start_validation(self, eid):
         """Publish the active phase and its stage in one idempotent transition."""
+        if self.experiment(eid)["phase"] == "cancelled":
+            return
         with self.tx() as db:
             stage = db.execute(
                 "SELECT state FROM stages WHERE experiment_id=? AND id='validate'", (eid,)
@@ -688,6 +712,8 @@ class Store:
             self.emit(db, eid, "validation_started")
 
     def stage(self, eid, stage_id, state, *, error=None, outputs=None):
+        if self.experiment(eid)["phase"] == "cancelled":
+            return
         with self.tx() as db:
             prior = db.execute(
                 "SELECT state FROM stages WHERE experiment_id=? AND id=?", (eid, stage_id)
@@ -701,6 +727,46 @@ class Store:
                 (state, error, encode(outputs) if outputs else None, time.time(), eid, stage_id),
             )
             self.emit(db, eid, "stage_changed", {"stage": stage_id, "state": state, "error": error})
+
+    def cancel_experiment(self, db, eid, now):
+        """Retire queued work atomically; dispatched identities remain for reconciliation."""
+        exp = self.experiment(eid)
+        if exp["phase"] == "complete":
+            raise Conflict("a completed experiment cannot be cancelled")
+        if exp["phase"] == "cancelled":
+            return
+        review = exp["plan_review"]
+        if review:
+            review["state"] = "cancelled"
+        db.execute(
+            "UPDATE experiments SET phase='cancelled',pause_agent=1,pause_compute=1,"
+            "pending_request=NULL,plan_review=?,hold_reason='cancellation_pending',error=NULL WHERE id=?",
+            (encode(review) if review else None, eid),
+        )
+        db.execute(
+            "UPDATE execution_transfers SET state='cancelled',result='Experiment cancelled',updated_at=? "
+            "WHERE experiment_id=? AND state NOT IN ('complete','failed','cancelled')",
+            (now, eid),
+        )
+        db.execute(
+            "UPDATE stages SET state='cancelled',error=NULL,updated_at=? "
+            "WHERE experiment_id=? AND state NOT IN ('complete','failed','cancelled')",
+            (now, eid),
+        )
+        db.execute(
+            "UPDATE agent_actions SET state='superseded',updated_at=? WHERE experiment_id=? AND state='pending'",
+            (now, eid),
+        )
+        db.execute(
+            "UPDATE steering SET state='cancelled',applied_at=? WHERE experiment_id=? AND state IN ('pending','cancelling')",
+            (now, eid),
+        )
+        db.execute(
+            "UPDATE report_versions SET state='failed',error='Experiment cancelled',updated_at=? "
+            "WHERE experiment_id=? AND state IN ('queued','building','publishing')",
+            (now, eid),
+        )
+        self.emit(db, eid, "experiment_cancel_requested")
 
     def command(self, request_id, kind, payload, *, eid=None, origin="local", experiment_id=None, _db=None):
         """Apply a validated user command atomically. Stable request IDs include a payload conflict check."""
@@ -853,6 +919,12 @@ class Store:
                 exp = self.experiment(eid)
                 if exp["deleted_at"] and kind != "delete":
                     raise Conflict("experiment has been deleted")
+                if (
+                    exp["phase"] == "cancelled"
+                    and kind not in ("note", "delete")
+                    and not (kind == "action" and payload["action"] == "cancel")
+                ):
+                    raise Conflict("experiment has been cancelled")
                 if kind == "discuss":
                     if exp["phase"] != "complete":
                         raise Conflict("discussion is available when the experiment is complete")
@@ -890,6 +962,8 @@ class Store:
                     ).fetchone()[0]
                     self._insert_report(db, eid, max(version or 1, 1) + 1, payload["document"], request_id)
                 elif kind == "delete":
+                    if exp["hold_reason"] in ("cancellation_pending", "cancellation_unconfirmed"):
+                        raise Conflict("reconcile cancellation before deleting the experiment")
                     if exp["phase"] not in ("complete", "failed", "cancelled"):
                         raise Conflict("finish or stop the experiment before deleting it")
                     if (
@@ -923,7 +997,9 @@ class Store:
                     )
                 elif kind == "action":
                     action = payload["action"]
-                    if action == "retry_agent":
+                    if action == "cancel":
+                        self.cancel_experiment(db, eid, now)
+                    elif action == "retry_agent":
                         session_failure = db.execute(
                             "SELECT * FROM agent_actions WHERE experiment_id=? AND state='failed' "
                             "AND turn_id IS NULL AND error LIKE 'session resume rejected:%' "
@@ -1113,19 +1189,21 @@ class Store:
                             (now, eid),
                         )
                     elif decision == "cancel":
+                        self.cancel_experiment(db, eid, now)
                         review["state"] = "cancelled"
-                        db.execute(
-                            "UPDATE experiments SET phase='cancelled',hold_reason=NULL WHERE id=?", (eid,)
-                        )
-                        db.execute(
-                            "UPDATE steering SET state='cancelled',applied_at=? WHERE experiment_id=? AND state='pending'",
-                            (now, eid),
-                        )
                     else:
                         raise Conflict("unknown plan decision")
                     db.execute(
                         "UPDATE experiments SET plan_review=?,hold_reason=? WHERE id=?",
-                        (encode(review), "plan_review" if decision == "approve" else None, eid),
+                        (
+                            encode(review),
+                            "plan_review"
+                            if decision == "approve"
+                            else "cancellation_pending"
+                            if decision == "cancel"
+                            else None,
+                            eid,
+                        ),
                     )
                 elif kind == "steer":
                     text = payload["text"].strip()
@@ -1174,6 +1252,7 @@ class Store:
     def activity(self, action, item_id, kind, summary, state):
         now = time.time()
         eid = action["experiment_id"]
+        action = {**action, "phase": action["phase"].removeprefix("agent:")}
         with self.tx() as db:
             prior = db.execute(
                 "SELECT summary,state FROM stage_activity WHERE action_id=? AND item_id=?",
@@ -1280,6 +1359,8 @@ class Store:
             self.emit(db, eid, "report_requested", {"report_version": 1})
 
     def report_state(self, eid, version, state, error=None):
+        if self.experiment(eid)["phase"] == "cancelled":
+            return
         with self.tx() as db:
             db.execute(
                 "UPDATE report_versions SET state=?,error=?,updated_at=? WHERE experiment_id=? AND version=?",

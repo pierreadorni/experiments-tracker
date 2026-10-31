@@ -38,6 +38,12 @@ def tool(name, description, properties, required=()):
 
 TOOLS = [
     tool(
+        "check_agent_stage",
+        "Check this active agent stage's declared outputs without completing it; fix errors in this turn.",
+        {},
+        [],
+    ),
+    tool(
         "update_report",
         "Publish a new working report version from available metrics/figures without waiting for all tasks.",
         {"request_id": {"type": "string"}, "document": {"type": "object"}},
@@ -285,6 +291,17 @@ class Controller:
         if not action or action["experiment_id"] != eid or action["state"] not in ("dispatching", "running"):
             raise ValueError("tool call requires this experiment's active owned session")
         exp = wf.store.experiment(eid)
+        if action["phase"].startswith("agent:"):
+            if name == "check_agent_stage":
+                job = iteration.agent_job(wf, exp, action["phase"])
+                iteration.check_stage(
+                    Path(job["execution_root"]), job["stage_id"], json.loads(job["execution_manifest"])
+                )
+                return {"valid": True}
+            if name not in ("job_status",):
+                raise ValueError(
+                    "agent stages permit output checks and status reads; finish the current task before dispatching other work"
+                )
         if action["phase"] == "monitor" and name not in ("job_status", "schedule_wakeup"):
             raise ValueError("monitoring only permits status reads and future backend checks")
         if name == "set_project_execution":

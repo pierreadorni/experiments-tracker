@@ -7,6 +7,7 @@ export function Protocol({ exp }: { exp: Experiment }) {
         stages?: {
           id: string;
           title: string;
+          executor?: 'agent' | 'slurm';
           resources?: Record<string, unknown> | null;
           local_outputs?: string[];
         }[];
@@ -27,7 +28,7 @@ export function Protocol({ exp }: { exp: Experiment }) {
       )}
       <dl className="protocol-list">
         <div>
-          <dt>Execution machine</dt>
+          <dt>Scheduled compute</dt>
           <dd>
             {execution?.context === 'jean-zay' ? 'Jean Zay' : 'Acacia'}
             {execution?.context === 'jean-zay' &&
@@ -54,18 +55,23 @@ export function Protocol({ exp }: { exp: Experiment }) {
           <dd>{exp.evidence_revision}</dd>
         </div>
       </dl>
+      {plan?.stages?.some((s) => s.executor === 'agent') && (
+        <p className="muted">Small agent stages run on Acacia with interactive checks and fixes.</p>
+      )}
       {plan?.stages?.some((s) => s.resources) && (
         <details className="technical-details" open>
           <summary>Planned Slurm resources</summary>
-          {plan.stages.map((s) => (
-            <div key={s.id}>
-              <h3>{s.title}</h3>
-              <pre>{JSON.stringify(s.resources, null, 2)}</pre>
-              {Boolean(s.local_outputs?.length) && (
-                <p>Kept on execution machine: {s.local_outputs?.join(', ')}</p>
-              )}
-            </div>
-          ))}
+          {plan.stages
+            .filter((s) => s.executor !== 'agent')
+            .map((s) => (
+              <div key={s.id}>
+                <h3>{s.title}</h3>
+                <pre>{JSON.stringify(s.resources, null, 2)}</pre>
+                {Boolean(s.local_outputs?.length) && (
+                  <p>Kept on execution machine: {s.local_outputs?.join(', ')}</p>
+                )}
+              </div>
+            ))}
         </details>
       )}
       {parameters !== undefined && parameters !== null && (

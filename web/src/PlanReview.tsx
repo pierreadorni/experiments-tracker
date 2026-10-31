@@ -95,7 +95,10 @@ export function PlanReview({
                       {stage.needs?.length ? `After: ${stage.needs.join(', ')}` : 'Can start first'}
                     </span>
                   )}
-                  {stage.resources && (
+                  {stage.executor === 'agent' && (
+                    <span className="muted small">Agent · interactive checks and fixes</span>
+                  )}
+                  {stage.executor !== 'agent' && stage.resources && (
                     <span className="muted small">{resourceSummary(stage.resources)}</span>
                   )}
                 </li>

@@ -444,6 +444,7 @@ def register(
 ):
     exp = store.experiment(eid)
     with contextlib.nullcontext(_db) if _db is not None else store.tx() as db:
+        changed = False
         for name in names:
             path = allowed_path(root / name, root)
             artifact_id = str(uuid5(NAMESPACE_URL, f"{eid}:{exp['evidence_revision']}:{name}"))
@@ -451,7 +452,7 @@ def register(
             digest = sha256(path)
             if existing and existing[0] != digest:
                 raise ValueError("registered immutable artifact changed")
-            db.execute(
+            inserted = db.execute(
                 """INSERT OR IGNORE INTO artifacts(
                 id,experiment_id,stage_id,path,name,sha256,size,media_type,evidence_revision,local_valid)
                 VALUES(?,?,?,?,?,?,?,?,?,1)""",
@@ -467,20 +468,28 @@ def register(
                     exp["evidence_revision"],
                 ),
             )
+            changed = changed or inserted.rowcount > 0
         if report_version is not None:
             from .reporting import artifact_id
 
-            db.execute(
-                "UPDATE report_versions SET state='publishing',artifact_ids=?,report_artifact_id=?,updated_at=? WHERE experiment_id=? AND version=?",
-                (
-                    encode([artifact_id(exp, name) for name in names]),
-                    artifact_id(exp, report_name),
-                    time.time(),
-                    eid,
-                    report_version,
-                ),
-            )
-        store.emit(db, eid, "artifacts_registered", {"names": names})
+            identities = encode([artifact_id(exp, name) for name in names])
+            report_id = artifact_id(exp, report_name)
+            report = db.execute(
+                "SELECT state,artifact_ids,report_artifact_id FROM report_versions WHERE experiment_id=? AND version=?",
+                (eid, report_version),
+            ).fetchone()
+            if (
+                report
+                and tuple(report) != ("publishing", identities, report_id)
+                and tuple(report) != ("ready", identities, report_id)
+            ):
+                db.execute(
+                    "UPDATE report_versions SET state='publishing',artifact_ids=?,report_artifact_id=?,updated_at=? WHERE experiment_id=? AND version=?",
+                    (identities, report_id, time.time(), eid, report_version),
+                )
+                changed = True
+        if changed:
+            store.emit(db, eid, "artifacts_registered", {"names": names})
 
 
 def validate_analysis(value, evidence_ids):

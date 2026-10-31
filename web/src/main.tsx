@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Description } from './Description';
+import { ExecutorUpdate } from './ExecutorUpdate';
 import {
   ArrowLeft,
   ArrowRight,
@@ -44,6 +45,7 @@ import { Report } from './Report';
 import { Protocol } from './Protocol';
 import { ExperimentActions } from './ExperimentActions';
 import { DeleteExperiment } from './DeleteExperiment';
+import { CancelExperiment } from './CancelExperiment';
 import { useDialog } from './useDialog';
 import { NewProject } from './NewProject';
 import { ProjectSettings } from './ProjectSettings';
@@ -156,6 +158,7 @@ function App() {
   const [reportChoice, setReportChoice] = useState<string | null>(null);
   const [conversationOpen, setConversationOpen] = useState(() => window.innerWidth >= 1360);
   const [deleting, setDeleting] = useState<{ eid: string; requestId: string } | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<Experiment | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Experiment | null>(null);
   const [brief, setBrief] = useState('');
   useEffect(() => {
@@ -369,6 +372,7 @@ function App() {
         'submission_uncertain',
         'agent_unavailable',
         'agent_session_unavailable',
+        'cancellation_unconfirmed',
       ].includes(e.hold_reason || ''),
   );
   const completed = experiments.filter((e) => e.phase === 'complete');
@@ -567,6 +571,13 @@ function App() {
         </nav>
         <div className="sidebar-bottom">
           {appearance}
+          <ExecutorUpdate
+            compact
+            onOpen={() => {
+              setPage('settings');
+              setSelected(null);
+            }}
+          />
           <div className="executor-label">
             <span className={`dot ${executorOnline ? 'online' : ''}`} />
             <strong>{status?.executor_id || 'Executor'}</strong>
@@ -828,12 +839,39 @@ function App() {
                     >
                       Summarize title
                     </button>
+                    {!['complete', 'cancelled'].includes(exp.phase) && (
+                      <button
+                        className="text-button delete-experiment"
+                        disabled={
+                          busy ||
+                          !status?.experiment_cancellation ||
+                          Boolean(exp.pending_commands?.some((c) => c.action === 'cancel'))
+                        }
+                        title={
+                          status?.experiment_cancellation
+                            ? 'Stop work and pending transfers'
+                            : 'Install the executor update to enable cancellation'
+                        }
+                        onClick={() => {
+                          setError(null);
+                          setCancelTarget(exp);
+                        }}
+                      >
+                        <X size={15} />
+                        {exp.pending_commands?.some((c) => c.action === 'cancel')
+                          ? 'Cancellation pending'
+                          : 'Cancel experiment'}
+                      </button>
+                    )}
                     {terminal.includes(exp.phase) && (
                       <button
                         className="text-button delete-experiment"
                         disabled={
                           busy ||
                           deleting?.eid === exp.id ||
+                          ['cancellation_pending', 'cancellation_unconfirmed'].includes(
+                            exp.hold_reason || '',
+                          ) ||
                           exp.report_versions?.some((r) =>
                             ['queued', 'building', 'publishing'].includes(r.state),
                           ) ||
@@ -1435,6 +1473,7 @@ function App() {
                   <p>Compute and agent usage have separate controls.</p>
                 </div>
               </div>
+              <ExecutorUpdate />
               <div className="bottom-grid">
                 <section className="panel">
                   <h2>{status?.executor_id}</h2>
@@ -1455,7 +1494,7 @@ function App() {
                     {status?.mode === 'demo'
                       ? 'Synthetic CPU demonstration. No Slurm jobs or GPU allocations.'
                       : status?.compute_policy?.agent_selected_resources
-                        ? 'The agent selects CPU/GPU resources and runtime for each stage using cluster capabilities and your Slurm permissions. Independent stages can queue together; dependencies and requests are saved in the protocol.'
+                        ? 'Small checks run in an agent tool loop with immediate fixes. Sustained compute uses Slurm CPU/GPU resources selected from cluster capabilities and your permissions. Dependencies and requests are saved in the protocol.'
                         : 'Waiting for the executor’s current resource policy.'}
                   </p>
                   {status?.compute_policy?.agent_selected_resources && (
@@ -1521,6 +1560,20 @@ function App() {
             setProjectId(projects.find((p) => p.id !== currentProject.id)?.id || '');
             setSelected(null);
             await reload();
+          }}
+        />
+      )}
+      {cancelTarget && (
+        <CancelExperiment
+          title={experimentTitle(cancelTarget)}
+          busy={busy}
+          error={error}
+          onClose={() => setCancelTarget(null)}
+          onConfirm={async () => {
+            await act(async () => {
+              await command(`/api/experiments/${cancelTarget.id}/actions`, { action: 'cancel' });
+              setCancelTarget(null);
+            });
           }}
         />
       )}
@@ -1704,7 +1757,7 @@ function App() {
               </details>
               {status?.mode !== 'demo' && (
                 <p className="resource-note">
-                  Managed Codex · agent-selected Slurm CPU/GPU resources
+                  Managed Codex · interactive checks and Slurm CPU/GPU stages
                 </p>
               )}
               {error && (
@@ -1958,6 +2011,10 @@ function holdExplanation(reason: string) {
       'Cancellation could not be confirmed. The executor checks the exact job identity before another attempt.',
     project_unavailable:
       'The saved project folder is missing or changed. Restore the original folder to continue safely.',
+    cancellation_pending:
+      'Cancellation is saved. Pending transfers are removed; the executor is stopping recorded work.',
+    cancellation_unconfirmed:
+      'Pending transfers are removed. A recorded job or agent turn still needs its stopped outcome confirmed.',
     publication_pending: 'Evidence is ready; required artifact publication is still pending.',
     unsupported_request:
       'The available recipe does not satisfy this brief. No compute was launched for this request.',

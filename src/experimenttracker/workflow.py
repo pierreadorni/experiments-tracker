@@ -11,12 +11,15 @@ from pathlib import Path
 from uuid import uuid4
 
 from . import artifacts, iteration, reporting
+from .cancellation import process_cancellations
 from .codex_client import CodexAgent, NeedsAttention, RpcRejected, SessionUnavailable, TerminalTurnError
 from .config import JobResources
 from .controller import Controller, ControllerDecision
 from .conversation import Conversation
 from .knowledge import ProjectSupervisor
+from .maintenance import Maintenance, blocked
 from .models import (
+    AgentStageResult,
     Analysis,
     ExperimentResult,
     ExperimentValidation,
@@ -55,6 +58,7 @@ TERMINAL_BAD = {
 class Workflow:
     def __init__(self, config, store, scheduler, agent):
         self.config = config
+        self.maintenance = Maintenance(config, store)
         self.store = store
         self.projects = Projects(config, store)
         self.workspaces = Workspaces(self.projects)
@@ -268,6 +272,8 @@ class Workflow:
 
     def status(self, last_tick, executor_error=None, *, projects=None):
         return {
+            "experiment_cancellation": True,
+            "maintenance": self.maintenance.status(self),
             "projects": self.projects.catalog() if projects is None else projects,
             "last_tick": last_tick,
             "agent_ready": self.agent_ready,
@@ -460,6 +466,7 @@ class Workflow:
         )
 
     async def tick(self, *, force_observe=False):
+        await process_cancellations(self)
         self.projects.tick()
         self.projects.settings_tick()
         self.supervisor.memory.refresh()
@@ -519,6 +526,8 @@ class Workflow:
             if not lane.agent_ready and not lane.agent_task and now - lane.last_agent_start >= 60:
                 await lane.agent.close()
                 await lane.connect_agent()
+        if blocked(self.store):
+            return
         self.apply_planning_steering()
         await process_restarts(self)
         await self.repair_failed_experiments()
@@ -690,6 +699,8 @@ class Workflow:
         eid = action["experiment_id"]
         try:
             decision = await self.refresh_quota()
+            if blocked(self.store):
+                return
             if not decision.admitted:
                 return
             exp = self.store.experiment(eid)
@@ -707,6 +718,8 @@ class Workflow:
                 return
             self.root(eid).mkdir(parents=True, exist_ok=True)
             thread_id, _ = await self.agent.session(None, self.root(eid), model=saved["model"])
+            if blocked(self.store) or self.store.experiment(eid)["phase"] == "cancelled":
+                return
             with self.store.tx() as db:
                 db.execute(
                     "UPDATE agent_actions SET thread_id=?,state='dispatching',attempts=attempts+1,updated_at=? WHERE id=?",
@@ -966,6 +979,8 @@ class Workflow:
 
     def fail(self, eid, reason, error):
         exp = self.store.experiment(eid)
+        if exp["phase"] == "cancelled":
+            return
         if reason == "validation_failed" and exp["phase"] == "validating":
             self.store.stage(eid, "validate", "failed", error=error)
         if (
@@ -1026,7 +1041,7 @@ class Workflow:
 
     async def advance(self, eid):
         exp = self.store.experiment(eid)
-        if exp["hold_reason"] == "automatic_repair_pending":
+        if exp["phase"] == "cancelled" or exp["hold_reason"] == "automatic_repair_pending":
             return
         restart = self.store.one(
             "SELECT 1 FROM steering WHERE experiment_id=? AND mode='restart' AND state IN ('pending','cancelling')",
@@ -1044,6 +1059,8 @@ class Workflow:
         }
         root = await asyncio.to_thread(self.root, eid)
         await asyncio.to_thread(root.mkdir, parents=True, exist_ok=True)
+        if self.store.experiment(eid)["phase"] == "cancelled":
+            return
         generic = exp["recipe_id"] == "agent_experiment_v1"
         if generic and exp["contract"].get("planning_version") and stages["plan"] != "complete":
             await self.agent_stage(exp, "plan")
@@ -1072,6 +1089,8 @@ class Workflow:
             return
         await asyncio.to_thread(artifacts.verify_snapshot, root, exp["snapshot"])
         await asyncio.to_thread(artifacts.register_snapshot, self.store, eid, root)
+        if self.store.experiment(eid)["phase"] == "cancelled":
+            return
         if stages["prepare"] != "complete":
             await self.agent_stage(exp, "prepare")
             return
@@ -1101,6 +1120,18 @@ class Workflow:
                 "SELECT * FROM jobs WHERE experiment_id=? AND stage_id=? AND attempt=?",
                 (eid, stage, exp["evidence_revision"]),
             )
+            spec = next(
+                (s for s in exp["snapshot"].get("plan", {}).get("stages", []) if s["id"] == stage), {}
+            )
+            if spec.get("executor") == "agent":
+                if any(stages[need] != "complete" for need in dependencies[stage]):
+                    continue
+                if exp["pause_compute"] and not job:
+                    self.store.update(eid, hold_reason="new_compute_paused")
+                    continue
+                iteration.queue_agent(self, exp, stage)
+                await self.agent_stage(exp, "agent:" + stage)
+                continue
             if job:
                 if job["state"] == "complete":
                     if not iteration.enabled(exp) and exp["contract"].get("strict_reproducibility"):
@@ -1241,6 +1272,9 @@ class Workflow:
         if stage not in compute_stages:
             raise ValueError("stage is not in the saved implementation")
         index = compute_stages.index(stage)
+        spec = next((s for s in exp["snapshot"].get("plan", {}).get("stages", []) if s["id"] == stage), {})
+        if spec.get("executor") == "agent":
+            raise ValueError("agent stages run through the managed agent loop, not scheduler submission")
         if request_id:
             exact = self.store.one("SELECT * FROM jobs WHERE intent_id=?", (request_id,))
             if exact and (exact["experiment_id"], exact["stage_id"], exact["attempt"]) != (
@@ -1274,6 +1308,8 @@ class Workflow:
                 return {"state": "held", "reason": "dependencies_pending"}
             if exp["plan_review"] and exp["plan_review"]["state"] != "approved":
                 return {"state": "held", "reason": "plan_review"}
+        if blocked(self.store):
+            return {"state": "held", "reason": "executor_maintenance"}
         if exp["pause_compute"]:
             return {"state": "held", "reason": "new_compute_paused"}
         cap = self.config.slurm.max_concurrent_jobs
@@ -1287,7 +1323,10 @@ class Workflow:
         ):
             return {"state": "held", "reason": "compute_busy"}
         artifacts.verify_snapshot(root, exp["snapshot"])
-        count = self.store.one("SELECT COUNT(*) AS n FROM jobs WHERE experiment_id=?", (eid,))["n"]
+        count = self.store.one(
+            "SELECT COUNT(*) AS n FROM jobs WHERE experiment_id=? AND json_extract(execution_manifest, '$.executor') IS NOT 'agent'",
+            (eid,),
+        )["n"]
         budget = exp["contract"].get("max_jobs", self.config.slurm.max_jobs_per_experiment)
         if budget is not None and count >= budget:
             self.fail(eid, "compute_budget_exhausted", f"{budget}-job budget exhausted")
@@ -1355,7 +1394,8 @@ class Workflow:
                 return {"state": "held", "reason": "resources_unavailable"}
         admitted = self.store.experiment(eid)
         if (
-            admitted["pause_compute"]
+            blocked(self.store)
+            or admitted["pause_compute"]
             or admitted["phase"] in ("failed", "cancelled", "complete")
             or admitted["snapshot"]["snapshot_hash"] != exp["snapshot"]["snapshot_hash"]
         ):
@@ -1568,7 +1608,8 @@ class Workflow:
 
     async def observe_jobs(self):
         for job in self.store.rows(
-            "SELECT * FROM jobs WHERE state IN ('submitting','submitted') ORDER BY created_at"
+            "SELECT j.* FROM jobs j JOIN experiments e ON e.id=j.experiment_id "
+            "WHERE j.state IN ('submitting','submitted') AND e.phase!='cancelled' ORDER BY j.created_at"
         ):
             eid = job["experiment_id"]
             try:
@@ -1605,6 +1646,8 @@ class Workflow:
                     job["job_id"] = job_id
                     self.store.update(eid, hold_reason=None, error=None)
                 observed = check[1] if check else await scheduler.observe(job["job_id"])
+                if self.store.experiment(eid)["phase"] == "cancelled":
+                    continue
                 if isinstance(scheduler, RemoteSlurmScheduler):
                     try:
                         await scheduler.fetch(job, observed)
@@ -1746,6 +1789,8 @@ class Workflow:
                         for field in ("started_at", "ended_at")
                     )
                 )
+                if self.store.experiment(eid)["phase"] == "cancelled":
+                    continue
                 with self.store.tx() as db:
                     registration_started = time.monotonic()
                     if completed_names is not None and iteration.enabled(exp):
@@ -1859,7 +1904,14 @@ class Workflow:
             lane = self.agent_lane(eid)
             if lane is not self:
                 return await lane.agent_stage(exp, phase)
-        self.store.update(eid, phase="preparing" if phase in ("plan", "prepare") else "interpreting")
+        self.store.update(
+            eid,
+            phase="training"
+            if phase.startswith("agent:")
+            else "preparing"
+            if phase in ("plan", "prepare")
+            else "interpreting",
+        )
         action_revision = (
             (exp["plan_review"] or {}).get(
                 "preparation_revision", (exp["plan_review"] or {}).get("revision", 1)
@@ -1887,6 +1939,8 @@ class Workflow:
                     )
                     return
             prompt = await asyncio.to_thread(self.prompt, exp, phase)
+            if self.store.experiment(eid)["phase"] == "cancelled":
+                return
             action_id = str(uuid4())
             with self.store.tx() as db:
                 db.execute(
@@ -1899,6 +1953,9 @@ class Workflow:
         if action["state"] == "completed":
             try:
                 value = json.loads(action["result"])
+                if phase.startswith("agent:"):
+                    iteration.finish_agent(self, exp, phase, value)
+                    return
                 if phase == "plan" and exp["recipe_id"] == "agent_experiment_v1":
                     plan = ResearchPlan.model_validate(value)
                     self.validate_resource_plan(exp, plan)
@@ -1954,6 +2011,7 @@ class Workflow:
                                         {
                                             "id": stage.id,
                                             "title": stage.title,
+                                            "executor": stage.executor,
                                             "needs": stage.needs,
                                             "resources": stage.resources.model_dump()
                                             if stage.resources
@@ -1989,6 +2047,8 @@ class Workflow:
                     requirements = (
                         "" if iteration.enabled(exp) else await self.dependencies(self.root(eid), python)
                     )
+                    if self.store.experiment(eid)["phase"] == "cancelled":
+                        return
                     reused = self.reusable_stages(exp, plan)
                     budget = exp["contract"].get("max_jobs", self.config.slurm.max_jobs_per_experiment)
                     submitted = self.store.one(
@@ -2452,7 +2512,7 @@ class Workflow:
 
     def prepared_python(self, exp, plan):
         if self.is_remote(exp):
-            if any(not stage.script for stage in plan.stages):
+            if any(stage.executor == "slurm" and not stage.script for stage in plan.stages):
                 raise ValueError(
                     "Jean Zay stages must declare .sbatch or .sh scripts that set up their remote runtime"
                 )
@@ -2506,8 +2566,8 @@ class Workflow:
         cap = self.config.slurm.limits.gpu_hours_per_experiment
         if cap is not None:
             reserved = sum(
-                json.loads(j["resources"])["gpus_per_job"]
-                * json.loads(j["resources"])["walltime_minutes_per_job"]
+                json.loads(j["resources"]).get("gpus_per_job", 0)
+                * json.loads(j["resources"]).get("walltime_minutes_per_job", 0)
                 / 60
                 for j in self.store.rows("SELECT resources FROM jobs WHERE experiment_id=?", (exp["id"],))
             )
@@ -2521,15 +2581,19 @@ class Workflow:
         if not iteration.enabled(exp) and plan.schema_version == 3:
             raise ValueError("saved historical contracts cannot switch execution semantics")
         budget = exp["contract"].get("max_jobs", self.config.slurm.max_jobs_per_experiment)
-        if budget is not None and len(plan.stages) > budget:
+        if budget is not None and sum(s.executor == "slurm" for s in plan.stages) > budget:
             raise ValueError(f"plan exceeds the {budget}-job experiment budget")
         for stage in plan.stages:
+            if stage.executor == "agent":
+                if not iteration.enabled(exp):
+                    raise ValueError("agent stages require execution contract 3")
+                continue
             if (
                 self.config.mode == "live"
                 and exp["contract"].get("resource_policy_version") == 2
                 and stage.resources is None
             ):
-                raise ValueError("every live stage must declare its Slurm resources")
+                raise ValueError("every live Slurm stage must declare its resources")
             resources = stage.resources or self.config.slurm.defaults()
             if isinstance(plan, Implementation) and stage.script and stage.script.endswith(".sbatch"):
                 from .remote import sbatch_directives
@@ -2551,6 +2615,7 @@ class Workflow:
                 * (s.resources or self.config.slurm.defaults()).walltime_minutes_per_job
                 / 60
                 for s in plan.stages
+                if s.executor == "slurm"
             )
             > cap
         ):
@@ -2702,7 +2767,11 @@ class Workflow:
         if phase == "plan":
             instruction += (
                 "This turn is read-only planning: no edits, installs, jobs or training. Return schema_version 3, "
-                "title, concise summary, protocol and stages with resources and explicit needs ([] for roots). "
+                "title, concise summary, protocol and stages with explicit needs ([] for roots). "
+                "Choose executor:'agent' for small preparation, model shape/gradient/forward checks, quick inference "
+                "and debugging that fit a bounded interactive tool loop. Agent stages have resources:null. "
+                "Choose executor:'slurm' with explicit resources for training, heavy extraction and sustained compute. "
+                "A small check should fix and retest inside one agent turn before dependent training queues. "
                 "Plan evaluation, plotting and extra analysis as separate resumable tasks. There is no universal "
                 "final verification stage or all-stage dependency requirement. Dependencies express needed inputs. "
                 "Initial plan approval is required. For essential missing inputs return questions and stages: []. "
@@ -2721,6 +2790,12 @@ class Workflow:
             )
             payload["output_schema"] = ExperimentResult.model_json_schema()
             instruction += (
+                "Preserve the plan's executor choices. Agent stages declare executor:'agent', resources:null, "
+                "a concrete instruction and declared outputs; no script. Use them for small tests and in-turn debugging. "
+                "They run locally beside the agent even when Slurm training uses Jean Zay; foreign-host inputs need an explicit transfer. "
+                "Slurm stages declare executor:'slurm' and resources. "
+                "For a readiness-only gate, use needs to wait and input_output_ids:[] when no producer files are consumed, "
+                "especially when a local check gates remote training. This does not transfer data across hosts. "
                 "Write schema_version 3 Implementation in workspace. files lists executable small sources with normal "
                 "package paths; project_files lists explicitly needed project source/config files (16 MiB total). "
                 "The tracker copies declared sources into each attempt before dispatch. Jobs never import editable "
@@ -3074,6 +3149,8 @@ class Workflow:
         return instruction + "\n" + self.execution_instruction(exp, phase) + "\nPAYLOAD:\n" + encode(payload)
 
     def prompt(self, exp, phase):
+        if phase.startswith("agent:"):
+            return iteration.agent_prompt(self, exp, phase)
         payload = {
             "phase": phase,
             "experiment_id": exp["id"],
@@ -3237,7 +3314,10 @@ class Workflow:
             if (
                 not action["thread_id"]
                 or action["attempts"] != 1
-                or action["phase"] not in ("plan", "prepare", "interpret")
+                or (
+                    action["phase"] not in ("plan", "prepare", "interpret")
+                    and not action["phase"].startswith("agent:")
+                )
             ):
                 raise NeedsAttention("missing turn recovery requires one saved research dispatch")
             if self.store.one(
@@ -3297,6 +3377,8 @@ class Workflow:
             }
         elif action["phase"] in ("title", "summarize_title"):
             TitleSummary.model_validate(result)
+        elif action["phase"].startswith("agent:"):
+            AgentStageResult.model_validate(result)
         elif action["phase"] == "monitor":
             ControllerDecision.model_validate(result)
         elif action["phase"] == "plan" and exp["recipe_id"] == "agent_experiment_v1":
@@ -3358,6 +3440,8 @@ class Workflow:
         eid = action["experiment_id"]
         try:
             decision = await self.refresh_quota()
+            if blocked(self.store):
+                return
             if not decision.admitted:
                 self.store.update(eid, hold_reason="quota_hold", error=decision.reason)
                 return
@@ -3443,7 +3527,18 @@ class Workflow:
             if project_workspace:
                 turn_options["project_workspace"] = project_workspace
             generic_prepare = exp["recipe_id"] == "agent_experiment_v1" and action["phase"] == "prepare"
-            if action["phase"] == "monitor":
+            agent_execution = action["phase"].startswith("agent:")
+            if agent_execution:
+                job = iteration.agent_job(self, exp, action["phase"])
+                workspace = Path(job["execution_root"])
+                turn_options.pop("project_workspace", None)
+                turn_options["additional_writable_roots"] = [self.working_directory(exp)]
+                if project_workspace:
+                    turn_options["additional_writable_roots"].append(project_workspace)
+                thread_id, model = await self.agent.session(
+                    action["thread_id"], workspace, writable=True, **session_options
+                )
+            elif action["phase"] == "monitor":
                 # A bounded diagnostic must never accumulate in the research
                 # conversation or replace its saved session identity.
                 thread_id, model = await self.agent.session(
@@ -3486,6 +3581,8 @@ class Workflow:
                     or (self.root(eid) if action["phase"] == "plan" else self.root(eid) / "snapshot"),
                     **session_options,
                 )
+            if blocked(self.store) or self.store.experiment(eid)["phase"] == "cancelled":
+                return
             prompt = action["input"]
             if action["error"] and not self.input_rejected(action):
                 prompt = (
@@ -3517,7 +3614,9 @@ class Workflow:
                     },
                 )
             schema = (
-                ControllerDecision.model_json_schema()
+                AgentStageResult.model_json_schema()
+                if agent_execution
+                else ControllerDecision.model_json_schema()
                 if action["phase"] == "monitor"
                 else ResearchPlan.model_json_schema()
                 if action["phase"] == "plan"
@@ -3525,10 +3624,14 @@ class Workflow:
                 if action["phase"] == "prepare"
                 else Analysis.model_json_schema()
             )
-            if generic_prepare or (
-                action["phase"] == "interpret"
-                and exp["recipe_id"] == "agent_experiment_v1"
-                and self.config.mode == "live"
+            if (
+                agent_execution
+                or generic_prepare
+                or (
+                    action["phase"] == "interpret"
+                    and exp["recipe_id"] == "agent_experiment_v1"
+                    and self.config.mode == "live"
+                )
             ):
                 if not generic_prepare:
                     turn_options.pop("project_workspace", None)
@@ -3591,6 +3694,8 @@ class Workflow:
 
     async def publish(self, exp):
         eid = exp["id"]
+        if self.store.experiment(eid)["phase"] == "cancelled":
+            return
         root = self.root(eid)
         self.store.update(eid, phase="publishing", hold_reason="publication_pending")
         records = self.store.rows(
@@ -3788,13 +3893,17 @@ class Workflow:
     async def advance_reports(self):
         rows = self.store.rows(
             "SELECT r.* FROM report_versions r JOIN experiments e ON e.id=r.experiment_id "
-            "WHERE e.deleted_at IS NULL AND r.state IN ('queued','building','publishing') ORDER BY r.created_at LIMIT 1"
+            "WHERE e.deleted_at IS NULL AND e.phase!='cancelled' AND r.state IN ('queued','building','publishing') ORDER BY r.created_at"
         )
+        rendered = False
         for row in rows:
             eid, version = row["experiment_id"], row["version"]
             exp = self.store.experiment(eid)
             try:
                 if row["state"] in ("queued", "building"):
+                    if rendered:
+                        continue
+                    rendered = True
                     if row["state"] == "queued":
                         self.store.report_state(eid, version, "building")
                     exp = self.store.experiment(eid)
@@ -3809,6 +3918,8 @@ class Workflow:
                     name, files = await asyncio.to_thread(
                         reporting.build_report, exp, root, records, json.loads(row["document"]), version
                     )
+                    if self.store.experiment(eid)["phase"] == "cancelled":
+                        return
                     artifacts.register(
                         self.store, eid, "publish", root, files, report_version=version, report_name=name
                     )

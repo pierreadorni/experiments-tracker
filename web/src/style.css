@@ -2891,3 +2891,33 @@ progress::-moz-progress-bar {
   overflow-wrap: normal;
   text-align: end;
 }
+
+.executor-update {
+  margin-bottom: 24px;
+}
+.update-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.executor-update-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+}
+.update-spinner {
+  animation: update-spin 1.2s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes update-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .update-spinner {
+    animation: none;
+  }
+}

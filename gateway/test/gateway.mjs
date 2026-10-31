@@ -1934,3 +1934,261 @@ test('iteration metrics remain available through plot failure and recovery witho
   privatePath.output_refs[0].path = '/private/research';
   assert.equal((await send(privatePath)).status, 422);
 });
+
+test('contract 3 repair artifacts retain duplicate filenames with distinct immutable IDs', async () => {
+  const { result } = await create({ recipe_id: 'agent_experiment_v1' });
+  const initial = await (await req(`/api/experiments/${result.experiment_id}`)).json();
+  const artifacts = [0, 1].map(() => ({
+    id: randomUUID(),
+    name: 'preparation.json',
+    sha256: 'a'.repeat(64),
+    size: 2,
+    media_type: 'application/json',
+    local_valid: 1,
+    remote_published: 0,
+  }));
+  const exp = {
+    ...initial,
+    revision: 1,
+    phase: 'training',
+    hold_reason: null,
+    contract: { ...initial.contract, execution_contract: 3 },
+    artifacts,
+  };
+  const send = (experiment) =>
+    req('/api/executor/publish', {
+      token: executor,
+      method: 'POST',
+      body: JSON.stringify({
+        schema_version: 1,
+        executor_id: 'acacia',
+        messages: [{ schema_version: 1, event_id: randomUUID(), experiment, inbox: [] }],
+      }),
+    });
+  assert.equal((await send(exp)).status, 200);
+  const saved = await (await req(`/api/experiments/${exp.id}`)).json();
+  assert.deepEqual(
+    saved.artifacts.map((a) => a.id),
+    artifacts.map((a) => a.id),
+  );
+  assert.equal(
+    (await send({ ...exp, revision: 2, artifacts: [artifacts[0], artifacts[0]] })).status,
+    422,
+  );
+  assert.equal(
+    (
+      await send({
+        ...exp,
+        revision: 2,
+        artifacts: [{ ...artifacts[0], sha256: 'b'.repeat(64) }, artifacts[1]],
+      })
+    ).status,
+    409,
+  );
+  assert.equal(
+    (
+      await send({
+        ...exp,
+        revision: 2,
+        contract: {
+          ...exp.contract,
+          execution_contract: 2,
+        },
+      })
+    ).status,
+    422,
+  );
+});
+
+test('maintenance authorization, immutable receipts, stale progress and credential roles', async () => {
+  const releaseId = 'a'.repeat(40);
+  const state = {
+    current_commit: 'b'.repeat(40),
+    available: true,
+    release: {
+      commit_id: releaseId,
+      summary: 'Synthetic tested release',
+      state: 'ready',
+      error: null,
+    },
+    operation: null,
+    blockers: [],
+    running_jobs: 3,
+    observed_at: Date.now() / 1000,
+  };
+  assert.equal((await req('/api/maintenance', { token: executor })).status, 401);
+  assert.equal(
+    (await req('/api/executor/maintenance', { method: 'POST', body: JSON.stringify(state) }))
+      .status,
+    401,
+  );
+  assert.equal(
+    (
+      await req('/api/executor/maintenance', {
+        token: executor,
+        method: 'POST',
+        body: JSON.stringify(state),
+      })
+    ).status,
+    200,
+  );
+  const payload = { schema_version: 1, request_id: randomUUID(), release_id: releaseId };
+  assert.equal(
+    (
+      await req('/api/maintenance/install', {
+        method: 'POST',
+        body: JSON.stringify({ ...payload, shell: 'forbidden' }),
+      })
+    ).status,
+    422,
+  );
+  const send = () =>
+    req('/api/maintenance/install', { method: 'POST', body: JSON.stringify(payload) });
+  assert.equal((await send()).status, 202);
+  assert.equal((await send()).status, 202);
+  assert.equal(
+    (
+      await req('/api/maintenance/install', {
+        method: 'POST',
+        body: JSON.stringify({ ...payload, release_id: 'c'.repeat(40) }),
+      })
+    ).status,
+    409,
+  );
+  assert.equal(
+    (
+      await req('/api/maintenance/install', {
+        method: 'POST',
+        body: JSON.stringify({ ...payload, request_id: randomUUID() }),
+      })
+    ).status,
+    409,
+  );
+  const commands = await (
+    await req('/api/executor/maintenance-commands', { token: executor })
+  ).json();
+  assert.deepEqual(commands.commands, [{ request_id: payload.request_id, release_id: releaseId }]);
+  const receipt = { ...payload, state: 'accepted', error: null };
+  for (let i = 0; i < 2; i++)
+    assert.equal(
+      (
+        await req('/api/executor/maintenance-commands', {
+          token: executor,
+          method: 'POST',
+          body: JSON.stringify(receipt),
+        })
+      ).status,
+      200,
+    );
+  assert.equal(
+    (
+      await req('/api/executor/maintenance-commands', {
+        token: executor,
+        method: 'POST',
+        body: JSON.stringify({ ...receipt, state: 'rejected', error: 'changed' }),
+      })
+    ).status,
+    409,
+  );
+  const installing = {
+    ...state,
+    observed_at: state.observed_at + 2,
+    operation: {
+      request_id: payload.request_id,
+      release_id: releaseId,
+      state: 'backing_up',
+      error: null,
+      updated_at: state.observed_at + 2,
+    },
+  };
+  assert.equal(
+    (
+      await req('/api/executor/maintenance', {
+        token: executor,
+        method: 'POST',
+        body: JSON.stringify(installing),
+      })
+    ).status,
+    200,
+  );
+  await req('/api/executor/maintenance', {
+    token: executor,
+    method: 'POST',
+    body: JSON.stringify(state),
+  });
+  const latest = await (await req('/api/maintenance')).json();
+  assert.equal(latest.operation.state, 'backing_up');
+  assert.equal(latest.pending, null);
+  assert.equal(
+    (
+      await req('/api/maintenance/install', {
+        method: 'POST',
+        body: JSON.stringify({ ...payload, request_id: randomUUID() }),
+      })
+    ).status,
+    409,
+  );
+});
+
+test('cancellation is durable in every phase and requires a capable executor', async () => {
+  const db = await mf.getD1Database('DB');
+  const prior = await db.prepare('SELECT * FROM executor_status WHERE id=?').bind('acacia').first();
+  try {
+    await db.prepare('DELETE FROM executor_status WHERE id=?').bind('acacia').run();
+    const { result } = await create();
+    const eid = result.experiment_id;
+    const post = (payload) =>
+      req(`/api/experiments/${eid}/actions`, { method: 'POST', body: JSON.stringify(payload) });
+    assert.equal(
+      (await post({ schema_version: 1, request_id: randomUUID(), action: 'cancel' })).status,
+      409,
+    );
+    await db
+      .prepare('INSERT INTO executor_status(id,payload,received_at) VALUES(?,?,?)')
+      .bind('acacia', JSON.stringify({ experiment_cancellation: true }), Date.now() / 1000)
+      .run();
+    const exp = await (await req(`/api/experiments/${eid}`)).json();
+    for (const phase of [
+      'waiting_for_executor',
+      'preparing',
+      'training',
+      'evaluating',
+      'validating',
+      'interpreting',
+      'publishing',
+      'failed',
+      'cancelled',
+    ]) {
+      exp.phase = phase;
+      await db
+        .prepare('UPDATE projections SET payload=? WHERE id=?')
+        .bind(JSON.stringify(exp), eid)
+        .run();
+      const payload = { schema_version: 1, request_id: randomUUID(), action: 'cancel' };
+      assert.equal((await post(payload)).status, 202, phase);
+      assert.equal((await post(payload)).status, 202, `${phase} redelivery`);
+      const saved = await db
+        .prepare('SELECT kind,payload FROM commands WHERE request_id=?')
+        .bind(payload.request_id)
+        .first();
+      assert.equal(saved.kind, 'action');
+      assert.equal(JSON.parse(saved.payload).action, 'cancel');
+    }
+    exp.phase = 'complete';
+    await db
+      .prepare('UPDATE projections SET payload=? WHERE id=?')
+      .bind(JSON.stringify(exp), eid)
+      .run();
+    assert.equal(
+      (await post({ schema_version: 1, request_id: randomUUID(), action: 'cancel' })).status,
+      409,
+    );
+  } finally {
+    await db.prepare('DELETE FROM executor_status WHERE id=?').bind('acacia').run();
+    if (prior)
+      await db
+        .prepare('INSERT INTO executor_status(id,payload,received_at) VALUES(?,?,?)')
+        .bind(prior.id, prior.payload, prior.received_at)
+        .run();
+  }
+});

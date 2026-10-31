@@ -246,3 +246,40 @@ def test_discussion_output_manifest_is_not_limited_to_twenty_files():
         }
     )
     assert len(reply.generated_artifacts) == 40
+
+
+async def test_pending_report_does_not_block_later_builds(config, runtime):
+    store, _, _, workflow = runtime
+    eid = submit(store)
+    await until(workflow, store, eid, lambda e: e["phase"] == "complete")
+    # Keep the first report waiting on remote publication while another is queued.
+    config.gateway.url = "https://gateway.example"
+    store.command(uuid4(), "present", {"document": document()}, eid=eid)
+    await workflow.advance_reports()
+    first = store.one("SELECT * FROM report_versions WHERE experiment_id=? AND version=2", (eid,))
+    assert first["state"] == "publishing"
+    names = [
+        store.one("SELECT name FROM artifacts WHERE id=?", (identity,))["name"]
+        for identity in json.loads(first["artifact_ids"])
+    ]
+    revision = store.experiment(eid)["revision"]
+    artifacts.register(
+        store, eid, "publish", workflow.root(eid), names, report_version=2, report_name="report-v2.html"
+    )
+    assert store.experiment(eid)["revision"] == revision
+    store.command(uuid4(), "present", {"document": document()}, eid=eid)
+    await workflow.advance_reports()
+    assert (
+        store.one("SELECT state FROM report_versions WHERE experiment_id=? AND version=3", (eid,))["state"]
+        == "publishing"
+    )
+    assert (
+        store.one("SELECT state FROM report_versions WHERE experiment_id=? AND version=2", (eid,))["state"]
+        == "publishing"
+    )
+    with store.tx() as db:
+        db.execute("UPDATE artifacts SET remote_published=1 WHERE experiment_id=?", (eid,))
+    await workflow.advance_reports()
+    assert {
+        r["state"] for r in store.rows("SELECT state FROM report_versions WHERE experiment_id=?", (eid,))
+    } == {"ready"}

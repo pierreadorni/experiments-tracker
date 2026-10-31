@@ -1,5 +1,26 @@
 import type { Experiment, Job, Stage, Status } from './types';
 
+// Contract 3 retains failed attempts; array order is not the current job identity.
+export function stageJob(exp: Experiment, stage: Stage): Job | undefined {
+  const reused = (exp.contract?.reused_job_intents || []) as string[];
+  return exp.jobs
+    .filter(
+      (job) =>
+        job.stage_id === stage.id &&
+        (stage.attempt === undefined ||
+          job.attempt === undefined ||
+          job.attempt === stage.attempt ||
+          reused.includes(job.intent_id)),
+    )
+    .reduce<Job | undefined>((latest, job) => {
+      if (!latest) return job;
+      const attemptOrder = (job.attempt ?? 0) - (latest.attempt ?? 0);
+      return attemptOrder > 0 || (attemptOrder === 0 && job.created_at > latest.created_at)
+        ? job
+        : latest;
+    }, undefined);
+}
+
 export function repairProgress(exp: Experiment) {
   const repair = exp.contract?.auto_repair as
     | { kind?: string; error?: string; completed_stages?: string[] }
@@ -181,7 +202,7 @@ export function stageSummary(exp: Experiment, stage: Stage): string {
         ? 'Planned; implementation is being prepared'
         : 'Planned; waiting for plan approval')
     );
-  const job = exp.jobs.find((j) => j.stage_id === stage.id);
+  const job = stageJob(exp, stage);
   const label = stage.id.replaceAll('_', ' ');
   if (job) {
     if (job.state === 'submitting') return `Submitting job “${label}”`;
@@ -210,8 +231,13 @@ export function stageSummary(exp: Experiment, stage: Stage): string {
     }
     return stage.id === 'publish' ? 'Report and evidence published' : 'Complete';
   }
-  if (['plan', 'prepare', 'interpret'].includes(stage.id)) {
-    const action = exp.agent_actions.filter((a) => a.phase === stage.id).at(-1);
+  if (
+    ['plan', 'prepare', 'interpret'].includes(stage.id) ||
+    exp.agent_actions.some((a) => a.phase === `agent:${stage.id}`)
+  ) {
+    const action = exp.agent_actions
+      .filter((a) => a.phase === stage.id || a.phase === `agent:${stage.id}`)
+      .at(-1);
     if (action?.state === 'uncertain') return 'Waiting for turn reconciliation';
     if (action?.state === 'running' || action?.state === 'dispatching') {
       const activity = (exp.stage_activity || []).filter((a) => a.stage_id === stage.id).at(-1);
@@ -287,7 +313,7 @@ export function stageIndicator(exp: Experiment, stage: Stage): string {
   if (stageRecovery(exp, stage) === 'retained') return 'waiting';
   if (stage.id === 'plan' && exp.plan_review?.state === 'awaiting_review') return 'waiting';
   if (['complete', 'failed', 'cancelled'].includes(stage.state)) return stage.state;
-  const job = exp.jobs.find((j) => j.stage_id === stage.id);
+  const job = stageJob(exp, stage);
   if (job) {
     if (job.state === 'failed') return 'failed';
     if (job.state === 'submitting') return 'waiting';

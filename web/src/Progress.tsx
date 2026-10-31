@@ -15,6 +15,7 @@ import {
   jobProgress,
   repairProgress,
   stageRecovery,
+  stageJob,
 } from './progress';
 
 export function StageTimeline({ exp, status }: { exp: Experiment; status: Status | null }) {
@@ -80,7 +81,7 @@ export function StageTimeline({ exp, status }: { exp: Experiment; status: Status
           const indicator = stageIndicator(exp, stage);
           const recovery = stageRecovery(exp, stage);
           const open = expanded[stage.id] ?? ['running', 'failed'].includes(stage.state);
-          const job = exp.jobs.find((j) => j.stage_id === stage.id);
+          const job = stageJob(exp, stage);
           const execution = exp.contract.execution as
             | { context?: string; poll_seconds?: number }
             | undefined;
@@ -91,7 +92,9 @@ export function StageTimeline({ exp, status }: { exp: Experiment; status: Status
             : undefined;
           const activity = (exp.stage_activity || []).filter((a) => a.stage_id === stage.id);
           const outputs = exp.artifacts.filter((artifact) => artifact.stage_id === stage.id);
-          const action = exp.agent_actions.filter((a) => a.phase === stage.id).at(-1);
+          const action = exp.agent_actions
+            .filter((a) => a.phase === stage.id || a.phase === `agent:${stage.id}`)
+            .at(-1);
           const observed = job ? observationTime(job, status) : null;
           const stale = Boolean(
             job &&
@@ -180,6 +183,9 @@ export function StageTimeline({ exp, status }: { exp: Experiment; status: Status
               {open && (
                 <div id={panelId} className="stage-body">
                   <Description className="muted" text={stageSummary(exp, stage)} lines={2} />
+                  {action?.phase.startsWith('agent:') && (
+                    <p className="muted small">Agent · interactive checks and fixes</p>
+                  )}
                   {planned?.resources && (
                     <p className="muted small">{resourceSummary(planned.resources)}</p>
                   )}

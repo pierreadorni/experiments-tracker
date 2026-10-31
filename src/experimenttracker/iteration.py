@@ -140,12 +140,19 @@ def stage_attempt(wf, exp, stage, intent):
     )
     (root / "snapshot/project").mkdir(exist_ok=True)
     refs = input_refs(wf.store, exp, stage)
-    if not wf.is_remote(exp):
+    spec = next(s for s in exp["snapshot"]["plan"]["stages"] if s["id"] == stage)
+    if not wf.is_remote(exp) or spec.get("executor") == "agent":
         for ref in refs:
             if ref["context"] != "acacia" or ref["host"] != wf.config.executor_id:
                 raise ValueError("selected input belongs to another host; arrange an explicit transfer")
             if not Path(ref["path"]).exists():
                 raise ValueError(f"missing output {ref['id']}; replace or rerun only its producer")
+    else:
+        host = exp["contract"]["execution"]["ssh_host"]
+        if any(ref["context"] != "jean-zay" or ref["host"] != host for ref in refs):
+            raise ValueError(
+                "selected input belongs to another host; arrange an explicit transfer or use input_output_ids:[] for an ordering-only gate"
+            )
     saved_path = root / "snapshot/manifest.json"
     if saved_path.exists():
         saved = artifacts.read_json(saved_path, root)
@@ -172,6 +179,7 @@ def stage_attempt(wf, exp, stage, intent):
             source_context["note"] = "optional Git context unavailable"
     manifest = {
         **exp["snapshot"],
+        **({"executor": "agent", "remote_execution": False} if spec.get("executor") == "agent" else {}),
         "files": files,
         "project_sources": project_sources,
         "reused_stages": {},
@@ -192,6 +200,116 @@ def stage_attempt(wf, exp, stage, intent):
     (root / "snapshot/manifest.json").write_text(encode(manifest))
     (root / "inputs.json").write_text(encode(refs))
     return root, manifest, refs
+
+
+def agent_job(wf, exp, phase):
+    return wf.store.one(
+        "SELECT * FROM jobs WHERE experiment_id=? AND stage_id=? AND attempt=?",
+        (exp["id"], phase.removeprefix("agent:"), exp["evidence_revision"]),
+    )
+
+
+def queue_agent(wf, exp, stage):
+    """Record the local attempt and input bindings before any managed turn."""
+    from uuid import uuid4
+
+    existing = agent_job(wf, exp, "agent:" + stage)
+    if existing:
+        return existing
+    intent = str(uuid4())
+    root, manifest, refs = stage_attempt(wf, exp, stage, intent)
+    with wf.store.tx() as db:
+        db.execute(
+            "INSERT INTO jobs(intent_id,experiment_id,stage_id,attempt,state,script_hash,resources,snapshot_hash,created_at,execution_root,execution_manifest) VALUES(?,?,?,?,'agent',?,'{}',?,?,?,?)",
+            (
+                intent,
+                exp["id"],
+                stage,
+                exp["evidence_revision"],
+                manifest["snapshot_hash"],
+                manifest["snapshot_hash"],
+                time.time(),
+                str(root),
+                encode(manifest),
+            ),
+        )
+        for ref in refs:
+            db.execute(
+                "INSERT INTO output_bindings VALUES(?,?,?)",
+                (intent, ref["id"], "selected dependency producer"),
+            )
+        db.execute(
+            "UPDATE stages SET state='running',updated_at=? WHERE experiment_id=? AND id=?",
+            (time.time(), exp["id"], stage),
+        )
+        wf.store.emit(db, exp["id"], "agent_stage_intent", {"intent_id": intent, "stage": stage})
+    return agent_job(wf, exp, "agent:" + stage)
+
+
+def agent_prompt(wf, exp, phase):
+    job = agent_job(wf, exp, phase)
+    manifest = json.loads(job["execution_manifest"])
+    spec = next(s for s in manifest["plan"]["stages"] if s["id"] == job["stage_id"])
+    payload = {
+        "phase": phase,
+        "brief": exp["brief"],
+        "stage": spec,
+        "protocol": manifest["plan"]["protocol"],
+        "attempt_directory": job["execution_root"],
+        "source_directory": str(Path(job["execution_root"]) / "snapshot"),
+        "inputs": manifest["inputs"],
+        "python": manifest["python_executable"],
+        "workspace": str(wf.working_directory(exp)),
+        "project_context": wf.project_context(exp),
+        "project_instructions": wf.projects.instructions(
+            exp["contract"].get("project", {}).get("id", "test-project")
+        ),
+    }
+    return (
+        "Execute this small agent stage with shell/tool calls in the local attempt_directory. "
+        "Diagnose failures and correct/retest within this same turn; do not turn a failed small check into a Slurm job. "
+        "Use the declared source copies as starting context; write any corrected scripts, diagnostics and declared outputs "
+        "inside attempt_directory, preserving snapshot and inputs.json. You may also fix declared source/config files "
+        "in workspace and the authorized project_context.checkout, preserving unrelated edits. Copy changed candidate sources "
+        "into this attempt's scratch area and test them there. Dependent Slurm attempts copy the corrected declared sources "
+        "at dispatch; already dispatched source copies stay unchanged. Do not modify producer inputs, shared environments "
+        "or other experiments. Dependencies are direct paths in inputs, never files assumed under your output root. "
+        "Keep work bounded to the approved instruction: no long training, background processes, scheduler submission, "
+        "API billing or credentials. Local GPU access requires existing runtime/host authorization; a plan grants none. "
+        "If required inputs/resources are unavailable, request user input through the runtime. "
+        "Write all declared outputs before returning a concise summary. For evaluation, result_file follows the supplied "
+        "ExperimentResult schema and exact protocol. Use check_agent_stage to check outputs and fix errors before finishing.\nPAYLOAD:\n"
+        + encode({**payload, "result_schema": ExperimentResult.model_json_schema()})
+    )
+
+
+def finish_agent(wf, exp, phase, value):
+    from .models import AgentStageResult
+
+    AgentStageResult.model_validate(value)
+    job = agent_job(wf, exp, phase)
+    if job["state"] == "complete":
+        return
+    manifest = json.loads(job["execution_manifest"])
+    root = Path(job["execution_root"])
+    check_stage(root, job["stage_id"], manifest)
+    with wf.store.tx() as db:
+        complete(wf, exp, job, manifest, root, db)
+        db.execute(
+            "UPDATE jobs SET state='complete',ended_at=? WHERE intent_id=?", (time.time(), job["intent_id"])
+        )
+        db.execute(
+            "UPDATE stages SET state='complete',error=NULL,updated_at=? WHERE experiment_id=? AND id=?",
+            (time.time(), exp["id"], job["stage_id"]),
+        )
+        db.execute("UPDATE experiments SET hold_reason=NULL,error=NULL WHERE id=?", (exp["id"],))
+        wf.store.emit(
+            db,
+            exp["id"],
+            "agent_stage_complete",
+            {"stage": job["stage_id"], "intent_id": job["intent_id"], "summary": value["summary"]},
+        )
+        queue_working_report(wf, exp, job, db)
 
 
 def check_stage(root, stage, manifest):
