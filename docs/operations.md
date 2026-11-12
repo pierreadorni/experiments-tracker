@@ -72,3 +72,14 @@ need append-only migration `0008_executor_maintenance.sql`. Gateway code still
 uses the installation's normal private hosting deployment workflow.
 
 Shared source updates use GitHub `main`; keep installation records under ignored `.local/installation/`. See [development](development.md). Schema 22 adds opt-in Research Autopilot records; installing its software does not activate a project.
+
+## Incomplete implementation and agent stages
+
+Implementation can return `outcome: blocked` with a concrete obstacle. Its partial
+graph is not accepted; **Retry with agent** resumes the saved implementation turn.
+For an already accepted contract 3 graph with a known blocked or failed agent
+stage, **Repair implementation** requests selective graph repair. Original source
+and producer records remain available; pending or uncertain agent outcomes must
+settle first. Successful reuse requires explicit decisions and rationale. The
+control requires a running executor that advertises support. Structural manifest
+checks do not establish scientific completeness.

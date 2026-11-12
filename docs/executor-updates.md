@@ -138,4 +138,3 @@ with saved history. Gateway tests use actual local D1/R2. The browser smoke scri
 the installation boundary to check desktop/mobile confirmation, progress, stale
 status and blocked recovery. None establishes live Slurm, managed-account or
 physical-phone acceptance.
-

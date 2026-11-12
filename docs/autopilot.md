@@ -128,7 +128,7 @@ pause still holds it. An explicit deadline revision is required for more researc
 Schema 22 adds project authority/ledger/documents and child authority revisions;
 gateway migration 0009 is append-only. Existing projects start disabled. Prepare
 the exact committed release using [executor updates](executor-updates.md), publish
-the compatible gateway to the Site in `docs/site.json`, and leave installation to
+the compatible gateway to the installation's Site in ignored `.local/installation/site.json`, and leave installation to
 the owner's **Install update…** authorization. No permanent daemon is added.
 Old binaries cannot use the migrated local schema; retain the installation backup
 and choose compatible forward repair rather than checking out an older binary.
@@ -140,10 +140,7 @@ checks desktop/mobile project controls using a mocked research boundary. None
 establishes managed-account retrieval, real cluster accounting, scientific results
 or physical-phone sign-in. Those remain separate owner-authorized acceptance.
 
-Read-only compatibility discovery on 2026-11-02 found acacia Slurm 23.02.2:
-AllocTRES and Suspended are available in `sacct --helpformat`, Restarts is not.
-The adapter uses supported fields, `--duplicates` for Autopilot allocation rows
-and bounded running-job `scontrol` metadata. This is field discovery, not live
-GPU accounting acceptance or authorization to enable the profile. See the
-[Slurm accounting reference](https://slurm.schedmd.com/sacct.html) and
-[sbatch requeue options](https://slurm.schedmd.com/sbatch.html).
+Discover supported scheduler accounting fields before enabling a profile. The adapter
+uses supported fields, `--duplicates` for allocation rows and bounded running-job
+`scontrol` metadata. Field discovery is separate from live accounting acceptance.
+See the [Slurm accounting reference](https://slurm.schedmd.com/sacct.html).

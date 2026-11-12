@@ -19,3 +19,7 @@ gateway/dist/
 gateway/src/generated-assets.ts
 web/*.tsbuildinfo
 tools/codex/node_modules/
+
+# Installation identities and optional local agent overrides
+/.openai/hosting.json
+/AGENTS.local.md
