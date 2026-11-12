@@ -60,8 +60,11 @@ TOOLS = [
     ),
     tool(
         "job_status",
-        "Read only this experiment's saved jobs, measured progress and bounded exact job logs.",
-        {},
+        "Read this experiment's saved jobs. Use summary_only for a compact list; select intent_ids to inspect bounded exact logs and details.",
+        {
+            "intent_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 32},
+            "summary_only": {"type": "boolean"},
+        },
         [],
     ),
     tool(
@@ -200,7 +203,7 @@ class Controller:
                 )
         return {"valid": True, "manifest": parsed.model_dump()}
 
-    def status(self, eid, *, intent_ids=None):
+    def status(self, eid, *, intent_ids=None, summary_only=False):
         wf = self.workflow
         jobs = wf.store.rows("SELECT * FROM jobs WHERE experiment_id=? ORDER BY created_at", (eid,))
         result = []
@@ -223,6 +226,11 @@ class Controller:
                     "ended_at",
                 )
             }
+            item["attempt"] = job["attempt"]
+            if summary_only:
+                item.pop("progress", None)
+                result.append(item)
+                continue
             item["outputs"] = wf.store.rows(
                 "SELECT * FROM output_refs WHERE intent_id=?", (job["intent_id"],)
             )
@@ -354,10 +362,16 @@ class Controller:
         if name == "check_manifest":
             return await self.check(exp, args["kind"], args["manifest"])
         if name == "job_status":
+            requested = args.get("intent_ids")
+            if requested is not None:
+                if not isinstance(requested, list) or len(requested) > 32:
+                    raise ValueError("select at most 32 job intents")
+                requested = {str(UUID(value)) for value in requested}
             if action["phase"] == "monitor":
                 payload = json.loads(action["input"].split("\nPAYLOAD:\n", 1)[1])
-                return self.status(eid, intent_ids={job["intent_id"] for job in payload["jobs"]})
-            return self.status(eid)
+                permitted = {job["intent_id"] for job in payload["jobs"]}
+                requested = permitted if requested is None else requested & permitted
+            return self.status(eid, intent_ids=requested, summary_only=args.get("summary_only", False))
         if name == "schedule_wakeup":
             return self.schedule(eid, args["request_id"], args["delay_seconds"], args["reason"], action["id"])
         if name == "submit_stage":

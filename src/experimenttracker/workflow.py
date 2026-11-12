@@ -2777,7 +2777,7 @@ class Workflow:
             approved_plan=exp.get("plan_review"),
             plan_revision_feedback=(exp.get("plan_review") or {}).get("feedback"),
             output_refs=self.store.rows("SELECT * FROM output_refs WHERE experiment_id=?", (exp["id"],)),
-            jobs=self.controller.status(exp["id"]),
+            jobs=self.controller.status(exp["id"], summary_only=True),
             project_knowledge=self.supervisor.context(
                 exp["contract"].get("project", {}).get("id", "test-project")
             ),
@@ -2808,7 +2808,8 @@ class Workflow:
             "experiment, shared environment or source_checkout belonging to another editor. Reuse this experiment's "
             "stable environment. Choose each stage's CPU/GPU/resources from fresh cluster authorization and optional "
             "owner limits. Busy nodes may queue; drained/down nodes are not usable. Follow the machine context. "
-            "Use check_manifest before finishing, job_status for exact logs, submit_stage for prepared work, "
+            "Use check_manifest before finishing, job_status with selected intent_ids for details and exact logs, "
+            "submit_stage for prepared work, "
             "register_result for outputs, update_report for incremental working reports and schedule_wakeup for continuation. Return the requested JSON schema. "
         )
         if phase == "plan":

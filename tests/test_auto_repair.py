@@ -116,6 +116,21 @@ async def test_repair_distinguishes_agent_stage_from_scheduler_job(runtime, stat
     await workflow.close()
 
 
+async def test_job_status_can_select_a_compact_owned_job(runtime):
+    store, _, _, workflow, eid = await failed_run(runtime)
+    job = store.one("SELECT * FROM jobs WHERE experiment_id=?", (eid,))
+    action = store.one("SELECT id FROM agent_actions WHERE experiment_id=? LIMIT 1", (eid,))
+    store.db.execute("UPDATE agent_actions SET state='running' WHERE id=?", (action["id"],))
+    summary = await workflow.controller.call(eid, "job_status", {"summary_only": True})
+    assert len(summary) == 1 and summary[0]["intent_id"] == job["intent_id"]
+    assert "logs" not in summary[0] and "outputs" not in summary[0]
+    detail = await workflow.controller.call(eid, "job_status", {"intent_ids": [job["intent_id"]]})
+    assert len(detail) == 1 and "logs" in detail[0]
+    assert await workflow.controller.call(eid, "job_status", {"intent_ids": [str(uuid4())]}) == []
+    store.db.execute("UPDATE agent_actions SET state='completed' WHERE id=?", (action["id"],))
+    await workflow.close()
+
+
 @pytest.mark.parametrize(
     "block", ["accounting", "identity", "uncertain_turn", "unknown_submission", "budget", "steering", "demo"]
 )

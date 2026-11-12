@@ -185,6 +185,9 @@ async def test_metrics_survive_plot_failure_repair_restart_and_direct_bindings(r
     assert "EXPERIMENT_INPUTS" in diagnostic["command"]
     assert diagnostic["attempt"] == 1
     assert diagnostic["declared_outputs"]["context"] == "acacia"
+    prompt_payload = json.loads(wf.prompt(store.experiment(eid), "prepare").split("\nPAYLOAD:\n", 1)[1])
+    assert prompt_payload["jobs"]
+    assert all("logs" not in job and "outputs" not in job for job in prompt_payload["jobs"])
     assert store.one("SELECT COUNT(*) n FROM output_bindings")["n"] == 3
     scheduler.preflight = AsyncMock()
     scheduler.discover = AsyncMock(return_value={"fixture": True})
