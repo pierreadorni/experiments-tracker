@@ -373,7 +373,6 @@ async def test_inactive_weekly_project_cannot_block_owner_retention(runtime):
     store, _, agent, wf = runtime
     await wf.start()
     eid = completed(store)
-    memory = wf.supervisor.memory
     with store.tx() as db:
         db.execute(
             "INSERT INTO project_knowledge(project_id,next_due,updated_at) VALUES('retired-project',0,0)"
