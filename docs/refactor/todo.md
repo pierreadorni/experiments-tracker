@@ -14,7 +14,7 @@ Briefing rules and the brief template are in [README.md](README.md).
 
 ## Phase 1 — Tier 0: fewer stalls now
 
-### [ ] T0.1 Internal errors hold an experiment instead of failing it (C1) · F · S
+### [x] T0.1 Internal errors hold an experiment instead of failing it (C1) · F · S
 - **Files:** `src/experimenttracker/workflow.py` (`tick`, around lines 560–576; `fail`, around line 1054).
 - **Do:**
   1. Add `class ExperimentFailure(Exception)` (fields `reason`, `message`) to a new
@@ -326,4 +326,6 @@ Record completed tasks here: `date · task · commit · notes`.
 
 2026-11-12 · T0.7 · dcf22d4 · Linked the refactor workspace from agent and development instructions; link targets, Ruff and all 452 Python tests pass.
 
-2026-11-12 · T0.3 · this commit · Notice-only watchdog uses persisted revision timestamps and deduplicates by hold; 29 targeted and all 481 Python tests pass, with Ruff checks.
+2026-11-12 · T0.3 · eb61db9 · Notice-only watchdog uses persisted revision timestamps and deduplicates by hold; 29 targeted and all 481 Python tests pass, with Ruff checks.
+
+2026-11-12 · T0.1 · this commit · Explicit terminal failures, per-experiment internal-error backoff and deduplicated notices; 76 targeted (including watchdog integration) and all 491 Python tests pass, with Ruff checks. The commit message records the ValueError audit.

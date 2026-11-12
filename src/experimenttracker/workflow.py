@@ -17,6 +17,7 @@ from .codex_client import CodexAgent, NeedsAttention, RpcRejected, SessionUnavai
 from .config import JobResources
 from .controller import Controller, ControllerDecision
 from .conversation import Conversation
+from .errors import ExperimentFailure
 from .knowledge import ProjectSupervisor
 from .maintenance import Maintenance, blocked
 from .models import (
@@ -120,6 +121,7 @@ class Workflow:
         self.agent_assignments = {}
         self.output_checks = {}
         self.evidence_checks = {}
+        self.error_backoff = {}
         self.cleanup_tasks = {}
         self.last_cleanup_attempt = {}
         self.check_slot = asyncio.Semaphore(1)
@@ -566,15 +568,21 @@ class Workflow:
         # and the account-wide agent slot remain the dispatch authority.
         for row in rows:
             eid = row["id"]
+            backoff = self.error_backoff.get(eid)
+            if backoff and time.time() < backoff[1]:
+                continue
             try:
                 await self.advance(eid)
+            except ExperimentFailure as exc:
+                self.fail(eid, exc.reason, exc.message)
             except ProjectUnavailable as exc:
                 self.store.update(eid, hold_reason="project_unavailable", error=str(exc))
-            except (ValueError, KeyError, OSError) as exc:
-                self.fail(eid, "validation_failed", str(exc))
             except Exception as exc:
-                log.exception("workflow tick failed")
-                self.store.update(eid, hold_reason="executor_error", error=str(exc))
+                # Bugs hold one experiment; they never fail a saved research record.
+                log.exception("advance failed for experiment %s", eid)
+                self.hold_advance_error(eid, exc)
+            else:
+                self.error_backoff.pop(eid, None)
         engine_watchdog(self.store, now, self.config.watchdog_minutes)
         self.discard_failed_implementation()
         await self.advance_cleanup()
@@ -1081,6 +1089,20 @@ class Workflow:
         self.store.update(eid, phase="failed", hold_reason=reason, error=error)
         self.store.notify(eid, "recovery_exhausted", f"Experiment stopped: {error}")
 
+    def hold_advance_error(self, eid, exc):
+        """Bugs hold one experiment: an inbox notice per distinct error text, then back off.
+
+        The inbox is unique per (experiment, kind, text), so a repeating error does not
+        flood the owner. The next successful `advance(eid)` clears the backoff entry, so
+        a repaired bug resumes normal ticks instead of staying suppressed.
+        """
+        error = str(exc) or type(exc).__name__
+        previous = self.error_backoff.get(eid)
+        count = 0 if previous is None else previous[0] + 1
+        self.error_backoff[eid] = (count, time.time() + min(30 * 2**count, 1800))
+        self.store.update(eid, hold_reason="executor_error", error=error)
+        self.store.notify(eid, "executor_error", f"Experiment paused after an internal error: {error}")
+
     def apply_planning_steering(self):
         """Fold saved guidance into a fresh preparation revision before any job is dispatched."""
         pending = self.store.rows(
@@ -1333,10 +1355,12 @@ class Workflow:
             for metric in task["result"]["metrics"]:
                 key = (metric["name"], metric["variant"])
                 if key in metrics:
-                    raise ValueError("ambiguous evaluation metric; use distinct metric/variant names")
+                    raise ExperimentFailure(
+                        "validation_failed", "ambiguous evaluation metric; use distinct metric/variant names"
+                    )
                 metrics[key] = metric
         if not metrics:
-            raise ValueError("requested evaluation has no registered metrics")
+            raise ExperimentFailure("validation_failed", "requested evaluation has no registered metrics")
         result = {
             "schema_version": 1,
             "protocol": exp["snapshot"]["plan"]["protocol"],
@@ -1452,7 +1476,9 @@ class Workflow:
                 )
                 return {"state": "held", "reason": "runtime_check_pending"}
             if installed != (root / "snapshot/requirements.txt").read_text():
-                raise ValueError("prepared environment dependencies changed after freezing")
+                raise ExperimentFailure(
+                    "validation_failed", "prepared environment dependencies changed after freezing"
+                )
         submission_manifest = exp["snapshot"]
         refs = []
         scheduler = self.scheduler_for(exp)
@@ -2763,7 +2789,10 @@ class Workflow:
                 or resources.cpus_per_job != 1
                 or resources.walltime_minutes_per_job > 5
             ):
-                raise ValueError("legacy/demo experiments retain their short single-CPU resource contract")
+                raise ExperimentFailure(
+                    "validation_failed",
+                    "legacy/demo experiments retain their short single-CPU resource contract",
+                )
         self.config.slurm.limits.validate_request(resources)
         cap = self.config.slurm.limits.gpu_hours_per_experiment
         if cap is not None:
@@ -2774,7 +2803,7 @@ class Workflow:
                 for j in self.store.rows("SELECT resources FROM jobs WHERE experiment_id=?", (exp["id"],))
             )
             if reserved + resources.gpus_per_job * resources.walltime_minutes_per_job / 60 > cap:
-                raise ValueError("experiment GPU-hour budget exhausted")
+                raise ExperimentFailure("validation_failed", "experiment GPU-hour budget exhausted")
         return resources
 
     def validate_resource_plan(self, exp, plan):
@@ -4051,7 +4080,9 @@ class Workflow:
                         return
                     self.fail(eid, "report_failed", report_version["error"])
                     return
-                raise ValueError("initial report failed: " + report_version["error"])
+                raise ExperimentFailure(
+                    "validation_failed", "initial report failed: " + report_version["error"]
+                )
             if report_version["state"] != "ready":
                 return
         if not report.exists():
