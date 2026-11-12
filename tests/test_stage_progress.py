@@ -145,6 +145,10 @@ async def test_progress_publication_restart_replay_and_readiness(runtime, monkey
         log.write_text(line(sample(job, now - 1)))
         await workflow.observe_jobs()
         assert reopened.projection(eid)["jobs"][0]["progress"] == projection["jobs"][0]["progress"]
+        log.write_text(line(sample(job, now + 0.5)))
+        await workflow.observe_jobs()
+        assert reopened.experiment(eid)["revision"] == projection["revision"]
+        assert reopened.projection(eid)["jobs"][0]["progress"]["reported_at"] == now + 0.5
         log.write_text(line(sample(job, now + 1, completed=100)))
         await workflow.observe_jobs()
         assert reopened.projection(eid)["jobs"][0]["progress"]["completed"] == 100

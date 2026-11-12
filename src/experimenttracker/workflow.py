@@ -81,6 +81,8 @@ class Workflow:
         self.started = False
         self.closing = False
         self.last_quota_refresh = 0
+        self.retention_cursor = 0
+        self.last_retention = 0
         self.last_backup = 0
         self.backup_task = None
         self.last_scheduler = 0
@@ -558,13 +560,30 @@ class Workflow:
             await self.advance_title()
             await self.controller.advance()
         await self.supervisor.advance()
+        if now - self.last_retention >= 5:
+            from .retention import prune_batch
+
+            try:
+                result = await asyncio.to_thread(prune_batch, self.store, self.retention_cursor)
+                self.retention_cursor = result["cursor"]
+                if result["pruned"]:
+                    log.info("outbox retention: %s", result)
+            except Exception:
+                log.exception("outbox retention failed; payloads retained for investigation")
+            self.last_retention = now
         if now - self.last_backup >= 60 and (not self.backup_task or self.backup_task.done()):
             self.backup_task = asyncio.create_task(self.backup_state())
             self.last_backup = now
 
     async def backup_state(self):
+        started = time.monotonic()
         try:
             await asyncio.to_thread(self.store.publish_backup, self.config.backup_dir)
+            log.info(
+                "backup complete: bytes=%d seconds=%.2f",
+                (self.config.backup_dir / "workflow.sqlite").stat().st_size,
+                time.monotonic() - started,
+            )
         except Exception:
             log.exception("backup failed; authoritative local state remains intact")
 
@@ -1698,7 +1717,15 @@ class Workflow:
                     progress is None or progress["reported_at"] <= previous_progress["reported_at"]
                 ):
                     progress = previous_progress
-                progress_changed = progress != previous_progress
+                # Observation freshness is saved below, but a heartbeat timestamp
+                # alone is not new scientific progress worth another full view.
+                progress_changed = (
+                    {k: v for k, v in progress.items() if k != "reported_at"} if progress else None
+                ) != (
+                    {k: v for k, v in previous_progress.items() if k != "reported_at"}
+                    if previous_progress
+                    else None
+                )
                 previous_tensorboard = json.loads(job["tensorboard"]) if job.get("tensorboard") else None
                 tensorboard = (
                     await asyncio.to_thread(read_previews, job_root, job, job_manifest)

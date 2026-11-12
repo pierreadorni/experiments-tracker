@@ -398,6 +398,8 @@ async def test_configured_sessions_let_another_plan_progress_while_one_turn_wait
     store, scheduler, _, old = runtime
     old.config.codex.max_sessions = 2
 
+    release_turns = asyncio.Event()
+
     class WaitingAgent(ImplementationAgent):
         async def session(self, thread, workspace, *, writable=False):
             identity = thread or str(uuid4())
@@ -407,7 +409,7 @@ async def test_configured_sessions_let_another_plan_progress_while_one_turn_wait
         async def finish(self, thread, turn):
             payload = self.results[(thread, turn)]
             if payload.get("title") == "Requested method frontier":
-                await asyncio.sleep(0.1)
+                await release_turns.wait()
             return await DemoAgent.finish(self, thread, turn)
 
     wf = Workflow(old.config, store, scheduler, WaitingAgent())
@@ -419,6 +421,7 @@ async def test_configured_sessions_let_another_plan_progress_while_one_turn_wait
         if len(running) == 2:
             break
     assert len(running) == 2 and {a["experiment_id"] for a in running} == {first, second}
+    release_turns.set()
     assert wf.lanes[0].gate is wf.lanes[1].gate
     for _ in range(50):
         await wf.tick(force_observe=True)

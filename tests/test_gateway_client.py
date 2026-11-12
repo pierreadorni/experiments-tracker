@@ -547,6 +547,7 @@ async def test_upload_uses_acknowledged_metadata_during_revision_churn(
     config, runtime, tmp_path, execution_contract
 ):
     from experimenttracker import artifacts
+    from experimenttracker.retention import prune_batch
 
     store, _, _, workflow = runtime
     eid = publication_experiment(store)
@@ -596,6 +597,7 @@ async def test_upload_uses_acknowledged_metadata_during_revision_churn(
     await client.publish_outbox()
     (root / "new.json").write_text("{}")
     artifacts.register(store, eid, "evaluate", root, ["new.json"])
+    assert prune_batch(store)["pruned"] >= 0
     await client.upload_artifacts()
     assert uploads == ["known.json"]
     await client.publish_outbox()
