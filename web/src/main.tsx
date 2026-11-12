@@ -1504,32 +1504,10 @@ function App() {
                     {executorOnline ? 'Executor online' : 'Executor offline or stale'}
                   </p>
                   <p>Last observed {age(status?.last_tick || null)}</p>
-                  <p>
-                    Mode:{' '}
-                    {status?.mode === 'demo'
-                      ? 'Local deterministic simulation'
-                      : status?.mode === 'gateway'
-                        ? 'Private outbound gateway'
-                        : 'Live Slurm and Codex'}
-                  </p>
-                  <p>
-                    {status?.mode === 'demo'
-                      ? 'Synthetic CPU demonstration. No Slurm jobs or GPU allocations.'
-                      : status?.compute_policy?.agent_selected_resources
-                        ? 'Small checks run in an agent tool loop with immediate fixes. Sustained compute uses Slurm CPU/GPU resources selected from cluster capabilities and your permissions. Dependencies and requests are saved in the protocol.'
-                        : 'Waiting for the executor’s current resource policy.'}
-                  </p>
-                  {status?.compute_policy?.agent_selected_resources && (
-                    <p>
-                      {status.compute_policy.max_jobs_per_experiment == null
-                        ? 'No fixed three-job limit.'
-                        : `Up to ${status.compute_policy.max_jobs_per_experiment} jobs per experiment.`}{' '}
-                      Optional executor limits apply alongside Slurm account and partition limits.
-                    </p>
+                  {status?.mode === 'demo' && (
+                    <p>Synthetic CPU demonstration. No Slurm jobs or GPU allocations.</p>
                   )}
-                  {status?.cluster && (
-                    <p>Cluster capabilities observed {age(status.cluster.observed_at)}</p>
-                  )}
+                  {status?.cluster && <p>Cluster snapshot · {age(status.cluster.observed_at)}</p>}
                   {status?.cluster_error && <p className="error">{status.cluster_error}</p>}
                   {status?.agent_error && <p className="error">{status.agent_error}</p>}
                 </section>
@@ -1551,11 +1529,6 @@ function App() {
                     }}
                     onRefresh={reload}
                   />
-                  <p>Drag the markers to set the remaining quota reserved for other work.</p>
-                  <p className="muted">
-                    No inference while watching jobs. No purchased credits, quota resets, or API
-                    billing fallback.
-                  </p>
                 </section>
               </div>
             </>
