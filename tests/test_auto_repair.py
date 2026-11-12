@@ -90,6 +90,32 @@ async def test_repair_same_identity_restart_and_only_fixed_evidence(runtime):
     await workflow.close()
 
 
+@pytest.mark.parametrize("state,allowed", [("complete", True), ("agent", False)])
+async def test_repair_distinguishes_agent_stage_from_scheduler_job(runtime, state, allowed):
+    store, scheduler, _, workflow, eid = await failed_run(runtime)
+    original = store.one("SELECT * FROM jobs WHERE experiment_id=?", (eid,))
+    store.db.execute(
+        "INSERT INTO jobs(intent_id,experiment_id,stage_id,attempt,state,script_hash,resources,"
+        "snapshot_hash,created_at,execution_manifest) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        (
+            str(uuid4()),
+            eid,
+            "plan",
+            1,
+            state,
+            original["script_hash"],
+            "{}",
+            original["snapshot_hash"],
+            original["created_at"],
+            json.dumps({"executor": "agent"}),
+        ),
+    )
+    await workflow.repair_failed_experiments()
+    assert store.experiment(eid)["evidence_revision"] == (2 if allowed else 1)
+    assert scheduler.submissions == 1
+    await workflow.close()
+
+
 @pytest.mark.parametrize(
     "block", ["accounting", "identity", "uncertain_turn", "unknown_submission", "budget", "steering", "demo"]
 )

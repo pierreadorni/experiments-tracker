@@ -891,14 +891,22 @@ class Workflow:
                 ):
                     continue
             jobs = self.store.rows("SELECT * FROM jobs WHERE experiment_id=?", (eid,))
-            if (not jobs and not resource_revision) or any(
-                j["state"] in ("submitting", "submitted") or not j["job_id"] for j in jobs
+            # Agent-stage producer records share this table but never have a
+            # Slurm identity. Their turns are reconciled above, not via Slurm.
+            agent_jobs = [
+                j for j in jobs if json.loads(j["execution_manifest"] or "{}").get("executor") == "agent"
+            ]
+            scheduler_jobs = [j for j in jobs if j not in agent_jobs]
+            if any(j["state"] not in ("complete", "failed", "cancelled") for j in agent_jobs):
+                continue
+            if (not scheduler_jobs and not resource_revision) or any(
+                j["state"] in ("submitting", "submitted") or not j["job_id"] for j in scheduler_jobs
             ):
                 continue
             # Fresh exact accounting is required even for an output-validation failure.
             confirmed = True
             current_timeout = False
-            for job in jobs:
+            for job in scheduler_jobs:
                 try:
                     if (
                         await self.scheduler_for(self.store.experiment(job["experiment_id"]), job).reconcile(
@@ -922,7 +930,7 @@ class Workflow:
             if not confirmed:
                 continue
             budget = exp["contract"].get("max_jobs", self.config.slurm.max_jobs_per_experiment)
-            if budget is not None and len(jobs) >= budget:
+            if budget is not None and len(scheduler_jobs) >= budget:
                 if exp["hold_reason"] == "automatic_repair_pending":
                     self.fail(
                         eid, "compute_budget_exhausted", "Automatic repair would exceed the saved job budget"
