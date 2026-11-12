@@ -1,11 +1,11 @@
 """Resource selection, durable GPU intents, and cluster-only training evidence."""
 
-import asyncio
 import copy
 import json
 from uuid import uuid4
 
 import pytest
+from helpers import wait_for_experiment, wait_until
 from pydantic import ValidationError
 from test_generic import PLAN, ImplementationAgent, approve_plan
 
@@ -176,11 +176,11 @@ async def test_gpu_plan_persists_before_dispatch_and_restart_never_resubmits(run
         {"brief": "Test an entirely new method and show its frontier.", "recipe_id": "agent_experiment_v1"},
     )["experiment_id"]
     await approve_plan(workflow, store, eid)
-    for _ in range(100):
-        await workflow.tick(force_observe=True)
-        await asyncio.sleep(0.01)
-        if scheduler.submissions:
-            break
+    await wait_until(
+        lambda: bool(scheduler.submissions),
+        ticks=lambda: workflow.tick(force_observe=True),
+        describe=lambda: store.experiment(eid),
+    )
     assert scheduler.submissions == 1
     first = store.one("SELECT * FROM jobs WHERE experiment_id=?", (eid,))
     assert first["state"] == "submitting" and first["job_id"] is None
@@ -191,11 +191,7 @@ async def test_gpu_plan_persists_before_dispatch_and_restart_never_resubmits(run
         update={"slurm": SlurmConfig(partition="shortrun", walltime_minutes_per_job=5)}
     )
     workflow = Workflow(config, store, scheduler, agent)
-    for _ in range(100):
-        await workflow.tick(force_observe=True)
-        await asyncio.sleep(0.01)
-        if store.experiment(eid)["phase"] in ("complete", "failed"):
-            break
+    await wait_for_experiment(workflow, store, eid, lambda e: e["phase"] in ("complete", "failed"))
     assert store.experiment(eid)["phase"] == "complete", store.experiment(eid)
     assert scheduler.submissions == 2
     assert scheduler.preflights == 2
@@ -230,12 +226,7 @@ async def test_unavailable_preflight_creates_no_submission_intent_and_no_duplica
         {"brief": "Test an entirely new method and show its frontier.", "recipe_id": "agent_experiment_v1"},
     )["experiment_id"]
     await approve_plan(workflow, store, eid)
-    for _ in range(100):
-        await workflow.tick(force_observe=True)
-        await asyncio.sleep(0.01)
-        if store.experiment(eid)["hold_reason"] == "resources_unavailable":
-            break
-    assert store.experiment(eid)["hold_reason"] == "resources_unavailable"
+    await wait_for_experiment(workflow, store, eid, lambda e: e["hold_reason"] == "resources_unavailable")
     for _ in range(3):
         workflow.last_preflight.clear()
         await workflow.tick(force_observe=True)
@@ -417,11 +408,7 @@ PY
         },
     )["experiment_id"]
     await approve_plan(workflow, store, eid)
-    for _ in range(150):
-        await workflow.tick(force_observe=True)
-        await asyncio.sleep(0.01)
-        if store.experiment(eid)["phase"] in ("complete", "failed"):
-            break
+    await wait_for_experiment(workflow, store, eid, lambda e: e["phase"] in ("complete", "failed"))
     exp = store.experiment(eid)
     assert exp["phase"] == "complete", exp
     assert workflow.experiment_python(exp) == interpreter

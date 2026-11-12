@@ -5,6 +5,7 @@ import json
 from uuid import uuid4
 
 import pytest
+from helpers import wait_until
 from pydantic import ValidationError
 from test_generic import ImplementationAgent, approve_plan
 from test_workflow import until
@@ -164,12 +165,16 @@ async def test_restart_reconciles_each_active_branch_before_replacement(runtime,
         "SELECT job_id FROM jobs WHERE experiment_id=? AND stage_id IN ('train_a','train_b')", (eid,)
     )
     store.command(uuid4(), "steer", {"text": "Correct the protocol.", "mode": "restart"}, eid=eid)
-    for _ in range(30):
+
+    async def cancel_tick():
         workflow.last_cancellation.clear()  # Advance the normal 30-second cancellation retry interval.
         await workflow.tick(force_observe=True)
-        if store.experiment(eid)["phase"] == "cancelled":
-            break
-    assert store.experiment(eid)["phase"] == "cancelled"
+
+    await wait_until(
+        lambda: store.experiment(eid)["phase"] == "cancelled",
+        ticks=cancel_tick,
+        describe=lambda: store.experiment(eid),
+    )
     assert cancelled == {job["job_id"] for job in branch_jobs}
     assert len(store.rows("SELECT id FROM experiments WHERE replaces_experiment_id=?", (eid,))) == 1
     await workflow.close()

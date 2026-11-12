@@ -15,8 +15,8 @@
 3. Shared environments live in each project's folder:
    `<repo>/.experimenttracker/envs/<lockhash>/`.
 4. Implementation uses DeepSeek Flash subagents, with stronger-model review where a
-   card says F+R or S. No task has been started yet; begin with the first batch
-   under **Order** below.
+   card says F+R or S. The first implementation batch is complete; see
+   [todo.md](todo.md) for status and validation. Continue under **Order** below.
 
 ## How we work
 

@@ -4,6 +4,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from helpers import wait_for_experiment
 
 from experimenttracker.api import create_app
 from experimenttracker.progress import describe_item
@@ -93,14 +94,7 @@ async def test_selected_model_and_effort_survive_restart_and_both_turns(runtime)
         "reasoning_effort": "medium",
     }
     reopened.close()
-    import asyncio
-
-    for _ in range(100):
-        await workflow.tick(force_observe=True)
-        await asyncio.sleep(0.001)
-        if store.experiment(eid)["phase"] == "complete":
-            break
-    assert store.experiment(eid)["phase"] == "complete"
+    await wait_for_experiment(workflow, store, eid, lambda e: e["phase"] == "complete")
     assert sessions == ["deterministic-demo"] * 2 and efforts == ["medium"] * 2
     assert scheduler.submissions == 3
     await workflow.close()
@@ -109,12 +103,7 @@ async def test_selected_model_and_effort_survive_restart_and_both_turns(runtime)
 async def test_unavailable_model_stops_before_thread_or_job_dispatch(runtime):
     store, scheduler, agent, workflow = runtime
     eid = create(store, model="unadvertised", reasoning_effort="medium")
-    import asyncio
-
-    for _ in range(10):
-        await workflow.tick(force_observe=True)
-        await asyncio.sleep(0.001)
-    assert store.experiment(eid)["hold_reason"] == "model_unavailable"
+    await wait_for_experiment(workflow, store, eid, lambda e: e["hold_reason"] == "model_unavailable")
     assert agent.calls == scheduler.submissions == 0
     assert not store.experiment(eid)["thread_id"]
     await workflow.close()
@@ -211,25 +200,14 @@ async def test_scheduler_queue_running_and_exact_accounting_timestamps(config, m
 
 
 async def test_deleted_reference_remains_usable_for_existing_child(runtime):
-    import asyncio
-
     store, _, _, workflow = runtime
     parent = create(store)
-
-    async def complete(eid):
-        for _ in range(100):
-            await workflow.tick(force_observe=True)
-            await asyncio.sleep(0.001)
-            if store.experiment(eid)["phase"] == "complete":
-                return
-        pytest.fail("Reference experiment did not complete")
-
-    await complete(parent)
+    await wait_for_experiment(workflow, store, parent, lambda e: e["phase"] == "complete")
     child = create(store, reference_experiment_id=parent)
     store.command(uuid4(), "delete", {}, eid=parent)
     with pytest.raises(Conflict, match="completed"):
         create(store, reference_experiment_id=parent)
-    await complete(child)
+    await wait_for_experiment(workflow, store, child, lambda e: e["phase"] == "complete")
     assert store.experiment(child)["contract"]["reference"]["experiment_id"] == parent
     assert store.experiment(parent)["snapshot"]
     await workflow.close()

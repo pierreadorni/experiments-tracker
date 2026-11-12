@@ -12,12 +12,13 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from helpers import wait_for_experiment, wait_until
 from test_generic import PLAN, SOURCE, ImplementationAgent, approve_plan
 from test_workflow import until
 
 from experimenttracker import artifacts
 from experimenttracker.api import create_app
-from experimenttracker.codex_client import NeedsAttention
+from experimenttracker.codex_client import NeedsAttention, TerminalTurnError
 from experimenttracker.store import Conflict, Store
 from experimenttracker.workflow import Workflow
 
@@ -31,6 +32,12 @@ def create(store):
             "recipe_id": "agent_experiment_v1",
         },
     )["experiment_id"]
+
+
+def failed_prepare(store, eid):
+    return store.one(
+        "SELECT * FROM agent_actions WHERE experiment_id=? AND phase='prepare' AND state='failed'", (eid,)
+    )
 
 
 async def test_slow_shared_backup_keeps_owner_commands_and_event_loop_responsive(runtime, monkeypatch):
@@ -148,7 +155,7 @@ async def test_distinct_manifest_corrections_preserve_every_turn_and_continue_ac
     wf = Workflow(old.config, store, scheduler, agent)
     eid = create(store)
     await approve_plan(wf, store, eid)
-    await until(wf, store, eid, lambda exp: exp["phase"] == "complete", ticks=200)
+    await until(wf, store, eid, lambda exp: exp["phase"] == "complete")
     actions = store.rows("SELECT * FROM agent_actions WHERE experiment_id=? ORDER BY rowid", (eid,))
     failed = [a for a in actions if a["state"] == "failed"]
     assert len(failed) == 4 and scheduler.submissions == 2
@@ -255,6 +262,53 @@ async def test_explicit_retry_grants_one_turn_at_owner_budget_with_idempotent_re
     await wf.close()
 
 
+async def test_known_quota_interruption_resumes_automatically_after_owner_restart(runtime):
+    store, scheduler, _, old = runtime
+    agent = ImplementationAgent()
+    wf = Workflow(old.config, store, scheduler, agent)
+    eid = create(store)
+    await approve_plan(wf, store, eid)
+    finish = agent.finish
+    interrupted = False
+
+    async def interrupt_once(thread, turn):
+        nonlocal interrupted
+        if not interrupted:
+            interrupted = True
+            store.update(eid, hold_reason="quota_hold")
+            raise TerminalTurnError("turn interrupted: None")
+        return await finish(thread, turn)
+
+    agent.finish = interrupt_once
+    await wait_for_experiment(wf, store, eid, lambda e: failed_prepare(store, eid) is not None)
+    prior = failed_prepare(store, eid)
+    assert prior and prior["turn_id"] and prior["attempts"] == 1
+    await wf.close()
+    # The saved failure is the whole recovery state: no owner retry was issued.
+    assert not store.rows("SELECT 1 FROM agent_actions WHERE previous_action_id=?", (prior["id"],))
+    wf = Workflow(old.config, store, scheduler, agent)
+    continuation = await wait_until(
+        lambda: store.one("SELECT * FROM agent_actions WHERE previous_action_id=?", (prior["id"],)),
+        ticks=lambda: wf.tick(force_observe=True),
+        describe=lambda: store.rows("SELECT * FROM agent_actions WHERE experiment_id=?", (eid,)),
+    )
+    saved = store.one("SELECT * FROM agent_actions WHERE id=?", (prior["id"],))
+    assert saved["state"] == "failed" and saved["turn_id"] == prior["turn_id"]
+    assert saved["attempts"] == prior["attempts"]
+    assert (
+        continuation["phase"] == "prepare" and continuation["evidence_revision"] == prior["evidence_revision"]
+    )
+    assert continuation["thread_id"] == prior["thread_id"]
+    await until(wf, store, eid, lambda exp: exp["phase"] == "complete")
+    links = store.rows("SELECT * FROM agent_actions WHERE previous_action_id=?", (prior["id"],))
+    assert links and links[0]["id"] == continuation["id"]
+    resumed = store.one("SELECT * FROM agent_actions WHERE id=?", (prior["id"],))
+    assert resumed == prior
+    assert store.experiment(eid)["contract"].get("manual_agent_turn_requests", 0) == 0
+    assert scheduler.submissions == 2
+    await wf.close()
+
+
 class CheckpointAgent(ImplementationAgent):
     async def begin(self, thread_id, prompt, schema, *, workspace=None):
         turn = await super().begin(thread_id, prompt, schema, workspace=workspace)
@@ -310,7 +364,7 @@ async def test_evaluation_repair_reuses_training_checkpoint_package_and_runtime(
     await wf.repair_failed_experiments()
     await wf.close()
     wf = Workflow(old.config, store, scheduler, agent)
-    await until(wf, store, eid, lambda exp: exp["phase"] == "complete", ticks=200)
+    await until(wf, store, eid, lambda exp: exp["phase"] == "complete")
     exp = store.experiment(eid)
     assert scheduler.submissions == 3  # Evaluation alone reran.
     assert wf.working_directory(exp) == original_work
@@ -414,23 +468,30 @@ async def test_configured_sessions_let_another_plan_progress_while_one_turn_wait
 
     wf = Workflow(old.config, store, scheduler, WaitingAgent())
     first, second = create(store), create(store)
-    for _ in range(10):
-        await wf.tick(force_observe=True)
-        await asyncio.sleep(0.005)
+
+    def two_running():
         running = store.rows("SELECT * FROM agent_actions WHERE state='running'")
-        if len(running) == 2:
-            break
-    assert len(running) == 2 and {a["experiment_id"] for a in running} == {first, second}
-    release_turns.set()
-    assert wf.lanes[0].gate is wf.lanes[1].gate
-    for _ in range(50):
-        await wf.tick(force_observe=True)
-        await asyncio.sleep(0.005)
-        if all(
+        return running if len(running) == 2 else None
+
+    def both_awaiting_review():
+        return all(
             (store.experiment(eid)["plan_review"] or {}).get("state") == "awaiting_review"
             for eid in [first, second]
-        ):
-            break
-    assert all(store.experiment(eid)["plan_review"]["state"] == "awaiting_review" for eid in [first, second])
+        )
+
+    running = await wait_until(
+        two_running,
+        ticks=lambda: wf.tick(force_observe=True),
+        describe=lambda: store.rows("SELECT * FROM agent_actions WHERE state='running'"),
+    )
+    assert {a["experiment_id"] for a in running} == {first, second}
+    release_turns.set()
+    assert wf.lanes[0].gate is wf.lanes[1].gate
+    await wait_until(
+        both_awaiting_review,
+        ticks=lambda: wf.tick(force_observe=True),
+        describe=lambda: [store.experiment(eid)["plan_review"] for eid in [first, second]],
+    )
+    assert both_awaiting_review()
     assert scheduler.submissions == 0
     await wf.close()

@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from helpers import wait_until
 from test_workflow import submit, until
 
 from experimenttracker.api import create_app
@@ -208,14 +209,17 @@ def send(store, eid, text, request=None, **selection):
     return store.command(identity, "discuss", {"text": text, **selection}, eid=eid)["request_id"]
 
 
+def discussion(store, identity, state):
+    row = store.one("SELECT * FROM discussions WHERE id=?", (identity,))
+    return row if row["state"] == state else None
+
+
 async def response(workflow, store, identity, state="completed"):
-    for _ in range(100):
-        await workflow.tick(force_observe=True)
-        await asyncio.sleep(0.001)
-        row = store.one("SELECT * FROM discussions WHERE id=?", (identity,))
-        if row["state"] == state:
-            return row
-    pytest.fail(f"discussion did not reach {state}: {row}")
+    return await wait_until(
+        lambda: discussion(store, identity, state),
+        ticks=lambda: workflow.tick(force_observe=True),
+        describe=lambda: store.one("SELECT * FROM discussions WHERE id=?", (identity,)),
+    )
 
 
 async def test_ordered_evidence_discussion_and_report_edit_do_not_repeat_science(runtime):
@@ -448,14 +452,17 @@ async def test_missing_output_manifest_continues_saved_turn_with_feedback(runtim
     agent.finish = omit_manifest
     identity = send(store, eid, "Add the saved history plot")
     target = "failed" if always_missing else "completed"
-    for _ in range(20):
+
+    async def tick():
         await workflow.tick(force_observe=True)
         if workflow.agent_task:
             await workflow.agent_task
-        row = store.one("SELECT * FROM discussions WHERE id=?", (identity,))
-        if row["state"] == target:
-            break
-    assert row["state"] == target
+
+    row = await wait_until(
+        lambda: discussion(store, identity, target),
+        ticks=tick,
+        describe=lambda: store.one("SELECT * FROM discussions WHERE id=?", (identity,)),
+    )
     actions = store.rows(
         "SELECT * FROM agent_actions WHERE phase=? ORDER BY created_at", ("discuss:" + identity,)
     )

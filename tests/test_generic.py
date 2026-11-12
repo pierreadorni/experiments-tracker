@@ -1,10 +1,10 @@
 """The planner supplies methods and graph; the executor never selects a model family."""
 
-import asyncio
 import json
 from uuid import uuid4
 
 import pytest
+from helpers import wait_for_experiment, wait_until
 from pydantic import ValidationError
 
 from experimenttracker import artifacts
@@ -133,16 +133,15 @@ class ImplementationAgent(DemoAgent):
 
 
 async def approve_plan(workflow, store, eid):
-    for _ in range(100):
-        await workflow.tick(force_observe=True)
-        await asyncio.sleep(0.001)
-        review = store.experiment(eid)["plan_review"]
-        if review and review["state"] == "awaiting_review":
-            store.command(
-                uuid4(), "plan_review", {"decision": "approve", "plan_revision": review["revision"]}, eid=eid
-            )
-            return
-    pytest.fail("plan review was not reached")
+    await wait_until(
+        lambda: (store.experiment(eid)["plan_review"] or {}).get("state") == "awaiting_review",
+        ticks=lambda: workflow.tick(force_observe=True),
+        describe=lambda: store.experiment(eid),
+    )
+    review = store.experiment(eid)["plan_review"]
+    store.command(
+        uuid4(), "plan_review", {"decision": "approve", "plan_revision": review["revision"]}, eid=eid
+    )
 
 
 async def test_generic_dynamic_graph_restart_and_evidence(runtime):
@@ -155,19 +154,14 @@ async def test_generic_dynamic_graph_restart_and_evidence(runtime):
     eid = store.command(payload["request_id"], "create", payload)["experiment_id"]
     assert store.command(payload["request_id"], "create", payload)["experiment_id"] == eid
     await approve_plan(workflow, store, eid)
-    for _ in range(100):
-        await workflow.tick(force_observe=True)
-        await asyncio.sleep(0.01)
-        if store.experiment(eid)["snapshot"]:
-            break
-    assert store.experiment(eid)["snapshot"]
+    await wait_until(
+        lambda: bool(store.experiment(eid)["snapshot"]),
+        ticks=lambda: workflow.tick(force_observe=True),
+        describe=lambda: store.experiment(eid),
+    )
     await workflow.close()
     workflow = Workflow(old.config, store, scheduler, agent)
-    for _ in range(100):
-        await workflow.tick(force_observe=True)
-        await asyncio.sleep(0.01)
-        if store.experiment(eid)["phase"] in ("complete", "failed"):
-            break
+    await wait_for_experiment(workflow, store, eid, lambda e: e["phase"] in ("complete", "failed"))
     assert store.experiment(eid)["phase"] == "complete", store.experiment(eid)
     assert scheduler.submissions == 2 and agent.calls == 3
     assert [r["id"] for r in store.projection(eid)["stages"]] == [
@@ -265,11 +259,7 @@ async def test_detailed_outputs_reconcile_saved_job_without_retraining(runtime, 
         {"brief": "Test an entirely new method and show its frontier.", "recipe_id": "agent_experiment_v1"},
     )["experiment_id"]
     await approve_plan(workflow, store, eid)
-    for _ in range(200):
-        await workflow.tick(force_observe=True)
-        await asyncio.sleep(0.01)
-        if store.experiment(eid)["phase"] == "failed":
-            break
+    await wait_for_experiment(workflow, store, eid, lambda e: e["phase"] == "failed")
     assert store.experiment(eid)["hold_reason"] == "validation_failed"
     assert scheduler.submissions == 2 and agent.calls == 2
     root = workflow.root(eid)
@@ -281,11 +271,7 @@ async def test_detailed_outputs_reconcile_saved_job_without_retraining(runtime, 
     await workflow.close()
     workflow = Workflow(old.config, store, scheduler, agent)
     store.command(uuid4(), "action", {"action": "resume_new_compute"}, eid=eid)
-    for _ in range(200):
-        await workflow.tick(force_observe=True)
-        await asyncio.sleep(0.01)
-        if store.experiment(eid)["phase"] in ("complete", "failed"):
-            break
+    await wait_for_experiment(workflow, store, eid, lambda e: e["phase"] in ("complete", "failed"))
     assert store.experiment(eid)["phase"] == "complete", store.experiment(eid)["error"]
     assert scheduler.submissions == 2 and agent.calls == 3
     assert (root / "results.json").read_bytes() == original
@@ -308,12 +294,7 @@ async def test_invalid_prepared_source_fails_bounded_repair_before_compute(runti
         },
     )["experiment_id"]
     await approve_plan(workflow, store, eid)
-    for _ in range(100):
-        await workflow.tick(force_observe=True)
-        await asyncio.sleep(0.01)
-        if store.experiment(eid)["phase"] == "failed":
-            break
-    assert store.experiment(eid)["phase"] == "failed"
+    await wait_for_experiment(workflow, store, eid, lambda e: e["phase"] == "failed")
     assert "does not compile" in store.experiment(eid)["error"]
     assert scheduler.submissions == 0 and agent.calls == 4
     assert store.experiment(eid)["snapshot"] is None

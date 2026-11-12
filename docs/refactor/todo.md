@@ -117,7 +117,7 @@ Briefing rules and the brief template are in [README.md](README.md).
 - **Acceptance:** the note exists, with file and line evidence. The follow-up becomes
   T0.5b, or moves into T1.6.
 
-### [ ] T0.6 Deterministic timing in tests (C12 prerequisite) · F · M
+### [x] T0.6 Deterministic timing in tests (C12 prerequisite) · F · M
 - **Do:**
   1. `rg -n "range\((10|20|30|50|100)\)|asyncio.sleep|time.sleep" tests`.
   2. Replace fixed tick-count loops with a shared helper `tests/helpers.py:
@@ -328,4 +328,6 @@ Record completed tasks here: `date · task · commit · notes`.
 
 2026-11-12 · T0.3 · eb61db9 · Notice-only watchdog uses persisted revision timestamps and deduplicates by hold; 29 targeted and all 481 Python tests pass, with Ruff checks.
 
-2026-11-12 · T0.1 · this commit · Explicit terminal failures, per-experiment internal-error backoff and deduplicated notices; 76 targeted (including watchdog integration) and all 491 Python tests pass, with Ruff checks. The commit message records the ValueError audit.
+2026-11-12 · T0.1 · bd826be · Explicit terminal failures, per-experiment internal-error backoff and deduplicated notices; 76 targeted (including watchdog integration) and all 491 Python tests pass, with Ruff checks. The commit message records the ValueError audit.
+
+2026-11-12 · T0.6 · this commit · Shared wall-bounded callback waits replace fixed polling budgets; quota-interruption restart regression restored with continuation and saved-identity assertions. All 499 Python tests pass three consecutive times and with three other full suites running concurrently (separate temporary roots). Node 24 make check passes, including 29 web and 41 gateway tests. First batch complete; synthetic demo and doctor pass, with no live activation.

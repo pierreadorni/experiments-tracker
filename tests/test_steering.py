@@ -1,10 +1,10 @@
 """Saved steering changes planning or safely replaces an in-flight run."""
 
-import asyncio
 import json
 from uuid import uuid4
 
 import pytest
+from helpers import wait_for_experiment
 from test_generic import ImplementationAgent, approve_plan
 
 from experimenttracker.codex_client import DemoAgent
@@ -15,13 +15,7 @@ from experimenttracker.workflow import Workflow
 
 
 async def wait_for(workflow, store, eid, predicate):
-    deadline = asyncio.get_running_loop().time() + 10
-    while asyncio.get_running_loop().time() < deadline:
-        await workflow.tick(force_observe=True)
-        await asyncio.sleep(0.01)
-        if predicate(store.experiment(eid)):
-            return
-    raise AssertionError(store.experiment(eid))
+    await wait_for_experiment(workflow, store, eid, predicate)
 
 
 async def test_plan_is_reviewed_before_source_is_written(runtime):

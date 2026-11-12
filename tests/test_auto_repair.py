@@ -1,11 +1,11 @@
 """In-place repair with real local CPU fixtures, never live Slurm acceptance."""
 
-import asyncio
 import json
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from helpers import wait_for_experiment, wait_until
 from test_generic import ImplementationAgent, approve_plan
 
 from experimenttracker import artifacts
@@ -37,11 +37,7 @@ async def failed_run(runtime):
     ).model_dump(mode="json")
     eid = store.command(payload["request_id"], "create", payload)["experiment_id"]
     await approve_plan(workflow, store, eid)
-    for _ in range(100):
-        await workflow.tick(force_observe=True)
-        await asyncio.sleep(0.01)
-        if store.experiment(eid)["phase"] == "failed":
-            break
+    await wait_for_experiment(workflow, store, eid, lambda e: e["phase"] == "failed")
     assert store.experiment(eid)["hold_reason"] == "compute_failed"
     # Enable production recovery policy using the local scheduler fixture only.
     workflow.config.mode = "live"
@@ -66,11 +62,7 @@ async def test_repair_same_identity_restart_and_only_fixed_evidence(runtime):
     artifacts.verify_snapshot(original_root, original_manifest)
     await workflow.close()
     workflow = Workflow(workflow.config, store, scheduler, agent)
-    for _ in range(150):
-        await workflow.tick(force_observe=True)
-        await asyncio.sleep(0.01)
-        if store.experiment(eid)["phase"] in ("complete", "failed"):
-            break
+    await wait_for_experiment(workflow, store, eid, lambda e: e["phase"] in ("complete", "failed"))
     exp = store.experiment(eid)
     assert exp["phase"] == "complete", exp["error"]
     assert len(store.rows("SELECT id FROM experiments")) == 1
@@ -172,11 +164,7 @@ async def test_three_repairs_then_explicit_idempotent_retry(runtime):
         return turn
 
     agent.begin = still_broken
-    for _ in range(300):
-        await workflow.tick(force_observe=True)
-        await asyncio.sleep(0.01)
-        if store.experiment(eid)["phase"] == "failed":
-            break
+    await wait_for_experiment(workflow, store, eid, lambda e: e["phase"] == "failed")
     exp = store.experiment(eid)
     assert exp["phase"] == "failed" and exp["evidence_revision"] == 4
     assert exp["contract"]["repair_count"] == 3
@@ -191,11 +179,7 @@ async def test_three_repairs_then_explicit_idempotent_retry(runtime):
     agent.begin = original_begin
     await workflow.close()
     workflow = Workflow(workflow.config, store, scheduler, agent)
-    for _ in range(150):
-        await workflow.tick(force_observe=True)
-        await asyncio.sleep(0.01)
-        if store.experiment(eid)["phase"] in ("complete", "failed"):
-            break
+    await wait_for_experiment(workflow, store, eid, lambda e: e["phase"] in ("complete", "failed"))
     exp = store.experiment(eid)
     assert exp["phase"] == "complete", exp["error"]
     assert exp["evidence_revision"] == 5 and exp["contract"]["repair_count"] == 4
@@ -216,19 +200,17 @@ async def test_resource_amendment_is_autonomous_within_authorization(runtime):
             agent.results[(thread_id, turn)] = result
         return turn
 
+    def amendment_approved(exp):
+        review = exp["plan_review"] or {}
+        return (
+            review.get("state") == "approved"
+            and review["stages"][0]["resources"]["memory_mb_per_job"] == 2048
+        )
+
     agent.begin = amended
-    for _ in range(100):
-        await workflow.tick(force_observe=True)
-        await asyncio.sleep(0.01)
-        if store.experiment(eid)["hold_reason"] == "plan_review":
-            break
-    exp = store.experiment(eid)
+    exp = await wait_for_experiment(workflow, store, eid, amendment_approved)
     assert exp["plan_review"]["state"] == "approved"
-    for _ in range(150):
-        await workflow.tick(force_observe=True)
-        await asyncio.sleep(0.01)
-        if store.experiment(eid)["phase"] in ("complete", "failed"):
-            break
+    await wait_for_experiment(workflow, store, eid, lambda e: e["phase"] in ("complete", "failed"))
     assert store.experiment(eid)["phase"] == "complete"
     assert scheduler.submissions == 3
     await workflow.close()
@@ -274,14 +256,17 @@ async def test_timeout_after_code_repair_has_own_bounded_turn(runtime, block):
             await repair_failed()
 
     # Simulate an older owner that stops after its first implementation repair.
-    workflow.repair_failed_experiments = first_repair_only
-    for _ in range(100):
-        await workflow.tick(force_observe=True)
-        await asyncio.sleep(0.01)
+    def awaiting_first_repair():
         exp = store.experiment(eid)
-        if exp["evidence_revision"] == 2 and exp["hold_reason"] == "automatic_repair_pending":
-            store.update(eid, phase="failed", hold_reason="compute_failed")
-            break
+        return exp["evidence_revision"] == 2 and exp["hold_reason"] == "automatic_repair_pending"
+
+    workflow.repair_failed_experiments = first_repair_only
+    await wait_until(
+        awaiting_first_repair,
+        ticks=lambda: workflow.tick(force_observe=True),
+        describe=lambda: store.experiment(eid),
+    )
+    store.update(eid, phase="failed", hold_reason="compute_failed")
     workflow.repair_failed_experiments = repair_failed
     assert store.experiment(eid)["evidence_revision"] == 2
     failed_root = workflow.root(eid)
@@ -320,11 +305,7 @@ async def test_timeout_after_code_repair_has_own_bounded_turn(runtime, block):
     assert exp["contract"]["auto_repair"]["kind"] == "timeout"
     await workflow.close()
     workflow = Workflow(workflow.config, store, scheduler, agent)
-    for _ in range(150):
-        await workflow.tick(force_observe=True)
-        await asyncio.sleep(0.01)
-        if store.experiment(eid)["phase"] in ("complete", "failed"):
-            break
+    await wait_for_experiment(workflow, store, eid, lambda e: e["phase"] in ("complete", "failed"))
     exp = store.experiment(eid)
     assert exp["phase"] == "complete", exp["error"]
     assert scheduler.submissions == 4
@@ -350,11 +331,7 @@ async def test_explicit_retry_of_confirmed_interrupted_repair_turn(runtime, unce
         raise TerminalTurnError("turn interrupted: None")
 
     agent.finish = interrupted
-    for _ in range(100):
-        await workflow.tick(force_observe=True)
-        await asyncio.sleep(0.01)
-        if store.experiment(eid)["phase"] == "failed":
-            break
+    await wait_for_experiment(workflow, store, eid, lambda e: e["phase"] == "failed")
     exp = store.experiment(eid)
     assert exp["hold_reason"] == "agent_correction_stalled" and not exp["snapshot"]
     old = store.one(
@@ -375,11 +352,7 @@ async def test_explicit_retry_of_confirmed_interrupted_repair_turn(runtime, unce
     agent.finish = finish
     await workflow.close()
     workflow = Workflow(workflow.config, store, scheduler, agent)
-    for _ in range(150):
-        await workflow.tick(force_observe=True)
-        await asyncio.sleep(0.01)
-        if store.experiment(eid)["phase"] in ("complete", "failed"):
-            break
+    await wait_for_experiment(workflow, store, eid, lambda e: e["phase"] in ("complete", "failed"))
     assert store.experiment(eid)["phase"] == "complete"
     assert store.one("SELECT state,turn_id FROM agent_actions WHERE id=?", (old["id"],)) == {
         "state": "failed",
@@ -406,9 +379,12 @@ async def test_session_retry_preserves_action_and_does_not_block_other_experimen
         raise SessionUnavailable("session resume rejected: session archived")
 
     agent.session = archived
-    for _ in range(10):
-        await workflow.tick(force_observe=True)
-        await asyncio.sleep(0.01)
+    await wait_for_experiment(
+        workflow,
+        store,
+        eid,
+        lambda e: e["hold_reason"] == "agent_session_unavailable" and not workflow.agent_task,
+    )
     exp = store.experiment(eid)
     assert exp["hold_reason"] == "agent_session_unavailable"
     assert exp["phase"] != "failed"
@@ -418,11 +394,7 @@ async def test_session_retry_preserves_action_and_does_not_block_other_experimen
     agent.session = session
     other = {**payload, "request_id": str(uuid4())}
     other_id = store.command(other["request_id"], "create", other)["experiment_id"]
-    for _ in range(100):
-        await workflow.tick(force_observe=True)
-        await asyncio.sleep(0.01)
-        if store.experiment(other_id)["phase"] == "complete":
-            break
+    await wait_for_experiment(workflow, store, other_id, lambda e: e["phase"] == "complete")
     assert store.experiment(other_id)["phase"] == "complete", store.experiment(other_id)["error"]
     assert store.experiment(eid)["hold_reason"] == "agent_session_unavailable"
     if uncertain:
@@ -435,11 +407,7 @@ async def test_session_retry_preserves_action_and_does_not_block_other_experimen
         store.command(request, "action", {"action": "retry_agent"}, eid=eid)
         await workflow.close()
         workflow = Workflow(workflow.config, store, scheduler, agent)
-        for _ in range(100):
-            await workflow.tick(force_observe=True)
-            await asyncio.sleep(0.01)
-            if store.experiment(eid)["phase"] == "complete":
-                break
+        await wait_for_experiment(workflow, store, eid, lambda e: e["phase"] == "complete")
         assert store.experiment(eid)["phase"] == "complete"
         saved = store.one("SELECT * FROM agent_actions WHERE id=?", (old["id"],))
         assert saved["state"] == "completed" and saved["attempts"] == 1
@@ -471,11 +439,7 @@ async def test_retry_failed_report_preserves_compute_and_previous_turn(runtime, 
 
     agent.begin = invalid_report
     await approve_plan(workflow, store, eid)
-    for _ in range(100):
-        await workflow.tick(force_observe=True)
-        await asyncio.sleep(0.01)
-        if store.experiment(eid)["phase"] == "failed":
-            break
+    await wait_for_experiment(workflow, store, eid, lambda e: e["phase"] == "failed")
     exp = store.experiment(eid)
     assert exp["hold_reason"] == "agent_correction_stalled"
     failed = store.one(
@@ -495,11 +459,7 @@ async def test_retry_failed_report_preserves_compute_and_previous_turn(runtime, 
         agent.begin = begin
         await workflow.close()
         workflow = Workflow(workflow.config, store, scheduler, agent)
-        for _ in range(100):
-            await workflow.tick(force_observe=True)
-            await asyncio.sleep(0.01)
-            if store.experiment(eid)["phase"] in ("complete", "failed"):
-                break
+        await wait_for_experiment(workflow, store, eid, lambda e: e["phase"] in ("complete", "failed"))
         assert store.experiment(eid)["phase"] == "complete"
         assert store.experiment(eid)["snapshot"] == exp["snapshot"]
         assert store.one("SELECT state,turn_id FROM agent_actions WHERE id=?", (failed["id"],)) == {
@@ -516,11 +476,7 @@ async def test_retry_failed_report_preserves_compute_and_previous_turn(runtime, 
 
 async def test_repaired_readiness_does_not_wait_for_retired_artifact_uploads(runtime):
     store, scheduler, agent, workflow, eid = await failed_run(runtime)
-    for _ in range(150):
-        await workflow.tick(force_observe=True)
-        await asyncio.sleep(0.01)
-        if store.experiment(eid)["phase"] == "complete":
-            break
+    await wait_for_experiment(workflow, store, eid, lambda e: e["phase"] == "complete")
     exp = store.experiment(eid)
     assert exp["phase"] == "complete"
     with store.tx() as db:

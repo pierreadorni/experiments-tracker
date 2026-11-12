@@ -1,9 +1,9 @@
-import asyncio
 import json
 import time
 from uuid import uuid4
 
 import pytest
+from helpers import wait_until
 from test_workflow import submit, until
 
 from experimenttracker.config import ProjectConfig
@@ -38,14 +38,17 @@ def enqueue(memory, kind="synthesize", pid="test-project", **kwargs):
     return memory.enqueue(pid, {"request_id": str(uuid4()), "kind": kind, **kwargs})["request_id"]
 
 
+def project_turn(supervisor, identity):
+    row = supervisor.memory.store.one("SELECT * FROM project_turns WHERE id=?", (identity,))
+    return row if row and row["state"] in ("completed", "failed", "uncertain") else None
+
+
 async def finish(supervisor, identity):
-    for _ in range(100):
-        await supervisor.advance()
-        await asyncio.sleep(0.005)
-        row = supervisor.memory.store.one("SELECT * FROM project_turns WHERE id=?", (identity,))
-        if row["state"] in ("completed", "failed", "uncertain"):
-            return row
-    pytest.fail("Project turn did not reach a terminal or uncertain outcome")
+    return await wait_until(
+        lambda: project_turn(supervisor, identity),
+        ticks=supervisor.advance,
+        describe=lambda: supervisor.memory.store.one("SELECT * FROM project_turns WHERE id=?", (identity,)),
+    )
 
 
 async def test_synthesis_versions_tldrs_chat_and_replay(runtime):

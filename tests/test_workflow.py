@@ -4,6 +4,7 @@ import json
 from uuid import uuid4
 
 import pytest
+from helpers import wait_for_experiment
 
 from experimenttracker import artifacts
 from experimenttracker.codex_client import NeedsAttention, TransportError
@@ -23,14 +24,8 @@ def submit(store):
     )["experiment_id"]
 
 
-async def until(workflow, store, eid, predicate, ticks=100):
-    deadline = asyncio.get_running_loop().time() + max(10, ticks * 0.01)
-    while asyncio.get_running_loop().time() < deadline:
-        await workflow.tick(force_observe=True)
-        await asyncio.sleep(0.01)
-        if predicate(store.experiment(eid)):
-            return
-    pytest.fail(f"condition not reached: {store.experiment(eid)}")
+async def until(workflow, store, eid, predicate):
+    await wait_for_experiment(workflow, store, eid, predicate)
 
 
 async def test_full_lifecycle_and_duplicate_observations(runtime):
