@@ -1,6 +1,7 @@
 import json
 import os
 import time
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -95,6 +96,26 @@ def test_missing_eta_old_attempt_future_sample_and_unsafe_files(log_job):
     log.unlink()
     os.mkfifo(log)
     assert read_job_progress(root, job, now=now) is None
+
+
+def test_iso_timestamps_are_normalized_and_subject_to_same_bounds(log_job):
+    root, job, log, now = log_job
+
+    def iso(timestamp, tz=timezone.utc):
+        return datetime.fromtimestamp(timestamp, tz).isoformat()
+
+    log.write_text(
+        line(sample(job, now, timestamp=iso(now - 1)))
+        + line(sample(job, now, completed=50, timestamp=iso(now, timezone(timedelta(hours=2)))))
+    )
+    result = read_job_progress(root, job, now=now)
+    assert result["completed"] == 50
+    assert result["reported_at"] == pytest.approx(now, abs=0.000001)
+    log.write_text(line(sample(job, now, timestamp=iso(now).replace("+00:00", "Z"))))
+    assert read_job_progress(root, job, now=now) is not None
+    for timestamp in ("invalid", "2026-11-04T06:00:00", iso(now + 61), iso(job["started_at"] - 61)):
+        log.write_text(line(sample(job, now, timestamp=timestamp)))
+        assert read_job_progress(root, job, now=now) is None
 
 
 async def test_progress_publication_restart_replay_and_readiness(runtime, monkeypatch):

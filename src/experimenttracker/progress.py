@@ -5,6 +5,7 @@ import math
 import os
 import re
 import stat
+from datetime import datetime
 from pathlib import PurePath
 
 PROGRESS_PREFIX = "ET_PROGRESS "
@@ -44,6 +45,11 @@ def read_job_progress(root, job, *, now):
             if not isinstance(value, dict) or value.get("stage") != job["stage_id"]:
                 continue
             numbers = {key: value[key] for key in ("completed", "total", "timestamp")}
+            if isinstance(numbers["timestamp"], str):
+                timestamp = datetime.fromisoformat(numbers["timestamp"])
+                if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+                    continue
+                numbers["timestamp"] = timestamp.timestamp()
             eta = value.get("eta_seconds")
             if eta is not None:
                 numbers["eta_seconds"] = eta
