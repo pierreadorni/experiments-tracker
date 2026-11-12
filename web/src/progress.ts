@@ -32,9 +32,38 @@ export function repairProgress(exp: Experiment) {
   return {
     title: repair.kind === 'resources' ? 'Adjust compute resources' : 'Repair experiment',
     attempt: Number(exp.contract.repair_count) || 1,
-    preparing: !exp.snapshot && !['complete', 'failed', 'cancelled'].includes(exp.phase),
+    preparing:
+      ((exp.contract?.early_repair as { state?: string } | undefined)?.state === 'preparing' ||
+        !exp.snapshot) &&
+      !['complete', 'failed', 'cancelled'].includes(exp.phase),
     completed,
     error: repair.error || null,
+  };
+}
+
+export function selectiveRepair(exp: Experiment) {
+  const repair = exp.contract?.early_repair as
+    | {
+        state?: string;
+        decisions?: Record<string, { decision: string; rationale: string }>;
+      }
+    | undefined;
+  if (!repair) return null;
+  const cancellations = (exp.contract?.job_cancellations || {}) as Record<
+    string,
+    { intent_id: string; reason: string; state: string; job_id?: string; scheduler_state?: string }
+  >;
+  return {
+    preparing: repair.state === 'preparing',
+    decisions: Object.entries(repair.decisions || {}).map(([stage, decision]) => ({
+      stage,
+      ...decision,
+    })),
+    cancellations: Object.entries(cancellations).map(([id, cancellation]) => ({
+      id,
+      ...cancellation,
+      stage: exp.jobs.find((job) => job.intent_id === cancellation.intent_id)?.stage_id,
+    })),
   };
 }
 

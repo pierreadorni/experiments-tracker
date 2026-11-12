@@ -16,12 +16,14 @@ import {
   repairProgress,
   stageRecovery,
   stageJob,
+  selectiveRepair,
 } from './progress';
 
 export function StageTimeline({ exp, status }: { exp: Experiment; status: Status | null }) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const stages = timelineStages(exp);
   const repair = repairProgress(exp);
+  const selective = selectiveRepair(exp);
   const completed = stages.filter((stage) => stage.state === 'complete').length;
   const defining =
     !['complete', 'failed', 'cancelled'].includes(exp.phase) &&
@@ -36,7 +38,11 @@ export function StageTimeline({ exp, status }: { exp: Experiment; status: Status
           <strong>
             {repair.title} · attempt {repair.attempt}
           </strong>
-          <p>Codex is checking saved outputs and preparing the remaining work.</p>
+          <p>
+            {selective?.preparing
+              ? 'Codex is diagnosing the failure while other jobs continue.'
+              : 'Codex is checking saved outputs and preparing the remaining work.'}
+          </p>
           {repair.completed.length > 0 && (
             <p>
               {repair.completed.length} compute{' '}
@@ -46,6 +52,33 @@ export function StageTimeline({ exp, status }: { exp: Experiment; status: Status
           )}
           {repair.error && <Description text={repair.error} lines={3} />}
         </div>
+      )}
+      {selective && (selective.decisions.length > 0 || selective.cancellations.length > 0) && (
+        <details className="stage-execution-details">
+          <summary>Repair decisions and cancellations</summary>
+          {selective.decisions.map((decision) => (
+            <p key={decision.stage}>
+              <strong>
+                {decision.stage}: {decision.decision === 'keep' ? 'Keep' : 'Retry'}.
+              </strong>{' '}
+              {decision.rationale}
+            </p>
+          ))}
+          {selective.cancellations.map((cancellation) => (
+            <p key={cancellation.id}>
+              <strong>
+                {cancellation.stage || 'Job'}
+                {cancellation.job_id ? ` · ${cancellation.job_id}` : ''}:
+              </strong>{' '}
+              {cancellation.state === 'terminal'
+                ? `Scheduler confirmed ${cancellation.scheduler_state || 'a terminal state'}`
+                : cancellation.state === 'uncertain'
+                  ? 'Cancellation needs reconciliation'
+                  : 'Cancellation requested; waiting for scheduler confirmation'}
+              . {cancellation.reason}
+            </p>
+          ))}
+        </details>
       )}
       {!defining && !repair?.preparing && stages.length > 0 && (
         <div className="experiment-progress">

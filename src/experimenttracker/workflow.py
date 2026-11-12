@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
-from . import artifacts, iteration, reporting
+from . import artifacts, early_repair, iteration, reporting
 from .cancellation import process_cancellations
 from .codex_client import CodexAgent, NeedsAttention, RpcRejected, SessionUnavailable, TerminalTurnError
 from .config import JobResources
@@ -469,6 +469,7 @@ class Workflow:
 
     async def tick(self, *, force_observe=False):
         await process_cancellations(self)
+        await early_repair.reconcile_cancellations(self)
         self.projects.tick()
         self.projects.settings_tick()
         self.supervisor.memory.refresh()
@@ -847,6 +848,9 @@ class Workflow:
             exp = self.store.experiment(eid)
             if self.config.mode != "live" or exp["recipe_id"] != "agent_experiment_v1" or not exp["snapshot"]:
                 continue
+            if iteration.enabled(exp) and exp["hold_reason"] != "resources_unavailable":
+                await early_repair.queue(self, exp)
+                continue
             resource_revision = exp["hold_reason"] == "resources_unavailable"
             if resource_revision and time.time() - max(
                 (stamp for (saved_eid, _, _), stamp in self.last_preflight.items() if saved_eid == eid),
@@ -1008,6 +1012,9 @@ class Workflow:
         exp = self.store.experiment(eid)
         if exp["phase"] == "cancelled":
             return
+        if early_repair.preparing(exp) and reason in ("compute_failed", "validation_failed"):
+            self.store.update(eid, phase="preparing", hold_reason="automatic_repair", error=error)
+            return
         if reason == "validation_failed" and exp["phase"] == "validating":
             self.store.stage(eid, "validate", "failed", error=error)
         if reason in ("agent_correction_stalled", "agent_recovery_exhausted", "agent_budget_exhausted"):
@@ -1151,6 +1158,8 @@ class Workflow:
             if iteration.enabled(exp) and requested_done and stage not in requested:
                 continue
             if stages[stage] == "complete":
+                continue
+            if iteration.enabled(exp) and early_repair.active_predecessor(self, exp, stage):
                 continue
             job = self.store.one(
                 "SELECT * FROM jobs WHERE experiment_id=? AND stage_id=? AND attempt=?",
@@ -1303,6 +1312,10 @@ class Workflow:
         if not exp["snapshot"] or exp["phase"] in ("failed", "cancelled", "complete"):
             raise ValueError("submission requires an active saved implementation")
         root = self.root(eid)
+        if iteration.enabled(exp):
+            held = early_repair.submission_hold(self, exp, stage)
+            if held:
+                return held
         generic = exp["recipe_id"] == "agent_experiment_v1"
         compute_stages = self.compute_stages(exp)
         if stage not in compute_stages:
@@ -1645,9 +1658,15 @@ class Workflow:
     async def observe_jobs(self):
         for job in self.store.rows(
             "SELECT j.* FROM jobs j JOIN experiments e ON e.id=j.experiment_id "
-            "WHERE j.state IN ('submitting','submitted') AND e.phase!='cancelled' ORDER BY j.created_at"
+            "WHERE (j.state IN ('submitting','submitted') OR "
+            "(json_extract(e.contract, '$.execution_contract')=3 AND j.state='failed' "
+            "AND json_extract(j.execution_manifest, '$.executor') IS NOT 'agent' "
+            "AND (j.scheduler_state IS NULL OR j.scheduler_state NOT IN "
+            "('COMPLETED','FAILED','CANCELLED','TIMEOUT','OUT_OF_MEMORY','NODE_FAIL','PREEMPTED','BOOT_FAIL','DEADLINE','REVOKED') "
+            "OR j.exit_code IS NULL))) AND e.phase!='cancelled' ORDER BY j.created_at"
         ):
             eid = job["experiment_id"]
+            observed = None
             try:
                 check = self.output_checks.get(job["intent_id"])
                 if check and not check[0].done():
@@ -1837,6 +1856,9 @@ class Workflow:
                     continue
                 with self.store.tx() as db:
                     registration_started = time.monotonic()
+                    selected = early_repair.selected(self, exp, job)
+                    if completed_names is not None and not selected:
+                        completed_names = None
                     if completed_names is not None and iteration.enabled(exp):
                         iteration.complete(self, exp, job, job_manifest, job_root, db)
                     if completed_names is not None and not iteration.enabled(exp):
@@ -1906,7 +1928,7 @@ class Workflow:
                     "submission_uncertain",
                 ):
                     self.store.update(eid, hold_reason=None, error=None)
-                if state == "failed":
+                if state == "failed" and early_repair.selected(self, self.store.experiment(eid), job):
                     restarting = self.store.one(
                         "SELECT 1 FROM steering WHERE experiment_id=? AND mode='restart' AND state IN ('pending','cancelling')",
                         (eid,),
@@ -1921,17 +1943,24 @@ class Workflow:
                         self.fail(eid, "compute_failed", error)
             except ValueError as exc:
                 self.output_checks.pop(job["intent_id"], None)
-                self.store.stage(eid, job["stage_id"], "failed", error=str(exc))
+                selected = early_repair.selected(self, self.store.experiment(eid), job)
+                if selected:
+                    self.store.stage(eid, job["stage_id"], "failed", error=str(exc))
                 with self.store.tx() as db:
                     db.execute(
                         "UPDATE jobs SET state='failed',error=? WHERE intent_id=?",
                         (str(exc), job["intent_id"]),
                     )
+                    if observed is not None:
+                        db.execute(
+                            "UPDATE jobs SET scheduler_state=?,exit_code=?,observed_at=? WHERE intent_id=?",
+                            (observed.state, observed.exit_code, time.time(), job["intent_id"]),
+                        )
                     self.store.emit(db, eid, "output_validation_failed", {"error": str(exc)})
                 optional = iteration.enabled(exp) and not next(
                     s for s in job_manifest["plan"]["stages"] if s["id"] == job["stage_id"]
                 ).get("requested", True)
-                if not optional:
+                if not optional and selected:
                     self.fail(eid, "validation_failed", str(exc))
             except Exception as exc:
                 self.output_checks.pop(job["intent_id"], None)
@@ -2093,12 +2122,30 @@ class Workflow:
                     )
                     if self.store.experiment(eid)["phase"] == "cancelled":
                         return
+                    if early_repair.preparing(exp):
+                        early_repair.validate(self, exp, plan)
                     reused = self.reusable_stages(exp, plan)
                     budget = exp["contract"].get("max_jobs", self.config.slurm.max_jobs_per_experiment)
                     submitted = self.store.one(
                         "SELECT COUNT(*) AS n FROM jobs WHERE experiment_id=?", (eid,)
                     )["n"]
-                    if budget is not None and submitted + len(plan.stages) - len(reused) > budget:
+                    remaining = len(plan.stages) - len(reused)
+                    if early_repair.preparing(exp):
+                        submitted = self.store.one(
+                            "SELECT COUNT(*) AS n FROM jobs WHERE experiment_id=? "
+                            "AND json_extract(execution_manifest, '$.executor') IS NOT 'agent'",
+                            (eid,),
+                        )["n"]
+                        kept = {d.stage_id for d in plan.repair_decisions if d.decision == "keep"}
+                        retained = {
+                            row["stage_id"]
+                            for row in self.store.rows(
+                                "SELECT DISTINCT stage_id FROM jobs WHERE experiment_id=?", (eid,)
+                            )
+                            if row["stage_id"] in kept
+                        }
+                        remaining = sum(s.executor == "slurm" and s.id not in retained for s in plan.stages)
+                    if budget is not None and submitted + remaining > budget:
                         raise ValueError(
                             "remaining stages exceed the total saved job budget; reuse valid completed work or request owner guidance"
                         )
@@ -2112,7 +2159,10 @@ class Workflow:
                         reused=reused,
                         remote_execution=self.is_remote(exp),
                     )
-                    self.store.resolve_implementation(eid, manifest)
+                    if early_repair.preparing(exp):
+                        early_repair.apply(self, exp, plan, manifest)
+                    else:
+                        self.store.resolve_implementation(eid, manifest)
                     self.adopt_reused_stages(eid, reused)
                     if review and review.get("state") == "approved":
                         self.store.update(
@@ -2341,6 +2391,8 @@ class Workflow:
         self.agent_task = asyncio.create_task(self.dispatch(action))
 
     async def prepare_workspace(self, exp):
+        if early_repair.preparing(exp):
+            return True
         eid = exp["id"]
         if self.workspaces.row(eid):
             try:
@@ -2679,9 +2731,10 @@ class Workflow:
         else:
             raise ValueError("selected project checkout is unavailable; restore its configuration")
         isolated = self.workspaces.row(exp["id"])
+        candidate = exp["contract"].get("repair_project")
         return {
             **identity,
-            "checkout": checkout,
+            "checkout": candidate or checkout,
             "access": "read-write" if saved else "read-only",
             "isolation": "worktree" if isolated else "shared",
             "source_checkout": saved["folder"] if saved else checkout,
@@ -2836,6 +2889,24 @@ class Workflow:
                 "SELECT author,text FROM notes WHERE experiment_id=? ORDER BY created_at DESC LIMIT 20",
                 (exp["id"],),
             )
+            if early_repair.preparing(exp):
+                payload["early_repair"] = exp["contract"]["early_repair"]
+                payload["output_refs"] = self.context_pointer(
+                    exp, "repair-output-refs", payload["output_refs"]
+                )
+                payload["output_refs_instruction"] = (
+                    "Read only needed output references from this pointer or job_status for selected intents; "
+                    "do not load all output inventories into the conversation."
+                )
+                payload["repair_policy"] = (
+                    "Diagnose now; unrelated jobs continue. Read job_status by intent only when needed. "
+                    "Edit only candidate workspace/project paths, never running attempts or original sources. "
+                    "Return repair_decisions for every existing stage: keep or retry with rationale. "
+                    "Keep active/successful unrelated stages unchanged; reuse_stages lists kept successful stages. "
+                    "For affected queued/running Slurm jobs call cancel_job with exact intent, request UUID and reason. "
+                    "Retry admission waits for exact predecessor terminal accounting; agent turns cannot be cancelled by this tool. "
+                    "Use the previous saved python_executable read-only if suitable; install or change packages only in a candidate environment. New files must be written in candidate paths."
+                )
             payload["output_schema"] = ExperimentResult.model_json_schema()
             instruction += (
                 "Preserve the plan's executor choices. Agent stages declare executor:'agent', resources:null, "
@@ -3577,7 +3648,7 @@ class Workflow:
             turn_options = {"effort": selected_effort} if selected_effort else {}
             if action["phase"] == "monitor" and option and "low" in option["reasoning_efforts"]:
                 turn_options["effort"] = "low"
-            checkout = self.workspaces.checkout(eid)
+            checkout = exp["contract"].get("repair_project") or self.workspaces.checkout(eid)
             project_workspace = Path(checkout) if checkout else None
             isolated = self.workspaces.row(eid)
             if isolated and action["phase"] == "prepare":

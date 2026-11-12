@@ -22,6 +22,23 @@ def public_projection(value):
     """Omit executor repair evidence from views, including already queued views."""
     result = dict(value)
     contract = dict(result["contract"])
+    for key in ("repair_project", "working_directory"):
+        contract.pop(key, None)
+    if contract.get("early_repair"):
+        contract["early_repair"] = {
+            key: value
+            for key, value in contract["early_repair"].items()
+            if key in ("state", "revision", "failed_intents", "decisions")
+        }
+    if contract.get("job_cancellations"):
+        contract["job_cancellations"] = {
+            request: {
+                key: value
+                for key, value in record.items()
+                if key in ("intent_id", "reason", "state", "job_id", "scheduler_state")
+            }
+            for request, record in contract["job_cancellations"].items()
+        }
     for key in ("auto_repair", "repair_history"):
         if key not in contract:
             continue
@@ -54,15 +71,24 @@ def public_projection(value):
                 else:
                     remaining -= size
         result["jobs"] = jobs
-    result["events"] = [
-        {
-            **event,
-            "payload": encode({k: v for k, v in json.loads(event["payload"]).items() if k != "snapshot"}),
-        }
-        if event["kind"] == "automatic_repair_started"
-        else event
-        for event in result.get("events", [])
-    ]
+    events = []
+    for event in result.get("events", []):
+        omitted = {
+            "automatic_repair_started": {"snapshot"},
+            "selective_repair_queued": {"original_work", "error"},
+            "selective_cancellation_uncertain": {"error"},
+        }.get(event["kind"], set())
+        if event["kind"].startswith("selective_cancellation_"):
+            omitted.add("error")
+        if omitted:
+            event = {
+                **event,
+                "payload": encode(
+                    {key: value for key, value in json.loads(event["payload"]).items() if key not in omitted}
+                ),
+            }
+        events.append(event)
+    result["events"] = events
     return result
 
 

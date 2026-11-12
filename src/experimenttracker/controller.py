@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 
 from pydantic import Field
 
-from . import artifacts, iteration, reporting
+from . import artifacts, early_repair, iteration, reporting
 from .codex_client import TerminalTurnError
 from .config import StrictModel
 from .models import Analysis, Implementation, ReportDocument, ResearchPlan
@@ -37,6 +37,16 @@ def tool(name, description, properties, required=()):
 
 
 TOOLS = [
+    tool(
+        "cancel_job",
+        "During selective repair, cancel only this experiment's exact tracked Slurm intent. Saves a durable decision; terminal success is adopted, and uncertain outcomes need exact accounting.",
+        {
+            "intent_id": {"type": "string"},
+            "request_id": {"type": "string"},
+            "reason": {"type": "string", "maxLength": 2000},
+        },
+        ["intent_id", "request_id", "reason"],
+    ),
     tool(
         "check_agent_stage",
         "Check this active agent stage's declared outputs without completing it; fix errors in this turn.",
@@ -312,6 +322,10 @@ class Controller:
                 )
         if action["phase"] == "monitor" and name not in ("job_status", "schedule_wakeup"):
             raise ValueError("monitoring only permits status reads and future backend checks")
+        if name == "cancel_job":
+            if action["phase"] != "prepare":
+                raise ValueError("cancellation requires the active repair preparation turn")
+            return await early_repair.cancel(wf, exp, args["intent_id"], args["request_id"], args["reason"])
         if name == "set_project_execution":
             if action["phase"] != "prepare":
                 raise ValueError("execution settings can only be changed during implementation")

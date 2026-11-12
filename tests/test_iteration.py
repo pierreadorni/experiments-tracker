@@ -75,7 +75,7 @@ class IterationAgent(DemoAgent):
         self.workspace = workspace
         return await super().session(thread_id, workspace)
 
-    async def begin(self, thread_id, prompt, schema, *, workspace=None):
+    async def begin(self, thread_id, prompt, schema, *, workspace=None, **kwargs):
         self.calls += 1
         turn = f"iteration-{self.calls}"
         payload = json.loads(prompt.split("\nPAYLOAD:\n", 1)[1])
@@ -104,6 +104,14 @@ class IterationAgent(DemoAgent):
             result = {**PLAN, "python_executable": str(runtime)}
             if payload.get("repair_context"):
                 result |= {
+                    "repair_decisions": [
+                        {
+                            "stage_id": s["id"],
+                            "decision": "retry" if s["id"] == "plot" else "keep",
+                            "rationale": "Repair failed plot; retain measured producers.",
+                        }
+                        for s in PLAN["stages"]
+                    ],
                     "reuse_stages": ["train", "evaluate"],
                     "reuse_rationale": "Reuse measured synthetic outputs; repair only plotting.",
                 }
@@ -438,7 +446,7 @@ async def test_missing_original_output_is_actionable_without_new_compute(runtime
     await wf.close()
 
 
-async def test_failed_shared_editors_repair_serially_without_ownership_deadlock(runtime):
+async def test_failed_shared_editors_repair_in_isolated_candidates_without_ownership_deadlock(runtime):
     store, scheduler, agent, wf, first = await prepared(runtime, True)
     await until(wf, store, first, lambda e: e["phase"] == "failed")
     _, _, _, second_wf, second = await prepared(runtime, True)
@@ -450,7 +458,8 @@ async def test_failed_shared_editors_repair_serially_without_ownership_deadlock(
     wf.cluster_snapshot = {"fixture": True}
     await wf.repair_failed_experiments()
     phases = [store.experiment(eid)["phase"] for eid in (first, second)]
-    assert sorted(phases) == ["failed", "preparing"]
+    assert phases == ["preparing", "preparing"]
+    assert wf.working_directory(store.experiment(first)) != wf.working_directory(store.experiment(second))
     await until(wf, store, first, lambda e: e["phase"] == "complete")
     await until(wf, store, second, lambda e: e["phase"] == "complete")
     assert scheduler.submissions == 8  # Two initial graphs and exactly two plot retries.

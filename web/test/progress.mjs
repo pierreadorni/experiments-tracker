@@ -10,6 +10,8 @@ import {
   timelineStages,
   jobProgress,
   experimentStatus,
+  repairProgress,
+  selectiveRepair,
 } from '../src/progress.ts';
 const stage = { id: 'fit', state: 'running' };
 const job = {
@@ -29,6 +31,26 @@ const exp = {
   artifacts: [],
   snapshot: { plan: { stages: [{ id: 'fit', title: 'Fit requested method' }] } },
 };
+test('selective repair displays preparation with a saved snapshot and tracked decisions', () => {
+  const current = {
+    ...exp,
+    phase: 'preparing',
+    contract: {
+      auto_repair: { kind: 'selective' },
+      early_repair: {
+        state: 'preparing',
+        decisions: { fit: { decision: 'retry', rationale: 'The input failed.' } },
+      },
+      job_cancellations: {
+        request: { intent_id: 'intent', state: 'uncertain', reason: 'Shared failure' },
+      },
+    },
+  };
+  assert.equal(repairProgress(current).preparing, true);
+  assert.equal(selectiveRepair(current).decisions[0].rationale, 'The input failed.');
+  assert.equal(selectiveRepair(current).cancellations[0].stage, 'fit');
+  assert.equal(selectiveRepair(current).cancellations[0].state, 'uncertain');
+});
 test('successful scheduler accounting shows output checks until evidence is committed', () => {
   const checking = { ...job, scheduler_state: 'COMPLETED', exit_code: '0:0' };
   const base = { ...exp, phase: 'training', hold_reason: null, jobs: [checking] };

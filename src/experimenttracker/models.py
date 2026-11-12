@@ -355,6 +355,12 @@ class AgentStageResult(StrictModel):
     outcome: Literal["completed", "blocked", "failed"] = "completed"
 
 
+class RepairStageDecision(StrictModel):
+    stage_id: str
+    decision: Literal["keep", "retry"]
+    rationale: str = Field(min_length=1, max_length=2000)
+
+
 class Implementation(StrictModel):
     schema_version: Literal[1, 2, 3] = 1
     title: str | None = Field(default=None, min_length=1, max_length=100)
@@ -373,6 +379,7 @@ class Implementation(StrictModel):
         description="During repair, explicitly reuse checked successful stages. Null chooses unchanged stages. Never reuse a failed stage or its descendants.",
     )
     reuse_rationale: str | None = Field(default=None, max_length=4000)
+    repair_decisions: list[RepairStageDecision] | None = Field(default=None, max_length=256)
     objective_change: str | None = Field(
         default=None,
         max_length=4000,
