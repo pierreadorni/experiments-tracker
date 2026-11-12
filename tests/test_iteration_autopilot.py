@@ -787,3 +787,69 @@ def test_cpu_terminal_without_timestamps_cannot_hold_gpu_admission(runtime, monk
     service.budget.observe(job, Observation("COMPLETED"), "synthetic")
     assert service.budget.view(run["project_id"], policy())["unknown_jobs"] == 0
     assert linked(service, run)[2] is None
+
+
+def test_project_guidance_change_wakes_and_invalidates_stale_authority(runtime, monkeypatch):
+    service, run = activated(runtime, monkeypatch)
+    identity = action(service, run)
+    wf = runtime[3]
+    wf.projects.enqueue_settings(
+        "test-project",
+        {
+            "request_id": str(uuid4()),
+            "instructions": "Retain negative results; focus on the specified protocol.",
+        },
+    )
+    wf.projects.settings_tick()
+    changed = service.run("test-project")
+    assert changed["control_revision"] > run["control_revision"]
+    assert service.context(changed)["project_guidance"]["instructions"].startswith("Retain negative")
+    assert service.store.one(
+        "SELECT 1 FROM autopilot_inputs WHERE run_id=? AND kind='project_guidance'", (run["id"],)
+    )
+    with pytest.raises(Conflict, match="authority changed"):
+        tool(
+            service,
+            identity,
+            "record_decision",
+            outcome="stop",
+            rationale="Old context must not overwrite guidance",
+        )
+
+
+def test_request_identity_cannot_cross_project_and_experiment_commands(runtime, monkeypatch):
+    service, _ = activated(runtime, monkeypatch)
+    request = str(uuid4())
+    payload = {
+        "request_id": request,
+        "kind": "pause",
+        "expected_revision": service.run("test-project")["revision"],
+    }
+    service.command("test-project", payload)
+    with pytest.raises(Conflict, match="Autopilot"):
+        service.store.command(
+            request, "create", {"brief": "Cross-domain identity must conflict", "recipe_id": "toy_compare_v1"}
+        )
+    old = str(uuid4())
+    service.store.command(old, "create", {"brief": "Synthetic fixture", "recipe_id": "toy_compare_v1"})
+    with pytest.raises(Conflict, match="another domain"):
+        service.command(
+            "test-project",
+            {
+                "request_id": old,
+                "kind": "resume",
+                "expected_revision": service.run("test-project")["revision"],
+            },
+        )
+
+
+def test_synthetic_agent_evidence_cannot_become_a_research_claim(runtime, monkeypatch):
+    from experimenttracker.autopilot_tools import Source
+
+    service, run = activated(runtime, monkeypatch)
+    eid = service.store.command(
+        uuid4(), "create", {"brief": "Synthetic agent fixture", "recipe_id": "agent_experiment_v1"}
+    )["experiment_id"]
+    service.store.update(eid, snapshot={"plan": {"synthetic_demo": True}})
+    with pytest.raises(Conflict, match="synthetic"):
+        service.validate_sources(run, [Source(kind="experiment", id=eid)])

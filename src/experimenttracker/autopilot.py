@@ -248,6 +248,16 @@ class Autopilot:
             or prior["author"] != author
         ):
             raise Conflict("request identity already used with different payload or attribution")
+        if not prior:
+            for table, key in (
+                ("commands", "request_id"),
+                ("project_requests", "request_id"),
+                ("project_settings_requests", "request_id"),
+                ("project_turns", "id"),
+                ("maintenance", "request_id"),
+            ):
+                if self.store.one(f"SELECT 1 FROM {table} WHERE {key}=?", (request_id,)):
+                    raise Conflict("request identity already belongs to another domain command")
         return prior
 
     def command(self, project_id, body, origin="researcher"):
@@ -615,6 +625,9 @@ class Autopilot:
             (run["id"], run["consumed_cursor"]),
         )
         view["instructions"] = self.policy(run).instructions
+        view["project_guidance"] = self.store.one(
+            "SELECT instructions,revision FROM project_preferences WHERE project_id=?", (run["project_id"],)
+        )
         view["accepted_tool_results"] = self.store.rows(
             "SELECT request_id,author,result FROM autopilot_requests WHERE run_id=? AND author LIKE 'agent:%' AND state='applied' ORDER BY created_at DESC LIMIT 100",
             (run["id"],),
@@ -656,7 +669,12 @@ class Autopilot:
                 exp = self.store.experiment(source.id)
             if exp["contract"].get("project", {}).get("id", "test-project") != run["project_id"]:
                 raise Conflict("evidence must belong to the project")
-            if exp["contract"].get("synthetic_demo"):
+            if (
+                exp["contract"].get("synthetic_demo")
+                or (exp["snapshot"] or {}).get("plan", {}).get("synthetic_demo")
+                or self.config is not None
+                and self.config.mode == "demo"
+            ):
                 raise Conflict("synthetic demonstration outputs cannot support research claims")
 
     def publish(self, db, run, request_id, documents, author, action_id=None):
@@ -911,7 +929,8 @@ class Autopilot:
                         borrowed > policy.borrowing_percent
                         or not args.dropped_work
                         or not args.remaining_ablations
-                        or calendar(policy, now)["phase"] not in ("foundation", "main_argument")
+                        or calendar(policy, now, run["borrowed_percent"])["phase"]
+                        not in ("foundation", "main_argument")
                     ):
                         raise Conflict("borrowing exceeds envelope or lacks dropped work/ablation priorities")
                     db.execute(

@@ -500,12 +500,17 @@ class Store:
     def projection(self, eid):
         result = self.experiment(eid)
         result["project_id"] = result["contract"].get("project", {}).get("id", "test-project")
-        result["autopilot_stage_holds"] = self.rows(
-            "SELECT stage_id,attempt,reason,detail FROM autopilot_stage_holds WHERE experiment_id=?", (eid,)
-        )
-        result["autopilot"] = self.one(
-            "SELECT run_id,project_id,purpose,deferred FROM autopilot_members WHERE experiment_id=?", (eid,)
-        )
+        if self.one("SELECT 1 FROM sqlite_master WHERE name='autopilot_runs'"):
+            result["autopilot_stage_holds"] = self.rows(
+                "SELECT stage_id,attempt,reason,detail FROM autopilot_stage_holds WHERE experiment_id=?",
+                (eid,),
+            )
+            result["autopilot"] = self.one(
+                "SELECT run_id,project_id,purpose,deferred FROM autopilot_members WHERE experiment_id=?",
+                (eid,),
+            )
+        else:
+            result["autopilot_stage_holds"], result["autopilot"] = [], None
         result["steering"] = self.rows(
             "SELECT request_id,text,mode,state,created_at,applied_at,replacement_experiment_id FROM steering WHERE experiment_id=? ORDER BY created_at",
             (eid,),
@@ -827,6 +832,8 @@ class Store:
                 ):
                     raise Conflict("request_id was already used for a different command")
                 return json.loads(prior["result"])
+            if db.execute("SELECT 1 FROM autopilot_requests WHERE request_id=?", (request_id,)).fetchone():
+                raise Conflict("request_id was already used for an Autopilot command")
             if (
                 db.execute("SELECT 1 FROM project_requests WHERE request_id=?", (request_id,)).fetchone()
                 or db.execute(

@@ -95,6 +95,8 @@ class Projects:
                 if prior["project_id"] != project_id or prior["payload"] != wire or prior["origin"] != origin:
                     raise Conflict("request_id was already used for different project settings")
             else:
+                if db.execute("SELECT 1 FROM autopilot_requests WHERE request_id=?", (identity,)).fetchone():
+                    raise Conflict("request_id was already used for an Autopilot command")
                 if (
                     db.execute("SELECT 1 FROM project_turns WHERE id=?", (identity,)).fetchone()
                     or db.execute("SELECT 1 FROM commands WHERE request_id=?", (identity,)).fetchone()
@@ -157,6 +159,19 @@ class Projects:
                         "instructions=excluded.instructions,revision=excluded.revision,updated_at=excluded.updated_at,execution=excluded.execution",
                         (row["project_id"], instructions, revision, time.time(), encode(execution)),
                     )
+                    from .autopilot import Autopilot
+
+                    service = Autopilot(self.store, self.config)
+                    if service.enabled(row["project_id"]):
+                        run = service.run(row["project_id"])
+                        db.execute(
+                            "UPDATE autopilot_runs SET control_revision=control_revision+1 WHERE id=?",
+                            (run["id"],),
+                        )
+                        service.wake(
+                            db, run["id"], row["request_id"], "project_guidance", {"revision": revision}
+                        )
+                        service.emit(db, run["id"], "project_guidance_changed", {"revision": revision})
                     db.execute(
                         "UPDATE project_settings_requests SET state='applied',result=? WHERE request_id=?",
                         (encode(result), row["request_id"]),
