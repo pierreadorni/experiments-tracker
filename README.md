@@ -56,3 +56,5 @@ make audit
 ```
 
 Run checks in a temporary source checkout if an owner serves the current checkout's `web/dist`; the checks rebuild served assets. No live credentials or Slurm jobs are required for the test suite. Contribution guidance is in [CONTRIBUTING.md](CONTRIBUTING.md). Licensed under [MIT](LICENSE).
+
+Development follows the shared `main` branch; see [development and local installations](docs/development.md) for keeping private installation state outside Git.

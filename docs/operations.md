@@ -70,3 +70,5 @@ There is no automatic restore or permanent service. The original executor needs
 one authorized bootstrap restart to load this capability; hosted gateways also
 need append-only migration `0008_executor_maintenance.sql`. Gateway code still
 uses the installation's normal private hosting deployment workflow.
+
+Shared source updates use GitHub `main`; keep installation records under ignored `.local/installation/`. See [development](development.md). Schema 22 adds opt-in Research Autopilot records; installing its software does not activate a project.

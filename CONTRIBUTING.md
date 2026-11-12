@@ -5,3 +5,5 @@ Start with README.md, AGENTS.md and docs/architecture.md. Use a separate checkou
 Keep changes reviewable. Describe the concrete behavior, validation and remaining limitations. Portability contributions should state the tested cluster policy and preserve saved execution contracts and exact dispatch reconciliation. Include tests for changed recovery, transaction, authorization or scheduler behavior; keep purely editorial changes lightweight.
 
 Never include research data, credentials, local configuration, database backups or private deployment identities. Report sensitive findings privately through the maintainer's GitHub profile rather than opening a public issue with secrets. This early project has no dedicated security response service.
+
+Use `main` as the latest shared source; see [development and local installations](docs/development.md). Keep installation records in ignored `.local/installation/`.

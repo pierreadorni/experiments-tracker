@@ -11,3 +11,5 @@
 - Browser smoke uses demo state and creates a synthetic experiment. Actual Slurm, managed runtime, private hosting and physical phone access need separate acceptance evidence.
 - Inspect the portability map before adapting saved acacia/jean-zay context identifiers or the site-specific remote scheduler policy. Preserve historical records.
 - Do not install a permanent service until host policy and local-disk retention are established. Keep adaptations and validation reviewable; do not publish local operations records.
+
+- Use GitHub main as the single shared code history and latest source. Read docs/development.md. Keep installation-specific records under ignored .local/installation/; consult its AGENTS.md when present. Commit and push reusable improvements through this repository, without snapshot-export workflows. Code publication does not authorize live activation.
