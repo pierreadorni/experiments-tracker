@@ -23,6 +23,7 @@ class QuotaGate:
         self.ordinary_allowed = None
         self.permission_observed_at = None
         self.account_id = None
+        self.policy_holds = {}
 
     def update(self, payload, now=None):
         now = time.time() if now is None else now
@@ -31,6 +32,7 @@ class QuotaGate:
             self.windows.clear()
             self.ordinary_allowed = None
             self.permission_observed_at = None
+            self.policy_holds.clear()
         if account:
             self.account_id = account
         if "ordinaryUsageAllowed" in payload:
@@ -88,3 +90,21 @@ class QuotaGate:
                 reason = "subscription reserve reached"
         self.held = reason is not None
         return Decision(not self.held, reason, remaining, observed)
+
+    def decide_policy(self, identity, five_hour, weekly, now=None):
+        """Independent hysteresis for stricter policies, sharing immutable observations."""
+        ordinary = self.decide(now)
+        thresholds = (
+            max(five_hour, self.config.five_hour_min_remaining),
+            max(weekly, self.config.weekly_min_remaining),
+        )
+        if self.policy_holds.get(identity, False):
+            thresholds = tuple(min(100, threshold + 5) for threshold in thresholds)
+        reason = ordinary.reason
+        if not reason and (
+            ordinary.remaining.get("300", 0) < thresholds[0]
+            or ordinary.remaining.get("10080", 0) < thresholds[1]
+        ):
+            reason = "autopilot subscription reserve reached"
+        self.policy_holds[identity] = reason is not None
+        return Decision(reason is None, reason, ordinary.remaining, ordinary.observed_at)

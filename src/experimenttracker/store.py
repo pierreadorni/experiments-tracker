@@ -107,7 +107,7 @@ class Store:
         reader.db = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, check_same_thread=False)
         reader.db.row_factory = sqlite3.Row
         version = reader.db.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-        if version not in (12, 13, 14, 15, 16, 17, 18, 19, 20, 21):
+        if version not in (12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22):
             reader.close()
             raise RuntimeError("start the owner to migrate this database before detailed inspection")
         return reader
@@ -418,7 +418,14 @@ class Store:
                     WHERE state NOT IN ('complete','failed','cancelled')""")
                 db.execute("INSERT INTO schema_version VALUES(21)")
             version = 21
-        if version != 21:
+        if version == 21:
+            from .autopilot import migrate
+
+            with self.tx() as db:
+                migrate(db)
+                db.execute("INSERT INTO schema_version VALUES(22)")
+            version = 22
+        if version != 22:
             raise RuntimeError("unsupported database schema version")
 
     def continue_action(self, action, *, request_id=None, feedback=None, _db=None):
