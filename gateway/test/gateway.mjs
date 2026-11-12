@@ -1935,6 +1935,26 @@ test('iteration metrics remain available through plot failure and recovery witho
   privatePath.revision = 4;
   privatePath.output_refs[0].path = '/private/research';
   assert.equal((await send(privatePath)).status, 422);
+
+  const agent = structuredClone(exp);
+  agent.revision = 4;
+  agent.jobs = [];
+  agent.snapshot = {
+    plan: { stages: [{ id: 'evaluate', executor: 'agent', result_file: 'metrics.json' }] },
+  };
+  assert.equal((await send(agent)).status, 200);
+  const wrongAgent = structuredClone(agent);
+  wrongAgent.revision = 5;
+  wrongAgent.partial_results.tasks.evaluate.intent_id = randomUUID();
+  assert.equal((await send(wrongAgent)).status, 422);
+  const wrongStage = structuredClone(agent);
+  wrongStage.revision = 5;
+  wrongStage.snapshot.plan.stages[0].id = 'other';
+  assert.equal((await send(wrongStage)).status, 422);
+  const slurmStage = structuredClone(agent);
+  slurmStage.revision = 5;
+  slurmStage.snapshot.plan.stages[0].executor = 'slurm';
+  assert.equal((await send(slurmStage)).status, 422);
 });
 
 test('contract 3 repair artifacts retain duplicate filenames with distinct immutable IDs', async () => {

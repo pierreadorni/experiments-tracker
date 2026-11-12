@@ -1093,11 +1093,37 @@ async function publish(env: Env, value: z.infer<typeof publishSchema>) {
     if (existing?.deleted_at && !exp.deleted_at && exp.revision > Number(existing.revision))
       throw new HttpError(409, 'Deleted experiments cannot be restored by a later projection');
     for (const [stage, task] of Object.entries(exp.partial_results?.tasks || {})) {
+      // Agent attempts are deliberately absent from the scheduler job list. A
+      // registered result output links their saved producer to the declared stage.
+      const agentPlan = z
+        .object({
+          plan: z.object({ stages: z.array(z.unknown()) }),
+        })
+        .passthrough()
+        .safeParse(exp.snapshot);
+      const agentStage =
+        agentPlan.success &&
+        agentPlan.data.plan.stages.some((entry) => {
+          const parsed = z
+            .object({ id: z.string(), executor: z.literal('agent'), result_file: z.string() })
+            .safeParse(entry);
+          return (
+            parsed.success &&
+            parsed.data.id === stage &&
+            exp.output_refs?.some(
+              (ref) =>
+                ref.intent_id === task.intent_id &&
+                ref.kind === 'file' &&
+                ref.name === parsed.data.result_file,
+            )
+          );
+        });
       if (
         !exp.jobs?.some(
           (job) =>
             job.intent_id === task.intent_id && job.stage_id === stage && job.state === 'complete',
-        )
+        ) &&
+        !(exp.contract?.execution_contract === 3 && agentStage)
       )
         throw new HttpError(422, 'Metric result must identify its successful producing job');
     }
