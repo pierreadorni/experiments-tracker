@@ -11,7 +11,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from .autopilot import Autopilot
 from .autopilot_models import ProjectDecision
-from .autopilot_tools import Compile
+from .autopilot_tools import MODELS, Compile
 from .codex_client import RpcRejected, TerminalTurnError
 from .maintenance import blocked
 from .store import Conflict, encode
@@ -24,6 +24,7 @@ class ResearchController:
         self.task = None
         self.active_id = None
         self.last_reconcile = {}
+        self.guidance_reconciled = False
 
     @property
     def busy(self):
@@ -63,6 +64,12 @@ class ResearchController:
                 ],
                 "startup_timeout_sec": 15,
                 "tool_timeout_sec": 120,
+                "required": True,
+                "enabled_tools": list(MODELS),
+                # Researcher activation grants this bounded bridge its authority.
+                # `never` rejects MCP tools that would otherwise prompt; it does
+                # not itself approve them. Other servers keep their own policy.
+                "tools": {name: {"approval_mode": "approve"} for name in MODELS},
             }
         }
 
@@ -182,6 +189,9 @@ class ResearchController:
 
     async def advance(self):
         wf = self.workflow
+        if not self.guidance_reconciled:
+            self.recover_guidance()
+            self.guidance_reconciled = True
         if self.task:
             if not self.task.done():
                 return
@@ -276,6 +286,65 @@ class ResearchController:
             self.task = asyncio.create_task(self.dispatch(row))
             return
 
+    def guidance_wait(self, db, row, decision):
+        """Retain a question even when the model could not call its input tool."""
+        if decision.outcome != "request_guidance":
+            return False
+        notice = self.workflow.store.one(
+            "SELECT n.* FROM autopilot_notices n JOIN autopilot_requests r ON r.request_id=n.id "
+            "WHERE n.run_id=? AND n.kind='researcher_input' AND r.author=? ORDER BY n.created_at DESC LIMIT 1",
+            (row["run_id"], "agent:" + row["id"]),
+        )
+        if not notice and row["pending_request"]:
+            pending = json.loads(row["pending_request"])
+            notice = self.workflow.store.one(
+                "SELECT * FROM autopilot_notices WHERE id=? AND run_id=?",
+                (pending["id"], row["run_id"]),
+            )
+        if notice:
+            return notice["resolved_at"] is None
+        identity = str(uuid5(NAMESPACE_URL, "autopilot-guidance:" + row["id"]))
+        db.execute(
+            "INSERT OR IGNORE INTO autopilot_notices VALUES(?,?,'researcher_input',?,NULL,?)",
+            (
+                identity,
+                row["run_id"],
+                "Autopilot needs your input.\n\n" + decision.summary + "\n\n" + decision.uncertainty,
+                time.time(),
+            ),
+        )
+        return (
+            self.workflow.store.one("SELECT resolved_at FROM autopilot_notices WHERE id=?", (identity,))[
+                "resolved_at"
+            ]
+            is None
+        )
+
+    def recover_guidance(self):
+        """Expose old terminal guidance results once without repeating inference."""
+        wf = self.workflow
+        for row in wf.store.rows(
+            "SELECT a.* FROM autopilot_actions a JOIN autopilot_runs r ON r.id=a.run_id "
+            "WHERE a.state='completed' AND a.result IS NOT NULL AND a.cursor=r.consumed_cursor "
+            "AND r.input_cursor=r.consumed_cursor AND a.control_revision=r.control_revision "
+            "AND r.status IN ('active','handoff_ready','handoff_incomplete') "
+            "AND NOT EXISTS (SELECT 1 FROM autopilot_actions newer WHERE newer.run_id=a.run_id "
+            "AND newer.created_at>a.created_at)"
+        ):
+            try:
+                decision = ProjectDecision.model_validate_json(row["result"])
+            except ValueError:
+                continue
+            with wf.store.tx() as db:
+                if self.guidance_wait(db, row, decision):
+                    run = self.service.run(run_id=row["run_id"])
+                    if run["hold_reason"] != "autopilot_researcher_input":
+                        db.execute(
+                            "UPDATE autopilot_runs SET hold_reason='autopilot_researcher_input' WHERE id=?",
+                            (run["id"],),
+                        )
+                        self.service.emit(db, run["id"], "guidance_wait_recovered", {"action_id": row["id"]})
+
     def complete(self, row):
         try:
             decision = ProjectDecision.model_validate_json(row["result"])
@@ -293,6 +362,11 @@ class ResearchController:
                     "UPDATE autopilot_runs SET central_argument=?,uncertainty=?,consumed_cursor=MAX(consumed_cursor,?) WHERE id=?",
                     (decision.central_argument, decision.uncertainty, row["cursor"], run["id"]),
                 )
+                if self.guidance_wait(db, row, decision):
+                    db.execute(
+                        "UPDATE autopilot_runs SET hold_reason='autopilot_researcher_input' WHERE id=?",
+                        (run["id"],),
+                    )
                 self.service.emit(db, run["id"], "research_decision", decision.model_dump())
             db.execute(
                 "UPDATE autopilot_actions SET state='completed',updated_at=? WHERE id=?",

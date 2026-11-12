@@ -10,7 +10,11 @@ if (!process.env.ET_TOKEN_FILE) throw new Error('Dedicated demo token file requi
 const token = (await readFile(process.env.ET_TOKEN_FILE, 'utf8')).trim();
 const output = process.env.ET_SCREENSHOTS || '/tmp/et-autopilot-screenshots';
 await mkdir(output, { recursive: true });
-const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
+const browser = await chromium.launch({
+  headless: true,
+  args: ['--no-sandbox'],
+  executablePath: process.env.ET_CHROMIUM_EXECUTABLE || undefined,
+});
 const page = await browser.newPage({
   viewport: { width: 1440, height: 1050 },
   reducedMotion: 'reduce',
@@ -109,6 +113,12 @@ try {
               kind: 'message',
               document: JSON.stringify({ text: payload.text }),
             });
+          if (payload.kind === 'answer') {
+            const notice = state.notices.find((n) => n.id === payload.input_id);
+            if (!notice) throw new Error('Answer did not reference the saved question');
+            notice.resolved_at = now;
+            state.run.hold_reason = null;
+          }
         }
         await route.fulfill({
           status: 202,
@@ -158,6 +168,34 @@ try {
   await panel.getByRole('button', { name: 'Activate Autopilot', exact: true }).click();
   await panel.getByRole('button', { name: 'Pause Autopilot', exact: true }).click();
   await panel.getByRole('button', { name: 'Resume Autopilot', exact: true }).click();
+  state = {
+    ...state,
+    run: { ...state.run, hold_reason: 'autopilot_researcher_input' },
+    notices: [
+      {
+        id: randomUUID(),
+        kind: 'researcher_input',
+        text: 'Synthetic recovered question: select a fixture source to continue.',
+        resolved_at: null,
+      },
+    ],
+  };
+  await panel.getByLabel('Message to Autopilot').fill('Synthetic refresh for recovered guidance.');
+  await panel.getByRole('button', { name: 'Send to Autopilot', exact: true }).click();
+  await panel.getByText('Waiting for your reply.', { exact: false }).waitFor();
+  for (const [name, width, height] of [
+    ['desktop', 1440, 1050],
+    ['mobile', 390, 844],
+  ]) {
+    await page.setViewportSize({ width, height });
+    await page.screenshot({ path: `${output}/guidance-${name}.png`, fullPage: true });
+    if (await page.evaluate(() => document.documentElement.scrollWidth > innerWidth))
+      throw new Error('Guidance view horizontal overflow');
+  }
+  await panel.getByRole('button', { name: 'Answer researcher question', exact: true }).click();
+  await panel.getByLabel('Your answer').fill('Use only the synthetic fixture source.');
+  await panel.getByRole('button', { name: 'Send to Autopilot', exact: true }).click();
+  await panel.getByText('Waiting for your reply.', { exact: false }).waitFor({ state: 'hidden' });
   state = {
     ...state,
     observed_at: now - 300,
@@ -241,6 +279,7 @@ try {
   if (errors.length) throw new Error(errors.join('\n'));
   if (
     !commands.some((c) => c.kind === 'activate') ||
+    !commands.some((c) => c.kind === 'answer') ||
     !commands.some((c) => c.kind === 'control' && c.control === 'defer')
   )
     throw new Error('Missing control paths');

@@ -524,7 +524,14 @@ class DemoAgent:
         }
 
     async def session(
-        self, thread_id, workspace, *, writable=False, model=None, approval_policy="on-request"
+        self,
+        thread_id,
+        workspace,
+        *,
+        writable=False,
+        model=None,
+        approval_policy="on-request",
+        runtime_config=None,
     ):
         return thread_id or f"demo-thread-{workspace.name}", "deterministic-demo"
 

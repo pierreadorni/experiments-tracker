@@ -224,3 +224,65 @@ test('attention push intents commit with project view and deduplicate unchanged 
   rows = await db.prepare("SELECT * FROM push_outbox WHERE id LIKE 'autopilot:%'").all();
   assert.equal(rows.results.length, 1);
 });
+
+test('recovered guidance survives stale publication and accepts one durable answer', async () => {
+  const notice = {
+    id: randomUUID(),
+    kind: 'researcher_input',
+    text: 'Synthetic recovered turn: tools could not save the question. Reply to continue.',
+    created_at: 1007,
+    resolved_at: null,
+  };
+  const waiting = view(7, [], {
+    run: {
+      id: run,
+      project_id: 'test-project',
+      revision: 7,
+      status: 'active',
+      hold_reason: 'autopilot_researcher_input',
+    },
+    notices: [notice],
+  });
+  assert.equal((await req('/api/executor/autopilot', 'POST', waiting, machine)).status, 200);
+  const stale = view(6);
+  stale.observed_at = waiting.observed_at + 1;
+  assert.equal((await req('/api/executor/autopilot', 'POST', stale, machine)).status, 200);
+  const saved = await (await req('/api/projects/test-project/autopilot')).json();
+  assert.equal(saved.run.hold_reason, 'autopilot_researcher_input');
+  assert.equal(saved.notices[0].id, notice.id);
+  assert.equal(
+    (await (await req('/api/inbox')).json()).entries.filter((n) => n.id === notice.id).length,
+    1,
+  );
+  const answer = {
+    request_id: randomUUID(),
+    kind: 'answer',
+    expected_revision: 7,
+    input_id: notice.id,
+    text: 'Continue the synthetic fixture after the software repair.',
+  };
+  for (let i = 0; i < 2; i++)
+    assert.equal(
+      (await req('/api/projects/test-project/autopilot/commands', 'POST', answer)).status,
+      202,
+    );
+  const commands = await (
+    await req('/api/executor/autopilot-commands', 'GET', undefined, machine)
+  ).json();
+  assert.equal(commands.commands.filter((c) => c.request_id === answer.request_id).length, 1);
+  assert.equal(
+    (
+      await req(
+        '/api/executor/autopilot',
+        'POST',
+        view(8, [], { notices: [{ ...notice, resolved_at: 1008 }] }),
+        machine,
+      )
+    ).status,
+    200,
+  );
+  assert.equal(
+    (await (await req('/api/inbox')).json()).entries.filter((n) => n.id === notice.id).length,
+    0,
+  );
+});

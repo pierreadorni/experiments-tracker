@@ -853,3 +853,106 @@ def test_synthetic_agent_evidence_cannot_become_a_research_claim(runtime, monkey
     service.store.update(eid, snapshot={"plan": {"synthetic_demo": True}})
     with pytest.raises(Conflict, match="synthetic"):
         service.validate_sources(run, [Source(kind="experiment", id=eid)])
+
+
+def test_project_bridge_explicitly_authorizes_only_its_declared_tools(runtime, monkeypatch):
+    from experimenttracker.autopilot_tools import MODELS
+
+    _, _, _, wf = runtime
+    monkeypatch.setattr(wf.controller, "server", object())
+    config = wf.research.config("synthetic-action")
+    assert list(config) == ["mcp_servers.experimenttracker_project"]
+    server = config["mcp_servers.experimenttracker_project"]
+    assert server["required"] is True
+    assert server["enabled_tools"] == list(MODELS)
+    assert server["tools"] == {name: {"approval_mode": "approve"} for name in MODELS}
+    assert server["args"][-1] == "synthetic-action"
+
+
+def guidance_result():
+    return {
+        "summary": "Synthetic fixture: project tools were rejected before a question could be saved.",
+        "central_argument": "No scientific claim in this software fixture.",
+        "uncertainty": "Which synthetic source should the fixture use?",
+        "outcome": "request_guidance",
+    }
+
+
+def finish_guidance(wf, identity):
+    wf.research.state(identity, "received", result=json.dumps(guidance_result()))
+    wf.research.complete(wf.store.one("SELECT * FROM autopilot_actions WHERE id=?", (identity,)))
+
+
+async def test_rejected_question_becomes_durable_visible_wait_and_answer_resumes(runtime, monkeypatch):
+    service, run = activated(runtime, monkeypatch)
+    store, _, agent, wf = runtime
+    identity = action(service, run)
+    finish_guidance(wf, identity)
+    saved = service.run("test-project")
+    assert saved["hold_reason"] == "autopilot_researcher_input"
+    assert saved["consumed_cursor"] == saved["input_cursor"]
+    notice = store.one("SELECT * FROM autopilot_notices WHERE run_id=?", (run["id"],))
+    assert guidance_result()["summary"] in notice["text"]
+    assert guidance_result()["uncertainty"] in notice["text"]
+    before = saved["revision"]
+    wf.research.recover_guidance()
+    wf.research.recover_guidance()
+    assert service.run("test-project")["revision"] == before
+    assert len(store.rows("SELECT * FROM autopilot_notices")) == 1
+    assert agent.calls == 0
+    command(service, "answer", input_id=notice["id"], text="Use only synthetic sources.")
+    assert service.run("test-project")["input_cursor"] > saved["consumed_cursor"]
+    assert store.one("SELECT resolved_at FROM autopilot_notices WHERE id=?", (notice["id"],))["resolved_at"]
+    wf.agent_ready = True
+    wf.gate.update(await agent.quota())
+    agent.resolved_model = "demo"
+    agent.models = [{"id": "demo", "reasoning_efforts": ["medium"], "default_effort": "medium"}]
+
+    async def begin(thread, prompt, schema, **kwargs):
+        agent.calls += 1
+        assert "Use only synthetic sources." in prompt
+        agent.results[(thread, "synthetic-continuation")] = {**guidance_result(), "outcome": "wait"}
+        return "synthetic-continuation"
+
+    monkeypatch.setattr(agent, "begin", begin)
+    await wf.research.advance()
+    await wf.research.task
+    await wf.research.advance()
+    assert agent.calls == 1
+    assert service.run("test-project")["hold_reason"] is None
+    assert store.one("SELECT state FROM autopilot_actions WHERE id=?", (identity,))["state"] == "completed"
+    await wf.research.close()
+
+
+@pytest.mark.parametrize("resolved", [False, True])
+def test_guidance_completion_preserves_existing_question_without_duplicate(runtime, monkeypatch, resolved):
+    service, run = activated(runtime, monkeypatch)
+    identity = action(service, run)
+    receipt = tool(service, identity, "request_researcher_input", question="Synthetic question?")
+    if resolved:
+        command(service, "answer", input_id=receipt["request_id"], text="Synthetic answer.")
+    finish_guidance(runtime[3], identity)
+    assert len(service.store.rows("SELECT * FROM autopilot_notices")) == 1
+    assert service.run("test-project")["hold_reason"] == (None if resolved else "autopilot_researcher_input")
+
+
+def test_startup_recovers_old_guidance_without_replaying_turn_and_respects_new_input(runtime, monkeypatch):
+    service, run = activated(runtime, monkeypatch)
+    identity = action(service, run)
+    wf = runtime[3]
+    wf.research.state(identity, "completed", result=json.dumps(guidance_result()))
+    with service.store.tx() as db:
+        db.execute("UPDATE autopilot_runs SET consumed_cursor=input_cursor WHERE id=?", (run["id"],))
+    wf.research.recover_guidance()
+    wf.research.recover_guidance()
+    assert len(service.store.rows("SELECT * FROM autopilot_notices")) == 1
+    assert service.run("test-project")["hold_reason"] == "autopilot_researcher_input"
+    assert runtime[2].calls == 0
+    assert (
+        service.store.one("SELECT state FROM autopilot_actions WHERE id=?", (identity,))["state"]
+        == "completed"
+    )
+    command(service, "message", text="New synthetic guidance supersedes the old turn.")
+    revision = service.run("test-project")["revision"]
+    wf.research.recover_guidance()
+    assert service.run("test-project")["revision"] == revision

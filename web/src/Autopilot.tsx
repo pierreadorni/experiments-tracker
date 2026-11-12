@@ -95,7 +95,8 @@ type View = {
     };
   }[];
 };
-const label = (value: string) => value.replaceAll('_', ' ');
+const label = (value: string) =>
+  value === 'autopilot_researcher_input' ? 'Waiting for your reply' : value.replaceAll('_', ' ');
 const hours = (seconds: number) =>
   new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(seconds / 3600);
 const date = (seconds: number, zone?: string) => {
@@ -603,12 +604,17 @@ export function Autopilot({
           </div>
           {run.foundation !== 'ready' && (
             <p className="notice">
-              Foundation {label(run.foundation)}
-              {run.hold_reason ? ' due to ' + label(run.hold_reason) : ''}. The first admitted
-              awakening completes initial literature and protocol work before main experiments.
+              Foundation {label(run.foundation)}. Initial literature and protocol work must finish
+              before main experiments.
             </p>
           )}
-          {run.hold_reason && <p className="notice warning">{label(run.hold_reason)}</p>}
+          {run.hold_reason && (
+            <p className="notice warning">
+              {label(run.hold_reason)}
+              {run.hold_reason === 'autopilot_researcher_input' &&
+                '. Review the pending question below and reply to continue.'}
+            </p>
+          )}
           {run.central_argument && <p className="autopilot-argument">{run.central_argument}</p>}
           {run.uncertainty && (
             <p>
