@@ -11,7 +11,7 @@ confirmation after the backup.
 
 The previously running binary cannot process maintenance commands. Activate this
 maintenance-enabled executor once using the existing authorized restart procedure
-in `runbook.md`, with its protected online backup and identity comparisons. Schema
+in [operations](operations.md), with its protected online backup and identity comparisons. Schema
 21 adds software release and maintenance records; saved scientific contracts are
 unchanged. Publish the backward-compatible gateway/UI and append-only D1 migration
 `0008_executor_maintenance.sql` to the exact private Site in your ignored `.local/installation/site.json` before
