@@ -14,7 +14,7 @@ class AutopilotClient:
     def __init__(self, socket_path: Path, action_id: str):
         self.socket_path, self.action_id = socket_path, action_id
 
-    def call(self, name: str, **arguments) -> dict:
+    def call(self, name: str, /, **arguments) -> dict:
         with socket.socket(socket.AF_UNIX) as connection:
             connection.settimeout(120)
             connection.connect(str(self.socket_path))
