@@ -468,6 +468,78 @@ class Store:
             )
             return dict(db.execute("SELECT * FROM agent_actions WHERE id=?", (identity,)).fetchone())
 
+    def _consume_steering(self, db, eid, *, request_id=None):
+        """Attach saved later guidance to an admitted recovery, in its transaction."""
+        rows = db.execute(
+            "SELECT request_id,text FROM steering WHERE experiment_id=? AND state='pending' "
+            "AND (mode='later' OR request_id=?) ORDER BY created_at,rowid",
+            (eid, request_id),
+        ).fetchall()
+        if not rows:
+            return None
+        db.executemany(
+            "UPDATE steering SET state='applied',applied_at=? WHERE request_id=?",
+            [(time.time(), row["request_id"]) for row in rows],
+        )
+        self.emit(db, eid, "steering_applied", {"request_ids": [row["request_id"] for row in rows]})
+        return "\n\n".join(row["text"] for row in rows)
+
+    def _resume_blocked(self, db, exp, request_id, feedback, *, resolve_request=False):
+        """Continue only a settled blocked phase; retain the original turn and attempt."""
+        eid = exp["id"]
+        if (
+            exp["phase"] in ("complete", "cancelled")
+            or (exp["pending_request"] and not resolve_request)
+            or db.execute(
+                "SELECT 1 FROM agent_actions WHERE experiment_id=? "
+                "AND state IN ('dispatching','running','uncertain')",
+                (eid,),
+            ).fetchone()
+            or db.execute(
+                "SELECT 1 FROM steering WHERE experiment_id=? AND mode='restart' "
+                "AND state IN ('pending','cancelling')",
+                (eid,),
+            ).fetchone()
+        ):
+            raise Conflict("resolve pending or uncertain work before resuming the blocked phase")
+        implementation = exp["hold_reason"] == "implementation_blocked"
+        saved = db.execute(
+            "SELECT a.* FROM agent_actions a JOIN stages s ON s.experiment_id=a.experiment_id "
+            "AND s.id=CASE WHEN a.phase='prepare' THEN 'prepare' ELSE substr(a.phase,7) END "
+            "WHERE a.experiment_id=? "
+            "AND (a.state='failed' OR (a.state='completed' "
+            "AND json_extract(COALESCE(a.result,'{}'),'$.outcome') IN ('blocked','failed'))) "
+            "AND NOT EXISTS (SELECT 1 FROM agent_actions child WHERE child.previous_action_id=a.id) AND "
+            + (
+                "a.phase='prepare' "
+                if implementation
+                else "a.phase LIKE 'agent:%' AND a.evidence_revision=? AND s.state IN ('pending','failed') "
+            )
+            + "ORDER BY a.rowid DESC LIMIT 1",
+            (eid,) if implementation else (eid, exp["evidence_revision"]),
+        ).fetchone()
+        if (
+            not saved
+            or saved["state"] not in ("completed", "failed")
+            or (saved["state"] == "failed" and saved["attempts"] and not saved["turn_id"])
+        ):
+            raise Conflict("resumption requires a known settled blocked action")
+        action = self.continue_action(dict(saved), request_id=request_id, feedback=feedback, _db=db)
+        db.execute(
+            "UPDATE experiments SET phase=?,hold_reason=NULL,error=NULL,pending_request=NULL WHERE id=?",
+            ("preparing" if implementation else "training", eid),
+        )
+        db.execute(
+            "UPDATE stages SET state=?,error=NULL,updated_at=? WHERE experiment_id=? AND id=?",
+            (
+                "pending" if implementation else "running",
+                time.time(),
+                eid,
+                "prepare" if implementation else saved["phase"].removeprefix("agent:"),
+            ),
+        )
+        return action
+
     @contextlib.contextmanager
     def tx(self):
         with self.lock:
@@ -1048,6 +1120,9 @@ class Store:
                     )
                 elif kind == "action":
                     action = payload["action"]
+                    if action in ("retry_agent", "repair_implementation"):
+                        guidance = self._consume_steering(db, eid)
+                        feedback = "\n\n".join(filter(None, (exp["error"], guidance))) or None
                     if action == "cancel":
                         self.cancel_experiment(db, eid, now)
                     elif action == "repair_implementation":
@@ -1088,76 +1163,20 @@ class Store:
                             raise Conflict("the saved agent producer is unavailable for repair")
                         db.execute(
                             "UPDATE jobs SET state='failed',error=?,ended_at=? WHERE intent_id=?",
-                            (exp["error"], now, job["intent_id"]),
+                            (feedback, now, job["intent_id"]),
                         )
                         contract = exp["contract"]
                         contract["manual_repair_requests"] = contract.get("manual_repair_requests", 0) + 1
                         db.execute(
-                            "UPDATE experiments SET contract=?,phase='preparing',hold_reason='automatic_repair_pending' WHERE id=?",
-                            (encode(contract), eid),
-                        )
-                    elif action == "retry_agent" and exp["hold_reason"] == "implementation_blocked":
-                        saved = db.execute(
-                            "SELECT * FROM agent_actions WHERE experiment_id=? AND phase='prepare' ORDER BY rowid DESC LIMIT 1",
-                            (eid,),
-                        ).fetchone()
-                        if (
-                            not saved
-                            or saved["state"] != "completed"
-                            or exp["pending_request"]
-                            or db.execute(
-                                "SELECT 1 FROM agent_actions WHERE experiment_id=? AND state IN ('dispatching','running','uncertain')",
-                                (eid,),
-                            ).fetchone()
-                            or db.execute(
-                                "SELECT 1 FROM steering WHERE experiment_id=? AND state IN ('pending','cancelling')",
-                                (eid,),
-                            ).fetchone()
-                        ):
-                            raise Conflict("resolve pending or uncertain work before retrying implementation")
-                        self.continue_action(
-                            dict(saved), request_id=request_id, feedback=exp["error"], _db=db
-                        )
-                        db.execute(
-                            "UPDATE experiments SET phase='preparing',hold_reason='agent_continuation',error=NULL WHERE id=?",
-                            (eid,),
-                        )
-                        db.execute(
-                            "UPDATE stages SET state='pending',error=NULL,updated_at=? WHERE experiment_id=? AND id='prepare'",
-                            (now, eid),
+                            "UPDATE experiments SET contract=?,phase='preparing',hold_reason='automatic_repair_pending',error=? WHERE id=?",
+                            (encode(contract), feedback, eid),
                         )
                     elif action == "retry_agent" and exp["hold_reason"] in (
+                        "implementation_blocked",
                         "agent_stage_blocked",
                         "agent_stage_failed",
                     ):
-                        saved = db.execute(
-                            "SELECT * FROM agent_actions WHERE experiment_id=? AND phase LIKE 'agent:%' ORDER BY rowid DESC LIMIT 1",
-                            (eid,),
-                        ).fetchone()
-                        if (
-                            not saved
-                            or exp["pending_request"]
-                            or db.execute(
-                                "SELECT 1 FROM agent_actions WHERE experiment_id=? AND state IN ('dispatching','running','uncertain')",
-                                (eid,),
-                            ).fetchone()
-                            or db.execute(
-                                "SELECT 1 FROM steering WHERE experiment_id=? AND state IN ('pending','cancelling')",
-                                (eid,),
-                            ).fetchone()
-                        ):
-                            raise Conflict("resolve pending or uncertain work before retrying the stage")
-                        self.continue_action(
-                            dict(saved), request_id=request_id, feedback=exp["error"], _db=db
-                        )
-                        db.execute(
-                            "UPDATE experiments SET phase='training',hold_reason='agent_continuation',error=NULL WHERE id=?",
-                            (eid,),
-                        )
-                        db.execute(
-                            "UPDATE stages SET state='running',error=NULL,updated_at=? WHERE experiment_id=? AND id=?",
-                            (now, eid, saved["phase"].removeprefix("agent:")),
-                        )
+                        self._resume_blocked(db, exp, request_id, feedback)
                     elif action == "retry_agent":
                         session_failure = db.execute(
                             "SELECT * FROM agent_actions WHERE experiment_id=? AND state='failed' "
@@ -1185,8 +1204,8 @@ class Store:
                                     "resolve pending or uncertain work before retrying the session"
                                 )
                             db.execute(
-                                "UPDATE agent_actions SET state='pending',error=NULL,updated_at=? WHERE id=?",
-                                (now, session_failure["id"]),
+                                "UPDATE agent_actions SET state='pending',error=?,updated_at=? WHERE id=?",
+                                (guidance, now, session_failure["id"]),
                             )
                             db.execute(
                                 "UPDATE experiments SET hold_reason=NULL,error=NULL WHERE id=?", (eid,)
@@ -1235,7 +1254,12 @@ class Store:
                                 raise Conflict(
                                     "retry requires a known terminal agent outcome without unresolved work"
                                 )
-                            self.continue_action(dict(failed), request_id=request_id, _db=db)
+                            self.continue_action(
+                                dict(failed),
+                                request_id=request_id,
+                                feedback="\n\n".join(filter(None, (failed["error"], guidance))) or None,
+                                _db=db,
+                            )
                             if exp["hold_reason"] == "agent_budget_exhausted":
                                 contract = exp["contract"]
                                 contract["manual_agent_turn_requests"] = (
@@ -1282,8 +1306,8 @@ class Store:
                             contract = exp["contract"]
                             contract["manual_repair_requests"] = contract.get("manual_repair_requests", 0) + 1
                             db.execute(
-                                "UPDATE experiments SET contract=?,phase='preparing',hold_reason='automatic_repair_pending' WHERE id=?",
-                                (encode(contract), eid),
+                                "UPDATE experiments SET contract=?,phase='preparing',hold_reason='automatic_repair_pending',error=? WHERE id=?",
+                                (encode(contract), feedback, eid),
                             )
                     elif action == "summarize_title":
                         if db.execute(
@@ -1317,15 +1341,54 @@ class Store:
                     if (
                         not pending
                         or pending["id"] != payload["pending_request_id"]
-                        or pending.get("expired")
+                        or (
+                            pending.get("expired")
+                            and exp["hold_reason"]
+                            not in (
+                                "implementation_blocked",
+                                "agent_stage_blocked",
+                                "agent_stage_failed",
+                            )
+                        )
                     ):
                         raise Conflict("stale or mismatched pending request")
                     try:
                         request_answer(pending, payload["answer"])
                     except ValueError as exc:
                         raise Conflict(str(exc)) from None
-                    pending["answer"] = payload["answer"]
-                    db.execute("UPDATE experiments SET pending_request=? WHERE id=?", (encode(pending), eid))
+                    if exp["hold_reason"] in (
+                        "implementation_blocked",
+                        "agent_stage_blocked",
+                        "agent_stage_failed",
+                    ):
+                        # A settled turn has no live RPC to answer, even if its request survived restart.
+                        db.execute(
+                            "INSERT INTO steering(request_id,experiment_id,text,created_at,mode) VALUES(?,?,?,?,'later')",
+                            (request_id, eid, payload["answer"], now),
+                        )
+                        guidance = self._consume_steering(db, eid)
+                        resumed = self._resume_blocked(
+                            db,
+                            exp,
+                            request_id,
+                            guidance,
+                            resolve_request=True,
+                        )
+                        self.emit(
+                            db,
+                            eid,
+                            "steering_resumed_blocked_work",
+                            {
+                                "request_id": request_id,
+                                "action_id": resumed["id"],
+                                "source": "answer",
+                            },
+                        )
+                    else:
+                        pending["answer"] = payload["answer"]
+                        db.execute(
+                            "UPDATE experiments SET pending_request=? WHERE id=?", (encode(pending), eid)
+                        )
                 elif kind == "plan_review":
                     review = exp["plan_review"]
                     if not review or review.get("state") != "awaiting_review":
@@ -1376,8 +1439,13 @@ class Store:
                     if not text:
                         raise Conflict("steering text is required")
                     mode = payload.get("mode", "later")
+                    blocked_work = exp["hold_reason"] in (
+                        "implementation_blocked",
+                        "agent_stage_blocked",
+                        "agent_stage_failed",
+                    )
                     if exp["phase"] in ("complete", "failed", "cancelled") and not (
-                        exp["phase"] == "failed" and mode == "restart"
+                        exp["phase"] == "failed" and (mode == "restart" or blocked_work)
                     ):
                         raise Conflict("steering requires an active experiment or a restart of a failed run")
                     if db.execute(
@@ -1399,7 +1467,26 @@ class Store:
                         "INSERT INTO steering(request_id,experiment_id,text,created_at,mode) VALUES(?,?,?,?,?)",
                         (request_id, eid, text, now, mode),
                     )
-                    if mode == "restart":
+                    if blocked_work:
+                        guidance = self._consume_steering(db, eid, request_id=request_id)
+                        resumed = self._resume_blocked(
+                            db,
+                            exp,
+                            request_id,
+                            guidance,
+                            resolve_request=True,
+                        )
+                        self.emit(
+                            db,
+                            eid,
+                            "steering_resumed_blocked_work",
+                            {
+                                "request_id": request_id,
+                                "action_id": resumed["id"],
+                                "source": "steer",
+                            },
+                        )
+                    elif mode == "restart":
                         db.execute(
                             "UPDATE experiments SET pause_compute=1,hold_reason='steering_restart' WHERE id=?",
                             (eid,),

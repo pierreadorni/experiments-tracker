@@ -42,7 +42,7 @@ Briefing rules and the brief template are in [README.md](README.md).
 - **Tests:** new `tests/test_tick_error_policy.py` (monkeypatch `Workflow.advance`);
   `uv run --locked pytest -q tests/test_tick_error_policy.py tests/test_workflow.py tests/test_generic.py`.
 
-### [ ] T0.2 Steering and answers resume blocked work (C2 interim) · F+R · M
+### [x] T0.2 Steering and answers resume blocked work (C2 interim) · F+R · M
 - **Files:** `store.py` (`steer` command, around lines 1373–1405; `retry_agent` and
   implementation-repair action handling, around lines 1040–1290, the
   `SELECT 1 FROM steering ... state IN ('pending','cancelling')` guards);
@@ -330,4 +330,6 @@ Record completed tasks here: `date · task · commit · notes`.
 
 2026-11-12 · T0.1 · bd826be · Explicit terminal failures, per-experiment internal-error backoff and deduplicated notices; 76 targeted (including watchdog integration) and all 491 Python tests pass, with Ruff checks. The commit message records the ValueError audit.
 
-2026-11-12 · T0.6 · this commit · Shared wall-bounded callback waits replace fixed polling budgets; quota-interruption restart regression restored with continuation and saved-identity assertions. All 499 Python tests pass three consecutive times and with three other full suites running concurrently (separate temporary roots). Node 24 make check passes, including 29 web and 41 gateway tests. First batch complete; synthetic demo and doctor pass, with no live activation.
+2026-11-12 · T0.6 · 99c80ec · Shared wall-bounded callback waits replace fixed polling budgets; quota-interruption restart regression restored with continuation and saved-identity assertions. All 499 Python tests pass three consecutive times and with three other full suites running concurrently (separate temporary roots). Node 24 make check passes, including 29 web and 41 gateway tests. First batch complete; synthetic demo and doctor pass, with no live activation.
+
+2026-11-12 · T0.2 · this commit · Steering in either mode and validated answers transactionally continue settled blocked work; manual retries and implementation repairs consume pending later guidance. Saved turns/attempts, active and uncertain work, owner pauses, and normal restart behavior are preserved. Rollback, duplicate commands, expired settled questions and nested Autopilot commands covered; 126 targeted and all 530 Python tests pass, with Ruff checks on Node 24. No live activation.

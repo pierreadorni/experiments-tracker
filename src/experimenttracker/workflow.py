@@ -1151,6 +1151,7 @@ class Workflow:
         if exp["phase"] == "cancelled" or exp["hold_reason"] in (
             "automatic_repair_pending",
             "agent_stage_blocked",
+            "agent_stage_failed",
             "implementation_blocked",
         ):
             return

@@ -157,7 +157,58 @@ async def test_missing_output_corrects_only_agent_stage_in_same_attempt(runtime)
     await wf.close()
 
 
-async def test_blocked_stage_holds_dependencies_and_resumes_exact_attempt(runtime):
+GUIDANCE = "The missing packages are ready; continue the approved check."
+
+
+def resume_with_feedback(store, eid, trigger):
+    prior = store.one("SELECT * FROM agent_actions WHERE experiment_id=? ORDER BY rowid DESC LIMIT 1", (eid,))
+    request = str(uuid4())
+    if trigger == "answer":
+        pending = {
+            "id": "settled-question",
+            "rpc_id": 17,
+            "expired": True,
+            "method": "item/tool/requestUserInput",
+            "params": {"questions": [{"id": "packages", "question": "Are the packages ready?"}]},
+        }
+        store.update(eid, pending_request=pending)
+        kind, payload = "answer", {"pending_request_id": pending["id"], "answer": GUIDANCE}
+    elif trigger == "retry_agent":
+        kind, payload = "action", {"action": trigger}
+    else:
+        kind, payload = "steer", {"text": GUIDANCE, "mode": trigger}
+    result = store.command(request, kind, payload, eid=eid)
+    assert store.command(request, kind, payload, eid=eid) == result
+    actions = store.rows(
+        "SELECT * FROM agent_actions WHERE experiment_id=? AND phase=? ORDER BY rowid", (eid, prior["phase"])
+    )
+    assert len(actions) == 2 and actions[-1]["state"] == "pending"
+    assert actions[-1]["previous_action_id"] == prior["id"]
+    assert actions[-1]["thread_id"] == prior["thread_id"]
+    assert actions[-1]["evidence_revision"] == prior["evidence_revision"]
+    assert GUIDANCE in actions[-1]["error"]
+    assert store.one("SELECT * FROM agent_actions WHERE id=?", (prior["id"],)) == prior
+    assert store.experiment(eid)["hold_reason"] is None
+    assert store.experiment(eid)["pending_request"] is None
+    assert all(
+        row["state"] == "applied"
+        for row in store.rows("SELECT state FROM steering WHERE experiment_id=?", (eid,))
+    )
+    if trigger != "retry_agent":
+        assert (
+            len(
+                store.rows(
+                    "SELECT 1 FROM events WHERE experiment_id=? AND kind='steering_resumed_blocked_work'",
+                    (eid,),
+                )
+            )
+            == 1
+        )
+
+
+@pytest.mark.parametrize("trigger", ["retry_agent", "later", "restart", "answer"])
+@pytest.mark.parametrize("outcome", ["blocked", "failed"])
+async def test_blocked_stage_holds_dependencies_and_resumes_exact_attempt(runtime, trigger, outcome):
     class BlockedAgent(MixedAgent):
         async def begin(self, thread_id, prompt, schema, *, workspace=None, **kwargs):
             payload = json.loads(prompt.split("\nPAYLOAD:\n", 1)[1])
@@ -165,27 +216,32 @@ async def test_blocked_stage_holds_dependencies_and_resumes_exact_attempt(runtim
                 self.check_calls += 1
                 self.roots.append(workspace)
                 (workspace / "ready.json").write_text('{"ready": false}')
+                self.store.command(uuid4(), "steer", {"text": GUIDANCE, "mode": "later"}, eid=self.eid)
                 self.results[(thread_id, "blocked")] = {
-                    "outcome": "blocked",
+                    "outcome": outcome,
                     "summary": "Install the missing scientific packages.",
                 }
                 return "blocked"
+            if payload["phase"].startswith("agent:"):
+                assert GUIDANCE in prompt
             return await super().begin(thread_id, prompt, schema, workspace=workspace, **kwargs)
 
     store, scheduler, agent, wf, eid = await setup_mixed(runtime, BlockedAgent())
-    await until(wf, store, eid, lambda e: e["hold_reason"] == "agent_stage_blocked")
+    await until(wf, store, eid, lambda e: e["hold_reason"] == "agent_stage_" + outcome)
     job = iteration.agent_job(wf, store.experiment(eid), "agent:model_check")
     assert job["state"] == "agent" and scheduler.submissions == 0
-    assert (
-        store.one("SELECT state FROM stages WHERE experiment_id=? AND id='model_check'", (eid,))["state"]
-        == "pending"
-    )
+    assert store.one("SELECT state FROM stages WHERE experiment_id=? AND id='model_check'", (eid,))[
+        "state"
+    ] == ("pending" if outcome == "blocked" else "failed")
     for _ in range(3):
         await wf.tick()
     assert agent.check_calls == 1 and scheduler.submissions == 0
-    request = uuid4()
-    store.command(request, "action", {"action": "retry_agent"}, eid=eid)
-    store.command(request, "action", {"action": "retry_agent"}, eid=eid)
+    store.update(eid, pause_agent=1)
+    resume_with_feedback(store, eid, trigger)
+    await wf.tick()
+    assert store.experiment(eid)["pause_agent"]
+    assert agent.check_calls == 1 and scheduler.submissions == 0
+    store.update(eid, pause_agent=0)
     await until(wf, store, eid, lambda e: e["phase"] == "complete")
     assert len(set(agent.roots)) == 1 and scheduler.submissions == 3
     actions = store.rows("SELECT * FROM agent_actions WHERE phase='agent:model_check' ORDER BY rowid")
@@ -193,15 +249,19 @@ async def test_blocked_stage_holds_dependencies_and_resumes_exact_attempt(runtim
     await wf.close()
 
 
-async def test_blocked_implementation_is_not_accepted_and_retry_resumes_it(runtime):
+@pytest.mark.parametrize("trigger", ["retry_agent", "later", "restart", "answer"])
+async def test_blocked_implementation_is_not_accepted_and_retry_resumes_it(runtime, trigger):
     class BlockedImplementation(MixedAgent):
         blocked_once = False
 
         async def begin(self, thread_id, prompt, schema, *, workspace=None, **kwargs):
             payload = json.loads(prompt.split("\nPAYLOAD:\n", 1)[1])
+            if payload["phase"] == "prepare" and self.blocked_once:
+                assert GUIDANCE in prompt
             turn = await super().begin(thread_id, prompt, schema, workspace=workspace, **kwargs)
             if payload["phase"] == "prepare" and not self.blocked_once:
                 self.blocked_once = True
+                self.store.command(uuid4(), "steer", {"text": GUIDANCE, "mode": "later"}, eid=self.eid)
                 self.results[(thread_id, turn)].update(
                     outcome="blocked", summary="PyTorch is unavailable.", files=[], stages=[]
                 )
@@ -217,9 +277,7 @@ async def test_blocked_implementation_is_not_accepted_and_retry_resumes_it(runti
         store.one("SELECT state FROM stages WHERE experiment_id=? AND id='prepare'", (eid,))["state"]
         == "pending"
     )
-    request = uuid4()
-    store.command(request, "action", {"action": "retry_agent"}, eid=eid)
-    store.command(request, "action", {"action": "retry_agent"}, eid=eid)
+    resume_with_feedback(store, eid, trigger)
     await until(wf, store, eid, lambda e: e["phase"] == "complete")
     actions = store.rows(
         "SELECT * FROM agent_actions WHERE experiment_id=? AND phase='prepare' ORDER BY rowid", (eid,)
@@ -233,6 +291,7 @@ async def test_repair_implementation_requires_settled_agent_and_journals_request
         async def begin(self, thread_id, prompt, schema, *, workspace=None, **kwargs):
             payload = json.loads(prompt.split("\nPAYLOAD:\n", 1)[1])
             if payload["phase"].startswith("agent:"):
+                self.store.command(uuid4(), "steer", {"text": GUIDANCE, "mode": "later"}, eid=self.eid)
                 self.results[(thread_id, "blocked")] = {"outcome": "blocked", "summary": "Missing graph."}
                 return "blocked"
             return await super().begin(thread_id, prompt, schema, workspace=workspace, **kwargs)
@@ -245,11 +304,14 @@ async def test_repair_implementation_requires_settled_agent_and_journals_request
     store.db.execute("UPDATE agent_actions SET state='uncertain' WHERE id=?", (action["id"],))
     with pytest.raises(Conflict, match="settled agent stage"):
         store.command(uuid4(), "action", {"action": "repair_implementation"}, eid=eid)
+    assert store.one("SELECT state FROM steering WHERE experiment_id=?", (eid,))["state"] == "pending"
     store.db.execute("UPDATE agent_actions SET state='completed' WHERE id=?", (action["id"],))
     request = uuid4()
     store.command(request, "action", {"action": "repair_implementation"}, eid=eid)
     store.command(request, "action", {"action": "repair_implementation"}, eid=eid)
     assert store.experiment(eid)["hold_reason"] == "automatic_repair_pending"
+    assert GUIDANCE in store.experiment(eid)["error"]
+    assert store.one("SELECT state FROM steering WHERE experiment_id=?", (eid,))["state"] == "applied"
     assert store.one("SELECT state FROM jobs WHERE experiment_id=?", (eid,))["state"] == "failed"
     assert scheduler.submissions == 0
     wf.config.mode = "live"  # Exercise the production repair policy with the synthetic fixture.
@@ -258,6 +320,10 @@ async def test_repair_implementation_requires_settled_agent_and_journals_request
     assert exp["evidence_revision"] == 2
     assert exp["contract"]["early_repair"]["state"] == "preparing"
     assert exp["contract"]["early_repair"]["failed_intents"]
+    assert GUIDANCE in exp["contract"]["auto_repair"]["error"]
+    prompt = await asyncio.to_thread(wf.prompt, exp, "prepare")
+    repair_context = Path(json.loads(prompt.split("\nPAYLOAD:\n", 1)[1])["repair_context"]["path"])
+    assert GUIDANCE in await asyncio.to_thread(repair_context.read_text)
     assert scheduler.submissions == 0
     await wf.close()
 
