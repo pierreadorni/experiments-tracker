@@ -123,9 +123,17 @@ of older events sends identity and revision only.
   event's revision, it sends `{schema_version, event_id, experiment: projection}`.
   If not, it skips; the newer event will be sent.
 - Retention (`retention.py`) only matters for legacy rows; leave the code in place
-  for old databases.
+  for old databases. Reference-only `{}` rows have no snapshot to validate or prune.
 - The local API already reads projections directly; check `api.py` for any reader
   of `outbox.payload`.
+
+Artifact upload also used the latest acknowledged snapshot as proof of metadata
+registration. SQLite schema 23 adds compact `artifact_registrations` receipts
+(artifact ID, event ID, transport SHA-256 and size), committed with the exact
+publication acknowledgement. Upload checks these receipts or a legacy acknowledged
+snapshot, so progress during an in-flight publication and publisher restarts do not
+allow unregistered artifacts to upload. No gateway schema or protocol change is
+needed.
 
 Effects: less write volume, faster transactions, and no database growth from
 projections.

@@ -21,6 +21,9 @@ def protected(db, eid):
     if current and not any(r[1] == current for r in rows):
         raise ValueError("missing current outbox snapshot")
     for identity, revision, payload in rows:
+        # Reference-only rows contain no legacy snapshot to validate or prune.
+        if payload == "{}":
+            continue
         message = json.loads(payload or "null")
         if (
             not isinstance(message, dict)

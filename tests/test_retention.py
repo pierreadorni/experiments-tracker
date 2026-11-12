@@ -4,14 +4,25 @@ from uuid import uuid4
 import pytest
 
 from experimenttracker.retention import compact_snapshot, compare, prune_batch, verify
+from experimenttracker.store import encode
 
 
 def history(store):
     eid = store.command(
         uuid4(), "create", {"brief": "Synthetic retention fixture", "recipe_id": "toy_compare_v1"}
     )["experiment_id"]
+    # Legacy owners persisted a complete view per event. Keep these fixtures
+    # explicit now that emit writes references only.
     for i in range(6):
         store.update(eid, error=str(i))
+    with store.tx() as db:
+        for event in store.rows("SELECT id,revision FROM events WHERE experiment_id=?", (eid,)):
+            view = store.projection(eid)
+            view["revision"] = event["revision"]
+            db.execute(
+                "UPDATE outbox SET payload=? WHERE id=?",
+                (encode({"event_id": event["id"], "experiment": view}), event["id"]),
+            )
     rows = store.rows(
         "SELECT o.*,e.revision FROM outbox o JOIN events e ON e.id=o.id WHERE e.experiment_id=? ORDER BY e.seq",
         (eid,),
@@ -61,7 +72,7 @@ def test_no_ack_and_corrupt_receipt_abort_without_pruning(runtime):
     assert sweep(store) == 0
     with store.tx() as db:
         db.execute("UPDATE outbox SET delivered_at=1")
-        db.execute("UPDATE outbox SET payload='{}' WHERE id=?", (rows[-1]["id"],))
+        db.execute("UPDATE outbox SET payload=? WHERE id=?", ('{"invalid":true}', rows[-1]["id"]))
     with pytest.raises(ValueError, match="protected"):
         prune_batch(store)
     assert (

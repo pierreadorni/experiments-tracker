@@ -84,7 +84,7 @@ Briefing rules and the brief template are in [README.md](README.md).
   `plan_review`, `quota_hold` or `agent_paused` get none.
 - **Tests:** new `tests/test_watchdog.py` (direct store setup; monkeypatch time).
 
-### [ ] T0.4 Outbox by reference (C3) · F+R · M
+### [x] T0.4 Outbox by reference (C3) · F+R · M
 - **Files:** `store.py` (`emit`, around line 657); `gateway_client.py`
   (`publish_outbox`, around line 151); check readers of `outbox.payload` with
   `rg "outbox" src tests`; `retention.py` stays, legacy only.
@@ -333,3 +333,5 @@ Record completed tasks here: `date · task · commit · notes`.
 2026-11-12 · T0.6 · 99c80ec · Shared wall-bounded callback waits replace fixed polling budgets; quota-interruption restart regression restored with continuation and saved-identity assertions. All 499 Python tests pass three consecutive times and with three other full suites running concurrently (separate temporary roots). Node 24 make check passes, including 29 web and 41 gateway tests. First batch complete; synthetic demo and doctor pass, with no live activation.
 
 2026-11-12 · T0.2 · this commit · Steering in either mode and validated answers transactionally continue settled blocked work; manual retries and implementation repairs consume pending later guidance. Saved turns/attempts, active and uncertain work, owner pauses, and normal restart behavior are preserved. Rollback, duplicate commands, expired settled questions and nested Autopilot commands covered; 126 targeted and all 530 Python tests pass, with Ruff checks on Node 24. No live activation.
+
+2026-11-12 · T0.4 · this commit · Implemented and reviewed by the coordinator at the owner's request. Events store `{}` references; publication builds a consistent current projection and skips stale revisions. SQLite schema 23 records compact artifact metadata acknowledgements transactionally, preserving upload registration during revision churn and publisher restarts; legacy snapshots remain readable and retention ignores reference-only payloads. Size, stale-selection, migration and legacy compatibility coverage passes: 41 targeted tests and isolated Node 24 `make setup`/`make check` (535 Python, 29 web, 41 unchanged gateway tests). Synthetic lifecycle coverage only; no live activation.

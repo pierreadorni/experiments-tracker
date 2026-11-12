@@ -158,10 +158,20 @@ class GatewayClient:
             (time.time(),),
         )
         for row in rows:
-            message = json.loads(row["payload"])
-            message["experiment"] = public_projection(message["experiment"])
-            eid = message["experiment"]["id"]
-            message["inbox"] = self.store.rows("SELECT * FROM inbox WHERE experiment_id=?", (eid,))
+            with self.store.tx() as db:
+                event = db.execute(
+                    "SELECT experiment_id,revision FROM events WHERE id=?", (row["id"],)
+                ).fetchone()
+                eid = event["experiment_id"]
+                revision = db.execute("SELECT revision FROM experiments WHERE id=?", (eid,)).fetchone()[0]
+                if revision != event["revision"]:
+                    continue
+                message = {
+                    "schema_version": 1,
+                    "event_id": row["id"],
+                    "experiment": public_projection(self.store.projection(eid)),
+                    "inbox": self.store.rows("SELECT * FROM inbox WHERE experiment_id=?", (eid,)),
+                }
             try:
                 response = await self.request(
                     "POST",
@@ -171,6 +181,17 @@ class GatewayClient:
                 if response.get("accepted") != [row["id"]]:
                     raise ValueError("gateway did not acknowledge the exact event identity")
                 with self.store.tx() as db:
+                    # Save only metadata actually acknowledged, even if progress
+                    # committed while the request was in flight.
+                    db.executemany(
+                        "INSERT INTO artifact_registrations(artifact_id,event_id,sha256,size) "
+                        "VALUES(?,?,?,?) ON CONFLICT(artifact_id) DO UPDATE SET "
+                        "event_id=excluded.event_id,sha256=excluded.sha256,size=excluded.size",
+                        [
+                            (a["id"], row["id"], a["sha256"], a["size"])
+                            for a in message["experiment"]["artifacts"]
+                        ],
+                    )
                     db.execute(
                         "UPDATE outbox SET delivered_at=?,error=NULL WHERE id=?", (time.time(), row["id"])
                     )
@@ -243,9 +264,8 @@ class GatewayClient:
             raise
 
     async def upload_artifacts(self):
-        # The newest acknowledged full projection establishes metadata registration.
-        # Replay only acknowledges revisions below a delivered full projection, so
-        # the maximum delivered revision always contains acknowledged metadata.
+        # Compact receipts prove metadata registration for reference-only rows.
+        # Retain the snapshot lookup for acknowledged rows from older owners.
         rows = self.store.rows(
             "SELECT a.* FROM artifacts a JOIN experiments x ON x.id=a.experiment_id "
             "JOIN events e ON e.experiment_id=x.id AND e.revision=("
@@ -255,10 +275,12 @@ class GatewayClient:
             "WHERE a.local_valid=1 AND a.remote_published=0 "
             "AND x.deleted_at IS NULL AND x.phase!='cancelled' "
             "AND (json_extract(x.contract,'$.execution_contract')=3 OR a.evidence_revision=x.evidence_revision) "
-            "AND EXISTS (SELECT 1 FROM json_each(o.payload,'$.experiment.artifacts') j "
+            "AND (EXISTS (SELECT 1 FROM artifact_registrations r WHERE r.artifact_id=a.id "
+            "AND r.sha256=a.sha256 AND r.size=a.size) "
+            "OR EXISTS (SELECT 1 FROM json_each(o.payload,'$.experiment.artifacts') j "
             "WHERE json_extract(j.value,'$.id')=a.id "
             "AND json_extract(j.value,'$.sha256')=a.sha256 "
-            "AND json_extract(j.value,'$.size')=a.size) ORDER BY a.rowid",
+            "AND json_extract(j.value,'$.size')=a.size)) ORDER BY a.rowid",
         )
         attempts = 0
         for row in rows:

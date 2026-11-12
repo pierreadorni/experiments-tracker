@@ -297,7 +297,7 @@ async def test_repair_publication_compacts_new_and_preexisting_outbox(config, ru
 
     # Simulate an oversized message persisted by the old owner before this fix.
     row = store.one("SELECT * FROM outbox ORDER BY rowid DESC LIMIT 1")
-    message = json.loads(row["payload"])
+    message = {"schema_version": 1, "event_id": row["id"], "experiment": view}
     message["experiment"]["contract"] = contract
     message["experiment"]["events"].append(
         {
@@ -326,7 +326,7 @@ async def test_repair_publication_compacts_new_and_preexisting_outbox(config, ru
     try:
         await client.publish_outbox()
         assert deliveries[0]["event_id"] == row["id"]
-        assert deliveries[0]["experiment"] == public_projection(message["experiment"])
+        assert deliveries[0]["experiment"] == public_projection(store.projection(eid))
         assert (
             store.one("SELECT payload,delivered_at FROM outbox WHERE id=?", (row["id"],))["payload"] == saved
         )
@@ -542,9 +542,10 @@ async def test_project_memory_lost_ack_and_rejected_receipts_are_durable(config,
     await client.close()
 
 
+@pytest.mark.parametrize("legacy_receipt", [False, True])
 @pytest.mark.parametrize("execution_contract", [None, 3])
 async def test_upload_uses_acknowledged_metadata_during_revision_churn(
-    config, runtime, tmp_path, execution_contract
+    config, runtime, tmp_path, execution_contract, legacy_receipt
 ):
     from experimenttracker import artifacts
     from experimenttracker.retention import prune_batch
@@ -570,7 +571,7 @@ async def test_upload_uses_acknowledged_metadata_during_revision_churn(
         artifacts.register(store, eid, "evaluate", root, ["known.json"])
     assert store.experiment(eid)["revision"] == revision
     (root / "known.json").write_text("{}")
-    uploads = []
+    uploads, sent = [], []
 
     async def handler(request):
         if request.method == "PUT":
@@ -589,18 +590,141 @@ async def test_upload_uses_acknowledged_metadata_during_revision_churn(
             )
         body = json.loads(request.content)
         items = body.get("messages", body.get("events", []))
+        sent.extend(body.get("messages", []))
         # Progress can commit while the gateway acknowledges the older projection.
         store.update(eid, error="new progress")
         return httpx.Response(200, json={"schema_version": 1, "accepted": [x["event_id"] for x in items]})
 
     client = publication_client(config, store, tmp_path, handler)
     await client.publish_outbox()
+    if legacy_receipt:
+        from experimenttracker.store import encode
+
+        with store.tx() as db:
+            db.execute("DELETE FROM artifact_registrations")
+            db.execute("UPDATE outbox SET payload=? WHERE id=?", (encode(sent[0]), sent[0]["event_id"]))
     (root / "new.json").write_text("{}")
     artifacts.register(store, eid, "evaluate", root, ["new.json"])
     assert prune_batch(store)["pruned"] >= 0
+    # Registration receipts survive a publisher restart.
+    await client.close()
+    client = publication_client(config, store, tmp_path, handler)
     await client.upload_artifacts()
     assert uploads == ["known.json"]
     await client.publish_outbox()
     await client.upload_artifacts()
     assert uploads == ["known.json", "new.json"]
     await client.close()
+
+
+async def test_reference_outbox_stays_small_and_publishes_latest(config, runtime, tmp_path, monkeypatch):
+    from experimenttracker.retention import prune_batch
+
+    store, *_ = runtime
+    eid = publication_experiment(store)
+    before = store.one("SELECT count(*) AS n, sum(length(payload)) AS size FROM outbox")
+    projection = store.projection
+    with monkeypatch.context() as patch:
+
+        def unexpected_projection(eid):
+            raise AssertionError("emit must not build projections")
+
+        patch.setattr(store, "projection", unexpected_projection)
+        for i in range(100):
+            store.update(eid, error=str(i))
+    after = store.one("SELECT count(*) AS n, sum(length(payload)) AS size FROM outbox")
+    assert after == {"n": before["n"] + 100, "size": before["size"] + 200}
+    assert all(row["payload"] == "{}" for row in store.rows("SELECT payload FROM outbox"))
+    latest = store.one("SELECT id FROM events ORDER BY seq DESC LIMIT 1")["id"]
+    published, replayed = [], []
+
+    def checked_projection(eid):
+        assert store.db.in_transaction
+        return projection(eid)
+
+    monkeypatch.setattr(store, "projection", checked_projection)
+
+    async def handler(request):
+        body = json.loads(request.content)
+        if request.url.path.endswith("/publish"):
+            published.extend(body["messages"])
+            items = body["messages"]
+        else:
+            replayed.extend(body["events"])
+            items = body["events"]
+        return httpx.Response(200, json={"schema_version": 1, "accepted": [x["event_id"] for x in items]})
+
+    client = publication_client(config, store, tmp_path, handler)
+    try:
+        await client.publish_outbox()
+        assert len(published) == 1
+        assert published[0]["event_id"] == latest
+        assert published[0]["experiment"]["error"] == "99"
+        assert published[0]["experiment"]["revision"] == store.experiment(eid)["revision"]
+        assert len(replayed) == after["n"] - 1
+        assert all(set(e) == {"event_id", "experiment_id", "revision"} for e in replayed)
+        assert not store.one("SELECT 1 FROM outbox WHERE delivered_at IS NULL")
+        assert prune_batch(store)["pruned"] == 0
+    finally:
+        await client.close()
+
+
+async def test_reference_outbox_skips_revision_changed_after_selection(
+    config, runtime, tmp_path, monkeypatch
+):
+    store, *_ = runtime
+    eid = publication_experiment(store)
+    original_rows = store.rows
+    changed = False
+
+    def race(sql, args=()):
+        nonlocal changed
+        rows = original_rows(sql, args)
+        if sql.startswith("SELECT o.* FROM experiments") and not changed:
+            changed = True
+            store.update(eid, error="newer revision")
+        return rows
+
+    monkeypatch.setattr(store, "rows", race)
+    published = []
+
+    async def handler(request):
+        body = json.loads(request.content)
+        items = body.get("messages", body.get("events", []))
+        published.extend(body.get("messages", []))
+        return httpx.Response(200, json={"schema_version": 1, "accepted": [x["event_id"] for x in items]})
+
+    client = publication_client(config, store, tmp_path, handler)
+    try:
+        await client.publish_outbox()
+        assert not published
+        assert not store.one("SELECT 1 FROM outbox WHERE delivered_at IS NOT NULL")
+        await client.publish_outbox()
+        assert len(published) == 1
+        assert published[0]["experiment"]["error"] == "newer revision"
+        assert not store.one("SELECT 1 FROM outbox WHERE delivered_at IS NULL")
+    finally:
+        await client.close()
+
+
+def test_reference_outbox_migration_preserves_saved_history(runtime):
+    from experimenttracker.store import Store
+
+    store, *_ = runtime
+    eid = publication_experiment(store)
+    with store.tx() as db:
+        db.execute("DROP TABLE artifact_registrations")
+        db.execute("DELETE FROM schema_version WHERE version=23")
+    before = {name: store.rows(f"SELECT * FROM {name}") for name in ("experiments", "events", "outbox")}
+    migrated = Store(store.path)
+    try:
+        assert migrated.one("SELECT MAX(version) AS version FROM schema_version")["version"] == 23
+        assert migrated.rows("SELECT * FROM artifact_registrations") == []
+        assert {name: migrated.rows(f"SELECT * FROM {name}") for name in before} == before
+        reader = Store.read_only(store.path)
+        try:
+            assert reader.projection(eid) == migrated.projection(eid)
+        finally:
+            reader.close()
+    finally:
+        migrated.close()

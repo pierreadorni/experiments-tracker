@@ -97,7 +97,7 @@ class Conflict(ValueError):
 
 
 class Store:
-    """One process owns the database. Every domain mutation emits a durable projection outbox record."""
+    """One process owns the database. Every domain mutation emits a durable outbox reference."""
 
     @classmethod
     def read_only(cls, path: Path):
@@ -107,7 +107,7 @@ class Store:
         reader.db = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, check_same_thread=False)
         reader.db.row_factory = sqlite3.Row
         version = reader.db.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-        if version not in (12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22):
+        if version not in (12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23):
             reader.close()
             raise RuntimeError("start the owner to migrate this database before detailed inspection")
         return reader
@@ -425,7 +425,15 @@ class Store:
                 migrate(db)
                 db.execute("INSERT INTO schema_version VALUES(22)")
             version = 22
-        if version != 22:
+        if version == 22:
+            with self.tx() as db:
+                db.execute("""CREATE TABLE artifact_registrations(
+                    artifact_id TEXT PRIMARY KEY REFERENCES artifacts(id),
+                    event_id TEXT NOT NULL REFERENCES events(id),
+                    sha256 TEXT NOT NULL, size INTEGER NOT NULL)""")
+                db.execute("INSERT INTO schema_version VALUES(23)")
+            version = 23
+        if version != 23:
             raise RuntimeError("unsupported database schema version")
 
     def continue_action(self, action, *, request_id=None, feedback=None, _db=None):
@@ -735,8 +743,7 @@ class Store:
             "INSERT INTO events(id,experiment_id,kind,revision,payload,created_at) VALUES(?,?,?,?,?,?)",
             (event_id, eid, kind, revision, encode(payload or {}), now),
         )
-        message = {"schema_version": 1, "event_id": event_id, "experiment": self.projection(eid)}
-        db.execute("INSERT INTO outbox(id,payload) VALUES(?,?)", (event_id, encode(message)))
+        db.execute("INSERT INTO outbox(id,payload) VALUES(?,'{}')", (event_id,))
 
     def update(self, eid, *, kind="state_changed", **fields):
         allowed = {
