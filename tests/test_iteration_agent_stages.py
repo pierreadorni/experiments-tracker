@@ -156,6 +156,42 @@ async def test_missing_output_corrects_only_agent_stage_in_same_attempt(runtime)
     await wf.close()
 
 
+async def test_blocked_stage_holds_dependencies_and_resumes_exact_attempt(runtime):
+    class BlockedAgent(MixedAgent):
+        async def begin(self, thread_id, prompt, schema, *, workspace=None, **kwargs):
+            payload = json.loads(prompt.split("\nPAYLOAD:\n", 1)[1])
+            if payload["phase"].startswith("agent:") and not self.check_calls:
+                self.check_calls += 1
+                self.roots.append(workspace)
+                (workspace / "ready.json").write_text('{"ready": false}')
+                self.results[(thread_id, "blocked")] = {
+                    "outcome": "blocked",
+                    "summary": "Install the missing scientific packages.",
+                }
+                return "blocked"
+            return await super().begin(thread_id, prompt, schema, workspace=workspace, **kwargs)
+
+    store, scheduler, agent, wf, eid = await setup_mixed(runtime, BlockedAgent())
+    await until(wf, store, eid, lambda e: e["hold_reason"] == "agent_stage_blocked")
+    job = iteration.agent_job(wf, store.experiment(eid), "agent:model_check")
+    assert job["state"] == "agent" and scheduler.submissions == 0
+    assert (
+        store.one("SELECT state FROM stages WHERE experiment_id=? AND id='model_check'", (eid,))["state"]
+        == "pending"
+    )
+    for _ in range(3):
+        await wf.tick()
+    assert agent.check_calls == 1 and scheduler.submissions == 0
+    request = uuid4()
+    store.command(request, "action", {"action": "retry_agent"}, eid=eid)
+    store.command(request, "action", {"action": "retry_agent"}, eid=eid)
+    await until(wf, store, eid, lambda e: e["phase"] == "complete")
+    assert len(set(agent.roots)) == 1 and scheduler.submissions == 3
+    actions = store.rows("SELECT * FROM agent_actions WHERE phase='agent:model_check' ORDER BY rowid")
+    assert len(actions) == 2 and actions[1]["previous_action_id"] == actions[0]["id"]
+    await wf.close()
+
+
 async def test_uncertain_agent_turn_never_repeats_or_submits_dependent_work(runtime):
     store, scheduler, agent, wf, eid = await setup_mixed(runtime)
     agent.lose_response = True
@@ -306,6 +342,29 @@ async def test_remote_runtime_requires_scripts_only_for_slurm_stages(runtime):
     plan.stages[1].script = None
     with pytest.raises(ValueError, match="Jean Zay stages"):
         wf.prepared_python(exp, plan)
+    await wf.close()
+
+
+async def test_original_project_venv_is_available_from_isolated_worktree(runtime, tmp_path, monkeypatch):
+    store, _, _, wf, eid = await setup_mixed(runtime)
+    source = tmp_path / "source"
+    checkout = tmp_path / "worktree"
+    python = source / ".venv/bin/python"
+    python.parent.mkdir(parents=True)
+    python.symlink_to(sys.executable)
+    checkout.mkdir()
+    monkeypatch.setattr(
+        wf, "project_context", lambda exp: {"checkout": str(checkout), "source_checkout": str(source)}
+    )
+    plan = Implementation.model_validate(mixed_plan())
+    plan.python_executable = str(python)
+    assert wf.prepared_python(store.experiment(eid), plan) == python
+    other = source / ".experimenttracker/other/bin/python"
+    other.parent.mkdir(parents=True)
+    other.symlink_to(sys.executable)
+    plan.python_executable = str(other)
+    with pytest.raises(ValueError, match="must belong"):
+        wf.prepared_python(store.experiment(eid), plan)
     await wf.close()
 
 

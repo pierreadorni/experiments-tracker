@@ -1115,7 +1115,11 @@ function App() {
                         {!['complete', 'cancelled'].includes(exp.phase) && (
                           <section className="panel control-panel">
                             <h3>Automation controls</h3>
-                            {(exp.hold_reason === 'agent_session_unavailable' ||
+                            {([
+                              'agent_session_unavailable',
+                              'agent_stage_blocked',
+                              'agent_stage_failed',
+                            ].includes(exp.hold_reason || '') ||
                               (exp.phase === 'failed' &&
                                 exp.recipe_id === 'agent_experiment_v1' &&
                                 ((exp.snapshot &&
@@ -1918,6 +1922,8 @@ function holdTitle(reason: string) {
     agent_dispatch_uncertain: 'Checking whether agent work started',
     waiting_for_executor: 'Waiting for the executor',
     agent_session_unavailable: 'Experiment conversation unavailable',
+    agent_stage_blocked: 'Agent stage needs attention',
+    agent_stage_failed: 'Agent stage failed',
     agent_busy: 'Waiting for agent availability',
     compute_busy: 'Waiting for a compute slot',
     project_busy: 'Waiting for this project’s working folder',
@@ -1943,6 +1949,8 @@ function holdGuidance(reason: string) {
     return 'Check this project’s folder and Git setup in Project settings.';
   if (reason === 'agent_session_unavailable')
     return 'Restore access to the saved conversation, then use Retry with agent below.';
+  if (reason === 'agent_stage_blocked' || reason === 'agent_stage_failed')
+    return 'Resolve the issue described above, then use Retry with agent below.';
   if (reason === 'agent_correction_stalled')
     return 'Provide a correction below or use Retry with agent when the cause is resolved.';
   if (reason === 'model_unavailable')

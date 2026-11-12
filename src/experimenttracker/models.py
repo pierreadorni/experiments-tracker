@@ -352,6 +352,7 @@ class ResearchPlan(StrictModel):
 
 class AgentStageResult(StrictModel):
     summary: str = Field(min_length=1, max_length=4000)
+    outcome: Literal["completed", "blocked", "failed"] = "completed"
 
 
 class Implementation(StrictModel):

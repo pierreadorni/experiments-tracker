@@ -397,7 +397,12 @@ class Store:
 
     def continue_action(self, action, *, request_id=None, feedback=None, _db=None):
         """Append once after a saved terminal outcome; never replace its identity/result."""
-        if action["state"] != "failed":
+        blocked = (
+            action["state"] == "completed"
+            and action["phase"].startswith("agent:")
+            and json.loads(action["result"] or "{}").get("outcome") in ("blocked", "failed")
+        )
+        if action["state"] != "failed" and not blocked:
             raise Conflict("continuation requires a known failed action")
         with contextlib.nullcontext(_db) if _db is not None else self.tx() as db:
             prior = db.execute(
@@ -999,6 +1004,38 @@ class Store:
                     action = payload["action"]
                     if action == "cancel":
                         self.cancel_experiment(db, eid, now)
+                    elif action == "retry_agent" and exp["hold_reason"] in (
+                        "agent_stage_blocked",
+                        "agent_stage_failed",
+                    ):
+                        saved = db.execute(
+                            "SELECT * FROM agent_actions WHERE experiment_id=? AND phase LIKE 'agent:%' ORDER BY rowid DESC LIMIT 1",
+                            (eid,),
+                        ).fetchone()
+                        if (
+                            not saved
+                            or exp["pending_request"]
+                            or db.execute(
+                                "SELECT 1 FROM agent_actions WHERE experiment_id=? AND state IN ('dispatching','running','uncertain')",
+                                (eid,),
+                            ).fetchone()
+                            or db.execute(
+                                "SELECT 1 FROM steering WHERE experiment_id=? AND state IN ('pending','cancelling')",
+                                (eid,),
+                            ).fetchone()
+                        ):
+                            raise Conflict("resolve pending or uncertain work before retrying the stage")
+                        self.continue_action(
+                            dict(saved), request_id=request_id, feedback=exp["error"], _db=db
+                        )
+                        db.execute(
+                            "UPDATE experiments SET phase='training',hold_reason='agent_continuation',error=NULL WHERE id=?",
+                            (eid,),
+                        )
+                        db.execute(
+                            "UPDATE stages SET state='running',error=NULL,updated_at=? WHERE experiment_id=? AND id=?",
+                            (now, eid, saved["phase"].removeprefix("agent:")),
+                        )
                     elif action == "retry_agent":
                         session_failure = db.execute(
                             "SELECT * FROM agent_actions WHERE experiment_id=? AND state='failed' "
@@ -1043,7 +1080,7 @@ class Store:
                             )
                         ):
                             failed = db.execute(
-                                "SELECT * FROM agent_actions WHERE experiment_id=? AND phase IN ('plan','prepare','interpret') ORDER BY rowid DESC LIMIT 1",
+                                "SELECT * FROM agent_actions WHERE experiment_id=? AND (phase IN ('plan','prepare','interpret') OR phase LIKE 'agent:%') ORDER BY rowid DESC LIMIT 1",
                                 (eid,),
                             ).fetchone()
                             if (
@@ -1087,11 +1124,18 @@ class Store:
                                 )
                             db.execute(
                                 "UPDATE experiments SET phase=?,hold_reason='agent_continuation',error=NULL WHERE id=?",
-                                ("interpreting" if failed["phase"] == "interpret" else "preparing", eid),
+                                (
+                                    "training"
+                                    if failed["phase"].startswith("agent:")
+                                    else "interpreting"
+                                    if failed["phase"] == "interpret"
+                                    else "preparing",
+                                    eid,
+                                ),
                             )
                             db.execute(
                                 "UPDATE stages SET state='pending',error=NULL,updated_at=? WHERE experiment_id=? AND id=?",
-                                (now, eid, failed["phase"]),
+                                (now, eid, failed["phase"].removeprefix("agent:")),
                             )
                         else:
                             if (

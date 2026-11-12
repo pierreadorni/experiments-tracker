@@ -737,7 +737,9 @@ async function enqueue(env: Env, kind: string, payload: Record<string, unknown>,
     if (
       kind === 'action' &&
       payload.action === 'retry_agent' &&
-      exp.hold_reason !== 'agent_session_unavailable' &&
+      !['agent_session_unavailable', 'agent_stage_blocked', 'agent_stage_failed'].includes(
+        exp.hold_reason,
+      ) &&
       (exp.phase !== 'failed' ||
         exp.recipe_id !== 'agent_experiment_v1' ||
         !(

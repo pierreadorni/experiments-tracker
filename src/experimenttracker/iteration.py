@@ -276,8 +276,10 @@ def agent_prompt(wf, exp, phase):
         "or other experiments. Dependencies are direct paths in inputs, never files assumed under your output root. "
         "Keep work bounded to the approved instruction: no long training, background processes, scheduler submission, "
         "API billing or credentials. Local GPU access requires existing runtime/host authorization; a plan grants none. "
-        "If required inputs/resources are unavailable, request user input through the runtime. "
-        "Write all declared outputs before returning a concise summary. For evaluation, result_file follows the supplied "
+        "Return outcome='blocked' with a concrete reason and needed action in summary if required inputs or resources "
+        "are unavailable; return outcome='failed' if the work cannot be completed for another reason. "
+        "Return outcome='completed' only after successful work and all declared outputs exist. "
+        "For evaluation, result_file follows the supplied "
         "ExperimentResult schema and exact protocol. Use check_agent_stage to check outputs and fix errors before finishing.\nPAYLOAD:\n"
         + encode({**payload, "result_schema": ExperimentResult.model_json_schema()})
     )
@@ -286,9 +288,37 @@ def agent_prompt(wf, exp, phase):
 def finish_agent(wf, exp, phase, value):
     from .models import AgentStageResult
 
-    AgentStageResult.model_validate(value)
+    result = AgentStageResult.model_validate(value)
     job = agent_job(wf, exp, phase)
     if job["state"] == "complete":
+        return
+    if result.outcome != "completed":
+        with wf.store.tx() as db:
+            db.execute(
+                "UPDATE stages SET state=?,error=?,updated_at=? WHERE experiment_id=? AND id=?",
+                (
+                    "pending" if result.outcome == "blocked" else "failed",
+                    result.summary,
+                    time.time(),
+                    exp["id"],
+                    job["stage_id"],
+                ),
+            )
+            db.execute(
+                "UPDATE experiments SET phase=?,hold_reason=?,error=? WHERE id=?",
+                (
+                    "training" if result.outcome == "blocked" else "failed",
+                    "agent_stage_blocked" if result.outcome == "blocked" else "agent_stage_failed",
+                    result.summary,
+                    exp["id"],
+                ),
+            )
+            wf.store.emit(
+                db,
+                exp["id"],
+                "agent_stage_" + result.outcome,
+                {"stage": job["stage_id"], "intent_id": job["intent_id"], "summary": result.summary},
+            )
         return
     manifest = json.loads(job["execution_manifest"])
     root = Path(job["execution_root"])

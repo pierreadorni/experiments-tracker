@@ -983,6 +983,12 @@ class Workflow:
             return
         if reason == "validation_failed" and exp["phase"] == "validating":
             self.store.stage(eid, "validate", "failed", error=error)
+        if reason in ("agent_correction_stalled", "agent_recovery_exhausted", "agent_budget_exhausted"):
+            action = self.store.one(
+                "SELECT phase FROM agent_actions WHERE experiment_id=? ORDER BY rowid DESC LIMIT 1", (eid,)
+            )
+            if action and action["phase"].startswith("agent:"):
+                self.store.stage(eid, action["phase"].removeprefix("agent:"), "failed", error=error)
         if (
             self.config.mode == "live"
             and exp["recipe_id"] == "agent_experiment_v1"
@@ -1041,7 +1047,10 @@ class Workflow:
 
     async def advance(self, eid):
         exp = self.store.experiment(eid)
-        if exp["phase"] == "cancelled" or exp["hold_reason"] == "automatic_repair_pending":
+        if exp["phase"] == "cancelled" or exp["hold_reason"] in (
+            "automatic_repair_pending",
+            "agent_stage_blocked",
+        ):
             return
         restart = self.store.one(
             "SELECT 1 FROM steering WHERE experiment_id=? AND mode='restart' AND state IN ('pending','cancelling')",
@@ -2523,8 +2532,11 @@ class Workflow:
             if plan.python_executable
             else self.working_directory(exp) / ".venv/bin/python"
         )
-        project = self.project_context(exp)["checkout"]
+        context = self.project_context(exp)
+        project = context["checkout"]
         allowed = [self.working_directory(exp)] + ([Path(project)] if project else [])
+        if context.get("source_checkout"):
+            allowed.append(Path(context["source_checkout"]) / ".venv")
         # Reusing an exact saved runtime from this experiment is valid even
         # when the current checkout is a worktree or a newer repair directory.
         base = self.projects.base_root(exp["id"])
@@ -2937,7 +2949,9 @@ class Workflow:
             payload["cluster"] = self.cluster_for(exp)
             payload["execution_mode"] = self.config.mode
             payload["resource_policy_version"] = exp["contract"].get("resource_policy_version", 1)
-            checkout = payload["project_context"]["checkout"]
+            checkout = (
+                payload["project_context"].get("source_checkout") or payload["project_context"]["checkout"]
+            )
             payload["project_python"] = (
                 str(Path(checkout) / ".venv/bin/python")
                 if checkout and (Path(checkout) / ".venv/bin/python").is_file()

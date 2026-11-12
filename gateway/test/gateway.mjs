@@ -1441,6 +1441,8 @@ test('manual agent retry is durable, deduplicated and restricted to failed compu
   assert.equal((await post({ ...retry, request_id: randomUUID() })).status, 409);
   for (const [phase, hold_reason] of [
     ['interpreting', 'agent_session_unavailable'],
+    ['training', 'agent_stage_blocked'],
+    ['failed', 'agent_stage_failed'],
     ['failed', 'agent_recovery_exhausted'],
   ]) {
     Object.assign(exp, { phase, hold_reason });
