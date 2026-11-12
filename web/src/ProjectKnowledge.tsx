@@ -258,11 +258,13 @@ export function ProjectKnowledge({
         </p>
       )}
       <div className="knowledge-nav" role="group" aria-label="Project knowledge sections">
-        {([
-          ['report', 'Working report'],
-          ['ideas', 'Next ideas'],
-          ['conversation', 'Conversation'],
-        ] as const).map(([key, label]) => (
+        {(
+          [
+            ['report', 'Working report'],
+            ['ideas', 'Next ideas'],
+            ['conversation', 'Conversation'],
+          ] as const
+        ).map(([key, label]) => (
           <button
             key={key}
             type="button"
@@ -308,7 +310,10 @@ export function ProjectKnowledge({
                 value={version}
                 options={[
                   { value: '', label: 'Latest version' },
-                  ...memory.report_versions.map((v) => ({ value: String(v), label: `Version ${v}` })),
+                  ...memory.report_versions.map((v) => ({
+                    value: String(v),
+                    label: `Version ${v}`,
+                  })),
                 ]}
                 onChange={setVersion}
               />
@@ -327,7 +332,8 @@ export function ProjectKnowledge({
               <header className="memory-report-header">
                 <h1>{report.document.title}</h1>
                 <p className="memory-report-meta">
-                  Version {report.version} · {new Date(report.created_at * 1000).toLocaleDateString()}
+                  Version {report.version} ·{' '}
+                  {new Date(report.created_at * 1000).toLocaleDateString()}
                 </p>
                 {report.document.source_scope === 'synthetic' && (
                   <p className="memory-scope">Synthetic demonstration · No research conclusion</p>
@@ -393,30 +399,32 @@ export function ProjectKnowledge({
                   ))}
                 </ol>
               </section>
-          </article>
-        )}
-        {!!memory?.pending_experiment_ids.length && (
-          <aside className="notice">
-            <strong>
-              {memory.pending_experiment_ids.length} result
-              {memory.pending_experiment_ids.length === 1 ? '' : 's'} waiting to be incorporated
-            </strong>
-            <div className="memory-sources">{memory.pending_experiment_ids.map(sourceButton)}</div>
-          </aside>
-        )}
-        {!!memory?.summaries.length && (
-          <details>
-            <summary>Experiment TL;DRs ({memory.summaries.length})</summary>
-            {memory.summaries.map((s) => (
-              <article key={s.id} className="saved-idea">
-                {sourceButton(s.id)}
-                {s.synthetic && <p className="muted">Synthetic demonstration</p>}
-                <p>{s.tldr || 'No scientific summary was saved.'}</p>
-                {s.limitations?.length > 0 && <p className="muted">{s.limitations.join(' ')}</p>}
-              </article>
-            ))}
-          </details>
-        )}
+            </article>
+          )}
+          {!!memory?.pending_experiment_ids.length && (
+            <aside className="notice">
+              <strong>
+                {memory.pending_experiment_ids.length} result
+                {memory.pending_experiment_ids.length === 1 ? '' : 's'} waiting to be incorporated
+              </strong>
+              <div className="memory-sources">
+                {memory.pending_experiment_ids.map(sourceButton)}
+              </div>
+            </aside>
+          )}
+          {!!memory?.summaries.length && (
+            <details>
+              <summary>Experiment TL;DRs ({memory.summaries.length})</summary>
+              {memory.summaries.map((s) => (
+                <article key={s.id} className="saved-idea">
+                  {sourceButton(s.id)}
+                  {s.synthetic && <p className="muted">Synthetic demonstration</p>}
+                  <p>{s.tldr || 'No scientific summary was saved.'}</p>
+                  {s.limitations?.length > 0 && <p className="muted">{s.limitations.join(' ')}</p>}
+                </article>
+              ))}
+            </details>
+          )}
         </section>
       )}
       {view === 'ideas' && (
@@ -449,16 +457,16 @@ export function ProjectKnowledge({
             useIdea={useIdea}
             remove={({ experiment_id, text }) => send('dismiss_idea', { experiment_id, text })}
           />
-          </>
-        )}
-        {view === 'conversation' && (
-          <section className="panel knowledge-conversation" aria-label="Project conversation">
-            <h2>Chat with Codex</h2>
-            <p>
-              Discuss next steps across this project. Codex reads the working report and can inspect
-              individual experiment details.
-            </p>
-            <div className="project-chat-log" aria-live="polite">
+        </>
+      )}
+      {view === 'conversation' && (
+        <section className="panel knowledge-conversation" aria-label="Project conversation">
+          <h2>Chat with Codex</h2>
+          <p>
+            Discuss next steps across this project. Codex reads the working report and can inspect
+            individual experiment details.
+          </p>
+          <div className="project-chat-log" aria-live="polite">
             {memory?.messages
               .filter((m) => ['chat', 'synthesize'].includes(m.kind))
               .map((m) => (

@@ -131,6 +131,7 @@ class ActionCommand(StrictModel):
         "resume_new_compute",
         "summarize_title",
         "retry_agent",
+        "repair_implementation",
         "cancel",
     ]
 
@@ -363,13 +364,14 @@ class RepairStageDecision(StrictModel):
 
 class Implementation(StrictModel):
     schema_version: Literal[1, 2, 3] = 1
+    outcome: Literal["completed", "blocked"] = "completed"
     title: str | None = Field(default=None, min_length=1, max_length=100)
     summary: str = Field(min_length=1, max_length=4000)
     protocol: str = Field(min_length=1, max_length=8000)
     synthetic_demo: bool
     parameters_json: str = Field(max_length=10000)
-    files: list[str] = Field(min_length=1, max_length=256)
-    stages: list[ComputeStage] = Field(min_length=1, max_length=256)
+    files: list[str] = Field(max_length=256)
+    stages: list[ComputeStage] = Field(max_length=256)
     figures: list[str] = Field(max_length=20)
     python_executable: str | None = None
     project_files: list[str] = Field(default_factory=list, max_length=256)
@@ -390,6 +392,12 @@ class Implementation(StrictModel):
     def check_plan(self):
         import re
 
+        if self.outcome == "blocked":
+            if self.schema_version != 3:
+                raise ValueError("blocked implementation requires schema version 3")
+            return self
+        if not self.files or not self.stages:
+            raise ValueError("a completed implementation requires sources and stages")
         parameters = json.loads(self.parameters_json)
         if not isinstance(parameters, dict):
             raise ValueError("parameters_json must encode an object")

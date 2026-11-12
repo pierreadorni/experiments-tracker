@@ -153,6 +153,7 @@ const actionSchema = z
       'resume_new_compute',
       'summarize_title',
       'retry_agent',
+      'repair_implementation',
       'cancel',
     ]),
   })
@@ -738,9 +739,12 @@ async function enqueue(env: Env, kind: string, payload: Record<string, unknown>,
     if (
       kind === 'action' &&
       payload.action === 'retry_agent' &&
-      !['agent_session_unavailable', 'agent_stage_blocked', 'agent_stage_failed'].includes(
-        exp.hold_reason,
-      ) &&
+      ![
+        'agent_session_unavailable',
+        'agent_stage_blocked',
+        'agent_stage_failed',
+        'implementation_blocked',
+      ].includes(exp.hold_reason) &&
       (exp.phase !== 'failed' ||
         exp.recipe_id !== 'agent_experiment_v1' ||
         !(
@@ -769,6 +773,15 @@ async function enqueue(env: Env, kind: string, payload: Record<string, unknown>,
         throw new HttpError(409, 'Install the executor update to enable cancellation');
       if (exp.phase === 'complete')
         throw new HttpError(409, 'A completed experiment cannot be cancelled');
+    }
+    if (kind === 'action' && payload.action === 'repair_implementation') {
+      const owner = await first(
+        env,
+        'SELECT payload FROM executor_status WHERE id=?',
+        env.EXECUTOR_ID,
+      );
+      if (!owner || !JSON.parse(String(owner.payload)).implementation_repair)
+        throw new HttpError(409, 'Install the executor update to enable implementation repair');
     }
     if (kind === 'discuss' && exp.phase !== 'complete')
       throw new HttpError(409, 'Discussion is available when the experiment is complete');

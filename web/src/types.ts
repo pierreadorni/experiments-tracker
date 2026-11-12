@@ -239,6 +239,7 @@ export type ModelOption = {
 export type Status = {
   autopilot?: { available: boolean; schema_version: number };
   experiment_cancellation?: boolean;
+  implementation_repair?: boolean;
   quota_reserve?: { five_hour_percent: number; weekly_percent: number };
   compute_policy?: {
     agent_selected_resources: boolean;

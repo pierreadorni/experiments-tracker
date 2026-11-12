@@ -1443,6 +1443,7 @@ test('manual agent retry is durable, deduplicated and restricted to failed compu
     ['interpreting', 'agent_session_unavailable'],
     ['training', 'agent_stage_blocked'],
     ['failed', 'agent_stage_failed'],
+    ['preparing', 'implementation_blocked'],
     ['failed', 'agent_recovery_exhausted'],
   ]) {
     Object.assign(exp, { phase, hold_reason });
@@ -1459,6 +1460,32 @@ test('manual agent retry is durable, deduplicated and restricted to failed compu
     commands.find((c) => c.request_id === retry.request_id).payload.action,
     'retry_agent',
   );
+});
+
+test('implementation repair requires executor capability', async () => {
+  const { result } = await create({ recipe_id: 'agent_experiment_v1', brief: 'Repair graph' });
+  const endpoint = `/api/experiments/${result.experiment_id}/actions`;
+  const db = await mf.getD1Database('DB');
+  const before = await db
+    .prepare('SELECT payload,received_at FROM executor_status WHERE id=?')
+    .bind('acacia')
+    .first();
+  const request = { schema_version: 1, request_id: randomUUID(), action: 'repair_implementation' };
+  const post = () => req(endpoint, { method: 'POST', body: JSON.stringify(request) });
+  await db.prepare('DELETE FROM executor_status WHERE id=?').bind('acacia').run();
+  assert.equal((await post()).status, 409);
+  await db
+    .prepare('INSERT INTO executor_status(id,payload,received_at) VALUES(?,?,?)')
+    .bind('acacia', JSON.stringify({ implementation_repair: true }), Date.now() / 1000)
+    .run();
+  assert.equal((await post()).status, 202);
+  assert.equal((await post()).status, 202);
+  await db.prepare('DELETE FROM executor_status WHERE id=?').bind('acacia').run();
+  if (before)
+    await db
+      .prepare('INSERT INTO executor_status(id,payload,received_at) VALUES(?,?,?)')
+      .bind('acacia', before.payload, before.received_at)
+      .run();
 });
 
 test('historical event replay is bounded, idempotent and cannot publish a state or claim readiness', async () => {

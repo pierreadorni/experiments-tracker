@@ -1131,6 +1131,7 @@ function App() {
                               'agent_session_unavailable',
                               'agent_stage_blocked',
                               'agent_stage_failed',
+                              'implementation_blocked',
                             ].includes(exp.hold_reason || '') ||
                               (exp.phase === 'failed' &&
                                 exp.recipe_id === 'agent_experiment_v1' &&
@@ -1164,6 +1165,32 @@ function App() {
                                 Retry with agent
                               </button>
                             )}
+                            {['agent_stage_blocked', 'agent_stage_failed'].includes(
+                              exp.hold_reason || '',
+                            ) &&
+                              exp.contract?.execution_contract === 3 && (
+                                <button
+                                  disabled={
+                                    busy ||
+                                    !status?.implementation_repair ||
+                                    Boolean(
+                                      exp.pending_commands?.some(
+                                        (c) => c.action === 'repair_implementation',
+                                      ),
+                                    )
+                                  }
+                                  onClick={() =>
+                                    void act(async () => {
+                                      await command(`/api/experiments/${exp.id}/actions`, {
+                                        action: 'repair_implementation',
+                                      });
+                                    })
+                                  }
+                                >
+                                  <Play size={16} />
+                                  Repair implementation
+                                </button>
+                              )}
                             {!terminal.includes(exp.phase) && (
                               <>
                                 <button
@@ -1330,9 +1357,7 @@ function App() {
                           <div className="empty">
                             <FileText size={32} />
                             <h3>Interpretation is still pending.</h3>
-                            <p>
-                              The final report will appear here when interpretation is ready.
-                            </p>
+                            <p>The final report will appear here when interpretation is ready.</p>
                           </div>
                         )}
                       </section>
@@ -1912,6 +1937,7 @@ function holdTitle(reason: string) {
     agent_session_unavailable: 'Experiment conversation unavailable',
     agent_stage_blocked: 'Agent stage needs attention',
     agent_stage_failed: 'Agent stage failed',
+    implementation_blocked: 'Implementation needs attention',
     agent_busy: 'Waiting for agent availability',
     compute_busy: 'Waiting for a compute slot',
     project_busy: 'Waiting for this project’s working folder',
@@ -1938,6 +1964,8 @@ function holdGuidance(reason: string) {
   if (reason === 'agent_session_unavailable')
     return 'Restore access to the saved conversation, then use Retry with agent below.';
   if (reason === 'agent_stage_blocked' || reason === 'agent_stage_failed')
+    return 'Resolve the issue described above, then use Retry with agent below.';
+  if (reason === 'implementation_blocked')
     return 'Resolve the issue described above, then use Retry with agent below.';
   if (reason === 'agent_correction_stalled')
     return 'Provide a correction below or use Retry with agent when the cause is resolved.';

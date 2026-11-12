@@ -432,7 +432,7 @@ class Store:
         """Append once after a saved terminal outcome; never replace its identity/result."""
         blocked = (
             action["state"] == "completed"
-            and action["phase"].startswith("agent:")
+            and (action["phase"].startswith("agent:") or action["phase"] == "prepare")
             and json.loads(action["result"] or "{}").get("outcome") in ("blocked", "failed")
         )
         if action["state"] != "failed" and not blocked:
@@ -1050,6 +1050,82 @@ class Store:
                     action = payload["action"]
                     if action == "cancel":
                         self.cancel_experiment(db, eid, now)
+                    elif action == "repair_implementation":
+                        if (
+                            exp["hold_reason"] not in ("agent_stage_blocked", "agent_stage_failed")
+                            or exp["contract"].get("execution_contract") != 3
+                            or not exp["snapshot"]
+                            or exp["pending_request"]
+                            or db.execute(
+                                "SELECT 1 FROM agent_actions WHERE experiment_id=? AND state IN ('pending','dispatching','running','uncertain')",
+                                (eid,),
+                            ).fetchone()
+                            or db.execute(
+                                "SELECT 1 FROM steering WHERE experiment_id=? AND state IN ('pending','cancelling')",
+                                (eid,),
+                            ).fetchone()
+                        ):
+                            raise Conflict(
+                                "implementation repair requires a settled agent stage and no pending work"
+                            )
+                        saved = db.execute(
+                            "SELECT * FROM agent_actions WHERE experiment_id=? AND phase LIKE 'agent:%' ORDER BY rowid DESC LIMIT 1",
+                            (eid,),
+                        ).fetchone()
+                        if (
+                            not saved
+                            or saved["state"] != "completed"
+                            or json.loads(saved["result"] or "{}").get("outcome") not in ("blocked", "failed")
+                        ):
+                            raise Conflict(
+                                "implementation repair requires a known failed or blocked agent outcome"
+                            )
+                        job = db.execute(
+                            "SELECT * FROM jobs WHERE experiment_id=? AND stage_id=? AND attempt=? AND state='agent' ORDER BY rowid DESC LIMIT 1",
+                            (eid, saved["phase"].removeprefix("agent:"), saved["evidence_revision"]),
+                        ).fetchone()
+                        if not job:
+                            raise Conflict("the saved agent producer is unavailable for repair")
+                        db.execute(
+                            "UPDATE jobs SET state='failed',error=?,ended_at=? WHERE intent_id=?",
+                            (exp["error"], now, job["intent_id"]),
+                        )
+                        contract = exp["contract"]
+                        contract["manual_repair_requests"] = contract.get("manual_repair_requests", 0) + 1
+                        db.execute(
+                            "UPDATE experiments SET contract=?,phase='preparing',hold_reason='automatic_repair_pending' WHERE id=?",
+                            (encode(contract), eid),
+                        )
+                    elif action == "retry_agent" and exp["hold_reason"] == "implementation_blocked":
+                        saved = db.execute(
+                            "SELECT * FROM agent_actions WHERE experiment_id=? AND phase='prepare' ORDER BY rowid DESC LIMIT 1",
+                            (eid,),
+                        ).fetchone()
+                        if (
+                            not saved
+                            or saved["state"] != "completed"
+                            or exp["pending_request"]
+                            or db.execute(
+                                "SELECT 1 FROM agent_actions WHERE experiment_id=? AND state IN ('dispatching','running','uncertain')",
+                                (eid,),
+                            ).fetchone()
+                            or db.execute(
+                                "SELECT 1 FROM steering WHERE experiment_id=? AND state IN ('pending','cancelling')",
+                                (eid,),
+                            ).fetchone()
+                        ):
+                            raise Conflict("resolve pending or uncertain work before retrying implementation")
+                        self.continue_action(
+                            dict(saved), request_id=request_id, feedback=exp["error"], _db=db
+                        )
+                        db.execute(
+                            "UPDATE experiments SET phase='preparing',hold_reason='agent_continuation',error=NULL WHERE id=?",
+                            (eid,),
+                        )
+                        db.execute(
+                            "UPDATE stages SET state='pending',error=NULL,updated_at=? WHERE experiment_id=? AND id='prepare'",
+                            (now, eid),
+                        )
                     elif action == "retry_agent" and exp["hold_reason"] in (
                         "agent_stage_blocked",
                         "agent_stage_failed",

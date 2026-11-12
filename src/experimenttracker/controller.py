@@ -187,6 +187,8 @@ class Controller:
         wf = self.workflow
         model = {"plan": ResearchPlan, "prepare": Implementation, "interpret": Analysis}[kind]
         parsed = model.model_validate(value)
+        if kind == "prepare" and parsed.outcome == "blocked":
+            return {"valid": True, "ready": False, "manifest": parsed.model_dump()}
         if kind in ("plan", "prepare"):
             wf.validate_resource_plan(exp, parsed)
         if kind == "prepare":

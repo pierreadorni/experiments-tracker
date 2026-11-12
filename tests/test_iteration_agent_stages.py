@@ -15,6 +15,7 @@ from test_workflow import until
 from experimenttracker import iteration
 from experimenttracker.codex_client import NeedsAttention
 from experimenttracker.models import Implementation, ResearchPlan
+from experimenttracker.store import Conflict
 from experimenttracker.workflow import Workflow
 
 CHECK = {
@@ -189,6 +190,75 @@ async def test_blocked_stage_holds_dependencies_and_resumes_exact_attempt(runtim
     assert len(set(agent.roots)) == 1 and scheduler.submissions == 3
     actions = store.rows("SELECT * FROM agent_actions WHERE phase='agent:model_check' ORDER BY rowid")
     assert len(actions) == 2 and actions[1]["previous_action_id"] == actions[0]["id"]
+    await wf.close()
+
+
+async def test_blocked_implementation_is_not_accepted_and_retry_resumes_it(runtime):
+    class BlockedImplementation(MixedAgent):
+        blocked_once = False
+
+        async def begin(self, thread_id, prompt, schema, *, workspace=None, **kwargs):
+            payload = json.loads(prompt.split("\nPAYLOAD:\n", 1)[1])
+            turn = await super().begin(thread_id, prompt, schema, workspace=workspace, **kwargs)
+            if payload["phase"] == "prepare" and not self.blocked_once:
+                self.blocked_once = True
+                self.results[(thread_id, turn)].update(
+                    outcome="blocked", summary="PyTorch is unavailable.", files=[], stages=[]
+                )
+            return turn
+
+    store, scheduler, _, wf, eid = await setup_mixed(runtime, BlockedImplementation())
+    await until(wf, store, eid, lambda e: e["hold_reason"] == "implementation_blocked")
+    assert store.experiment(eid)["snapshot"] is None
+    assert scheduler.submissions == 0
+    for _ in range(3):
+        await wf.tick()
+    assert (
+        store.one("SELECT state FROM stages WHERE experiment_id=? AND id='prepare'", (eid,))["state"]
+        == "pending"
+    )
+    request = uuid4()
+    store.command(request, "action", {"action": "retry_agent"}, eid=eid)
+    store.command(request, "action", {"action": "retry_agent"}, eid=eid)
+    await until(wf, store, eid, lambda e: e["phase"] == "complete")
+    actions = store.rows(
+        "SELECT * FROM agent_actions WHERE experiment_id=? AND phase='prepare' ORDER BY rowid", (eid,)
+    )
+    assert len(actions) == 2 and actions[1]["previous_action_id"] == actions[0]["id"]
+    await wf.close()
+
+
+async def test_repair_implementation_requires_settled_agent_and_journals_request(runtime):
+    class BlockedAgent(MixedAgent):
+        async def begin(self, thread_id, prompt, schema, *, workspace=None, **kwargs):
+            payload = json.loads(prompt.split("\nPAYLOAD:\n", 1)[1])
+            if payload["phase"].startswith("agent:"):
+                self.results[(thread_id, "blocked")] = {"outcome": "blocked", "summary": "Missing graph."}
+                return "blocked"
+            return await super().begin(thread_id, prompt, schema, workspace=workspace, **kwargs)
+
+    store, scheduler, _, wf, eid = await setup_mixed(runtime, BlockedAgent())
+    await until(wf, store, eid, lambda e: e["hold_reason"] == "agent_stage_blocked")
+    action = store.one(
+        "SELECT * FROM agent_actions WHERE experiment_id=? AND phase='agent:model_check'", (eid,)
+    )
+    store.db.execute("UPDATE agent_actions SET state='uncertain' WHERE id=?", (action["id"],))
+    with pytest.raises(Conflict, match="settled agent stage"):
+        store.command(uuid4(), "action", {"action": "repair_implementation"}, eid=eid)
+    store.db.execute("UPDATE agent_actions SET state='completed' WHERE id=?", (action["id"],))
+    request = uuid4()
+    store.command(request, "action", {"action": "repair_implementation"}, eid=eid)
+    store.command(request, "action", {"action": "repair_implementation"}, eid=eid)
+    assert store.experiment(eid)["hold_reason"] == "automatic_repair_pending"
+    assert store.one("SELECT state FROM jobs WHERE experiment_id=?", (eid,))["state"] == "failed"
+    assert scheduler.submissions == 0
+    wf.config.mode = "live"  # Exercise the production repair policy with the synthetic fixture.
+    await wf.repair_failed_experiments()
+    exp = store.experiment(eid)
+    assert exp["evidence_revision"] == 2
+    assert exp["contract"]["early_repair"]["state"] == "preparing"
+    assert exp["contract"]["early_repair"]["failed_intents"]
+    assert scheduler.submissions == 0
     await wf.close()
 
 

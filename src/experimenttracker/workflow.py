@@ -284,6 +284,7 @@ class Workflow:
     def status(self, last_tick, executor_error=None, *, projects=None):
         return {
             "experiment_cancellation": True,
+            "implementation_repair": True,
             "autopilot": {"available": True, "schema_version": 1},
             "maintenance": self.maintenance.status(self),
             "projects": self.projects.catalog() if projects is None else projects,
@@ -1126,6 +1127,7 @@ class Workflow:
         if exp["phase"] == "cancelled" or exp["hold_reason"] in (
             "automatic_repair_pending",
             "agent_stage_blocked",
+            "implementation_blocked",
         ):
             return
         restart = self.store.one(
@@ -2142,6 +2144,18 @@ class Workflow:
                         return
                 elif phase == "prepare" and exp["recipe_id"] == "agent_experiment_v1":
                     plan = Implementation.model_validate(value)
+                    if plan.outcome == "blocked":
+                        with self.store.tx() as db:
+                            db.execute(
+                                "UPDATE stages SET state='pending',error=?,updated_at=? WHERE experiment_id=? AND id='prepare'",
+                                (plan.summary, time.time(), eid),
+                            )
+                            db.execute(
+                                "UPDATE experiments SET hold_reason='implementation_blocked',error=? WHERE id=?",
+                                (plan.summary, eid),
+                            )
+                            self.store.emit(db, eid, "implementation_blocked", {"summary": plan.summary})
+                        return
                     self.validate_resource_plan(exp, plan)
                     review = exp["plan_review"]
                     if review and review.get("state") != "approved":
@@ -2967,6 +2981,10 @@ class Workflow:
                 "retention or exhaustive checks unless scientifically requested or useful for the approved task."
             )
         elif phase == "prepare":
+            instruction += (
+                "Return outcome='blocked' with the concrete obstacle in summary if implementation is incomplete; "
+                "do not present an incomplete graph as completed. Return outcome='completed' only for a ready implementation. "
+            )
             payload["repair_context"] = (
                 self.context_pointer(exp, "repair-context", exp["contract"].get("auto_repair"))
                 if exp["contract"].get("auto_repair")
@@ -3891,6 +3909,11 @@ class Workflow:
                 if action["phase"] == "prepare"
                 else Analysis.model_json_schema()
             )
+            if generic_prepare and iteration.enabled(exp):
+                # Older saved implementations omit this field. New turns must
+                # explicitly distinguish a ready graph from blocked work.
+                schema.setdefault("required", []).append("outcome")
+                schema["properties"]["outcome"].pop("default", None)
             if (
                 agent_execution
                 or generic_prepare
