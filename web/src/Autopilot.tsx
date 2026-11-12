@@ -159,6 +159,10 @@ export function Autopilot({
     [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false),
     [draft, setDraft] = useState<Policy>(starter);
+  const [reserveDraft, setReserveDraft] = useState<{
+    five_hour_reserve: number;
+    weekly_reserve: number;
+  } | null>(null);
   const [review, setReview] = useState(false),
     [busy, setBusy] = useState(false),
     [notice, setNotice] = useState('');
@@ -194,6 +198,15 @@ export function Autopilot({
   const run = view?.run,
     policy = view?.policy,
     budget = view?.budget;
+  useEffect(() => {
+    if (
+      reserveDraft &&
+      policy &&
+      reserveDraft.five_hour_reserve === policy.five_hour_reserve &&
+      reserveDraft.weekly_reserve === policy.weekly_reserve
+    )
+      setReserveDraft(null);
+  }, [policy, reserveDraft]);
   const capable = !!status?.autopilot?.available && view?.available !== false;
   const pending =
     view?.pending_commands?.filter((c) => c.state === 'pending' || c.state === 'received') || [];
@@ -707,6 +720,87 @@ export function Autopilot({
               may finish after handoff. Explicit cancellation uses the experiment's existing
               cancellation flow.
             </p>
+          )}
+          {!['stopped', 'completed'].includes(run.status) && (
+            <section aria-labelledby="autopilot-reserve-heading">
+              <h3 id="autopilot-reserve-heading">Subscription reserve</h3>
+              <p className="muted small">
+                Autopilot uses the stricter of these reserves and your owner reserves. Changes apply
+                to future agent turns; submitted jobs continue.
+              </p>
+              <div className="quota">
+                {(
+                  [
+                    { key: '300', label: 'Five-hour window', field: 'five_hour_reserve' },
+                    { key: '10080', label: 'Weekly window', field: 'weekly_reserve' },
+                  ] as const
+                ).map(({ key, label, field }) => {
+                  const reserve = reserveDraft?.[field] ?? policy[field];
+                  const remaining = status?.quota.remaining[key];
+                  return (
+                    <div key={key}>
+                      <div className="quota-label">
+                        <span>{label}</span>
+                        <strong>
+                          {remaining === undefined
+                            ? 'Unknown'
+                            : `${remaining.toFixed(0)}% remaining`}
+                        </strong>
+                      </div>
+                      <div className="quota-track">
+                        <progress
+                          value={remaining ?? 0}
+                          max={100}
+                          aria-label={`${label} remaining`}
+                        />
+                        <input
+                          type="range"
+                          min="0"
+                          max="90"
+                          step="1"
+                          value={reserve}
+                          disabled={busy || pending.length > 0}
+                          aria-label={`${label} Autopilot subscription reserve`}
+                          aria-valuetext={`${reserve}% reserve`}
+                          onChange={(event) =>
+                            setReserveDraft({
+                              five_hour_reserve:
+                                reserveDraft?.five_hour_reserve ?? policy.five_hour_reserve,
+                              weekly_reserve: reserveDraft?.weekly_reserve ?? policy.weekly_reserve,
+                              [field]: Number(event.target.value),
+                            })
+                          }
+                        />
+                      </div>
+                      <small>
+                        {reserve}% reserve · resume above {Math.min(100, reserve + 5)}%
+                      </small>
+                    </div>
+                  );
+                })}
+                {reserveDraft && (
+                  <div className="quota-actions">
+                    <button
+                      className="primary"
+                      disabled={busy || pending.length > 0}
+                      onClick={() =>
+                        void send(run.status === 'draft' ? 'configure' : 'revise', {
+                          policy: { ...policy, ...reserveDraft },
+                        })
+                      }
+                    >
+                      Save reserve
+                    </button>
+                    <button
+                      disabled={busy || pending.length > 0}
+                      onClick={() => setReserveDraft(null)}
+                    >
+                      Reset
+                    </button>
+                  </div>
+                )}
+              </div>
+            </section>
           )}
           {budget && (
             <section aria-labelledby="allowance-heading">

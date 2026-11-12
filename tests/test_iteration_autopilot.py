@@ -102,6 +102,30 @@ def test_draft_no_work_revision_replay_and_authority(runtime, monkeypatch):
         command(service, "revise", policy=revised)
 
 
+def test_reserve_revision_preserves_borrowing_and_changes_admission(runtime, monkeypatch):
+    service, run = activated(runtime, monkeypatch)
+    with service.store.tx() as db:
+        db.execute("UPDATE autopilot_runs SET borrowed_percent=3 WHERE id=?", (run["id"],))
+    gate = runtime[3].gate
+    gate.update(
+        {
+            "ordinaryUsageAllowed": True,
+            "rateLimits": {
+                "primary": {"windowDurationMins": 300, "usedPercent": 60},
+                "secondary": {"windowDurationMins": 10080, "usedPercent": 10},
+            },
+        }
+    )
+    assert not service.quota(gate, run=service.run("test-project")).admitted
+    revised = service.policy(service.run("test-project")).model_dump()
+    revised["five_hour_reserve"] = 30
+    command(service, "revise", policy=revised)
+    run = service.run("test-project")
+    assert run["borrowed_percent"] == 3
+    assert service.quota(gate, run=run).admitted
+    assert service.policy(run).five_hour_reserve == 30
+
+
 def test_budget_six_40_hour_jobs_and_reset(runtime, monkeypatch):
     service, run = activated(runtime, monkeypatch)
     support(service)

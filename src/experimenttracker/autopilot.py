@@ -336,9 +336,12 @@ class Autopilot:
                         "INSERT INTO autopilot_policies VALUES(?,?,?,?,?)",
                         (run_id, revision, encode(body.policy.model_dump()), origin, time.time()),
                     )
+                    reserve_only = body.policy.model_dump(
+                        exclude={"five_hour_reserve", "weekly_reserve"}
+                    ) == policy.model_dump(exclude={"five_hour_reserve", "weekly_reserve"})
                     db.execute(
-                        "UPDATE autopilot_runs SET policy_revision=?,control_revision=control_revision+1,borrowed_percent=0 WHERE id=?",
-                        (revision, run_id),
+                        "UPDATE autopilot_runs SET policy_revision=?,control_revision=control_revision+1,borrowed_percent=CASE WHEN ? THEN borrowed_percent ELSE 0 END WHERE id=?",
+                        (revision, reserve_only, run_id),
                     )
                     if (
                         run["status"] in ("handoff_ready", "handoff_incomplete")
