@@ -367,3 +367,27 @@ async def test_remove_saved_idea_is_exact_durable_and_does_not_dispatch(runtime)
     assert agent.calls == 0
     assert scheduler.submissions == 0
     await wf.close()
+
+
+async def test_inactive_weekly_project_cannot_block_owner_retention(runtime):
+    store, _, agent, wf = runtime
+    await wf.start()
+    eid = completed(store)
+    memory = wf.supervisor.memory
+    with store.tx() as db:
+        db.execute(
+            "INSERT INTO project_knowledge(project_id,next_due,updated_at) VALUES('retired-project',0,0)"
+        )
+        db.execute("UPDATE outbox SET delivered_at=123")
+    retired = store.one("SELECT * FROM project_knowledge WHERE project_id='retired-project'")
+    # Reconstruct the supervisor to prove a process restart cannot reset the guard.
+    wf.supervisor = ProjectSupervisor(wf)
+    for _ in range(2):
+        wf.last_retention = 0
+        await wf.tick(force_observe=True)
+    assert store.one("SELECT * FROM project_knowledge WHERE project_id='retired-project'") == retired
+    assert not store.rows("SELECT * FROM project_turns WHERE project_id='retired-project'")
+    assert store.one("SELECT count(*) AS n FROM outbox WHERE payload='{}'")["n"] > 0
+    assert store.experiment(eid)["phase"] == "complete"
+    assert agent.calls == 0
+    await wf.close()

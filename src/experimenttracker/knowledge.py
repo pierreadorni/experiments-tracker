@@ -683,6 +683,10 @@ class ProjectSupervisor:
         for state in memory.store.rows(
             "SELECT * FROM project_knowledge WHERE weekly=1 AND next_due<=?", (time.time(),)
         ):
+            # Deleted or no-longer-configured projects retain their history and
+            # schedules, but cannot enqueue optional work or block owner ticks.
+            if state["project_id"] not in memory.store.projects:
+                continue
             if not memory.view(state["project_id"])["pending_experiment_ids"] or not self.plenty(
                 wf.gate.decide()
             ):
