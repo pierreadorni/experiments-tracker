@@ -80,6 +80,7 @@ export function ProjectKnowledge({
   useIdea: (idea: SavedIdea) => void;
 }) {
   const [memory, setMemory] = useState<Memory | null>(null);
+  const [view, setView] = useState<'report' | 'ideas' | 'conversation'>('report');
   const [error, setError] = useState<string | null>(null);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
@@ -191,6 +192,11 @@ export function ProjectKnowledge({
     parts.push(value.slice(start));
     return parts;
   };
+  const renderParagraphs = (value: string) =>
+    value
+      .split(/\n\s*\n/)
+      .filter((paragraph) => paragraph.trim())
+      .map((paragraph, index) => <p key={index}>{renderProse(paragraph.trim())}</p>);
   const renderBlock = (
     block: ReportBlock,
     index: number,
@@ -251,107 +257,142 @@ export function ProjectKnowledge({
           {error}
         </p>
       )}
-      <section className="panel knowledge-report">
-        <div className="memory-toolbar">
-          <div>
-            <h2>Working report</h2>
-            <p className="muted">Findings, open questions and evidence across experiments.</p>
-          </div>
+      <div className="knowledge-nav" role="group" aria-label="Project knowledge sections">
+        {([
+          ['report', 'Working report'],
+          ['ideas', 'Next ideas'],
+          ['conversation', 'Conversation'],
+        ] as const).map(([key, label]) => (
           <button
-            className="primary"
-            disabled={busy || working || !memory?.summaries.length}
-            onClick={() => void send('synthesize')}
+            key={key}
+            type="button"
+            className={view === key ? 'knowledge-nav-item selected' : 'knowledge-nav-item'}
+            aria-pressed={view === key}
+            onClick={() => setView(key)}
           >
-            {working ? 'Update in progress…' : 'Update report'}
+            {label}
           </button>
-        </div>
-        <div className="memory-toolbar memory-report-controls">
-          <label className="memory-schedule">
-            <input
-              type="checkbox"
-              role="switch"
-              checked={!autopilotActive && (memory?.weekly ?? false)}
-              disabled={busy || !memory || autopilotActive}
-              onChange={(e) => void send('schedule', { weekly: e.target.checked })}
-            />
-            {autopilotActive
-              ? 'Weekly reports managed by Autopilot'
-              : 'Update weekly with new results'}
-          </label>
-          {!!memory?.report_versions.length && (
-            <Select
-              label="Report version"
-              value={version}
-              options={[
-                { value: '', label: 'Latest version' },
-                ...memory.report_versions.map((v) => ({ value: String(v), label: `Version ${v}` })),
-              ]}
-              onChange={setVersion}
-            />
-          )}
-        </div>
-        {!memory && <p role="status">Loading project knowledge…</p>}
-        {memory && !memory.report && (
-          <p>
-            No working report yet. Finish an experiment, then ask the supervisor to organize its
-            findings here.
-          </p>
-        )}
-        {version && !older && <p role="status">Loading saved version…</p>}
-        {report && (
-          <article className="working-report">
-            <header className="memory-report-header">
-              <h1>{report.document.title}</h1>
-              <p className="memory-report-meta">
-                Version {report.version} · {new Date(report.created_at * 1000).toLocaleDateString()}
-              </p>
-              {report.document.source_scope === 'synthetic' && (
-                <p className="memory-scope">Synthetic demonstration · No research conclusion</p>
-              )}
-              {report.document.source_scope === 'mixed' && (
-                <p className="memory-scope">
-                  Mixed synthetic and research sources · Read source labels before comparing
-                  findings
-                </p>
-              )}
-            </header>
-            <section className="memory-abstract" aria-label="Abstract">
-              <h2>Abstract</h2>
-              <p>{renderProse(report.document.overview)}</p>
-            </section>
-            {report.document.sections.map((section, index) => (
-              <section key={index} className="memory-report-section">
-                <h2>{section.title}</h2>
-                <p>{renderProse(section.body)}</p>
-                {section.blocks?.map((block, blockIndex) => {
-                  if (block.kind === 'table') tableNumber++;
-                  if (block.kind === 'figure') figureNumber++;
-                  return renderBlock(block, blockIndex, tableNumber, figureNumber);
-                })}
-                <div className="memory-section-sources">
-                  <span>Experiments</span>
-                  {section.experiment_ids.map(referenceButton)}
-                </div>
-              </section>
-            ))}
-            {!!report.document.open_questions.length && (
-              <section className="memory-report-section">
-                <h2>Open questions</h2>
-                <ul>
-                  {report.document.open_questions.map((q, i) => (
-                    <li key={i}>{renderProse(q)}</li>
-                  ))}
-                </ul>
-              </section>
+        ))}
+      </div>
+      {view === 'report' && (
+        <section className="panel knowledge-report">
+          <div className="memory-toolbar">
+            <div>
+              <h2>Working report</h2>
+              <p className="muted">Findings, open questions and evidence across experiments.</p>
+            </div>
+            <button
+              className="primary"
+              disabled={busy || working || !memory?.summaries.length}
+              onClick={() => void send('synthesize')}
+            >
+              {working ? 'Update in progress…' : 'Update report'}
+            </button>
+          </div>
+          <div className="memory-toolbar memory-report-controls">
+            <label className="memory-schedule">
+              <input
+                type="checkbox"
+                role="switch"
+                checked={!autopilotActive && (memory?.weekly ?? false)}
+                disabled={busy || !memory || autopilotActive}
+                onChange={(e) => void send('schedule', { weekly: e.target.checked })}
+              />
+              {autopilotActive
+                ? 'Weekly reports managed by Autopilot'
+                : 'Update weekly with new results'}
+            </label>
+            {!!memory?.report_versions.length && (
+              <Select
+                label="Report version"
+                value={version}
+                options={[
+                  { value: '', label: 'Latest version' },
+                  ...memory.report_versions.map((v) => ({ value: String(v), label: `Version ${v}` })),
+                ]}
+                onChange={setVersion}
+              />
             )}
-            <section className="memory-report-section">
-              <h2>Sources</h2>
-              <ol className="memory-references">
-                {referenceIds.map((id) => (
-                  <li key={id}>{sourceButton(id)}</li>
-                ))}
-              </ol>
-            </section>
+          </div>
+          {!memory && <p role="status">Loading project knowledge…</p>}
+          {memory && !memory.report && (
+            <p>
+              No working report yet. Finish an experiment, then ask the supervisor to organize its
+              findings here.
+            </p>
+          )}
+          {version && !older && <p role="status">Loading saved version…</p>}
+          {report && (
+            <article className="working-report">
+              <header className="memory-report-header">
+                <h1>{report.document.title}</h1>
+                <p className="memory-report-meta">
+                  Version {report.version} · {new Date(report.created_at * 1000).toLocaleDateString()}
+                </p>
+                {report.document.source_scope === 'synthetic' && (
+                  <p className="memory-scope">Synthetic demonstration · No research conclusion</p>
+                )}
+                {report.document.source_scope === 'mixed' && (
+                  <p className="memory-scope">
+                    Mixed synthetic and research sources · Read source labels before comparing
+                    findings
+                  </p>
+                )}
+              </header>
+              <section className="memory-abstract" aria-label="Abstract">
+                <h2>Abstract</h2>
+                {renderParagraphs(report.document.overview)}
+              </section>
+              {!!report.document.sections.length && (
+                <nav className="memory-contents" aria-label="Report contents">
+                  <span>In this report</span>
+                  {report.document.sections.map((section, index) => (
+                    <a key={index} href={`#knowledge-section-${index}`}>
+                      {section.title}
+                    </a>
+                  ))}
+                  {!!report.document.open_questions.length && (
+                    <a href="#knowledge-open-questions">Open questions</a>
+                  )}
+                </nav>
+              )}
+              {report.document.sections.map((section, index) => (
+                <section
+                  key={index}
+                  id={`knowledge-section-${index}`}
+                  className="memory-report-section"
+                >
+                  <h2>{section.title}</h2>
+                  <div className="memory-report-copy">{renderParagraphs(section.body)}</div>
+                  {section.blocks?.map((block, blockIndex) => {
+                    if (block.kind === 'table') tableNumber++;
+                    if (block.kind === 'figure') figureNumber++;
+                    return renderBlock(block, blockIndex, tableNumber, figureNumber);
+                  })}
+                  <div className="memory-section-sources">
+                    <span>Experiments</span>
+                    {section.experiment_ids.map(referenceButton)}
+                  </div>
+                </section>
+              ))}
+              {!!report.document.open_questions.length && (
+                <section id="knowledge-open-questions" className="memory-report-section">
+                  <h2>Open questions</h2>
+                  <ul>
+                    {report.document.open_questions.map((q, i) => (
+                      <li key={i}>{renderProse(q)}</li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+              <section id="knowledge-sources" className="memory-report-section">
+                <h2>Sources</h2>
+                <ol className="memory-references">
+                  {referenceIds.map((id) => (
+                    <li key={id}>{sourceButton(id)}</li>
+                  ))}
+                </ol>
+              </section>
           </article>
         )}
         {!!memory?.pending_experiment_ids.length && (
@@ -376,116 +417,123 @@ export function ProjectKnowledge({
             ))}
           </details>
         )}
-      </section>
-      {memory?.messages
-        .filter((m) => m.kind === 'dismiss_idea' && m.state === 'failed')
-        .map((m) => (
-          <p key={m.id} className="error" role="alert">
-            Could not remove the saved idea:{' '}
-            {m.error || 'The executor rejected the request. Try again after refreshing.'}
-          </p>
-        ))}
-      {memory?.messages.some(
-        (m) => m.kind === 'dismiss_idea' && !['completed', 'failed'].includes(m.state),
-      ) && (
-        <p className="muted" role="status">
-          Idea removal saved; waiting for the executor to sync.
-        </p>
+        </section>
       )}
-      <ResearchMemory
-        experiments={experiments}
-        dismissed={[
-          ...(memory?.dismissed_ideas || []),
-          ...(memory?.messages || [])
-            .filter((m) => m.kind === 'dismiss_idea' && m.state !== 'failed' && m.experiment_id)
-            .map((m) => ({ experiment_id: m.experiment_id!, text: m.text })),
-        ]}
-        busy={busy || !memory}
-        open={open}
-        useIdea={useIdea}
-        remove={({ experiment_id, text }) => send('dismiss_idea', { experiment_id, text })}
-      />
-      <section className="panel knowledge-conversation" aria-label="Project conversation">
-        <h2>Chat with Codex</h2>
-        <p>
-          Discuss next steps across this project. Codex reads the working report and can inspect
-          individual experiment details.
-        </p>
-        <div className="project-chat-log" aria-live="polite">
+      {view === 'ideas' && (
+        <>
           {memory?.messages
-            .filter((m) => ['chat', 'synthesize'].includes(m.kind))
+            .filter((m) => m.kind === 'dismiss_idea' && m.state === 'failed')
             .map((m) => (
-              <article key={m.id} className="saved-idea">
-                <strong>{m.kind === 'synthesize' ? 'Project supervisor' : 'You'}</strong>
-                {m.text && <p>{m.text}</p>}
-                {m.reply && <p className="memory-prose">{m.reply}</p>}
-                {!['completed', 'failed'].includes(m.state) && (
-                  <p role="status">
-                    {m.state}
-                    {m.hold_reason ? ` · ${m.hold_reason.replaceAll('_', ' ')}` : ''}
-                  </p>
-                )}
-                {m.error && <p className="error">{m.error}</p>}
-              </article>
+              <p key={m.id} className="error" role="alert">
+                Could not remove the saved idea:{' '}
+                {m.error || 'The executor rejected the request. Try again after refreshing.'}
+              </p>
             ))}
-        </div>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            void send('chat', { text });
-          }}
-        >
-          <label className="memory-compose">
-            Project message
-            <textarea
-              value={text}
-              maxLength={8000}
-              rows={3}
-              onChange={(e) => setText(e.target.value)}
-              placeholder="What have we learned, and what should we try next?"
-            />
-          </label>
-          <div className="memory-toolbar">
-            <div className="memory-models">
-              <div className="memory-model-field">
-                <span>Model</span>
-                <Select
-                  label="Model"
-                  value={model}
-                  options={[
-                    { value: '', label: 'Default model' },
-                    ...models.map((m) => ({ value: m.id, label: m.name })),
-                  ]}
-                  onChange={(value) => {
-                    setModel(value);
-                    setEffort('');
-                  }}
-                />
-              </div>
-              <div className="memory-model-field">
-                <span>Reasoning</span>
-                <Select
-                  label="Reasoning"
-                  value={effort}
-                  options={[
-                    { value: '', label: 'Default effort' },
-                    ...(models.find((m) => m.id === model)?.reasoning_efforts || []).map(
-                      (value) => ({
-                        value,
-                        label: value,
-                      }),
-                    ),
-                  ]}
-                  onChange={setEffort}
-                />
-              </div>
-            </div>
-            <button className="primary" disabled={busy || !text.trim()}>
-              Send
-            </button>
+          {memory?.messages.some(
+            (m) => m.kind === 'dismiss_idea' && !['completed', 'failed'].includes(m.state),
+          ) && (
+            <p className="muted" role="status">
+              Idea removal saved; waiting for the executor to sync.
+            </p>
+          )}
+          <ResearchMemory
+            experiments={experiments}
+            dismissed={[
+              ...(memory?.dismissed_ideas || []),
+              ...(memory?.messages || [])
+                .filter((m) => m.kind === 'dismiss_idea' && m.state !== 'failed' && m.experiment_id)
+                .map((m) => ({ experiment_id: m.experiment_id!, text: m.text })),
+            ]}
+            busy={busy || !memory}
+            open={open}
+            useIdea={useIdea}
+            remove={({ experiment_id, text }) => send('dismiss_idea', { experiment_id, text })}
+          />
+          </>
+        )}
+        {view === 'conversation' && (
+          <section className="panel knowledge-conversation" aria-label="Project conversation">
+            <h2>Chat with Codex</h2>
+            <p>
+              Discuss next steps across this project. Codex reads the working report and can inspect
+              individual experiment details.
+            </p>
+            <div className="project-chat-log" aria-live="polite">
+            {memory?.messages
+              .filter((m) => ['chat', 'synthesize'].includes(m.kind))
+              .map((m) => (
+                <article key={m.id} className="saved-idea">
+                  <strong>{m.kind === 'synthesize' ? 'Project supervisor' : 'You'}</strong>
+                  {m.text && <p>{m.text}</p>}
+                  {m.reply && <p className="memory-prose">{m.reply}</p>}
+                  {!['completed', 'failed'].includes(m.state) && (
+                    <p role="status">
+                      {m.state}
+                      {m.hold_reason ? ` · ${m.hold_reason.replaceAll('_', ' ')}` : ''}
+                    </p>
+                  )}
+                  {m.error && <p className="error">{m.error}</p>}
+                </article>
+              ))}
           </div>
-        </form>
-      </section>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void send('chat', { text });
+            }}
+          >
+            <label className="memory-compose">
+              Project message
+              <textarea
+                value={text}
+                maxLength={8000}
+                rows={3}
+                onChange={(e) => setText(e.target.value)}
+                placeholder="What have we learned, and what should we try next?"
+              />
+            </label>
+            <div className="memory-toolbar">
+              <div className="memory-models">
+                <div className="memory-model-field">
+                  <span>Model</span>
+                  <Select
+                    label="Model"
+                    value={model}
+                    options={[
+                      { value: '', label: 'Default model' },
+                      ...models.map((m) => ({ value: m.id, label: m.name })),
+                    ]}
+                    onChange={(value) => {
+                      setModel(value);
+                      setEffort('');
+                    }}
+                  />
+                </div>
+                <div className="memory-model-field">
+                  <span>Reasoning</span>
+                  <Select
+                    label="Reasoning"
+                    value={effort}
+                    options={[
+                      { value: '', label: 'Default effort' },
+                      ...(models.find((m) => m.id === model)?.reasoning_efforts || []).map(
+                        (value) => ({
+                          value,
+                          label: value,
+                        }),
+                      ),
+                    ]}
+                    onChange={setEffort}
+                  />
+                </div>
+              </div>
+              <button className="primary" disabled={busy || !text.trim()}>
+                Send
+              </button>
+            </div>
+          </form>
+        </section>
+      )}
     </section>
   );
 }

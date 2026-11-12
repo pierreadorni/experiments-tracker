@@ -167,7 +167,7 @@ export function Autopilot({
     [busy, setBusy] = useState(false),
     [notice, setNotice] = useState('');
   const [text, setText] = useState(''),
-    [answer, setAnswer] = useState<string | null>(null);
+    [answerText, setAnswerText] = useState('');
   const [control, setControl] = useState<{ eid: string; operation: string } | null>(null);
   const [doc, setDoc] = useState<{ name: string; version: number; content: string } | null>(null);
   const refresh = async () => setView(await api<View>(path));
@@ -210,6 +210,7 @@ export function Autopilot({
   const capable = !!status?.autopilot?.available && view?.available !== false;
   const pending =
     view?.pending_commands?.filter((c) => c.state === 'pending' || c.state === 'received') || [];
+  const attention = (view?.notices || []).filter((n) => !n.resolved_at);
   const send = async (kind: string, fields: Record<string, unknown> = {}) => {
     setBusy(true);
     setError(null);
@@ -227,7 +228,7 @@ export function Autopilot({
       await refresh();
       if (['message', 'answer', 'control'].includes(kind))
         setText((current) => (current === fields.text ? '' : current));
-      setAnswer(null);
+      if (kind === 'answer') setAnswerText('');
       setControl(null);
       if (kind === 'configure' || kind === 'revise') {
         setEditing(false);
@@ -609,39 +610,13 @@ export function Autopilot({
           <div className="autopilot-state">
             <strong>
               {label(run.status)} · {label(view?.calendar?.phase || run.phase)}
+              {run.hold_reason === 'autopilot_researcher_input' && ' · Waiting for your reply'}
             </strong>
             <span>
               Week {(view?.calendar?.week || 0).toFixed(2)} ·{' '}
               {(view?.calendar?.weeks_remaining || 0).toFixed(2)} weeks remaining
             </span>
           </div>
-          {run.foundation !== 'ready' && (
-            <p className="notice">
-              Foundation {label(run.foundation)}. Initial literature and protocol work must finish
-              before main experiments.
-            </p>
-          )}
-          {run.hold_reason && (
-            <p className="notice warning">
-              {label(run.hold_reason)}
-              {run.hold_reason === 'autopilot_researcher_input' &&
-                '. Review the pending question below and reply to continue.'}
-            </p>
-          )}
-          {run.central_argument && <p className="autopilot-argument">{run.central_argument}</p>}
-          {run.uncertainty && (
-            <p>
-              <strong>Open question:</strong> {run.uncertainty}
-            </p>
-          )}
-          <ol className="autopilot-phases">
-            {Object.entries(view?.calendar?.boundaries || {}).map(([phase, at]) => (
-              <li key={phase} aria-current={phase === view?.calendar?.phase ? 'step' : undefined}>
-                <strong>{label(phase)}</strong>
-                <span>through {date(at, policy.timezone)}</span>
-              </li>
-            ))}
-          </ol>
           <div className="autopilot-actions">
             {run.status === 'draft' && !review && (
               <button
@@ -715,12 +690,78 @@ export function Autopilot({
           {['active', 'paused', 'stopped', 'handoff_ready', 'handoff_incomplete'].includes(
             run.status,
           ) && (
-            <p className="muted small">
+            <p className="muted small autopilot-action-note">
               Pause and stop hold new work. Already submitted queued and running jobs continue and
               may finish after handoff. Explicit cancellation uses the experiment's existing
               cancellation flow.
             </p>
           )}
+          {run.foundation !== 'ready' && (
+            <p className="notice">
+              Foundation {label(run.foundation)}. Initial literature and protocol work must finish
+              before main experiments.
+            </p>
+          )}
+          {run.hold_reason && run.hold_reason !== 'autopilot_researcher_input' && (
+            <p className="notice warning">{label(run.hold_reason)}</p>
+          )}
+          {run.hold_reason === 'autopilot_researcher_input' && attention.length === 0 && (
+            <p className="notice warning">
+              Waiting for your reply. The pending question is in this project's Inbox.
+            </p>
+          )}
+          {attention.length > 0 && (
+            <section className="autopilot-attention" aria-labelledby="autopilot-attention-heading">
+              <h3 id="autopilot-attention-heading">Needs your attention</h3>
+              {attention.map((n) =>
+                n.kind === 'researcher_input' ? (
+                  <form
+                    key={n.id}
+                    className="autopilot-question"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void send('answer', { text: answerText, input_id: n.id });
+                    }}
+                  >
+                    <p>{n.text}</p>
+                    <label>
+                      Your answer
+                      <textarea
+                        required
+                        rows={3}
+                        value={answerText}
+                        onChange={(e) => setAnswerText(e.target.value)}
+                      />
+                    </label>
+                    <button
+                      className="primary"
+                      disabled={busy || pending.length > 0 || !answerText.trim()}
+                    >
+                      Send answer
+                    </button>
+                  </form>
+                ) : (
+                  <p key={n.id} className="autopilot-question">
+                    {n.text}
+                  </p>
+                ),
+              )}
+            </section>
+          )}
+          {run.central_argument && <p className="autopilot-run-summary">{run.central_argument}</p>}
+          {run.uncertainty && (
+            <p className="autopilot-run-summary">
+              <strong>Still uncertain:</strong> {run.uncertainty}
+            </p>
+          )}
+          <ol className="autopilot-phases">
+            {Object.entries(view?.calendar?.boundaries || {}).map(([phase, at]) => (
+              <li key={phase} aria-current={phase === view?.calendar?.phase ? 'step' : undefined}>
+                <strong>{label(phase)}</strong>
+                <span>through {date(at, policy.timezone)}</span>
+              </li>
+            ))}
+          </ol>
           {!['stopped', 'completed'].includes(run.status) && (
             <section aria-labelledby="autopilot-reserve-heading">
               <h3 id="autopilot-reserve-heading">Subscription reserve</h3>
@@ -1004,98 +1045,103 @@ export function Autopilot({
               </p>
             )}
           </section>
-          {view?.backlog?.length ? (
-            <details>
-              <summary>Investigation backlog</summary>
-              {view.backlog.map((item) => (
-                <article key={item.id}>
-                  <h4>{item.document.question}</h4>
-                  <p>
-                    {item.document.status} · priority {item.document.priority} · review{' '}
-                    {date(item.document.review_at, policy.timezone)}
-                  </p>
-                  <p>Stop condition: {item.document.stop_condition}</p>
-                </article>
-              ))}
-            </details>
-          ) : null}
-          <details>
-            <summary>Research decisions</summary>
-            {view?.decisions?.map((d) => (
-              <p key={d.id}>
-                {date(d.created_at)} ·{' '}
-                {d.document.arguments?.rationale ||
-                  d.document.arguments?.reason ||
-                  label(d.document.name || 'Decision')}{' '}
-                <span className="muted">
-                  ({d.author.startsWith('agent:') ? 'Autopilot' : 'Researcher'})
-                </span>
-              </p>
-            ))}
-          </details>
-          {view?.notices
-            ?.filter((n) => !n.resolved_at)
-            .map((n) => (
-              <div key={n.id} className="notice">
-                <p>{n.text}</p>
-                {n.kind === 'researcher_input' && (
-                  <button
-                    className="secondary"
-                    onClick={() => {
-                      setAnswer(n.id);
-                      setText('');
-                    }}
-                  >
-                    Answer researcher question
-                  </button>
-                )}
-              </div>
-            ))}
           {!control && !['draft', 'completed', 'stopped'].includes(run.status) && (
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                void send(answer ? 'answer' : 'message', {
-                  text,
-                  ...(answer ? { input_id: answer } : {}),
-                });
-              }}
-            >
-              <h3>{answer ? 'Answer pending question' : 'Project guidance and questions'}</h3>
+            <section className="autopilot-guidance" aria-labelledby="autopilot-guidance-heading">
+              <h3 id="autopilot-guidance-heading">Project guidance and questions</h3>
               <p className="muted">
-                This conversation can steer Autopilot within the saved policy. Budget and deadline
-                changes use Review policy. An advisory message does not cancel work. Read-only
-                knowledge chat is below.
+                Steer Autopilot within the saved policy. Budget and deadline changes use Review
+                policy. An advisory message does not cancel work.
               </p>
-              {view?.messages
-                ?.slice()
-                .reverse()
-                .map((m) => (
-                  <p className="autopilot-message" key={m.seq}>
-                    <strong>Researcher:</strong> {JSON.parse(m.document).text}
-                  </p>
-                ))}
-              {view?.responses
-                ?.slice()
-                .reverse()
-                .map((response) => (
-                  <p className="autopilot-message" key={response.id}>
-                    <strong>Autopilot:</strong> {JSON.parse(response.result).summary}
-                  </p>
-                ))}
-              <label>
-                {answer ? 'Your answer' : 'Message to Autopilot'}
-                <textarea
-                  required
-                  rows={3}
-                  value={text}
-                  onChange={(e) => setText(e.target.value)}
-                />
-              </label>
-              <button className="primary" disabled={busy || pending.length > 0 || !text.trim()}>
-                Send to Autopilot
-              </button>
-            </form>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void send('message', { text });
+                }}
+              >
+                <label>
+                  Message to Autopilot
+                  <textarea
+                    required
+                    rows={3}
+                    value={text}
+                    onChange={(e) => setText(e.target.value)}
+                  />
+                </label>
+                <button className="primary" disabled={busy || pending.length > 0 || !text.trim()}>
+                  Send to Autopilot
+                </button>
+              </form>
+              {!!(view?.messages?.length || view?.responses?.length) && (
+                <details className="autopilot-disclosure">
+                  <summary>
+                    Earlier guidance (
+                    {(view?.messages?.length || 0) + (view?.responses?.length || 0)})
+                    <ChevronDown size={14} className="autopilot-disclosure-marker" />
+                  </summary>
+                  {view?.messages
+                    ?.slice()
+                    .reverse()
+                    .map((m) => (
+                      <p className="autopilot-message" key={m.seq}>
+                        <strong>Researcher:</strong> {JSON.parse(m.document).text}
+                      </p>
+                    ))}
+                  {view?.responses
+                    ?.slice()
+                    .reverse()
+                    .map((response) => (
+                      <p className="autopilot-message" key={response.id}>
+                        <strong>Autopilot:</strong> {JSON.parse(response.result).summary}
+                      </p>
+                    ))}
+                </details>
+              )}
+            </section>
+          )}
+          {!!(view?.backlog?.length || view?.decisions?.length) && (
+            <section className="autopilot-record" aria-labelledby="autopilot-record-heading">
+              <h3 id="autopilot-record-heading">Background record</h3>
+              <p className="muted small">
+                Autopilot's investigation notes and decisions for this run.
+              </p>
+              {!!view?.backlog?.length && (
+                <details className="autopilot-disclosure">
+                  <summary>
+                    Investigation backlog ({view.backlog.length})
+                    <ChevronDown size={14} className="autopilot-disclosure-marker" />
+                  </summary>
+                  {view.backlog.map((item) => (
+                    <article key={item.id}>
+                      <h4>{item.document.question}</h4>
+                      <p>
+                        {item.document.status} · priority {item.document.priority} · review{' '}
+                        {date(item.document.review_at, policy.timezone)}
+                      </p>
+                      <p>Stop condition: {item.document.stop_condition}</p>
+                    </article>
+                  ))}
+                </details>
+              )}
+              {!!view?.decisions?.length && (
+                <details className="autopilot-disclosure">
+                  <summary>
+                    Research decisions ({view.decisions.length})
+                    <ChevronDown size={14} className="autopilot-disclosure-marker" />
+                  </summary>
+                  {view.decisions.map((d) => (
+                    <p key={d.id}>
+                      {date(d.created_at)} ·{' '}
+                      {d.document.arguments?.rationale ||
+                        d.document.arguments?.reason ||
+                        label(d.document.name || 'Decision')}{' '}
+                      <span className="muted">
+                        ({d.author.startsWith('agent:') ? 'Autopilot' : 'Researcher'})
+                      </span>
+                    </p>
+                  ))}
+                </details>
+              )}
+            </section>
           )}
         </>
       )}

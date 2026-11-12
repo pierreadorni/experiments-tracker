@@ -1,6 +1,6 @@
 // Synthetic browser acceptance: real demo authentication and experiment creation,
 // mocked research boundary. No live model, Slurm job, restart or scientific claim.
-import { chromium } from '@playwright/test';
+import { chromium, expect } from '@playwright/test';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 const target = new URL(process.env.ET_UI_URL || 'http://127.0.0.1:8879');
@@ -182,7 +182,7 @@ try {
   };
   await panel.getByLabel('Message to Autopilot').fill('Synthetic refresh for recovered guidance.');
   await panel.getByRole('button', { name: 'Send to Autopilot', exact: true }).click();
-  await panel.getByText('Waiting for your reply.', { exact: false }).waitFor();
+  await expect(panel.locator('.autopilot-state')).toContainText('Waiting for your reply');
   for (const [name, width, height] of [
     ['desktop', 1440, 1050],
     ['mobile', 390, 844],
@@ -192,10 +192,9 @@ try {
     if (await page.evaluate(() => document.documentElement.scrollWidth > innerWidth))
       throw new Error('Guidance view horizontal overflow');
   }
-  await panel.getByRole('button', { name: 'Answer researcher question', exact: true }).click();
   await panel.getByLabel('Your answer').fill('Use only the synthetic fixture source.');
-  await panel.getByRole('button', { name: 'Send to Autopilot', exact: true }).click();
-  await panel.getByText('Waiting for your reply.', { exact: false }).waitFor({ state: 'hidden' });
+  await panel.getByRole('button', { name: 'Send answer', exact: true }).click();
+  await expect(panel.locator('.autopilot-state')).not.toContainText('Waiting for your reply');
   state = {
     ...state,
     observed_at: now - 300,

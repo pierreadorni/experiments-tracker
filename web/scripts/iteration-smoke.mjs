@@ -59,12 +59,8 @@ try {
   await page.getByRole('button', { name: 'Open workspace' }).click();
   await page.goto(new URL(`/?experiment=${eid}`, target).href);
   await page.getByRole('tab', { name: 'Report', exact: true }).click();
-  await page.getByRole('heading', { name: 'Results so far' }).waitFor();
-  await page.getByRole('heading', { name: 'Requested work remaining' }).waitFor();
-  const failedTask = page.locator('.incremental-results li').filter({ hasText: 'Synthetic plot' });
-  await failedTask.waitFor();
-  if (!(await failedTask.textContent()).includes('failed'))
-    throw new Error('Plot failure is not visible');
+  if (await page.getByRole('heading', { name: 'Results so far' }).count())
+    throw new Error('Removed partial results section is visible');
   for (const [label, width, height] of [
     ['desktop', 1440, 1050],
     ['mobile', 390, 844],
@@ -92,10 +88,8 @@ try {
   if (complete.jobs.length !== 4) throw new Error('Expected only one new plot attempt');
   await page.reload();
   await page.getByRole('tab', { name: 'Report', exact: true }).click();
-  await page.getByRole('heading', { name: 'Results so far' }).waitFor();
-  if (await page.getByRole('heading', { name: 'Requested work remaining' }).count())
-    throw new Error('Requested completion status is stale');
-  await page.locator('.incremental-results img').waitFor();
+  if (await page.getByRole('heading', { name: 'Results so far' }).count())
+    throw new Error('Removed partial results section is visible');
   for (const [label, width, height] of [
     ['desktop', 1440, 1050],
     ['mobile', 390, 844],

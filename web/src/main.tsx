@@ -36,7 +36,6 @@ import { ProjectKnowledge } from './ProjectKnowledge';
 import { Autopilot } from './Autopilot';
 import { downloadEvidenceBundle } from './evidence';
 import { currentReport, availableReports } from './reports';
-import { IncrementalResults } from './IncrementalResults';
 import { StageTimeline } from './Progress';
 import { timelineStages, experimentStatus } from './progress';
 import { PlanReview, Steering } from './PlanReview';
@@ -1291,7 +1290,6 @@ function App() {
                     )}
                     {tab === 'Report' && (
                       <section className="panel report-panel">
-                        <IncrementalResults experiment={exp} />
                         {report ? (
                           <>
                             <div className="report-toolbar">
@@ -1333,8 +1331,7 @@ function App() {
                             <FileText size={32} />
                             <h3>Interpretation is still pending.</h3>
                             <p>
-                              The working report appears when interpretation is ready. Available
-                              measurements and figures appear above.
+                              The final report will appear here when interpretation is ready.
                             </p>
                           </div>
                         )}
