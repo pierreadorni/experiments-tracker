@@ -102,7 +102,7 @@ Briefing rules and the brief template are in [README.md](README.md).
 - **Tests:** `tests/test_gateway_client.py`, `tests/test_publication*.py` (whichever exist),
   plus a new size assertion.
 
-### [ ] T0.5 Investigate global agent serialization (C4 interim) · F (investigation) · S
+### [x] T0.5 Investigate global agent serialization (C4 interim) · F (investigation) · S
 - **Files:** `workflow.py` (`agent_stage` end, around lines 2470–2500; `agent_lane`;
   `start_agent_pool`); `autopilot_controller.py:30`; `knowledge.py:576`;
   `conversation.py`.
@@ -116,6 +116,9 @@ Briefing rules and the brief template are in [README.md](README.md).
   Propose the smallest safe change. Do **not** change code in this task.
 - **Acceptance:** the note exists, with file and line evidence. The follow-up becomes
   T0.5b, or moves into T1.6.
+- **Result:** [serialization investigation](notes/t0.5-serialization.md). Experiment
+  lanes already run concurrently; other roles share the primary agent. Guard-only
+  removal is unsafe. Implementation moves into T1.6a–c; no T0.5b is needed.
 
 ### [x] T0.6 Deterministic timing in tests (C12 prerequisite) · F · M
 - **Do:**
@@ -213,7 +216,33 @@ and archived fixtures still render their report via the API.
   interval and its own `try/except` with logging. Keep the order constraints that
   matter, and document them in code comments.
 
-### [ ] T1.6 AgentPool replaces lanes (C4) · S · L → split after T0.5
+### [ ] T1.6a AgentPool reservations and ownership routing (C4) · S · M
+- Follow [T0.5 evidence](notes/t0.5-serialization.md). Introduce role/owner/action
+  reservations around the existing agents while preserving scheduling behavior.
+- Route callbacks, input replies, activity, interruption, reconciliation and
+  shutdown through the owning slot. Preserve action tables and saved thread/turn
+  identities; reconstruct reservations before admitting work after restart.
+- **Acceptance/tests:** existing lane concurrency and role recovery tests pass;
+  reservations retain uncertain work, including after session-count changes.
+
+### [ ] T1.6b Admit mixed roles through AgentPool (C4) · S · M
+- Depends on T1.6a. Admit experiment, research, supervisor, conversation, title and
+  monitor work through common slots with C4 priority, owner exclusion and fresh
+  quota admission. Reserve before asynchronous dispatch.
+- Replace global research/supervisor/conversation guards only once their ownership
+  paths use reservations; separate deterministic advancement from turn admission.
+- **Acceptance/tests:** unrelated roles overlap on distinct agents with two slots;
+  one-slot and same-owner work serialize; uncertain outcomes prevent duplicate
+  turns while independent owners can progress.
+
+### [ ] T1.6c Mixed-role recovery scenarios (C4, C12) · S · M
+- Depends on T1.6b and the T1.2b harness. Cover experiment plus research, experiment
+  plus supervisor, discussion plus unrelated experiment, single-slot and same-owner
+  exclusion, lost outcome/restart, callback/reply routing, quota interrupts and
+  shutdown across all occupied slots.
+- **Acceptance:** exact saved identities survive restart and unknown outcomes never
+  cause duplicate dispatch; all mixed-role scenarios and the full suite pass.
+
 ### [ ] T1.7a–f Split `workflow.py` mechanically (C11) · F · M each
 Move code without changing behaviour; each commit keeps the tests green.
 - a: prompts → `research/prompt.py`;
