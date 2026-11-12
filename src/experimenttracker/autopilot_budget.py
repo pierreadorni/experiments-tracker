@@ -73,6 +73,9 @@ class Budget:
         row = self.store.one("SELECT * FROM autopilot_allocations WHERE intent_id=?", (job["intent_id"],))
         if not row:
             return
+        if not row["requested_gpus"] and not getattr(observation, "allocated_gpus", None):
+            # CPU-only work has no GPU exposure; absent timestamps cannot create a GPU hold.
+            return
         observed_at = getattr(observation, "observed_at", None) or now
         if row["observed_at"] is not None and observed_at <= row["observed_at"]:
             return
@@ -93,6 +96,8 @@ class Budget:
         if not reliable:
             start, until = row["started_at"], row["accounted_until"]
             state = "unknown" if terminal or observation.state == "ACCOUNTING_PENDING" else row["state"]
+            if observation.state in ("PENDING", "CONFIGURING") and start is None and not anomaly:
+                state = "reserved"
         else:
             until = end if terminal else min(now, observed_at)
             state = "settled" if terminal and not anomaly else "unknown" if anomaly else "reserved"

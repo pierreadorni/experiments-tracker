@@ -685,3 +685,105 @@ async def test_gateway_autopilot_lost_ack_and_durable_refusal(runtime, config, t
         == "rejected"
     )
     await client.close()
+
+
+async def test_delegated_child_runs_contract_three_with_attributed_approval(runtime, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from test_iteration import IterationAgent
+    from test_workflow import until
+
+    from experimenttracker.workflow import Workflow
+
+    service, run = activated(runtime, monkeypatch)
+    store, scheduler, _, old = runtime
+    wf = Workflow(old.config, store, scheduler, IterationAgent())
+    wf.research.advance = AsyncMock()  # Explicit synthetic research-decision boundary.
+    identity = action(service, run)
+    foundation(service, identity)
+    eid = tool(
+        service,
+        identity,
+        "create_experiment",
+        brief="Synthetic child lifecycle acceptance only.",
+        backlog_id="question",
+        scope_rationale="Exercise existing experiment agent, never real research.",
+        estimated_finish_at=1003600,
+    )["experiment_id"]
+    with store.tx() as db:
+        db.execute("UPDATE autopilot_actions SET state='completed' WHERE id=?", (identity,))
+    await until(wf, store, eid, lambda e: (e["plan_review"] or {}).get("state") == "awaiting_review")
+    with store.tx() as db:
+        db.execute("UPDATE autopilot_actions SET state='running' WHERE id=?", (identity,))
+    revision = store.experiment(eid)["plan_review"]["revision"]
+    tool(
+        service,
+        identity,
+        "review_experiment_plan",
+        experiment_id=eid,
+        plan_revision=revision,
+        scope_rationale="Synthetic software acceptance inside fixture envelope",
+        comparable_protocol="Shared synthetic recipe; no research claim",
+        estimated_finish_at=1003600,
+    )
+    assert store.experiment(eid)["plan_review"]["approved_by"]["kind"] == "autopilot"
+    with store.tx() as db:
+        db.execute("UPDATE autopilot_actions SET state='completed' WHERE id=?", (identity,))
+    await until(wf, store, eid, lambda e: e["phase"] == "complete")
+    assert scheduler.submissions == 3
+    assert store.experiment(eid)["partial_results"]
+    assert len(store.rows("SELECT * FROM autopilot_members")) == 1
+    for row in store.rows(
+        "SELECT input FROM agent_actions WHERE experiment_id=? AND phase IN ('prepare','interpret')", (eid,)
+    ):
+        payload = json.loads(row["input"].split("\nPAYLOAD:\n", 1)[1])
+        assert payload["autopilot_guidance"]["purpose"] == "exploration"
+    await wf.close()
+
+
+async def test_managed_project_input_is_durable_and_scoped(runtime, monkeypatch):
+    service, run = activated(runtime, monkeypatch)
+    identity = action(service, run)
+    wf = runtime[3]
+    wf.research.active_id = identity
+    with service.store.tx() as db:
+        db.execute(
+            "UPDATE autopilot_actions SET thread_id='project-thread',turn_id='project-turn' WHERE id=?",
+            (identity,),
+        )
+    await wf.research.request(
+        {
+            "id": 123,
+            "method": "item/tool/requestUserInput",
+            "params": {
+                "threadId": "project-thread",
+                "turnId": "project-turn",
+                "questions": [{"id": "data", "question": "Synthetic fixture: which accessible data source?"}],
+            },
+        }
+    )
+    saved = service.store.one("SELECT pending_request FROM autopilot_actions WHERE id=?", (identity,))
+    pending = json.loads(saved["pending_request"])
+    command(
+        service, "answer", input_id=pending["id"], text="Keep this a synthetic fixture; no live data work."
+    )
+    answered = json.loads(
+        service.store.one("SELECT pending_request FROM autopilot_actions WHERE id=?", (identity,))[
+            "pending_request"
+        ]
+    )
+    assert answered["answer"].startswith("Keep this")
+    assert service.run("test-project")["control_revision"] == run["control_revision"]
+    assert service.store.one("SELECT resolved_at FROM autopilot_notices WHERE id=?", (pending["id"],))[
+        "resolved_at"
+    ]
+
+
+def test_cpu_terminal_without_timestamps_cannot_hold_gpu_admission(runtime, monkeypatch):
+    service, run = activated(runtime, monkeypatch)
+    support(service)
+    _, intent, _ = linked(service, run, gpus=0)
+    job = service.store.one("SELECT * FROM jobs WHERE intent_id=?", (intent,))
+    service.budget.observe(job, Observation("COMPLETED"), "synthetic")
+    assert service.budget.view(run["project_id"], policy())["unknown_jobs"] == 0
+    assert linked(service, run)[2] is None

@@ -1010,6 +1010,15 @@ class Autopilot:
                     "summary": args.summary,
                     "known_issues": args.known_issues,
                     "paper_version": paper["version"],
+                    "documents": self.store.rows(
+                        "SELECT name,MAX(version) AS version FROM autopilot_documents WHERE run_id=? GROUP BY name",
+                        (run["id"],),
+                    ),
+                    "files": self.store.rows(
+                        "SELECT id,name,size,created_at FROM autopilot_files WHERE run_id=? ORDER BY created_at DESC LIMIT 1",
+                        (run["id"],),
+                    ),
+                    "policy_revision": run["policy_revision"],
                     "published_at": now,
                     "judgment": "controller; researcher review required",
                 }

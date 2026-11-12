@@ -211,3 +211,29 @@ export const maintenanceCommands = sqliteTable(
       .where(sql`${t.state} = 'pending'`),
   ],
 );
+
+export const autopilotViews = sqliteTable('autopilot_views', {
+  projectId: text('project_id').primaryKey(),
+  executorId: text('executor_id').notNull(),
+  runId: text('run_id').notNull(),
+  revision: integer('revision').notNull(),
+  payload: text('payload').notNull(),
+  observedAt: real('observed_at').notNull(),
+});
+export const autopilotCommands = sqliteTable('autopilot_commands', {
+  requestId: text('request_id').primaryKey(),
+  projectId: text('project_id').notNull(),
+  executorId: text('executor_id').notNull(),
+  payload: text('payload').notNull(),
+  state: text('state').notNull().default('pending'),
+  error: text('error'),
+  receivedAt: real('received_at').notNull(),
+});
+export const autopilotDocuments = sqliteTable('autopilot_documents', {
+  identity: text('identity').primaryKey(),
+  projectId: text('project_id').notNull(),
+  runId: text('run_id').notNull(),
+  name: text('name').notNull(),
+  version: integer('version').notNull(),
+  objectKey: text('object_key').notNull(),
+});

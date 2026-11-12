@@ -59,8 +59,67 @@ def main():
             config.mode = original
         return {"synthetic": True}
 
+    @app.post("/fixture/autopilot-handoff")
+    async def autopilot_handoff(request: Request):
+        if not secrets.compare_digest(
+            request.headers.get("authorization", ""), "Bearer " + token.read_text().strip()
+        ):
+            raise HTTPException(401)
+        import time
+        from uuid import uuid4
+
+        from experimenttracker.autopilot_models import AutopilotPolicy
+        from experimenttracker.autopilot_tools import Document
+
+        service = workflow.research.service
+        now = time.time()
+        view = service.view("test-project")
+        if not view["run"]:
+            policy = AutopilotPolicy(
+                subject="Synthetic browser handoff fixture",
+                scope="Infrastructure only; no real research",
+                publication_goal="Software acceptance",
+                venue="Synthetic fixture",
+                start_at=now,
+                handoff_at=now + 604800,
+                submission_at=now + 1209600,
+                weekly_gpu_hours=0,
+                anchor_at=now,
+            )
+            service.command(
+                "test-project",
+                {
+                    "request_id": str(uuid4()),
+                    "kind": "configure",
+                    "expected_revision": 0,
+                    "policy": policy.model_dump(),
+                },
+            )
+            run = service.run("test-project")
+            with store.tx() as db:
+                service.publish(
+                    db,
+                    run,
+                    str(uuid4()),
+                    [
+                        Document(
+                            name="paper.tex",
+                            base_version=0,
+                            content="Synthetic browser source package. TODO: real research is not performed.",
+                        )
+                    ],
+                    "synthetic-fixture",
+                )
+                service.emit(db, run["id"], "synthetic_handoff_fixture")
+        return {"synthetic": True, "draft_only": True}
+
     # create_app mounts its static fallback last; keep the fixture endpoint ahead of it.
-    app.router.routes.insert(0, app.router.routes.pop())
+    fixture_routes = [
+        route for route in app.router.routes if getattr(route, "path", "").startswith("/fixture/")
+    ]
+    app.router.routes[:] = fixture_routes + [
+        route for route in app.router.routes if route not in fixture_routes
+    ]
     uvicorn.run(app, host="127.0.0.1", port=config.port, log_level="warning")
 
 

@@ -1,3 +1,4 @@
+import { autopilotRoute } from './autopilot';
 import { z } from 'zod';
 import { maintenanceRoute } from './maintenance';
 import { assets } from './generated-assets';
@@ -1448,6 +1449,8 @@ async function route(request: Request, env: Env): Promise<Response> {
   }
   const machine = p.startsWith('/api/executor/');
   await authorize(request, env, machine);
+  const autopilot = await autopilotRoute(request, env, p);
+  if (autopilot) return autopilot;
   const maintenance = await maintenanceRoute(request, env, p);
   if (maintenance) return maintenance;
   const memoryPath = p.match(/^\/api\/projects\/([^/]+)\/knowledge(?:\/reports\/(\d+))?$/);
@@ -2214,14 +2217,29 @@ async function route(request: Request, env: Env): Promise<Response> {
       return json(await enqueue(env, kind, payload, id), 202);
     }
   }
-  if (p === '/api/inbox' && request.method === 'GET')
+  if (p === '/api/inbox' && request.method === 'GET') {
+    const projectNotices = await all(
+      env,
+      'SELECT project_id,payload FROM autopilot_views WHERE executor_id=?',
+      env.EXECUTOR_ID,
+    );
     return json({
       schema_version: 1,
       entries: await all(
         env,
         'SELECT i.* FROM inbox i JOIN projections p ON p.id=i.experiment_id WHERE p.deleted_at IS NULL ORDER BY i.created_at DESC',
+      ).then((entries) =>
+        [
+          ...entries,
+          ...projectNotices.flatMap((row) =>
+            (JSON.parse(String(row.payload)).notices || [])
+              .filter((n: any) => !n.resolved_at)
+              .map((n: any) => ({ ...n, experiment_id: '', project_id: row.project_id })),
+          ),
+        ].sort((a: any, b: any) => b.created_at - a.created_at),
       ),
     });
+  }
   if (p === '/api/status' && request.method === 'GET') {
     const row = await first(env, 'SELECT * FROM executor_status WHERE id=?', env.EXECUTOR_ID);
     const status = row

@@ -33,6 +33,7 @@ import type { Experiment, InboxEntry, Status } from './types';
 import './style.css';
 import { registerWorkspaceTools } from './webmcp';
 import { ProjectKnowledge } from './ProjectKnowledge';
+import { Autopilot } from './Autopilot';
 import { downloadEvidenceBundle } from './evidence';
 import { currentReport, availableReports } from './reports';
 import { IncrementalResults } from './IncrementalResults';
@@ -117,7 +118,10 @@ function App() {
   const [inbox, setInbox] = useState<InboxEntry[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const notificationLink = useRef(new URLSearchParams(location.search).get('experiment'));
-  const [page, setPage] = useState<'experiments' | 'inbox' | 'settings' | 'memory'>('experiments');
+  const [page, setPage] = useState<'experiments' | 'inbox' | 'settings' | 'memory'>(() =>
+    new URLSearchParams(location.search).get('view') === 'memory' ? 'memory' : 'experiments',
+  );
+  const [autopilotActive, setAutopilotActive] = useState(false);
   const [tab, setTab] = useState('Progress');
   const [filter, setFilter] = useState('All');
   const [search, setSearch] = useState('');
@@ -356,8 +360,9 @@ function App() {
         ]
       : []),
   ];
-  const scopedInbox = inbox.filter((entry) =>
-    experiments.some((e) => e.id === entry.experiment_id),
+  const scopedInbox = inbox.filter(
+    (entry) =>
+      entry.project_id === projectId || experiments.some((e) => e.id === entry.experiment_id),
   );
   const report = exp ? currentReport(exp, reportChoice) : undefined;
   const reportOptions = exp ? availableReports(exp) : [];
@@ -682,7 +687,15 @@ function App() {
               <div className="page-heading">
                 <h1>Project knowledge</h1>
               </div>
+              <Autopilot
+                key={'autopilot-' + projectId}
+                onActive={setAutopilotActive}
+                projectId={projectId}
+                status={status}
+                open={choose}
+              />
               <ProjectKnowledge
+                autopilotActive={autopilotActive}
                 key={projectId}
                 projectId={projectId}
                 models={status?.models || []}
@@ -1443,7 +1456,12 @@ function App() {
                   <button
                     className="experiment-row"
                     key={n.id}
-                    onClick={() => choose(n.experiment_id)}
+                    onClick={() => {
+                      if (n.project_id) {
+                        setPage('memory');
+                        setSelected(null);
+                      } else choose(n.experiment_id);
+                    }}
                   >
                     <span
                       className={`experiment-icon ${n.kind === 'result_ready' ? 'complete-icon' : ''}`}

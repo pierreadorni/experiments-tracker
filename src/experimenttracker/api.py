@@ -353,7 +353,10 @@ def create_app(config, *, components=None, config_path=None, current_release=Non
                 "handoff.json",
                 run["handoff"] or '{"incomplete":true,"summary":"Working draft; no handoff judgment yet"}',
             )
-            for doc in service.view(project_id)["documents"]:
+            import json
+
+            handoff = json.loads(run["handoff"]) if run["handoff"] else {}
+            for doc in handoff.get("documents", service.view(project_id)["documents"]):
                 saved = service.document(run["id"], doc["name"], doc["version"])
                 archive.writestr(doc["name"], saved["content"])
             archive.writestr(

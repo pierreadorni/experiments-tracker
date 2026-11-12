@@ -100,6 +100,8 @@ export type ProjectReceipt = {
   project: Project | null;
 };
 export type Experiment = {
+  autopilot_stage_holds?: { stage_id: string; attempt: number; reason: string; detail: string }[];
+  autopilot?: { run_id: string; project_id: string; purpose: string; deferred: number } | null;
   partial_results?: {
     tasks: Record<
       string,
@@ -235,6 +237,7 @@ export type ModelOption = {
   default_effort: string;
 };
 export type Status = {
+  autopilot?: { available: boolean; schema_version: number };
   experiment_cancellation?: boolean;
   quota_reserve?: { five_hour_percent: number; weekly_percent: number };
   compute_policy?: {
@@ -273,6 +276,7 @@ export type Status = {
   gateway_configured?: boolean;
 };
 export type InboxEntry = {
+  project_id?: string;
   id: string;
   experiment_id: string;
   kind: string;

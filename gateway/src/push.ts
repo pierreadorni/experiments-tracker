@@ -207,7 +207,7 @@ export function pushStatements(env: Env, exp: PushExperiment, previous: PushExpe
   const now = Date.now() / 1000;
   return [
     env.DB.prepare(
-      "UPDATE push_outbox SET state='superseded' WHERE experiment_id=? AND revision<? AND state='pending' AND EXISTS(SELECT 1 FROM projections WHERE id=? AND revision=?)",
+      "UPDATE push_outbox SET state='superseded' WHERE experiment_id=? AND revision<? AND state='pending' AND id NOT LIKE 'autopilot:%' AND EXISTS(SELECT 1 FROM projections WHERE id=? AND revision=?)",
     ).bind(exp.id, exp.revision, exp.id, exp.revision),
     env.DB.prepare(
       `INSERT OR IGNORE INTO push_outbox(id,subscription_id,experiment_id,revision,payload,next_attempt_at,created_at)

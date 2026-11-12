@@ -33,6 +33,19 @@ export function StageTimeline({ exp, status }: { exp: Experiment; status: Status
         !exp.plan_review?.stages.length));
   return (
     <>
+      {!!exp.autopilot_stage_holds?.length && (
+        <div className="notice" role="status">
+          {exp.autopilot_stage_holds.map((hold) => (
+            <p key={hold.stage_id}>
+              {hold.stage_id}:{' '}
+              {hold.reason === 'autopilot_weekly_gpu_limit'
+                ? 'Waiting for autopilot limit reset'
+                : hold.reason.replaceAll('_', ' ')}
+              . No scheduler job has been submitted for this stage.
+            </p>
+          ))}
+        </div>
+      )}
       {repair?.preparing && (
         <div className="notice" role="status">
           <strong>

@@ -70,8 +70,10 @@ export function ProjectKnowledge({
   open,
   experiments,
   useIdea,
+  autopilotActive = false,
 }: {
   projectId: string;
+  autopilotActive?: boolean;
   models: Model[];
   open: (id: string) => void;
   experiments: Experiment[];
@@ -268,11 +270,13 @@ export function ProjectKnowledge({
             <input
               type="checkbox"
               role="switch"
-              checked={memory?.weekly ?? false}
-              disabled={busy || !memory}
+              checked={!autopilotActive && (memory?.weekly ?? false)}
+              disabled={busy || !memory || autopilotActive}
               onChange={(e) => void send('schedule', { weekly: e.target.checked })}
             />
-            Update weekly with new results
+            {autopilotActive
+              ? 'Weekly reports managed by Autopilot'
+              : 'Update weekly with new results'}
           </label>
           {!!memory?.report_versions.length && (
             <Select

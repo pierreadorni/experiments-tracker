@@ -77,6 +77,7 @@ export function stageRecovery(exp: Experiment, stage: Stage): 'retained' | 'reus
 export function experimentStatus(exp: Experiment): string {
   const pretty = (value: string) => value.replaceAll('_', ' ');
   if (['complete', 'failed', 'cancelled'].includes(exp.phase)) return pretty(exp.phase);
+  if (exp.hold_reason === 'autopilot_weekly_gpu_limit') return 'Waiting for autopilot limit reset';
   if (exp.hold_reason) return pretty(exp.hold_reason);
   const repair = repairProgress(exp);
   if (repair?.preparing)
