@@ -1,7 +1,7 @@
 import json
 import os
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -101,7 +101,7 @@ def test_missing_eta_old_attempt_future_sample_and_unsafe_files(log_job):
 def test_iso_timestamps_are_normalized_and_subject_to_same_bounds(log_job):
     root, job, log, now = log_job
 
-    def iso(timestamp, tz=timezone.utc):
+    def iso(timestamp, tz=UTC):
         return datetime.fromtimestamp(timestamp, tz).isoformat()
 
     log.write_text(
