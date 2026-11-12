@@ -40,6 +40,7 @@ from .store import encode
 from .tfevents import read_previews
 from .tfevents import selection as tensorboard_selection
 from .title import TitleSummary, luna_title_model, title_prompt
+from .watchdog import engine_watchdog
 from .workspaces import Workspaces, WorkspaceUnavailable
 
 log = logging.getLogger(__name__)
@@ -574,6 +575,7 @@ class Workflow:
             except Exception as exc:
                 log.exception("workflow tick failed")
                 self.store.update(eid, hold_reason="executor_error", error=str(exc))
+        engine_watchdog(self.store, now, self.config.watchdog_minutes)
         self.discard_failed_implementation()
         await self.advance_cleanup()
         queue_late_reports(self)

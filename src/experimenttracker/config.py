@@ -184,6 +184,8 @@ class Config(StrictModel):
     port: int = Field(default=8765, ge=1024, le=65535)
     api_token_file: Path
     scheduler_seconds: float = Field(default=30, ge=0.1)
+    # An experiment whose hold and revision stay unchanged for this long is reported.
+    watchdog_minutes: int = Field(default=30, ge=1)
     projects_root: Path | None = None
     projects: list[ProjectConfig] = Field(
         default_factory=lambda: [ProjectConfig(id="test-project", name="Test project")],

@@ -69,7 +69,7 @@ Briefing rules and the brief template are in [README.md](README.md).
   creates no second action.
 - **Tests:** extend `tests/test_iteration_agent_stages.py` and `tests/test_steering.py`.
 
-### [ ] T0.3 Liveness watchdog over existing tables (C2 interim) · F · S
+### [x] T0.3 Liveness watchdog over existing tables (C2 interim) · F · S
 - **Files:** new `src/experimenttracker/watchdog.py`; call it from `Workflow.tick`
   (after `advance`); `config.py` (`watchdog_minutes: int = 30`).
 - **Do:**
@@ -324,4 +324,6 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 
 Record completed tasks here: `date · task · commit · notes`.
 
-2026-11-12 · T0.7 · this commit · Linked the refactor workspace from agent and development instructions; link targets, Ruff and all 452 Python tests pass.
+2026-11-12 · T0.7 · dcf22d4 · Linked the refactor workspace from agent and development instructions; link targets, Ruff and all 452 Python tests pass.
+
+2026-11-12 · T0.3 · this commit · Notice-only watchdog uses persisted revision timestamps and deduplicates by hold; 29 targeted and all 481 Python tests pass, with Ruff checks.
