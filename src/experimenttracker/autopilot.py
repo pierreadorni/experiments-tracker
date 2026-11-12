@@ -67,7 +67,7 @@ def migrate(db):
         """CREATE TABLE autopilot_actions(
             id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES autopilot_runs(id), cursor INTEGER NOT NULL,
             control_revision INTEGER NOT NULL, state TEXT NOT NULL, input TEXT, result TEXT, error TEXT,
-            thread_id TEXT, turn_id TEXT, interrupt_reason TEXT, observed_at REAL,
+            thread_id TEXT, turn_id TEXT, interrupt_reason TEXT, observed_at REAL, pending_request TEXT,
             created_at REAL NOT NULL, updated_at REAL NOT NULL)""",
         "CREATE UNIQUE INDEX one_autopilot_action ON autopilot_actions(run_id) WHERE state IN ('pending','dispatching','running','uncertain','received')",
         """CREATE TABLE autopilot_allocations(
@@ -97,6 +97,12 @@ def migrate(db):
             boundary TEXT NOT NULL, nominal_at REAL NOT NULL, observed_at REAL NOT NULL, gaps TEXT NOT NULL,
             PRIMARY KEY(run_id,policy_revision,boundary))""",
     ]
+    statements.extend(
+        [
+            "CREATE TABLE autopilot_deliveries(identity TEXT PRIMARY KEY, delivered_at REAL NOT NULL)",
+            "CREATE TABLE autopilot_files(id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES autopilot_runs(id), request_id TEXT NOT NULL UNIQUE, name TEXT NOT NULL, path TEXT NOT NULL, size INTEGER NOT NULL, created_at REAL NOT NULL)",
+        ]
+    )
     for statement in statements:
         db.execute(statement)
 
@@ -194,6 +200,10 @@ class Autopilot:
             "calendar": calendar(policy, now, run["borrowed_percent"]),
             "budget": self.budget.view(project_id, policy, now),
             "documents": documents,
+            "files": self.store.rows(
+                "SELECT id,name,size,created_at FROM autopilot_files WHERE run_id=? ORDER BY created_at DESC LIMIT 20",
+                (run["id"],),
+            ),
             "backlog": [
                 {**r, "document": json.loads(r["document"])}
                 for r in self.store.rows("SELECT * FROM autopilot_backlog WHERE run_id=?", (run["id"],))
@@ -214,6 +224,10 @@ class Autopilot:
                     (run["id"],),
                 )
             ],
+            "responses": self.store.rows(
+                "SELECT id,cursor,result,created_at FROM autopilot_actions WHERE run_id=? AND state='completed' AND result IS NOT NULL ORDER BY created_at DESC LIMIT 20",
+                (run["id"],),
+            ),
             "messages": self.store.rows(
                 "SELECT * FROM autopilot_inputs WHERE run_id=? AND kind IN ('message','answer') ORDER BY seq DESC LIMIT 30",
                 (run["id"],),
@@ -258,6 +272,21 @@ class Autopilot:
             if body.kind == "configure" and (not run or run["status"] in ("completed", "stopped")):
                 if body.expected_revision != 0 or not body.policy:
                     raise Conflict("new draft requires policy and expected_revision 0")
+                if (
+                    self.store.one(
+                        "SELECT 1 FROM autopilot_members m JOIN jobs j ON j.experiment_id=m.experiment_id WHERE m.project_id=? AND j.state IN ('submitting','submitted','agent')",
+                        (project_id,),
+                    )
+                    or self.store.one(
+                        "SELECT 1 FROM autopilot_actions WHERE run_id IN (SELECT id FROM autopilot_runs WHERE project_id=?) AND state IN ('dispatching','running','uncertain')",
+                        (project_id,),
+                    )
+                    or self.store.one(
+                        "SELECT 1 FROM autopilot_members m JOIN agent_actions a ON a.experiment_id=m.experiment_id WHERE m.project_id=? AND a.state IN ('dispatching','running','uncertain')",
+                        (project_id,),
+                    )
+                ):
+                    raise Conflict("reconcile previous run's submitted and uncertain work before a new run")
                 if self.store.one(
                     "SELECT 1 FROM autopilot_allocations WHERE project_id=? AND state!='settled'",
                     (project_id,),
@@ -279,6 +308,8 @@ class Autopilot:
                 run_id = run["id"]
                 policy = self.policy(run)
                 if body.kind in ("configure", "revise"):
+                    if run["status"] in ("stopped", "completed"):
+                        raise Conflict("terminal runs retain their authority history; configure a new run")
                     if not body.policy or (body.kind == "configure" and run["status"] != "draft"):
                         raise Conflict("policy revision requires a complete policy")
                     if run["status"] != "draft" and body.policy.anchor_at != policy.anchor_at:
@@ -299,6 +330,15 @@ class Autopilot:
                         "UPDATE autopilot_runs SET policy_revision=?,control_revision=control_revision+1,borrowed_percent=0 WHERE id=?",
                         (revision, run_id),
                     )
+                    if (
+                        run["status"] in ("handoff_ready", "handoff_incomplete")
+                        and body.policy.handoff_at > time.time()
+                        and body.policy.handoff_at != policy.handoff_at
+                    ):
+                        db.execute(
+                            "UPDATE autopilot_runs SET status='active',handoff=NULL WHERE id=?", (run_id,)
+                        )
+                    self.wake(db, run_id, request_id, "policy_revision")
                 elif body.kind == "activate":
                     if run["status"] != "draft":
                         raise Conflict("only a draft can be activated")
@@ -315,7 +355,7 @@ class Autopilot:
                     self.wake(db, run_id, request_id, "activation")
                 elif body.kind in ("pause", "resume", "stop", "complete"):
                     allowed = {
-                        "pause": {"active"},
+                        "pause": {"active", "handoff_ready", "handoff_incomplete"},
                         "resume": {"paused"},
                         "stop": {"active", "paused", "handoff_ready", "handoff_incomplete"},
                         "complete": {"handoff_ready", "handoff_incomplete"},
@@ -328,6 +368,8 @@ class Autopilot:
                         "stop": "stopped",
                         "complete": "completed",
                     }[body.kind]
+                    if body.kind == "resume" and time.time() >= policy.handoff_at:
+                        state = "handoff_incomplete"
                     db.execute(
                         "UPDATE autopilot_runs SET status=?,control_revision=control_revision+1 WHERE id=?",
                         (state, run_id),
@@ -343,7 +385,30 @@ class Autopilot:
                             (time.time(), body.input_id, run_id),
                         ).rowcount:
                             raise Conflict("input request is not pending")
+                    pending_action = (
+                        self.store.one(
+                            "SELECT * FROM autopilot_actions WHERE run_id=? AND pending_request IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+                            (run_id,),
+                        )
+                        if body.kind == "answer"
+                        else None
+                    )
+                    pending = json.loads(pending_action["pending_request"]) if pending_action else None
+                    if pending and pending["id"] == body.input_id and not pending.get("expired"):
+                        from .models import request_answer
+
+                        request_answer(pending, body.text)
+                        pending["answer"] = body.text
+                        db.execute(
+                            "UPDATE autopilot_actions SET pending_request=? WHERE id=?",
+                            (encode(pending), pending_action["id"]),
+                        )
                     self.wake(db, run_id, request_id, body.kind, {"text": body.text, "author": origin})
+                    if body.kind == "message":
+                        db.execute(
+                            "UPDATE autopilot_runs SET control_revision=control_revision+1 WHERE id=?",
+                            (run_id,),
+                        )
                 elif body.kind == "control":
                     self.control(
                         db, run, str(body.experiment_id), body.control, body.text, request_id, origin
@@ -506,7 +571,7 @@ class Autopilot:
                 or supported.get("allocation_intervals") != "single"
             ):
                 reason = "autopilot_accounting_prerequisite"
-            elif budget["anomalies"] or budget["unknown_seconds"]:
+            elif budget["anomalies"] or budget["unknown_jobs"]:
                 reason = "autopilot_accounting_unknown"
             elif required > budget["cap_seconds"]:
                 reason = "autopilot_job_exceeds_weekly_cap"
@@ -550,6 +615,10 @@ class Autopilot:
             (run["id"], run["consumed_cursor"]),
         )
         view["instructions"] = self.policy(run).instructions
+        view["accepted_tool_results"] = self.store.rows(
+            "SELECT request_id,author,result FROM autopilot_requests WHERE run_id=? AND author LIKE 'agent:%' AND state='applied' ORDER BY created_at DESC LIMIT 100",
+            (run["id"],),
+        )
         # Full documents and experiment details are fetched on demand.
         return view
 
@@ -700,23 +769,18 @@ class Autopilot:
                     raise Conflict("writing phase rejects new exploratory directions")
                 self.require_slot(run)
                 eid = str(uuid5(NAMESPACE_URL, "autopilot-experiment:" + request_id))
+                if item["protocol_document"] != "protocol":
+                    raise Conflict("investigation must reference the project protocol document")
                 protocol = self.document(run["id"], item["protocol_document"])
                 brief = (
                     args.brief
-                    + "\n\nAutopilot research question: "
-                    + item["question"]
-                    + "\nPurpose: "
+                    + "\n\nAutopilot investigation: "
+                    + args.backlog_id
+                    + "; purpose: "
                     + item["purpose"]
-                    + "\nScope rationale: "
-                    + args.scope_rationale
-                    + "\nProtocol v"
+                    + "; protocol version: "
                     + str(protocol["version"])
-                    + ":\n"
-                    + protocol["content"]
-                    + "\nResearch scope:\n"
-                    + policy.scope
-                    + "\nExclusions:\n"
-                    + policy.exclusions
+                    + ". Read the saved project guidance and protocol pointer in the prompt."
                 )
                 result = self.store.command(
                     request_id,
@@ -899,7 +963,7 @@ class Autopilot:
                         refs[logical] = doc["version"]
                     literature = self.document(run["id"], "literature")
                     if not any(
-                        s["kind"] == "literature" and s["access"] != "unavailable"
+                        s["kind"] == "literature" and s["access"] in ("abstract", "full_text")
                         for s in literature["sources"]
                     ):
                         raise Conflict("foundation needs verified literature access, not placeholders")
@@ -1071,8 +1135,12 @@ class Autopilot:
                         ),
                     }
                     db.execute(
-                        "UPDATE autopilot_runs SET status='handoff_incomplete',handoff=?,control_revision=control_revision+1 WHERE id=?",
-                        (encode(handoff), run["id"]),
+                        "UPDATE autopilot_runs SET status=?,handoff=?,control_revision=control_revision+1 WHERE id=?",
+                        (
+                            "paused" if run["status"] == "paused" else "handoff_incomplete",
+                            encode(handoff),
+                            run["id"],
+                        ),
                     )
                     db.execute(
                         "INSERT OR IGNORE INTO autopilot_notices VALUES(?,?,'handoff',?,NULL,?)",

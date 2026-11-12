@@ -500,6 +500,12 @@ class Store:
     def projection(self, eid):
         result = self.experiment(eid)
         result["project_id"] = result["contract"].get("project", {}).get("id", "test-project")
+        result["autopilot_stage_holds"] = self.rows(
+            "SELECT stage_id,attempt,reason,detail FROM autopilot_stage_holds WHERE experiment_id=?", (eid,)
+        )
+        result["autopilot"] = self.one(
+            "SELECT run_id,project_id,purpose,deferred FROM autopilot_members WHERE experiment_id=?", (eid,)
+        )
         result["steering"] = self.rows(
             "SELECT request_id,text,mode,state,created_at,applied_at,replacement_experiment_id FROM steering WHERE experiment_id=? ORDER BY created_at",
             (eid,),

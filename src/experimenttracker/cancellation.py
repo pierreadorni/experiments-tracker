@@ -90,6 +90,12 @@ async def process_cancellations(workflow):
                 if not terminal:
                     observed = await scheduler.observe(job_id)
                     terminal = observed.state in TERMINAL_JOBS
+                if observed:
+                    workflow.research.service.budget.observe(
+                        job,
+                        observed,
+                        store.experiment(eid)["contract"].get("execution", {}).get("context", "acacia"),
+                    )
                 if terminal:
                     with store.tx() as db:
                         db.execute(

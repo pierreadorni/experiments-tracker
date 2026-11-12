@@ -95,12 +95,17 @@ def verify_release(config, commit):
 
 
 def identities(store):
-    return {
+    result = {
         "jobs": store.rows("SELECT intent_id,job_id FROM jobs ORDER BY intent_id"),
         "actions": store.rows("SELECT id,thread_id,turn_id FROM agent_actions ORDER BY id"),
         "project_turns": store.rows("SELECT id,thread_id,turn_id FROM project_turns ORDER BY id"),
         "pauses": store.rows("SELECT id,pause_agent,pause_compute FROM experiments ORDER BY id"),
     }
+
+    turns = store.rows("SELECT id,thread_id,turn_id FROM autopilot_actions ORDER BY id")
+    if turns:
+        result["autopilot_turns"] = turns
+    return result
 
 
 def blockers(workflow):
@@ -139,6 +144,10 @@ def blockers(workflow):
         or any(not task.done() for task in workflow.cleanup_tasks.values())
     ):
         reasons.append("filesystem work is settling")
+    if workflow.pool_owner.research.busy:
+        reasons.append("Autopilot work is active, settling or uncertain")
+    if store.one("SELECT 1 FROM autopilot_requests WHERE state='compiling'"):
+        reasons.append("an Autopilot document operation is unfinished")
     if supervisor.task and not supervisor.task.done():
         reasons.append("project work is settling")
     return reasons

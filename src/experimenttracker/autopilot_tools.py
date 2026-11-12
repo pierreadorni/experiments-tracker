@@ -59,7 +59,7 @@ class Decision(Mutation):
 
 
 class Create(Mutation):
-    brief: str = Field(min_length=1, max_length=24000)
+    brief: str = Field(min_length=1, max_length=3000)
     backlog_id: str = Field(max_length=80)
     scope_rationale: str = Field(min_length=1, max_length=4000)
     estimated_finish_at: float

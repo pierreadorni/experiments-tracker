@@ -53,6 +53,7 @@ class GatewayClient:
             follow_redirects=False,
         )
         self.last_heartbeat = 0
+        self.last_autopilot_publish = 0
         self.operation_errors = {}
         self.artifact_retry_at = {}
 
@@ -501,6 +502,116 @@ class GatewayClient:
                     (time.time(), row["project_id"], row["revision"]),
                 )
 
+    async def autopilot(self):
+        from .autopilot import Autopilot
+        from .autopilot_models import AutopilotCommand
+
+        service = Autopilot(self.store, self.config)
+        response = await self.request("GET", "/api/executor/autopilot-commands")
+        commands = response.get("commands")
+        if not isinstance(commands, list) or len(commands) > 20:
+            raise ValueError("invalid Autopilot command batch")
+        for row in commands:
+            identity = str(UUID(row["request_id"]))
+            if identity != row["payload"].get("request_id"):
+                raise ValueError("Autopilot command identity mismatch")
+            state, error = "accepted", None
+            prior = self.store.one("SELECT * FROM autopilot_requests WHERE request_id=?", (identity,))
+            if prior and prior["state"] == "rejected":
+                if prior["project_id"] != row["project_id"] or prior["payload"] != encode(row["payload"]):
+                    raise ValueError("Autopilot rejection identity changed")
+                state, error = "rejected", prior["error"]
+            else:
+                try:
+                    service.command(row["project_id"], AutopilotCommand.model_validate(row["payload"]))
+                except (ValueError, KeyError) as exc:
+                    state, error = "rejected", str(exc)[:1000]
+                    with self.store.tx() as db:
+                        db.execute(
+                            "INSERT OR IGNORE INTO autopilot_requests VALUES(?,?,NULL,?,'researcher','rejected',NULL,?,?)",
+                            (identity, row["project_id"], encode(row["payload"]), error, time.time()),
+                        )
+            ack = await self.request(
+                "POST",
+                "/api/executor/autopilot-commands",
+                json={"request_id": identity, "state": state, "error": error},
+            )
+            if ack.get("accepted") != identity:
+                raise ValueError("Autopilot acknowledgement identity mismatch")
+        if time.time() - self.last_autopilot_publish < 30 and not self.store.one(
+            "SELECT 1 FROM autopilot_events WHERE delivered_at IS NULL"
+        ):
+            return
+        # Deliver immutable objects before the current view advertises their versions.
+        # Publishing current views also refreshes deterministic reset/accounting diagnostics.
+        for run in self.store.rows("SELECT * FROM autopilot_runs ORDER BY created_at"):
+            for doc in self.store.rows(
+                "SELECT d.* FROM autopilot_documents d LEFT JOIN autopilot_deliveries p ON p.identity=d.run_id || ':' || d.name || ':' || d.version WHERE d.run_id=? AND p.identity IS NULL",
+                (run["id"],),
+            ):
+                await self.request(
+                    "POST",
+                    "/api/executor/autopilot-documents",
+                    json={
+                        "project_id": run["project_id"],
+                        "run_id": run["id"],
+                        "name": doc["name"],
+                        "version": doc["version"],
+                        "content": doc["content"],
+                        "sources": json.loads(doc["sources"]),
+                        "author": doc["author"],
+                        "created_at": doc["created_at"],
+                    },
+                )
+                with self.store.tx() as db:
+                    db.execute(
+                        "INSERT OR IGNORE INTO autopilot_deliveries VALUES(?,?)",
+                        (f"{run['id']}:{doc['name']}:{doc['version']}", time.time()),
+                    )
+            for file in self.store.rows(
+                "SELECT f.* FROM autopilot_files f LEFT JOIN autopilot_deliveries p ON p.identity=f.id WHERE f.run_id=? AND p.identity IS NULL",
+                (run["id"],),
+            ):
+                data = await asyncio.to_thread(Path(file["path"]).read_bytes)
+                if len(data) != file["size"] or len(data) > 10 * 1024 * 1024:
+                    raise ValueError("published manuscript file changed or is oversized")
+                response = await self.client.post(
+                    "/api/executor/autopilot-files/" + file["id"],
+                    content=data,
+                    headers={
+                        "Content-Type": "application/pdf",
+                        "X-Project-Id": run["project_id"],
+                        "X-Run-Id": run["id"],
+                    },
+                )
+                response.raise_for_status()
+                with self.store.tx() as db:
+                    db.execute(
+                        "INSERT OR IGNORE INTO autopilot_deliveries VALUES(?,?)", (file["id"], time.time())
+                    )
+            current = service.run(run["project_id"])
+            if current["id"] != run["id"]:
+                continue
+            view = service.view(run["project_id"])
+            await self.request(
+                "POST",
+                "/api/executor/autopilot",
+                json={
+                    "project_id": run["project_id"],
+                    "run_id": run["id"],
+                    "revision": view["run"]["revision"],
+                    "observed_at": view["observed_at"],
+                    "view": view,
+                },
+            )
+            with self.store.tx() as db:
+                db.execute(
+                    "UPDATE autopilot_events SET delivered_at=? WHERE run_id=? AND revision<=? AND delivered_at IS NULL",
+                    (time.time(), run["id"], view["run"]["revision"]),
+                )
+
+        self.last_autopilot_publish = time.time()
+
     async def maintenance(self):
         from .maintenance import InstallCommand
 
@@ -563,6 +674,7 @@ class GatewayClient:
             self.isolated("project_settings", self.project_settings_commands),
             self.isolated("commands", self.commands),
             self.isolated("maintenance", self.maintenance),
+            self.isolated("autopilot", self.autopilot),
             self.isolated("heartbeat", self.heartbeat),
             publication(),
         )

@@ -291,6 +291,81 @@ def create_app(config, *, components=None, config_path=None, current_release=Non
         except Conflict as exc:
             raise HTTPException(409, str(exc)) from None
 
+    from .autopilot_models import AutopilotCommand
+
+    @app.get("/api/projects/{project_id}/autopilot", dependencies=[Depends(authorize)])
+    async def autopilot_view(project_id: str):
+        if project_id not in store().projects:
+            raise HTTPException(404, "Unknown project")
+        return app.state.workflow.research.service.view(project_id)
+
+    @app.post(
+        "/api/projects/{project_id}/autopilot/commands", dependencies=[Depends(authorize)], status_code=202
+    )
+    async def autopilot_command(project_id: str, body: AutopilotCommand):
+        try:
+            return app.state.workflow.research.service.command(project_id, body)
+        except (Conflict, KeyError) as exc:
+            raise HTTPException(409, str(exc)) from None
+
+    @app.get(
+        "/api/projects/{project_id}/autopilot/documents/{name}/versions/{version}",
+        dependencies=[Depends(authorize)],
+    )
+    async def autopilot_document(project_id: str, name: str, version: int, run_id: UUID | None = None):
+        service = app.state.workflow.research.service
+        try:
+            run = service.run(project_id, str(run_id) if run_id else None)
+            if run["project_id"] != project_id:
+                raise KeyError("Wrong project")
+            doc = service.document(run["id"], name, version)
+        except KeyError:
+            raise HTTPException(404, "Unknown project document version") from None
+        return Response(
+            doc["content"],
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{name}"'},
+        )
+
+    @app.get("/api/projects/{project_id}/autopilot/files/{file_id}", dependencies=[Depends(authorize)])
+    def autopilot_file(project_id: str, file_id: UUID):
+        row = store().one(
+            "SELECT f.* FROM autopilot_files f JOIN autopilot_runs r ON r.id=f.run_id WHERE f.id=? AND r.project_id=?",
+            (str(file_id), project_id),
+        )
+        if not row or not Path(row["path"]).is_file() or Path(row["path"]).is_symlink():
+            raise HTTPException(404, "Published paper is unavailable")
+        return FileResponse(row["path"], media_type="application/pdf", filename="paper.pdf")
+
+    @app.get("/api/projects/{project_id}/autopilot/handoff", dependencies=[Depends(authorize)])
+    async def autopilot_handoff(project_id: str):
+        import io
+        import zipfile
+
+        service = app.state.workflow.research.service
+        try:
+            run = service.run(project_id)
+        except KeyError:
+            raise HTTPException(404, "No Autopilot run") from None
+        result = io.BytesIO()
+        with zipfile.ZipFile(result, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                "handoff.json",
+                run["handoff"] or '{"incomplete":true,"summary":"Working draft; no handoff judgment yet"}',
+            )
+            for doc in service.view(project_id)["documents"]:
+                saved = service.document(run["id"], doc["name"], doc["version"])
+                archive.writestr(doc["name"], saved["content"])
+            archive.writestr(
+                "BUILD.txt",
+                "Working source draft. Compile paper.tex with pdflatex -no-shell-escape.\nMissing results remain TODOs; researcher review is required.\n",
+            )
+        return Response(
+            result.getvalue(),
+            media_type="application/zip",
+            headers={"Content-Disposition": 'attachment; filename="autopilot-handoff.zip"'},
+        )
+
     @app.get("/api/experiments", dependencies=[Depends(authorize)])
     async def experiments():
         return {
@@ -379,6 +454,9 @@ def create_app(config, *, components=None, config_path=None, current_release=Non
             "schema_version": 1,
             "entries": store().rows(
                 "SELECT i.* FROM inbox i JOIN experiments e ON e.id=i.experiment_id WHERE e.deleted_at IS NULL ORDER BY i.created_at DESC"
+            )
+            + store().rows(
+                "SELECT n.id,'' AS experiment_id,r.project_id,n.kind,n.text,n.created_at FROM autopilot_notices n JOIN autopilot_runs r ON r.id=n.run_id WHERE n.resolved_at IS NULL ORDER BY n.created_at DESC LIMIT 100"
             ),
         }
 

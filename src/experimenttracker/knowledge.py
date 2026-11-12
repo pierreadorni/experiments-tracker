@@ -673,6 +673,8 @@ class ProjectSupervisor:
 
     async def advance(self):
         wf, memory = self.workflow, self.memory
+        if wf.research.busy:
+            return
         if self.task:
             if not self.task.done():
                 return
@@ -685,7 +687,9 @@ class ProjectSupervisor:
         ):
             # Deleted or no-longer-configured projects retain their history and
             # schedules, but cannot enqueue optional work or block owner ticks.
-            if state["project_id"] not in memory.store.projects:
+            if state["project_id"] not in memory.store.projects or wf.research.service.enabled(
+                state["project_id"]
+            ):
                 continue
             if not memory.view(state["project_id"])["pending_experiment_ids"] or not self.plenty(
                 wf.gate.decide()
@@ -730,7 +734,9 @@ class ProjectSupervisor:
                         row["id"], "uncertain", error=str(exc)[:2000], hold_reason="agent_dispatch_uncertain"
                     )
                 return
-            if row["origin"] == "weekly" and not memory.view(row["project_id"])["weekly"]:
+            if row["origin"] == "weekly" and (
+                not memory.view(row["project_id"])["weekly"] or wf.research.service.enabled(row["project_id"])
+            ):
                 memory.state(row["id"], "failed", error="Weekly synthesis was disabled before dispatch")
                 continue
             if any(lane.agent_task for lane in wf.lanes) or memory.store.one(

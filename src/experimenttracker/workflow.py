@@ -11,6 +11,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from . import artifacts, early_repair, iteration, reporting
+from .autopilot_controller import ResearchController
 from .cancellation import process_cancellations
 from .codex_client import CodexAgent, NeedsAttention, RpcRejected, SessionUnavailable, TerminalTurnError
 from .config import JobResources
@@ -63,6 +64,12 @@ class Workflow:
         self.projects = Projects(config, store)
         self.workspaces = Workspaces(self.projects)
         self.scheduler = scheduler
+        self.scheduler.autopilot_intent = lambda intent: bool(
+            store.one("SELECT 1 FROM autopilot_allocations WHERE intent_id=?", (intent,))
+        )
+        self.scheduler.autopilot_job = lambda job: bool(
+            store.one("SELECT 1 FROM autopilot_allocations WHERE job_id=?", (job,))
+        )
         self.agent = agent
         self.gate = QuotaGate(config.quota.model_copy(deep=True))
         saved_reserve = store.one(
@@ -105,6 +112,7 @@ class Workflow:
         self.conversation = Conversation(self)
         self.supervisor = ProjectSupervisor(self)
         self.controller = Controller(self)
+        self.research = ResearchController(self)
         self.submission_lock = asyncio.Lock()
         self.pool_owner = self
         self.lanes = [self]
@@ -246,6 +254,7 @@ class Workflow:
             lane.pool_owner = self
             lane.gate = self.gate
             lane.controller = self.controller
+            lane.research = self.research
             lane.submission_lock = self.submission_lock
             await lane.connect_agent()
             lane.started = True
@@ -275,6 +284,7 @@ class Workflow:
     def status(self, last_tick, executor_error=None, *, projects=None):
         return {
             "experiment_cancellation": True,
+            "autopilot": {"available": True, "schema_version": 1},
             "maintenance": self.maintenance.status(self),
             "projects": self.projects.catalog() if projects is None else projects,
             "last_tick": last_tick,
@@ -412,6 +422,7 @@ class Workflow:
                     (time.time(), encode(payload), decision.admitted, decision.reason),
                 )
             self.last_quota_refresh = time.time()
+            await self.pool_owner.research.interrupt_holds()
             if not decision.admitted:
                 await self.pool_owner.supervisor.interrupt()
                 for lane in self.pool_owner.lanes:
@@ -445,7 +456,7 @@ class Workflow:
         if (
             not self.closing
             and not self.gate.decide().admitted
-            and (self.active_action or self.pool_owner.supervisor.active_id)
+            and (self.active_action or self.pool_owner.supervisor.active_id or self.pool_owner.research.busy)
         ):
             # Do not await a correlated RPC from inside the protocol reader.
             if not self.quota_task or self.quota_task.done():
@@ -453,6 +464,9 @@ class Workflow:
 
     async def _request(self, message):
         action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (self.active_action,))
+        if not action and self.pool_owner.research.active_id:
+            await self.pool_owner.research.request(message)
+            return
         if not action:
             raise NeedsAttention("request has no active action")
         pending = {
@@ -468,6 +482,9 @@ class Workflow:
         )
 
     async def tick(self, *, force_observe=False):
+        self.research.service.tick()
+        await self.research.reply_inputs()
+        await self.research.interrupt_holds()
         await process_cancellations(self)
         await early_repair.reconcile_cancellations(self)
         self.projects.tick()
@@ -505,6 +522,7 @@ class Workflow:
                 self.quota_task = asyncio.create_task(self.refresh_quota())
         if force_observe or now - self.last_scheduler >= self.config.scheduler_seconds:
             await self.observe_jobs()
+            await self.reconcile_autopilot_accounting()
             self.last_scheduler = now
         for row in self.store.rows("SELECT id FROM experiments WHERE pending_request IS NOT NULL"):
             exp = self.store.experiment(row["id"])
@@ -536,7 +554,9 @@ class Workflow:
         await self.repair_failed_experiments()
         await self.advance_reports()
         rows = self.store.rows(
-            "SELECT id FROM experiments WHERE deleted_at IS NULL AND phase NOT IN ('complete','failed','cancelled') ORDER BY created_at"
+            "SELECT e.id FROM experiments e LEFT JOIN autopilot_members m ON m.experiment_id=e.id "
+            "WHERE e.deleted_at IS NULL AND e.phase NOT IN ('complete','failed','cancelled') "
+            "ORDER BY COALESCE(m.priority,0) DESC,e.created_at,e.id"
         )
         if self.supervisor.blocks_dispatch:
             rows = []
@@ -561,6 +581,7 @@ class Workflow:
             await self.advance_title()
             await self.controller.advance()
         await self.supervisor.advance()
+        await self.research.advance()
         if now - self.last_retention >= 5:
             from .retention import prune_batch
 
@@ -575,6 +596,21 @@ class Workflow:
         if now - self.last_backup >= 60 and (not self.backup_task or self.backup_task.done()):
             self.backup_task = asyncio.create_task(self.backup_state())
             self.last_backup = now
+
+    async def reconcile_autopilot_accounting(self):
+        for row in self.store.rows(
+            "SELECT j.* FROM jobs j JOIN autopilot_allocations a ON a.intent_id=j.intent_id WHERE a.state!='settled' AND j.state NOT IN ('submitting','submitted','agent') AND j.job_id IS NOT NULL"
+        ):
+            try:
+                exp = self.store.experiment(row["experiment_id"])
+                observation = await self.scheduler_for(exp, row).observe(row["job_id"])
+                self.research.service.budget.observe(
+                    row, observation, exp["contract"].get("execution", {}).get("context", "acacia")
+                )
+            except Exception:
+                log.warning(
+                    "Autopilot allocation accounting remains unresolved for intent %s", row["intent_id"]
+                )
 
     async def backup_state(self):
         started = time.monotonic()
@@ -715,6 +751,12 @@ class Workflow:
         )
 
     async def dispatch_title(self, action):
+        if (
+            self.research.busy
+            or not self.research.service.quota(self.gate, eid=action["experiment_id"]).admitted
+            or self.research.service.authority(action["experiment_id"], "title")
+        ):
+            return
         """Persist exact title turn identities; a lost outcome is never retried."""
         eid = action["experiment_id"]
         try:
@@ -1388,6 +1430,10 @@ class Workflow:
         python = self.experiment_python(exp) if generic else "/usr/bin/python3"
         project = self.project_context(exp)["checkout"] if generic else None
         resources = self.stage_resources(exp, stage)
+        with self.store.tx() as db:
+            held = self.research.service.admission(db, exp, stage, resources)
+            if held:
+                return held
         plan_stage = next(s for s in exp["snapshot"]["plan"]["stages"] if s["id"] == stage) if generic else {}
         if generic and not iteration.enabled(exp) and exp["contract"].get("strict_reproducibility"):
             artifacts.verify_project_sources(root, exp["snapshot"], project)
@@ -1478,6 +1524,17 @@ class Workflow:
         record_path.chmod(0o444)
         # Store submitting BEFORE crossing the scheduler boundary; all uncertainty is reconciled.
         with self.store.tx() as db:
+            current = self.store.experiment(eid)
+            if (
+                blocked(self.store)
+                or current["pause_compute"]
+                or current["phase"] in ("failed", "cancelled", "complete")
+                or current["snapshot"]["snapshot_hash"] != exp["snapshot"]["snapshot_hash"]
+            ):
+                return {"state": "held", "reason": "execution_authorization_changed"}
+            held = self.research.service.admission(db, current, stage, resources)
+            if held:
+                return held
             db.execute(
                 """INSERT INTO jobs(intent_id,experiment_id,stage_id,attempt,state,script_hash,
                 resources,snapshot_hash,created_at,execution_root,execution_manifest) VALUES(?,?,?,?,'submitting',?,?,?,?,?,?)""",
@@ -1494,6 +1551,7 @@ class Workflow:
                     encode(execution_manifest),
                 ),
             )
+            self.research.service.admission(db, current, stage, resources, intent_id)
             for ref in refs:
                 db.execute(
                     "INSERT INTO output_bindings VALUES(?,?,?)",
@@ -1703,6 +1761,9 @@ class Workflow:
                 observed = check[1] if check else await scheduler.observe(job["job_id"])
                 if self.store.experiment(eid)["phase"] == "cancelled":
                     continue
+                self.research.service.budget.observe(
+                    job, observed, exp["contract"].get("execution", {}).get("context", "acacia")
+                )
                 if isinstance(scheduler, RemoteSlurmScheduler):
                     try:
                         await scheduler.fetch(job, observed)
@@ -2023,6 +2084,27 @@ class Workflow:
                 )
                 self.store.emit(db, eid, "agent_action_queued", {"phase": phase, "action_id": action_id})
             action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (action_id,))
+        reason = self.research.service.authority(
+            eid, "interpret" if phase == "interpret" else phase, phase.removeprefix("agent:")
+        )
+        if reason and action["state"] not in ("dispatching", "running", "uncertain"):
+            if exp["hold_reason"] != reason:
+                self.store.update(eid, hold_reason=reason)
+            return
+        if (
+            action["state"] == "completed"
+            and action.get("autopilot_control_revision") is not None
+            and action["autopilot_control_revision"] != self.research.service.control_revision(eid)
+        ):
+            self._action_state(
+                action["id"], "failed", error="Known terminal result predates current project authority"
+            )
+            action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (action["id"],))
+            self.store.continue_action(
+                action,
+                feedback="Project authority or steering changed. Re-read current project guidance and retained files; accepted jobs/results stay unchanged.",
+            )
+            return
         if action["state"] == "completed":
             try:
                 value = json.loads(action["result"])
@@ -2336,9 +2418,12 @@ class Workflow:
                     count = self.store.one(
                         "SELECT COUNT(*) AS n FROM agent_actions WHERE experiment_id=? AND attempts>0", (eid,)
                     )["n"]
-                    if repeats >= self.config.codex.identical_error_limit and action.get(
-                        "interrupt_reason"
-                    ) not in ("quota_hold", "agent_paused", "owner_ceiling"):
+                    if (
+                        repeats >= self.config.codex.identical_error_limit
+                        and action.get("interrupt_reason")
+                        not in ("quota_hold", "agent_paused", "owner_ceiling")
+                        and not str(action.get("interrupt_reason", "")).startswith("autopilot_")
+                    ):
                         self.fail(
                             eid,
                             "agent_correction_stalled",
@@ -2383,7 +2468,9 @@ class Workflow:
         if phase == "prepare" and exp["recipe_id"] == "agent_experiment_v1":
             if not await self.prepare_workspace(exp):
                 return
-        decision = self.gate.decide()
+        if self.research.busy:
+            return
+        decision = self.research.service.quota(self.gate, eid=eid)
         if not decision.admitted:
             self.store.update(eid, hold_reason="quota_hold", error=decision.reason)
             return
@@ -3282,6 +3369,31 @@ class Workflow:
         return instruction + "\n" + self.execution_instruction(exp, phase) + "\nPAYLOAD:\n" + encode(payload)
 
     def prompt(self, exp, phase):
+        prompt = self._prompt(exp, phase)
+        member = self.research.service.member(exp["id"])
+        if member:
+            run = self.research.service.run(run_id=member["run_id"])
+            policy = self.research.service.policy(run)
+            prefix, wire = prompt.rsplit("\nPAYLOAD:\n", 1)
+            payload = json.loads(wire)
+            protocol = self.research.service.document(run["id"], "protocol")
+            payload["autopilot_guidance"] = {
+                "scope": policy.scope,
+                "instructions": policy.instructions,
+                "exclusions": policy.exclusions,
+                "purpose": member["purpose"],
+                "scope_rationale": member["rationale"],
+                "handoff_at": policy.handoff_at,
+                "protocol": self.context_pointer(exp, "autopilot-protocol", protocol),
+                "guidance": self.store.rows(
+                    "SELECT document FROM autopilot_inputs WHERE run_id=? AND kind IN ('message','answer') ORDER BY seq DESC LIMIT 20",
+                    (run["id"],),
+                ),
+            }
+            prompt = prefix + "\nPAYLOAD:\n" + encode(payload)
+        return prompt
+
+    def _prompt(self, exp, phase):
         if phase.startswith("agent:"):
             return iteration.agent_prompt(self, exp, phase)
         payload = {
@@ -3573,6 +3685,8 @@ class Workflow:
         eid = action["experiment_id"]
         try:
             decision = await self.refresh_quota()
+            if self.research.service.member(eid):
+                decision = self.research.service.quota(self.gate, eid=eid)
             if blocked(self.store):
                 return
             if not decision.admitted:
@@ -3725,6 +3839,26 @@ class Workflow:
                     + prompt
                 )
             with self.store.tx() as db:
+                held = self.research.service.authority(
+                    eid,
+                    "interpret" if action["phase"] == "interpret" else action["phase"],
+                    action["phase"].removeprefix("agent:"),
+                )
+                if held or self.store.experiment(eid)["pause_agent"]:
+                    db.execute(
+                        "UPDATE experiments SET hold_reason=? WHERE id=?", (held or "agent_paused", eid)
+                    )
+                    return
+                if (
+                    self.research.service.member(eid)
+                    and not self.research.service.quota(self.gate, eid=eid).admitted
+                ):
+                    db.execute("UPDATE experiments SET hold_reason='quota_hold' WHERE id=?", (eid,))
+                    return
+                db.execute(
+                    "UPDATE agent_actions SET autopilot_control_revision=? WHERE id=?",
+                    (self.research.service.control_revision(eid), action["id"]),
+                )
                 if action["phase"] != "monitor":
                     db.execute(
                         "UPDATE experiments SET thread_id=?,model=?,hold_reason=NULL,error=NULL WHERE id=?",
@@ -4095,6 +4229,7 @@ class Workflow:
                 self.store.notify(eid, "report_failed", f"Report version {version} could not be built: {exc}")
 
     async def close(self):
+        await self.research.close()
         await self.supervisor.close()
         self.closing = True
         # Threads only read/seal filesystem evidence; drain them before releasing ownership.

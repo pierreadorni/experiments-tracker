@@ -167,3 +167,521 @@ def test_unverified_accounting_and_cpu(runtime, monkeypatch):
     service, run = activated(runtime, monkeypatch)
     assert linked(service, run)[2]["reason"] == "autopilot_accounting_prerequisite"
     assert linked(service, run, gpus=0)[2] is None
+
+
+def action(service, run):
+    identity = str(uuid4())
+    with service.store.tx() as db:
+        db.execute(
+            "INSERT INTO autopilot_actions(id,run_id,cursor,control_revision,state,created_at,updated_at) VALUES(?,?,?,?,'running',?,?)",
+            (identity, run["id"], run["input_cursor"], run["control_revision"], 1000000, 1000000),
+        )
+    return identity
+
+
+def tool(service, identity, name, **arguments):
+    row = service.store.one("SELECT run_id FROM autopilot_actions WHERE id=?", (identity,))
+    run = service.run(run_id=row["run_id"])
+    return service.invoke(
+        identity, name, {"request_id": str(uuid4()), "expected_revision": run["revision"], **arguments}
+    )
+
+
+def foundation(service, identity):
+    docs = []
+    for name in (
+        "research_plan",
+        "literature",
+        "protocol",
+        "claims",
+        "backlog",
+        "paper.tex",
+        "references.bib",
+    ):
+        docs.append(
+            {
+                "name": name,
+                "base_version": 0,
+                "content": "Synthetic software fixture. TODO: real research is not performed.",
+                "sources": [
+                    {
+                        "kind": "literature",
+                        "id": "https://example.org/synthetic-fixture",
+                        "title": "Explicit synthetic retrieval adapter fixture",
+                        "access": "abstract",
+                        "retrieved_at": 1000000,
+                    }
+                ]
+                if name == "literature"
+                else [],
+            }
+        )
+    tool(service, identity, "publish_documents", documents=docs)
+    tool(
+        service,
+        identity,
+        "update_backlog",
+        item_revision=0,
+        item={
+            "id": "question",
+            "question": "Does synthetic admission preserve one experiment?",
+            "purpose": "exploration",
+            "decision_if_positive": "Continue software test",
+            "decision_if_negative": "Fix infrastructure",
+            "stop_condition": "Stop after fixture",
+            "review_at": 1000000 + WEEK,
+            "max_attempts": 2,
+            "priority": 3,
+            "resource_estimate": "Synthetic accounting, no real GPU use",
+        },
+    )
+    tool(
+        service,
+        identity,
+        "set_foundation",
+        state="ready",
+        gaps="All literature and measurements here are synthetic test fixtures.",
+    )
+
+
+def test_project_tools_lost_response_scoping_and_stale_documents(runtime, monkeypatch):
+    service, run = activated(runtime, monkeypatch)
+    identity = action(service, run)
+    with pytest.raises(Conflict, match="not ready"):
+        tool(
+            service,
+            identity,
+            "create_experiment",
+            brief="Synthetic experiment",
+            backlog_id="question",
+            scope_rationale="Synthetic infrastructure test",
+            estimated_finish_at=1000000 + 3600,
+        )
+    foundation(service, identity)
+    run = service.run("test-project")
+    arguments = {
+        "request_id": str(uuid4()),
+        "expected_revision": run["revision"],
+        "brief": "Synthetic scientific work is not authorized by this fixture.",
+        "backlog_id": "question",
+        "scope_rationale": "Test delegation only",
+        "estimated_finish_at": 1000000 + 3600,
+    }
+    first = service.invoke(identity, "create_experiment", arguments)
+    assert service.invoke(identity, "create_experiment", arguments) == first
+    assert len(service.store.rows("SELECT * FROM experiments")) == 1
+    assert service.store.experiment(first["experiment_id"])["contract"]["execution_contract"] == 3
+    assert len(service.store.rows("SELECT * FROM autopilot_members")) == 1
+    with pytest.raises(Conflict, match="different payload"):
+        service.invoke(identity, "create_experiment", {**arguments, "brief": "Different"})
+    with pytest.raises(Conflict, match="stale"):
+        tool(
+            service,
+            identity,
+            "publish_documents",
+            documents=[{"name": "paper.tex", "base_version": 0, "content": "Overwrite old draft"}],
+        )
+    assert service.document(run["id"], "paper.tex", 1)["content"].startswith("Synthetic")
+    with pytest.raises(Conflict, match="allowlist"):
+        service.invoke(identity, "revise_policy", {})
+    with pytest.raises(Conflict, match="owned"):
+        tool(
+            service,
+            identity,
+            "control_experiment",
+            experiment_id=str(uuid4()),
+            operation="abandon",
+            reason="Not linked",
+        )
+
+
+def test_scoped_defer_user_pause_and_cancellation_replay(runtime, monkeypatch):
+    service, run = activated(runtime, monkeypatch)
+    identity = action(service, run)
+    foundation(service, identity)
+    eid = tool(
+        service,
+        identity,
+        "create_experiment",
+        brief="Synthetic fixture",
+        backlog_id="question",
+        scope_rationale="Software check",
+        estimated_finish_at=1003600,
+    )["experiment_id"]
+    service.store.update(eid, pause_agent=True, pause_compute=True)
+    command(service, "control", experiment_id=eid, control="defer", text="Keep history and release idle slot")
+    assert service.authority(eid) == "autopilot_deferred"
+    # Late child/project tools cannot undo a researcher control.
+    with pytest.raises(Conflict, match="authority changed"):
+        tool(
+            service,
+            identity,
+            "control_experiment",
+            experiment_id=eid,
+            operation="resume",
+            reason="Stale controller",
+        )
+    command(service, "control", experiment_id=eid, control="resume", text="Resume separately from user flags")
+    exp = service.store.experiment(eid)
+    assert exp["pause_agent"] and exp["pause_compute"]
+    request = {
+        "request_id": str(uuid4()),
+        "expected_revision": service.run("test-project")["revision"],
+        "kind": "control",
+        "experiment_id": eid,
+        "control": "abandon",
+        "text": "Stop exact linked work",
+    }
+    first = service.command("test-project", request)
+    assert service.command("test-project", request) == first
+    assert service.store.experiment(eid)["phase"] == "cancelled"
+    with pytest.raises(Conflict, match="terminal"):
+        command(service, "control", experiment_id=eid, control="resume", text="Cannot resurrect")
+
+
+def test_investigation_review_and_cumulative_borrowing(runtime, monkeypatch):
+    service, run = activated(runtime, monkeypatch)
+    identity = action(service, run)
+    foundation(service, identity)
+    for _ in range(2):
+        created = tool(
+            service,
+            identity,
+            "create_experiment",
+            brief="Synthetic fixture",
+            backlog_id="question",
+            scope_rationale="Software check",
+            estimated_finish_at=1003600,
+        )
+        service.store.update(created["experiment_id"], phase="complete")
+    with pytest.raises(Conflict, match="review point"):
+        tool(
+            service,
+            identity,
+            "create_experiment",
+            brief="Rename cannot bypass attempts",
+            backlog_id="question",
+            scope_rationale="test",
+            estimated_finish_at=1003600,
+        )
+    tool(
+        service,
+        identity,
+        "record_decision",
+        outcome="narrow",
+        backlog_id="question",
+        rationale="Repeated inconclusive fixture; narrow before spending",
+        next_review_at=1000000 + WEEK,
+        next_max_attempts=3,
+    )
+    tool(
+        service,
+        identity,
+        "record_decision",
+        outcome="borrow",
+        rationale="Synthetic schedule test",
+        borrow_percent=3,
+        dropped_work="Drop low-value variant",
+        remaining_ablations="One control remains",
+    )
+    with pytest.raises(Conflict, match="borrowing"):
+        tool(
+            service,
+            identity,
+            "record_decision",
+            outcome="borrow",
+            rationale="Second small request cannot evade total cap",
+            borrow_percent=3,
+            dropped_work="Drop more",
+            remaining_ablations="Keep controls",
+        )
+    assert service.run("test-project")["borrowed_percent"] == 3
+
+
+def test_quota_policy_hysteresis_does_not_mutate_owner(runtime, monkeypatch):
+    service, run = activated(runtime, monkeypatch)
+    gate = runtime[3].gate
+    payload = {
+        "ordinaryUsageAllowed": True,
+        "rateLimits": {
+            "primary": {"windowDurationMins": 300, "usedPercent": 51},
+            "secondary": {"windowDurationMins": 10080, "usedPercent": 10},
+        },
+    }
+    gate.update(payload)
+    assert gate.decide().admitted
+    assert not service.quota(gate, run=run).admitted
+    payload["rateLimits"]["primary"]["usedPercent"] = 48
+    gate.update(payload)
+    assert gate.decide().admitted
+    assert not service.quota(gate, run=run).admitted
+    payload["rateLimits"]["primary"]["usedPercent"] = 44
+    gate.update(payload)
+    assert service.quota(gate, run=run).admitted
+    assert gate.config.five_hour_min_remaining == 25
+
+
+async def test_common_gate_one_240_hour_experiment_no_inference_on_reset(runtime, monkeypatch):
+    import sys
+
+    from experimenttracker import artifacts
+    from experimenttracker.models import Implementation
+    from experimenttracker.workflow import Workflow
+
+    service, run = activated(runtime, monkeypatch)
+    support(service)
+    store, _, agent, old = runtime
+    clock = [1000000]
+    monkeypatch.setattr("time.time", lambda: clock[0])
+
+    # Explicit metadata-only fake; never runs a GPU command or changes demo authorization.
+    class Scheduler:
+        submissions = []
+        preflight_hook = None
+
+        async def preflight(self, *args):
+            if self.preflight_hook:
+                self.preflight_hook()
+
+        async def submit(self, intent, *args, **kwargs):
+            assert store.one("SELECT * FROM autopilot_allocations WHERE intent_id=?", (intent,))
+            self.submissions.append(intent)
+            return str(len(self.submissions))
+
+    scheduler = Scheduler()
+    scheduler.submissions = []
+    wf = Workflow(old.config.model_copy(update={"mode": "live"}), store, scheduler, agent)
+    wf.config.slurm.max_concurrent_jobs = 10
+    eid = store.command(
+        uuid4(),
+        "create",
+        {"brief": "Synthetic allocation metadata fixture", "recipe_id": "agent_experiment_v1"},
+    )["experiment_id"]
+    with store.tx() as db:
+        db.execute(
+            "INSERT INTO autopilot_members VALUES(?,?,?,'question','exploration','test',0,1,0,NULL,'[]',?)",
+            (eid, run["id"], run["project_id"], clock[0]),
+        )
+    work = wf.working_directory(store.experiment(eid))
+    work.mkdir(parents=True, exist_ok=True)
+    (work / "recipe.py").write_text('print("Synthetic fixture; never executed")')
+    resources = JobResources(partition="fixture", gpus_per_job=1, walltime_minutes_per_job=2400)
+    plan = Implementation.model_validate(
+        {
+            "schema_version": 3,
+            "summary": "240-hour experiment metadata only",
+            "protocol": "Synthetic allocation test",
+            "synthetic_demo": True,
+            "parameters_json": "{}",
+            "files": ["recipe.py"],
+            "figures": [],
+            "python_executable": sys.executable,
+            "stages": [
+                {
+                    "id": f"job{i}",
+                    "title": f"Fixture {i}",
+                    "needs": [],
+                    "outputs": [f"output{i}.json"],
+                    "result_file": f"output{i}.json" if i == 5 else None,
+                    "expected_metrics": ["synthetic"] if i == 5 else [],
+                    "resources": resources.model_dump(),
+                }
+                for i in range(6)
+            ],
+        }
+    )
+    root = wf.root(eid)
+    root.mkdir(parents=True, exist_ok=True)
+    manifest = artifacts.freeze_implementation(
+        root, plan, "", python=sys.executable, project=None, workspace=work
+    )
+    store.resolve_implementation(eid, manifest)
+    store.update(eid, plan_review={"state": "approved", "revision": 1, "schema_version": 3, "stages": []})
+    for i in range(6):
+        outcome = await wf.submit_prepared_stage(store.experiment(eid), f"job{i}")
+        assert outcome["state"] == ("submitted" if i < 2 else "held"), outcome
+    assert len(store.rows("SELECT * FROM experiments")) == 1 and len(scheduler.submissions) == 2
+    assert agent.calls == 0
+    for intent in scheduler.submissions[:]:
+        row = store.one("SELECT * FROM jobs WHERE intent_id=?", (intent,))
+        service.budget.observe(
+            row,
+            Observation("COMPLETED", started_at=clock[0], ended_at=clock[0] + 40 * 3600),
+            "fixture",
+            now=clock[0] + 40 * 3600,
+        )
+        with store.tx() as db:
+            db.execute("UPDATE jobs SET state='complete' WHERE intent_id=?", (intent,))
+    clock[0] += WEEK
+    for i in (2, 3):
+        assert (await wf.submit_prepared_stage(store.experiment(eid), f"job{i}"))["state"] == "submitted"
+    assert len(scheduler.submissions) == 4 and agent.calls == 0
+    # A pause racing read-only preflight blocks the final transaction and reserves nothing.
+    for intent in scheduler.submissions[2:]:
+        row = store.one("SELECT * FROM jobs WHERE intent_id=?", (intent,))
+        service.budget.observe(
+            row,
+            Observation("COMPLETED", started_at=clock[0], ended_at=clock[0] + 40 * 3600),
+            "fixture",
+            now=clock[0] + 40 * 3600,
+        )
+        with store.tx() as db:
+            db.execute("UPDATE jobs SET state='complete' WHERE intent_id=?", (intent,))
+    clock[0] += WEEK
+    scheduler.preflight_hook = lambda: command(service, "pause")
+    assert (await wf.submit_prepared_stage(store.experiment(eid), "job4"))["reason"] == "autopilot_paused"
+    assert len(store.rows("SELECT * FROM autopilot_allocations")) == 4
+    assert len(scheduler.submissions) == 4
+    await wf.close()
+
+
+def test_cross_week_running_corrections_duplicate_steps_and_oversize(runtime, monkeypatch):
+    service, run = activated(runtime, monkeypatch)
+    support(service)
+    _, intent, held = linked(service, run, gpus=1, minutes=3600)
+    assert held is None
+    job = service.store.one("SELECT * FROM jobs WHERE intent_id=?", (intent,))
+    start = 1000000 + WEEK - 10 * 3600
+    now = 1000000 + WEEK + 5 * 3600
+    service.budget.observe(job, Observation("RUNNING", started_at=start, observed_at=now), "fixture", now)
+    current = service.budget.view(run["project_id"], policy(), now)
+    assert current["consumed_seconds"] == 5 * 3600
+    assert current["reserved_seconds"] == 45 * 3600
+    assert current["available_seconds"] == 50 * 3600
+    previous = service.budget.view(run["project_id"], policy(), 1000000 + 1)
+    assert previous["consumed_seconds"] == 10 * 3600
+    # A stale observation cannot refund elapsed allocation; late authoritative terminal correction can.
+    service.budget.observe(
+        job,
+        Observation("COMPLETED", started_at=start, ended_at=start + 3600, observed_at=now - 1),
+        "fixture",
+        now,
+    )
+    assert service.budget.view(run["project_id"], policy(), now)["reserved_seconds"] == 45 * 3600
+    service.budget.observe(
+        job,
+        Observation("COMPLETED", started_at=start, ended_at=1000000 + WEEK + 2 * 3600, observed_at=now + 1),
+        "fixture",
+        now + 1,
+    )
+    current = service.budget.view(run["project_id"], policy(), now + 1)
+    assert current["reserved_seconds"] == 0 and current["consumed_seconds"] == 2 * 3600
+    assert linked(service, run, minutes=6060)[2]["reason"] == "autopilot_job_exceeds_weekly_cap"
+    from experimenttracker.config import SlurmConfig
+    from experimenttracker.slurm import SlurmScheduler
+
+    assert "--no-requeue" not in SlurmScheduler(SlurmConfig()).submission_args(
+        "manual", service.config.state_dir, JobResources()
+    )
+
+
+def test_pause_survives_deadline_and_revised_deadline_resumes_only_explicitly(runtime, monkeypatch):
+    service, _ = activated(runtime, monkeypatch)
+    command(service, "pause")
+    service.tick(policy().handoff_at)
+    assert service.run("test-project")["status"] == "paused"
+    assert service.run("test-project")["handoff"]
+    changed = policy().model_dump()
+    changed["handoff_at"] += WEEK
+    changed["submission_at"] += WEEK
+    command(service, "revise", policy=changed)
+    assert service.run("test-project")["status"] == "paused"
+
+
+async def test_controller_coalesces_late_inputs_and_quarantines_unknown_turn(runtime, monkeypatch):
+    from experimenttracker.autopilot_models import ProjectDecision
+
+    service, run = activated(runtime, monkeypatch)
+    store, _, agent, wf = runtime
+    wf.agent_ready = True
+    wf.gate.update(await agent.quota())
+    agent.resolved_model = "demo"
+    agent.models = [{"id": "demo", "reasoning_efforts": ["medium"], "default_effort": "medium"}]
+    original_begin = agent.begin
+
+    async def begin(thread, prompt, schema, **kwargs):
+        assert schema == ProjectDecision.model_json_schema()
+        agent.calls += 1
+        identity = "project-turn"
+        agent.results[(thread, identity)] = {
+            "summary": "Synthetic checkpoint",
+            "central_argument": "No real science in fixture",
+            "uncertainty": "Real retrieval remains a live prerequisite",
+            "outcome": "wait",
+        }
+        # Result arrives during the turn; it must remain behind the saved input cursor.
+        with store.tx() as db:
+            service.wake(db, run["id"], "late-synthetic-result", "experiment_change", {"synthetic": True})
+        return identity
+
+    monkeypatch.setattr(agent, "begin", begin)
+    await wf.research.advance()
+    await wf.research.task
+    await wf.research.advance()
+    saved = service.run("test-project")
+    assert saved["consumed_cursor"] < saved["input_cursor"]
+    if wf.research.task:
+        await wf.research.task
+        await wf.research.advance()
+    await wf.research.close()
+    # A turn-start reply loss has no saved identity; restart must not issue another begin.
+    with store.tx() as db:
+        db.execute("UPDATE autopilot_actions SET state='completed'")
+        db.execute(
+            "INSERT INTO autopilot_actions(id,run_id,cursor,control_revision,state,thread_id,created_at,updated_at) VALUES(?,?,1,0,'dispatching','known-thread',?,?)",
+            (str(uuid4()), run["id"], 1000000, 1000000),
+        )
+    wf.research.task = None
+    calls = agent.calls
+    await wf.research.advance()
+    assert store.one("SELECT state FROM autopilot_actions WHERE state='uncertain'")
+    assert agent.calls == calls
+    monkeypatch.setattr(agent, "begin", original_begin)
+
+
+async def test_gateway_autopilot_lost_ack_and_durable_refusal(runtime, config, tmp_path, monkeypatch):
+    import httpx
+
+    from experimenttracker.config import GatewayConfig
+    from experimenttracker.gateway_client import GatewayClient
+
+    service, _ = activated(runtime, monkeypatch)
+    token = tmp_path / "machine-token"
+    token.write_text("e" * 40)
+    config.gateway = GatewayConfig(url="https://gateway.example", credential_file=token)
+    payload = {
+        "schema_version": 1,
+        "request_id": str(uuid4()),
+        "kind": "pause",
+        "expected_revision": service.run("test-project")["revision"],
+    }
+    row = {"request_id": payload["request_id"], "project_id": "test-project", "payload": payload}
+    attempts = []
+
+    async def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"schema_version": 1, "commands": [row]})
+        if request.url.path.endswith("autopilot-commands"):
+            attempts.append(json.loads(request.content))
+            if len(attempts) == 1:
+                raise httpx.ConnectError("lost command receipt")
+            return httpx.Response(200, json={"schema_version": 1, "accepted": payload["request_id"]})
+        return httpx.Response(200, json={"schema_version": 1, "accepted": True})
+
+    client = GatewayClient(config, service.store, transport=httpx.MockTransport(handler))
+    with pytest.raises(httpx.ConnectError):
+        await client.autopilot()
+    await client.autopilot()
+    assert attempts[0] == attempts[1]
+    assert service.run("test-project")["status"] == "paused"
+    payload.update(request_id=str(uuid4()), expected_revision=0, kind="resume")
+    row["request_id"] = payload["request_id"]
+    await client.autopilot()
+    assert attempts[-1]["state"] == "rejected"
+    assert (
+        service.store.one(
+            "SELECT state FROM autopilot_requests WHERE request_id=?", (payload["request_id"],)
+        )["state"]
+        == "rejected"
+    )
+    await client.close()

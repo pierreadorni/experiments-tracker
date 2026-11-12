@@ -28,6 +28,18 @@ class Observation:
     ended_at: float | None = None
     estimated_start_at: float | None = None
     pending_reason: str | None = None
+    allocated_gpus: int | None = None
+    observed_at: float | None = None
+    source: str | None = None
+    restarts: int | None = None
+
+
+def allocated_gpus(tres):
+    for entry in tres.split(","):
+        key, _, value = entry.strip().partition("=")
+        if key == "gres/gpu" and value.isdecimal():
+            return int(value)
+    return None
 
 
 def scheduler_time(value):
@@ -184,6 +196,8 @@ class SlurmScheduler:
             "--error",
             str(root / "%x-%j.err"),
         ]
+        if getattr(self, "autopilot_intent", lambda _: False)(intent_id):
+            args += ["--no-requeue"]
         if cfg.account:
             args += ["--account", cfg.account]
         if cfg.qos:
@@ -263,6 +277,7 @@ class SlurmScheduler:
         return next(iter(matches), None)
 
     async def observe(self, job_id):
+        autopilot = getattr(self, "autopilot_job", lambda _: False)(job_id)
         queue = await self.command("env", "TZ=UTC", "squeue", "--me", "--noheader", "--format", "%i|%T|%S|%R")
         for line in queue.splitlines():
             fields = line.split("|")
@@ -270,8 +285,18 @@ class SlurmScheduler:
                 state = fields[1].strip()
                 start = scheduler_time(fields[2]) if len(fields) > 2 else None
                 pending = state in ("PENDING", "CONFIGURING")
+                restarts = None
+                if autopilot:
+                    try:
+                        details = await self.command("scontrol", "show", "job", "--oneliner", job_id)
+                        for field in details.split():
+                            if field.startswith("Restarts=") and field.partition("=")[2].isdecimal():
+                                restarts = int(field.partition("=")[2])
+                    except (RuntimeError, TimeoutError, OSError):
+                        pass  # Missing metadata cannot reduce requested exposure.
                 return Observation(
                     state,
+                    restarts=restarts,
                     started_at=start if not pending else None,
                     estimated_start_at=start
                     if pending and start and start > datetime.now(UTC).timestamp()
@@ -287,16 +312,24 @@ class SlurmScheduler:
             "--noheader",
             "--parsable2",
             "--format",
-            "JobIDRaw,State,ExitCode,Start,End",
+            "JobIDRaw,State,ExitCode,Start,End,AllocTRES",
+            *(["--duplicates"] if autopilot else []),
         )
-        for line in accounting.splitlines():
-            fields = line.split("|")
-            if len(fields) >= 3 and fields[0].strip() == job_id:
+        matching = [
+            line.split("|") for line in accounting.splitlines() if line.split("|")[0].strip() == job_id
+        ]
+        intervals = {(tuple(fields[3:5])) for fields in matching if len(fields) >= 5}
+        for fields in reversed(matching):
+            if len(fields) >= 3:
                 return Observation(
                     fields[1].split()[0].rstrip("+"),
                     fields[2],
                     started_at=scheduler_time(fields[3]) if len(fields) > 3 else None,
                     ended_at=scheduler_time(fields[4]) if len(fields) > 4 else None,
+                    allocated_gpus=allocated_gpus(fields[5]) if len(fields) > 5 else None,
+                    restarts=1 if autopilot and len(intervals) > 1 else None,
+                    observed_at=time.time(),
+                    source="sacct allocation row",
                 )
         return Observation("ACCOUNTING_PENDING")
 

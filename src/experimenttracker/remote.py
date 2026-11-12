@@ -171,6 +171,9 @@ class RemoteSlurmScheduler(SlurmScheduler):
         self.settings = ExecutionSettings.model_validate(settings or exp["contract"].get("execution", {}))
         self.saved = saved
         self.layout = saved.get("layout") if saved else None
+        self.autopilot_job = lambda job: bool(
+            self.store.one("SELECT 1 FROM autopilot_allocations WHERE job_id=?", (job,))
+        )
         self.command = self.remote_command
 
     async def remote_command(self, *args, timeout=30, clean_slurm=False):
@@ -188,7 +191,11 @@ class RemoteSlurmScheduler(SlurmScheduler):
             cache_key = (self.settings.ssh_host, "reconcile_accounting")
         if args[0] == "env" and "squeue" in args:
             cache_key = (self.settings.ssh_host, "queue")
-        if "sacct" in args and "--jobs" in args and "JobIDRaw,State,ExitCode,Start,End" in args:
+        if (
+            "sacct" in args
+            and "--jobs" in args
+            and any(str(arg).startswith("JobIDRaw,State,ExitCode,Start,End") for arg in args)
+        ):
             identities = {args[args.index("--jobs") + 1]}
             for job in self.store.rows(
                 "SELECT job_id,execution_manifest FROM jobs WHERE state IN ('submitting','submitted') AND job_id IS NOT NULL"
@@ -197,7 +204,10 @@ class RemoteSlurmScheduler(SlurmScheduler):
                 if metadata.get("layout", {}).get("host") == self.settings.ssh_host:
                     identities.add(job["job_id"])
             args[args.index("--jobs") + 1] = ",".join(sorted(identities))
-            cache_key = (self.settings.ssh_host, "accounting")
+            cache_key = (
+                self.settings.ssh_host,
+                "accounting-autopilot" if "--duplicates" in args else "accounting",
+            )
         if cache_key and time.time() - cache.get(cache_key, (0, ""))[0] < self.settings.poll_seconds:
             return cache[cache_key][1]
         invocation = shlex.join([str(arg) for arg in args])
@@ -350,6 +360,8 @@ class RemoteSlurmScheduler(SlurmScheduler):
 
     def submission_args(self, intent_id, root, resources):
         args = super().submission_args(intent_id, root, resources)
+        if self.workflow.store.one("SELECT 1 FROM autopilot_allocations WHERE intent_id=?", (intent_id,)):
+            args += ["--no-requeue"]
         # The IDRIS submit plugin rejects explicit memory options. Memory follows
         # the cluster's CPU/GPU allocation policy; never pretend --mem was applied.
         position = args.index("--mem")

@@ -165,7 +165,14 @@ class Controller:
     async def connection(self, reader, writer):
         try:
             request = json.loads(await asyncio.wait_for(reader.readline(), 10))
-            result = await self.call(request["experiment_id"], request["name"], request.get("arguments", {}))
+            if request.get("project_action_id"):
+                result = await self.workflow.research.call(
+                    request["project_action_id"], request["name"], request.get("arguments", {})
+                )
+            else:
+                result = await self.call(
+                    request["experiment_id"], request["name"], request.get("arguments", {})
+                )
             response = {"ok": True, "result": result}
         except Exception as exc:
             response = {"ok": False, "error": self.workflow.validation_feedback(exc)}
@@ -309,6 +316,16 @@ class Controller:
         if not action or action["experiment_id"] != eid or action["state"] not in ("dispatching", "running"):
             raise ValueError("tool call requires this experiment's active owned session")
         exp = wf.store.experiment(eid)
+        if (
+            name not in ("job_status", "check_manifest", "check_agent_stage")
+            and action.get("autopilot_control_revision") is not None
+        ):
+            if action["autopilot_control_revision"] != wf.research.service.control_revision(
+                eid
+            ) or wf.research.service.authority(
+                eid, "interpret" if action["phase"] == "interpret" else action["phase"]
+            ):
+                raise ValueError("current project authority/hold rejects stale child turn effects")
         if action["phase"].startswith("agent:"):
             if name == "check_agent_stage":
                 job = iteration.agent_job(wf, exp, action["phase"])

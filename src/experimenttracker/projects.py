@@ -131,6 +131,13 @@ class Projects:
                                     "Delete this project's experiments before deleting the project."
                                 )
                         if db.execute(
+                            "SELECT 1 FROM autopilot_runs WHERE project_id=? AND status NOT IN ('draft','stopped','completed')",
+                            (row["project_id"],),
+                        ).fetchone():
+                            raise ValueError(
+                                "Stop Autopilot and reconcile its work before deleting this project."
+                            )
+                        if db.execute(
                             "SELECT 1 FROM project_turns WHERE project_id=? AND state NOT IN ('completed','failed')",
                             (row["project_id"],),
                         ).fetchone():
