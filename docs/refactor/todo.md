@@ -129,7 +129,7 @@ Briefing rules and the brief template are in [README.md](README.md).
 - **Acceptance:** `uv run --locked pytest -q` passes 3 times in a row, plus once
   under load (for example while 3 other copies of the suite run in parallel).
 
-### [ ] T0.7 Link the refactor docs · F · S
+### [x] T0.7 Link the refactor docs · F · S
 - Add one line to `AGENTS.md` and `docs/development.md` pointing at `docs/refactor/`.
 
 ---
@@ -323,3 +323,5 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 ## Log
 
 Record completed tasks here: `date · task · commit · notes`.
+
+2026-11-12 · T0.7 · this commit · Linked the refactor workspace from agent and development instructions; link targets, Ruff and all 452 Python tests pass.

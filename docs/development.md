@@ -5,6 +5,8 @@ software. Develop normal commits on this history and push reviewed improvements
 back to the same repository. Tags and release packages are optional. Do not
 export a second source repository or publish installation history.
 
+Plan refactors with the [refactor workspace](refactor/README.md) task cards.
+
 ## Files that belong in Git
 
 Track application source, tests, migrations, locked dependencies, generic agent

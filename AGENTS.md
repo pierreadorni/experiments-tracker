@@ -1,6 +1,7 @@
 # Working in this repository
 
 - Read docs/install.md, docs/agent-install.md, docs/architecture.md and docs/operations.md. Complete an isolated synthetic demo before live setup; distinguish synthetic demonstration from scientific research.
+- Refactoring and consolidation follow [docs/refactor/](docs/refactor/README.md): audit, design, ordered task cards and working rules.
 - Future brief-driven experiments use execution contract 3 / plan schema 3: bounded declared-source copies per attempt, direct output references, explicit reuse with rationale, metrics before independent figures and working report versions. Do not reintroduce scientific data hashing, recursive inventories, dependency freezes, a final validation barrier or completion cleanup. Historical/demo contracts retain their semantics.
 - SQLite on retained local disk owns execution; D1/R2 hold commands and published views. Keep user commands, events, outbox updates and readiness transitions transactional and idempotent.
 - Persist job/action/transfer intents before dispatch. Never retry uncertain submissions or turns without establishing the saved outcome. Reconcile exact identities.
