@@ -6,8 +6,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from test_generic import ImplementationAgent, approve_plan
-from test_workflow import until
+from helpers import IterationAgent, approve_plan, until
 
 from experimenttracker.workflow import Workflow
 
@@ -69,21 +68,23 @@ def test_compact_reference_retains_protocol_and_full_verified_pointers(runtime, 
         workflow.prompt(store.experiment(child_id), "prepare")
 
 
+@pytest.mark.current_contract
 async def test_first_implementation_starts_fresh_after_planning(runtime):
     store, scheduler, _, old = runtime
 
-    class HandoffAgent(ImplementationAgent):
+    class HandoffAgent(IterationAgent):
         def __init__(self):
             super().__init__()
             self.sessions = []
 
-        async def session(self, thread_id, workspace, *, writable=False):
-            self.sessions.append((thread_id, writable))
-            return await super().session(thread_id, workspace, writable=writable)
+        async def session(self, thread_id, workspace, **kwargs):
+            self.sessions.append((thread_id, kwargs.get("writable", False)))
+            return await super().session(thread_id, workspace, **kwargs)
 
     agent = HandoffAgent()
     workflow = Workflow(old.config, store, scheduler, agent)
     eid = create(store)
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
     await approve_plan(workflow, store, eid)
     await until(workflow, store, eid, lambda exp: exp["phase"] == "training")
     assert next(thread for thread, writable in agent.sessions if writable) is None

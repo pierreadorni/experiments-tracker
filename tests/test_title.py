@@ -2,6 +2,7 @@ import asyncio
 from uuid import uuid4
 
 import pytest
+from helpers import IterationAgent
 from pydantic import ValidationError
 from test_generic import ImplementationAgent
 from test_steering import wait_for
@@ -30,10 +31,11 @@ def test_title_output_is_bounded_and_prompt_includes_brief():
     assert "avoid adding claims about results" in prompt
 
 
+@pytest.mark.current_contract
 async def test_saved_luna_turn_is_reconciled_after_plan_approval(runtime):
     store, scheduler, _, old = runtime
 
-    class TitleAgent(ImplementationAgent):
+    class TitleAgent(IterationAgent):
         models = [{"id": "gpt-6-luna", "name": "GPT-6 Luna", "reasoning_efforts": ["low"]}]
 
         async def session(self, thread_id, workspace, *, writable=False, model=None):
@@ -48,7 +50,7 @@ async def test_saved_luna_turn_is_reconciled_after_plan_approval(runtime):
                 self.results[(thread, turn)] = {"title": "Concise managed title"}
                 self.title_turn = turn
                 return turn
-            return await super().begin(thread, prompt, schema, workspace=workspace)
+            return await super().begin(thread, prompt, schema, workspace=workspace, **kwargs)
 
         async def finish(self, thread, turn):
             if turn == getattr(self, "title_turn", None):
@@ -62,6 +64,7 @@ async def test_saved_luna_turn_is_reconciled_after_plan_approval(runtime):
         "create",
         {"brief": "Test an entirely new method and show its frontier.", "recipe_id": "agent_experiment_v1"},
     )["experiment_id"]
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
     await wait_for(
         workflow,
         store,

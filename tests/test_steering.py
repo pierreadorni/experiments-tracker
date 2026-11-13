@@ -4,8 +4,7 @@ import json
 from uuid import uuid4
 
 import pytest
-from helpers import wait_for_experiment
-from test_generic import ImplementationAgent, approve_plan
+from helpers import IterationAgent, approve_plan, wait_for_experiment
 
 from experimenttracker.codex_client import DemoAgent
 from experimenttracker.models import SteerCommand
@@ -18,15 +17,16 @@ async def wait_for(workflow, store, eid, predicate):
     await wait_for_experiment(workflow, store, eid, predicate)
 
 
+@pytest.mark.current_contract
 async def test_plan_is_reviewed_before_source_is_written(runtime):
     store, scheduler, _, old = runtime
-    agent = ImplementationAgent()
-    workflow = Workflow(old.config, store, scheduler, agent)
+    workflow = Workflow(old.config, store, scheduler, IterationAgent())
     eid = store.command(
         uuid4(),
         "create",
         {"brief": "Test an entirely new method and show its frontier.", "recipe_id": "agent_experiment_v1"},
     )["experiment_id"]
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
     await wait_for(
         workflow, store, eid, lambda exp: (exp["plan_review"] or {}).get("state") == "awaiting_review"
     )
@@ -53,14 +53,16 @@ async def test_plan_is_reviewed_before_source_is_written(runtime):
     await workflow.close()
 
 
+@pytest.mark.current_contract
 async def test_long_steering_survives_planning_revision(runtime):
     store, scheduler, _, old = runtime
-    workflow = Workflow(old.config, store, scheduler, ImplementationAgent())
+    workflow = Workflow(old.config, store, scheduler, IterationAgent())
     eid = store.command(
         uuid4(),
         "create",
         {"brief": "Test an entirely new method and show its frontier.", "recipe_id": "agent_experiment_v1"},
     )["experiment_id"]
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
     await wait_for(
         workflow, store, eid, lambda exp: (exp["plan_review"] or {}).get("state") == "awaiting_review"
     )
@@ -76,7 +78,11 @@ async def test_long_steering_survives_planning_revision(runtime):
         eid,
         lambda exp: (exp["plan_review"] or {}).get("revision") == 2,
     )
-    assert store.experiment(eid)["plan_review"]["feedback"] == text
+    revised = store.one(
+        "SELECT input FROM agent_actions WHERE experiment_id=? AND phase='plan' AND evidence_revision=2",
+        (eid,),
+    )
+    assert json.loads(revised["input"].split("\nPAYLOAD:\n", 1)[1])["plan_revision_feedback"] == text
     assert (
         store.one("SELECT text FROM steering WHERE request_id=?", (str(command.request_id),))["text"] == text
     )
@@ -101,15 +107,17 @@ class WaitingScheduler:
         return "12345"
 
 
+@pytest.mark.current_contract
 async def test_restart_cancels_only_saved_job_and_creates_one_replacement(runtime):
     store, _, _, old = runtime
     scheduler = WaitingScheduler()
-    workflow = Workflow(old.config, store, scheduler, ImplementationAgent())
+    workflow = Workflow(old.config, store, scheduler, IterationAgent())
     eid = store.command(
         uuid4(),
         "create",
         {"brief": "Test an entirely new method and show its frontier.", "recipe_id": "agent_experiment_v1"},
     )["experiment_id"]
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
     await approve_plan(workflow, store, eid)
     await wait_for(
         workflow,
@@ -139,12 +147,13 @@ async def test_restart_cancels_only_saved_job_and_creates_one_replacement(runtim
     await workflow.close()
 
 
+@pytest.mark.current_contract
 async def test_implementation_drift_requires_a_second_approval(runtime):
     store, scheduler, _, old = runtime
 
-    class AmendedAgent(ImplementationAgent):
-        async def begin(self, thread, prompt, schema, *, workspace=None):
-            turn = await super().begin(thread, prompt, schema, workspace=workspace)
+    class AmendedAgent(IterationAgent):
+        async def begin(self, thread, prompt, schema, *, workspace=None, **kwargs):
+            turn = await super().begin(thread, prompt, schema, workspace=workspace, **kwargs)
             if json.loads(prompt.split("\nPAYLOAD:\n", 1)[1])["phase"] == "prepare":
                 result = {
                     **self.results[(thread, turn)],
@@ -160,6 +169,7 @@ async def test_implementation_drift_requires_a_second_approval(runtime):
         "create",
         {"brief": "Test an entirely new method and show its frontier.", "recipe_id": "agent_experiment_v1"},
     )["experiment_id"]
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
     await approve_plan(workflow, store, eid)
     await wait_for(
         workflow, store, eid, lambda exp: (exp["plan_review"] or {}).get("scope") == "implementation"
@@ -174,15 +184,17 @@ async def test_implementation_drift_requires_a_second_approval(runtime):
     await workflow.close()
 
 
+@pytest.mark.current_contract
 async def test_failed_run_restart_reconciles_a_job_that_was_last_seen_running(runtime):
     store, _, _, old = runtime
     scheduler = WaitingScheduler()
-    workflow = Workflow(old.config, store, scheduler, ImplementationAgent())
+    workflow = Workflow(old.config, store, scheduler, IterationAgent())
     eid = store.command(
         uuid4(),
         "create",
         {"brief": "Test an entirely new method and show its frontier.", "recipe_id": "agent_experiment_v1"},
     )["experiment_id"]
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
     await approve_plan(workflow, store, eid)
     await wait_for(
         workflow,
@@ -210,16 +222,17 @@ async def test_failed_run_restart_reconciles_a_job_that_was_last_seen_running(ru
     await workflow.close()
 
 
+@pytest.mark.current_contract
 async def test_message_arriving_during_interpretation_is_queued_for_discussion(runtime):
     store, scheduler, _, old = runtime
     steering_id = str(uuid4())
 
-    class LateAgent(ImplementationAgent):
-        async def begin(self, thread, prompt, schema, *, workspace=None):
+    class LateAgent(IterationAgent):
+        async def begin(self, thread, prompt, schema, *, workspace=None, **kwargs):
             payload = json.loads(prompt.split("\nPAYLOAD:\n", 1)[1])
             if payload["phase"] == "discuss":
-                return await DemoAgent.begin(self, thread, prompt, schema, workspace=workspace)
-            turn = await super().begin(thread, prompt, schema, workspace=workspace)
+                return await DemoAgent.begin(self, thread, prompt, schema, workspace=workspace, **kwargs)
+            turn = await super().begin(thread, prompt, schema, workspace=workspace, **kwargs)
             if payload["phase"] == "interpret":
                 store.command(
                     steering_id,
@@ -235,12 +248,13 @@ async def test_message_arriving_during_interpretation_is_queued_for_discussion(r
         "create",
         {"brief": "Test an entirely new method and show its frontier.", "recipe_id": "agent_experiment_v1"},
     )["experiment_id"]
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
     await approve_plan(workflow, store, eid)
     await wait_for(workflow, store, eid, lambda exp: exp["phase"] == "complete")
     saved = store.one("SELECT * FROM steering WHERE request_id=?", (steering_id,))
     assert saved["state"] == "discussion_queued"
     assert store.one("SELECT text FROM discussions WHERE experiment_id=?", (eid,))["text"] == saved["text"]
-    assert scheduler.submissions == 2
+    assert scheduler.submissions == 3
     await workflow.close()
 
 
@@ -255,15 +269,17 @@ def test_subscription_reserve_survives_workflow_restart(runtime):
     assert old.config.quota.five_hour_min_remaining == 25
 
 
+@pytest.mark.current_contract
 async def test_planning_clarification_waits_for_durable_answer(runtime):
     store, scheduler, _, old = runtime
 
-    class QuestionAgent(ImplementationAgent):
-        async def begin(self, thread_id, prompt, schema, *, workspace=None):
+    class QuestionAgent(IterationAgent):
+        async def begin(self, thread_id, prompt, schema, *, workspace=None, **kwargs):
             payload = json.loads(prompt.split("\nPAYLOAD:\n", 1)[1])
-            turn = await super().begin(thread_id, prompt, schema, workspace=workspace)
+            turn = await super().begin(thread_id, prompt, schema, workspace=workspace, **kwargs)
             if payload["phase"] == "plan" and not payload.get("plan_revision_feedback"):
                 self.results[(thread_id, turn)] = {
+                    "schema_version": 3,
                     "title": "Clarify the dataset",
                     "summary": "The dataset is missing.",
                     "protocol": "Dataset selection is needed before choosing compute.",
@@ -272,7 +288,7 @@ async def test_planning_clarification_waits_for_durable_answer(runtime):
                 }
             elif payload["phase"] == "plan":
                 assert payload["plan_revision_feedback"] == "Use dataset A, official split."
-                assert payload["previous_plan"]["questions"] == ["Which dataset and split should be used?"]
+                assert payload["approved_plan"]["questions"] == ["Which dataset and split should be used?"]
             return turn
 
     workflow = Workflow(old.config, store, scheduler, QuestionAgent())
@@ -284,6 +300,7 @@ async def test_planning_clarification_waits_for_durable_answer(runtime):
             "recipe_id": "agent_experiment_v1",
         },
     )["experiment_id"]
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
     await wait_for(workflow, store, eid, lambda exp: bool((exp["plan_review"] or {}).get("questions")))
     review = store.experiment(eid)["plan_review"]
     assert review["state"] == "awaiting_review"
