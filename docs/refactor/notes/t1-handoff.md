@@ -1,4 +1,4 @@
-# T1 handoff (after M0b and M4, 2026-11-13)
+# T1 handoff (after M0b and M5, 2026-11-13)
 
 Read `docs/refactor/README.md`, `todo.md`, `notes/t1-owner-decisions.md`, then the
 current card's note. Root `AGENTS.md` applies. Source publication is not live activation.
@@ -34,6 +34,7 @@ Current migration:
 - M3 `566ea41`: 14 workflow nodeids on contract 3; lost-start/lost-completion agent-stage
   recovery preserves saved identities and never duplicates dispatch.
 - M4 `d440fb8`: nine steering, fresh-implementation-thread and saved-title tests on contract 3.
+- M5 `86b7e59`: branching DAG execution on contract 3; old reader-model constants retained.
 - M0b `7254d2e`: final widened-probe addendum, Opus-approved with coordinator amendments.
 
 Latest source validation: Ruff and all **571 Python tests pass**. M1's final isolated
@@ -41,11 +42,10 @@ Latest source validation: Ruff and all **571 Python tests pass**. M1's final iso
 
 ## Current task and order
 
-**M5 next.** A Flash candidate is in `.worktrees/t1-1m-m5`, based on `a5b656b`, touching
-only `tests/test_dag.py` (+97/−29). Rebase by file onto current main, then fresh review and
-final checks. Opus `1dd77343` permitted parallel preparation, but final landings are
-M3 → M4 → M5. Preserve old schema-2 `STAGES`/`PLAN`/`SOURCE` and invalid-graph unit tests
-byte-for-byte; current DAG constants and agent are separate, with no helper-global patching.
+**M4b, M11 and P-a next.** M3 → M4 → M5 have landed in order, each with final-main
+checks and fresh Opus approval. M4b needs a coordinator plan and final Opus decision before
+implementation; M11's bounded test-only scope and P-a's before-gate need are in §9.
+Preserve old schema-2 DAG constants/invalid-graph unit tests for their remaining importers.
 
 The authoritative migration plan is disposition **§8 plus §9**; §9 amends sequencing and
 retirement. After M5, prepare M4b (compact reference), M11 (remote transport) and P-a
