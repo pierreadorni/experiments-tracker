@@ -12,6 +12,13 @@ from experimenttracker.workflow import Workflow
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "current_contract: T1.1m-converted test keeps contract 3 (removed in M10)",
+    )
+
+
 @pytest.fixture
 def config(tmp_path):
     token = tmp_path / "token"
@@ -41,9 +48,12 @@ def runtime(config):
 def historical_execution_fixtures(request, monkeypatch):
     """Existing suites exercise saved v1/v2 contracts, not the new default.
 
-    New-contract behavior lives in test_iteration*. Creation still uses the real
-    command boundary; only these historical fixture contracts are downgraded.
+    New-contract behavior lives in test_iteration* and in tests marked
+    current_contract. Creation still uses the real command boundary; only these
+    historical fixture contracts are downgraded.
     """
+    if request.node.get_closest_marker("current_contract") is not None:
+        return
     if request.node.path.name.startswith("test_iteration"):
         return
     original = Store.command
