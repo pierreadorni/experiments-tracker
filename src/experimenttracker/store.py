@@ -107,7 +107,7 @@ class Store:
         reader.db = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, check_same_thread=False)
         reader.db.row_factory = sqlite3.Row
         version = reader.db.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-        if version not in (12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23):
+        if version not in (12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24):
             reader.close()
             raise RuntimeError("start the owner to migrate this database before detailed inspection")
         return reader
@@ -433,7 +433,19 @@ class Store:
                     sha256 TEXT NOT NULL, size INTEGER NOT NULL)""")
                 db.execute("INSERT INTO schema_version VALUES(23)")
             version = 23
-        if version != 23:
+        if version == 23:
+            with self.tx() as db:
+                db.execute("""CREATE TABLE obligations(
+                    id TEXT PRIMARY KEY, experiment_id TEXT REFERENCES experiments(id), project_id TEXT,
+                    kind TEXT NOT NULL, target TEXT,
+                    owner TEXT NOT NULL CHECK(owner IN ('backend','agent','owner','external')),
+                    wait TEXT,
+                    state TEXT NOT NULL CHECK(state IN ('open','satisfied','abandoned')),
+                    detail TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL, due_at REAL)""")
+                db.execute("CREATE INDEX obligations_open ON obligations(experiment_id) WHERE state='open'")
+                db.execute("INSERT INTO schema_version VALUES(24)")
+            version = 24
+        if version != 24:
             raise RuntimeError("unsupported database schema version")
 
     def continue_action(self, action, *, request_id=None, feedback=None, _db=None):

@@ -713,13 +713,15 @@ def test_reference_outbox_migration_preserves_saved_history(runtime):
     store, *_ = runtime
     eid = publication_experiment(store)
     with store.tx() as db:
+        db.execute("DROP TABLE obligations")
         db.execute("DROP TABLE artifact_registrations")
-        db.execute("DELETE FROM schema_version WHERE version=23")
+        db.execute("DELETE FROM schema_version WHERE version>=23")
     before = {name: store.rows(f"SELECT * FROM {name}") for name in ("experiments", "events", "outbox")}
     migrated = Store(store.path)
     try:
-        assert migrated.one("SELECT MAX(version) AS version FROM schema_version")["version"] == 23
+        assert migrated.one("SELECT MAX(version) AS version FROM schema_version")["version"] == 24
         assert migrated.rows("SELECT * FROM artifact_registrations") == []
+        assert migrated.rows("SELECT * FROM obligations") == []
         assert {name: migrated.rows(f"SELECT * FROM {name}") for name in before} == before
         reader = Store.read_only(store.path)
         try:

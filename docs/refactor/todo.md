@@ -223,7 +223,7 @@ and archived fixtures still render their report via the API.
   port; new test files only, zero production-source change.
 - [ ] **T1.2b-2:** blocked-steering and healthy-long-job ports; same boundaries.
 
-### [~] T1.3a Obligations schema and API (C2) · S · M
+### [x] T1.3a Obligations schema and API (C2) · S · M
 - Add the named schema migration and `core/obligations.py` API (`open`, `satisfy`,
   `abandon`, `open_for`, `derived_status`) and priority table.
 - [Approved design](notes/t1.3a-obligations-design.md); no source integration,
@@ -406,7 +406,9 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 
 Record completed tasks here: `date · task · commit · notes`.
 
-2026-11-13 · T1 rollout · this commit · Owner explicitly approved proposals 1–6. Recorded phase-wide production-source accounting, bounded implementation splits, demo/fixture-before-archive order, toy API/export compatibility, conservative possibly-live-turn capacity and in-flight archival settlement. Coordinator-authored S plans received final Opus 5.5 decisions; implementation status remains separate. Existing Node 24 source verification remains applicable: production/test files are unchanged by this documentation commit.
+2026-11-13 · T1.3a · this commit · Flash implementation with coordinator review and strengthened non-finite-time, new-obligation rollback and migration-DDL rollback proofs. SQLite schema 24 adds only obligations; saved job/action/thread/turn identities, projections and holds remain unchanged, with no backfill. Source +202/−2 (net +200), tests +268/−2; 474 changed source/test lines. Exact staged-index isolated Node 24 locked setup, Ruff, 26 targeted and all 545 Python tests pass. Additive intermediate source is owner-approved; no live migration/activation.
+
+2026-11-13 · T1 rollout · 006a39f · Owner explicitly approved proposals 1–6. Recorded phase-wide production-source accounting, bounded implementation splits, demo/fixture-before-archive order, toy API/export compatibility, conservative possibly-live-turn capacity and in-flight archival settlement. Coordinator-authored S plans received final Opus 5.5 decisions; implementation status remains separate. Existing Node 24 source verification remains applicable: production/test files are unchanged by this documentation commit.
 
 2026-11-13 · T1.2a · this commit · Flash implementation with coordinator AST/import and local-name-shadowing audits; normalized source ASTs are unchanged beyond time/clock references and imports. Source +232/−234 (net −2), tests +27/−4; 497 source/test changed lines. Isolated locked Node 24 validation matches the final worktree: Ruff clean, 90 targeted and all 537 Python tests pass; synthetic demo completes with labelled report/figure. No live activation. This independent card obeys existing size and net-source rules; archival and S-card implementation decisions remain pending.
 
