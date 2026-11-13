@@ -38,6 +38,20 @@ Code publication does not authorize live activation.
 - **One task, one child, one commit.** A child writes only inside its `cwd`.
   Parallel children need separate worktrees and must not touch the same hot files:
   `workflow.py`, `store.py`, `gateway/src/index.ts`, `web/src/main.tsx`.
+- **One-line commit messages.** `<type>: <what changed> (<task ID>)`, as in the
+  existing history. No test counts, acceptance disclaimers, review narratives or
+  "no live activation" trailers in the message; evidence lives in `todo.md`'s log,
+  not in the commit subject.
+- **Size budget per card.** The card's `Size` band in [todo.md](todo.md) is a hard
+  budget: S < 150, M < 500 changed lines (source plus tests, excluding generated
+  files). Beyond **2×** that budget the child stops and asks; the coordinator
+  reviews the overrun before anything is committed, and splits the card rather
+  than accepting the drift.
+- **Report net source lines.** Every commit reports `git show --numstat` totals for
+  source and for tests/docs, so review sees whether code was removed. **Phase 2
+  must come out net negative in production source overall.** The owner-approved
+  T1 rollout permits additive intermediate cards; retain bounded tasks, explicit
+  counts and the planned consolidation rather than deleting safety coverage.
 - **F+R and S tasks.** A fresh-context reviewer, or the coordinator, checks the diff
   against the task card and design.md before the commit.
 - **Live state is off limits.** No edits to `.local/`, no live owner restarts, no
@@ -46,7 +60,9 @@ Code publication does not authorize live activation.
 - **Additive schema.** SQLite migrations are additive; D1 migrations append-only.
   Saved job, action and turn identities keep their meaning.
 - **No new ceremony.** Do not add hashing, sealing, inventories, mandatory validation
-  stages, or new `hold_reason` values outside C2.
+  stages, or new `hold_reason` values outside C2. Do not add tables or migrations,
+  hold/failure reasons, error codes, config keys or environment variables unless the
+  card names them; if a card seems to need one, stop and ask the owner first.
 - **Checks before commit** (coordinator, Node 24, outside restrictive sandboxes):
   - `uv run --locked ruff check src tests scripts`
   - `uv run --locked ruff format --check src tests scripts`
@@ -67,10 +83,12 @@ Do: <steps from the card>
 Success criteria: <acceptance from the card>
 Validate: <exact pytest command from the card>; ruff check/format on changed files.
 Output: a short report covering the changed files, decisions made in judgment calls,
-            test results, and anything left unresolved. Do not commit.
+            test results, the net source-line delta (`git show --numstat`), and
+            anything left unresolved. Do not commit.
 Stop and ask if: acceptance conflicts with existing tests in a way the card does
-            not cover, a change would alter saved identities or schema meaning, or
-            the change exceeds the card's size estimate by more than 2x.
+            not cover, a change would alter saved identities, schema or config
+            meaning, adds a table, reason or config key the card does not name, or
+            the change exceeds the card's Size budget by more than 2x.
 ```
 
 ## Order
