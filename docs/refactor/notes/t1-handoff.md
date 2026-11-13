@@ -1,102 +1,124 @@
-# T1 handoff (T1.1m migration in progress, 2026-11-13)
+# T1 handoff (after M0b and M4, 2026-11-13)
 
-A clean-context agent continues from here. Read, in order: `docs/refactor/README.md`
-(rules, size budgets, commit style, checks), `docs/refactor/todo.md` (cards, log),
-`notes/t1-owner-decisions.md` (owner approved decisions 1-6), then the card's note.
-Root `AGENTS.md` applies (contract 3 only; no scientific hashing/inventories/freezes).
+Read `docs/refactor/README.md`, `todo.md`, `notes/t1-owner-decisions.md`, then the
+current card's note. Root `AGENTS.md` applies. Source publication is not live activation.
 
 ## Owner instructions in force
-- Continue T1 (todo Phase 2) in order. Coordinator = you: write briefs, review diffs,
-  run checks, commit, push, update the todo log. Implementers are `deepseek/deepseek-flash`
-  subagents (agent `worker`, `model: deepseek/deepseek-flash`, own git worktree under
-  `.worktrees/<slug>`, branch `refactor/<slug>`); call `subagents_enable` first.
-- **Any design or sequencing question: ask a fresh `reviewer` subagent with
-  `model: anthropic/claude-opus-5-5` (read-only; give file paths and the question)
-  instead of asking the owner.** Escalate to the owner only if a safety property cannot
-  get a contract-3 test, or production behaviour must change beyond the README rule
-  "No new ceremony". S-sized cards: write your own plan, then get Opus's final decision.
-- Browser checks: Node 24 + Playwright work with a workaround. Create
-  `/tmp/pw-browsers` containing symlinks `chromium-1243 -> ~/.cache/ms-playwright/chromium-1248`
-  and `chromium_headless_shell-1243 -> ~/.cache/ms-playwright/chromium_headless_shell-1248`,
-  then set `PLAYWRIGHT_BROWSERS_PATH=/tmp/pw-browsers`. Run demo servers only in a
-  worktree with its own `.local/` (`experimenttracker --config .local/demo.yaml init`,
-  then add `port: 18765`). Never touch the main checkout's `.local/`, live state,
-  Slurm or the gateway.
-- Do not use `pkill -f` with a pattern that appears in your own shell command line (it
-  kills the shell).
-- Code publication does not authorize live activation. Phase 2 production source must
-  end net negative overall (additive intermediate cards are approved).
 
-## Landed on main (pushed)
-T1.1a 42829f4 · T1.2a 864ba91 · T1.3a d644089 · T1.1c-1 b6c1297 · T1.2b (1a 9b7bc8f,
-1b 9bbef58, 2 7e939ac) · T1.1c-2 19ab387 (browser smoke on contract 3; all smoke scripts
-except iteration-smoke migrated) · T1.1m disposition note cbb7c16 · final T1.1m plan
-f716898 · T1.1m-M0 9426245 (shared helpers moved into `tests/helpers.py`) · seeded-state browser smoke correction 18b5b33 (empty and CLI-seeded synthetic states, full Node 24 checks pass) · M0c f3fca77 (temporary current-contract marker) · M1 96e0812 (frozen legacy fixture, six READER migrations, five loader tests; full check: 569 Python / 29 web / 41 gateway) · P1 b387af4 (current-contract discussion follow-ups) · M2 09c4d9b (all 17 discussion readers on saved evidence) · M3 566ea41 (observation/pause/exact-turn recovery) · M4 d440fb8 (steering, fresh implementation thread and saved title on contract 3; Opus-approved, 571 Python tests pass).
+- Continue T1 in order. Coordinator writes briefs, reviews, checks, commits and pushes.
+  Implementers: `worker`, `model: deepseek/deepseek-flash`, own worktree under
+  `.worktrees/<slug>`, branch `refactor/<slug>`; enable subagents first.
+- Any design or sequencing question goes to a fresh read-only `reviewer`,
+  `model: anthropic/claude-opus-5-5`, not the sleeping owner. S-card plans need its final
+  decision. Ask the owner only for an untestable safety property or production behaviour
+  beyond the README's approved boundaries; prefer bounded bug cards to losing coverage.
+- No main `.local/` edits, live owner restarts, Slurm, managed-runtime calls, gateway
+  deployment or unrelated checkouts. Demo servers use a worktree's own generated config.
+- Every source/test card stays below its line budget, counting moves/deletions; generated
+  fixture data is excluded. Phase 2 production source must end net negative overall.
+- Never use `pkill -f` with a pattern present in the invoking shell command.
 
-## Current task: T1.1m (fixture migration before archival)
-Plan and Opus decisions: `notes/t1.1m-disposition.md` §7 (sequencing "retire at the
-gate") and **§8 (final; supersedes §5 and §6)**. 122 tests drive the legacy branch of
-`Workflow.advance`; the per-test disposition (CONVERT / READER / ANALOGUE / RETIRE-ONLY)
-is in §1.
+## Landed and pushed
 
-Order: M0 (done) · M0b investigation (running) · M0c (done, temporary marker prerequisite) · M1 (done) · P1 (done) · M2 (done) · M3 (done) · M4 (done) · **M5 next** · M6 · M7a/b · M8a-d · M9-r1..4 · M10 · gate probe · T1.1b-1. M9-r1..4, M10 and T1.1b-1 are pushed together so legacy code is never reachable without its tests.
+Earlier T1: T1.1a `42829f4`; T1.2a `864ba91`; T1.3a `d644089`; T1.1c-1 `b6c1297`;
+T1.2b `9b7bc8f`, `9bbef58`, `7e939ac`; T1.1c-2 `19ab387`.
 
-Fresh Opus decision `09a27616` allows M0c/M1/P1/M2 and bounded M3–M8d conversions to land while M0b finishes. Keep its disposition note frozen until the addendum. Retirement, M10, archival and deletion remain blocked until the addendum is committed/Opus-approved, every baseline nodeid is mapped, and the widened probe is rerun on then-current main. Before M3+, check the provisional widened list for the card's files. M0c registers `current_contract` in conftest only, with no initial uses. Mark converted functions individually and prove contract 3; remove all marker uses and plumbing in M10.
+Current migration:
+- M0 `9426245`: shared helpers in `tests/helpers.py` (old imports re-exported).
+- Browser correction `18b5b33`: reference picker matches the UI title and asserts saved
+  reference identity. Empty and CLI-seeded synthetic smoke pass; full Node 24 checks pass.
+- M0c `f3fca77`: temporary `current_contract` marker, conftest registration only.
+- M1 `96e0812`: frozen legacy fixture, six reader migrations, five loader tests.
+- P1 `b387af4`: discussion follow-ups always create `agent_experiment_v1`.
+- M2 `09c4d9b`: all 17 discussion reader nodeids load saved evidence.
+- M3 `566ea41`: 14 workflow nodeids on contract 3; lost-start/lost-completion agent-stage
+  recovery preserves saved identities and never duplicates dispatch.
+- M4 `d440fb8`: nine steering, fresh-implementation-thread and saved-title tests on contract 3.
+- M0b `7254d2e`: final widened-probe addendum, Opus-approved with coordinator amendments.
 
-**M0b (running, pinned `34f29ec`).** The partial probe was corrected (its dependencies wrapper must await the original, not replace it); the transparent widened baseline passes all 564 tests and records 156 nodeids after the cleanup supplement (132 entrypoint / 24 non-gate; advance itself records 121). The original downgrade-disabled full suite finished with 76 failed / 488 passed in 1797.49 s; the worker's initial harness deadline interrupted its wait but the same test process was retained, not rerun. The supplemental probe and draft classification are complete. Fresh Opus `94dbc071` required corrections to causal attributions, final dry-run counts, model-reader retention, producer fixture assumptions and cleanup retirement sequencing; the revised addendum is awaiting its final decision. Do not treat the unapproved draft as permission to retire tests. Append final findings as `## 9. M0b addendum` in `t1.1m-disposition.md`, with pinned ref and mappings for any meanwhile-landed conversions. Spec: §8. The old partial patch is investigation-only; never commit probe/env switches. Retirement must wait for completed and reviewed findings.
+Latest source validation: Ruff and all **571 Python tests pass**. M1's final isolated
+`make check` also passed 29 web / 41 gateway tests. No live acceptance or activation.
 
-M1 loader: `from legacy_fixture import load_legacy_completed`; call `load_legacy_completed(store, workflow)`. Fixed valid UUID, seven saved tables, no events/outbox or pre-registered histories. Generator source ref and command are in the fixture README; Ruff excludes the frozen root so its bytes stay historical. P1 uses a marked current-contract discussion test on this legacy parent; the current recipe literal is the only production change. M2's worker can prepare independently (Opus `d90bf676`), but rebase onto P1 and rerun targeted/full checks before final review/commit; keep `send`, `response`, `discussion` and `script_reply` signatures unchanged. M2's custom-project reader must use a read-only project and a direct transactional SQL update of only `contract.project` (`Store.update` rejects `contract`).
+## Current task and order
 
-M4/M5 preparation is parallel under Opus `1dd77343`; final rebase/review/checks/landings stay ordered M3 → M4 → M5. The newly discovered compact-reference test is a separate M4b card after M4/M5, not in M4.
+**M5 next.** A Flash candidate is in `.worktrees/t1-1m-m5`, based on `a5b656b`, touching
+only `tests/test_dag.py` (+97/−29). Rebase by file onto current main, then fresh review and
+final checks. Opus `1dd77343` permitted parallel preparation, but final landings are
+M3 → M4 → M5. Preserve old schema-2 `STAGES`/`PLAN`/`SOURCE` and invalid-graph unit tests
+byte-for-byte; current DAG constants and agent are separate, with no helper-global patching.
 
-M2 review notes incidental writable-project discussion coverage is now gone (the original had no explicit write-grant assertion). Add a bounded explicit contract-3 discussion/write-grant check alongside M7a if it fits; do not weaken the existing project/workspace assertions to make space.
+The authoritative migration plan is disposition **§8 plus §9**; §9 amends sequencing and
+retirement. After M5, prepare M4b (compact reference), M11 (remote transport) and P-a
+(ticking API producers), then M6, M7a/b, M8a–d and M8e. The three added cards may proceed
+any time after M0, but all block M10/gate. Explicit static legacy fixture rewrites also
+precede M10. Remeasure/split all retirement cards: r1, r2, r3a (local outputs), r3b
+(resources), r4, r5 (M-sized temporary-output prompt/validation work, not live cleanup).
+M9-r*, M10, the gate and T1.1b-1 still ship in **one push**. P-b precedes toy-create
+removal in h. Do not treat classification as permission to remove live saved-state coverage.
 
-Card facts to keep (all in §8):
-- P1 is a small PRODUCTION change: discussion follow-ups are created as
-  `agent_experiment_v1` (`conversation.py:306`). M8c and M8d may need production cards.
-  Production changes need F+R review.
-- RETIRE-ONLY applies only to: toy snapshot-hash equality, the frozen `requirements.txt`
-  check, local checkpoint hashing checks, and the validate stage / `strict_reproducibility`.
-- ANALOGUE retirement must cite a contract-3 test and assertion. A weaker analogue is
-  strengthened first (that part is a CONVERT).
-- M1 builds a frozen legacy completed fixture under `tests/fixtures/legacy_completed/`,
-  generated once from current code BEFORE any legacy code is removed. `@ROOT@` replaces
-  the temporary root only in `artifacts.path` and `jobs.execution_root`. It adds no new
-  hashes or inventory. The loader is `tests/legacy_fixture.py`.
-- Gate: with M10 applied the full suite is green and the widened probe records zero
-  legacy-mechanism nodeids.
+## M0b facts and acceptance boundaries
 
-## After T1.1m
-- T1.1b-1: archival with hold `legacy_contract_archived`, an existing inbox kind, the
-  inventory §15 / §17.4 guards, and tests on an explicit archived fixture inserted
-  directly into saved state.
-- T1.1d-h: legacy deletion; they retire the tests listed in the M0b addendum.
-- Then T1.3b-d, T1.4a/b, T1.5, T1.6a-c, T1.7. S-card designs are Opus-approved in
-  `notes/t1.*-design.md`. T1.1b, T1.3b-d, T1.4 and T1.7 have preflight maps only
-  (inventory §15-17). T1.3b source order: agent_actions, jobs, transfers+publication,
-  pending_request, plan_review. `Store.update` lacks `_db=`, so it needs a transaction
-  variant. T1.7 areas were measured over budget; remeasure after the legacy deletion.
-- When all of T1.1 is done, update the "Future brief-driven experiments" line in root
-  `AGENTS.md` (contract 3 only; legacy archived; new demo; obligations/pool direction).
+- Pinned source `34f29ec`: transparent baseline 564 pass, 1126 records / 156 nodeids
+  (132 entrypoint / 24 non-gate); `advance` past early returns accounts for 121.
+- Original no-downgrade full run: 76 failed / 488 passed in 1797.49 s. It survived the
+  worker's harness deadline and was not rerun. Its final probe has 568 records / 92 nodeids,
+  including 58 toy-chain gate hits. Toy creates never had the downgraded contract flag.
+- M1/M2/M3 have moved 37 of those 58 off execution; 21 remained at that mapping point.
+  These are pinned measurements, not a current-main gate result.
+- The final probe is **uncommitted** at `/tmp/m0b/m0b-probe-final.patch`; raw logs and
+  JSONL are beside it. The tracked old partial patch is not valid gate evidence. Its
+  mutation-only repair detector was insufficient; the worker's initial rewrite also
+  introduced a non-transparent dependencies wrapper. Final attribution/corrections are §9.1.
+- Before retirement, account for every baseline nodeid and rerun the widened probe on
+  current main, rebased onto M0c conftest. Final gate zero is for §8 execution entrypoints,
+  not retained reader helpers. Report cleanup, legacy observation/reconciliation and
+  reader calls separately with **explicit static fixture origin** (G1–G4 in §9.6).
+- Keep the three cleanup tests until h.5 deletes that live historical path. Keep legacy
+  recovery refusal/rollback tests until the `1695-1703` branch is deleted: failed is
+  terminal and not covered by the non-terminal archive sweep. **M8d adds separate
+  contract-3 counterparts**, not an in-place conversion of their legacy fixture.
+- Keep sealed restart `[True]` through M10/gate. T1.1b-1 explicitly decides whether it stays
+  reachable (keep until f/h) or retires with a cited late-settlement replacement.
+- Keep ten schema-1/2 model-validation tests for archived readers. Replace their old
+  `test_generic.PLAN` import with static data when that module retires.
 
-## Process that worked (keep doing this)
-1. `git worktree add -b refactor/<x> .worktrees/<x> HEAD`; `uv sync --locked`; one Flash
-   worker per worktree with the README brief template (edit boundary, size budget, stop
-   conditions, exact validation, "do not commit").
-2. Review the diff yourself (a fresh Opus code review for risky or F+R cards). Apply the
-   worker's `git diff` to main with `git apply`. Run `uv run --locked ruff check` and
-   `ruff format --check` on `src tests scripts`, the targeted tests, and the full
-   `uv run --locked pytest -q` (564 tests at M0). Run `make check` when web or gateway
-   code changed.
-3. Commit one line `<type>: <what> (<ID>)` and push to origin main. Then a docs commit
-   `docs: record <ID> (<task>)` updating todo status and the log with numstat (source vs
-   tests/docs). Remove the worktree and branch.
+## Card facts to preserve
 
-## Pitfalls
-- `tests/conftest.py` strips `execution_contract` from every experiment created in test
-  files not named `test_iteration*`. Helper modules must not be named `test_*`.
-- The 122-test probe only covers `advance`; other legacy-dependent tests exist (M0b).
-- `.worktrees/` is untracked in main and holds a pre-existing `t1b-brief.md` (not mine);
-  leave it. No worktrees of mine should remain.
-- Do not edit `.local/`, run live restarts, Slurm or managed-model calls, or deploy the
-  gateway.
+- `load_legacy_completed(store, workflow)` from `tests/legacy_fixture.py` copies one valid
+  fixed-UUID fixture; seven saved tables, no events/outbox or pre-registered histories.
+  Historical hashes/tree bytes are retained. Ruff excludes the frozen root. Generator
+  removal belongs to the M9-r grouped push, after all required fixture generation.
+- Mark converted functions individually with `current_contract`; prove contract 3 via
+  `prepared()` or an explicit assertion after create. No manual contract restoration in
+  CONVERT tests. M10 removes all marker uses/registration and the global downgrade.
+- M4b measures the 25 KB prompt bound using a genuine manifest-mode parent before deciding
+  whether production has a bug. Do not weaken the bound or include it in M4.
+- M11 preserves all seven remote identity/transport/polling/admission guards; drop reused
+  checkpoint byte re-checks outright. Contract 3 has no scientific inventories/hashes.
+- P-a handles TestClient's real ticking loop **before the gate**. P-b cannot just replace
+  recipe literals: stage/job foreign keys require a schema-3 graph or explicit saved history.
+- M8e tests current declared-output/path safety only; no recursive child checks, new
+  production restrictions, reasons or scientific hashing. See the exact §9.5 scope.
+- M7a/M7b include the newly found prompt/catalog and five-GPU-stage budget tests. M7a may
+  add an explicit current-contract writable-project discussion check if it fits; M2's old
+  writable-project path had only incidental coverage, not an asserted write grant.
+- P1 is the sole production change so far in this continuation (+1/−1). M8c/M8d may need
+  separate production bug cards, each with fresh F+R review. Do not drop safety assertions.
+
+## Checks and continuation process
+
+1. One Flash writer per worktree; exact file boundary, budget, validation and “do not commit”.
+2. Review, apply by file, run locked Ruff check/format, targeted tests and the full suite on
+   the final rebased tree. Fresh Opus review for F+R/risky cards. `make check` for web/gateway
+   changes, in an isolated Node 24 checkout. Python subprocess tests run outside NSS sandboxes.
+3. Commit `<type>: <what> (<ID>)`, push main, then record source vs tests/docs numstat and
+   evidence in a docs commit. Remove completed worktrees/branches; leave pre-existing
+   `.worktrees/t1b-brief.md` alone.
+4. Browser workaround: `/tmp/pw-browsers/chromium-1243` → installed `chromium-1248`, and
+   matching headless-shell symlink; set `PLAYWRIGHT_BROWSERS_PATH=/tmp/pw-browsers`. Only
+   synthetic worktree demo servers, never main state or live ports.
+
+After T1.1: update root AGENTS future-contract wording, then T1.3b–d, T1.4, T1.5, T1.6,
+T1.7. Existing S plans are in `notes/t1.*-design.md`; remeasure T1.7 after legacy deletion.
+T1.3b source order: actions, jobs, transfers/publication, pending request, plan review;
+`Store.update` needs a transaction variant. None of this authorizes live activation.
