@@ -1,0 +1,323 @@
+diff --git a/tests/conftest.py b/tests/conftest.py
+index 3fd95dc..2ee108f 100644
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -1,4 +1,5 @@
+ import contextlib
++import os as _os
+ from pathlib import Path
+ 
+ import pytest
+@@ -44,6 +45,8 @@ def historical_execution_fixtures(request, monkeypatch):
+     New-contract behavior lives in test_iteration*. Creation still uses the real
+     command boundary; only these historical fixture contracts are downgraded.
+     """
++    if _os.environ.get("M0B_NO_DOWNGRADE"):
++        return
+     if request.node.path.name.startswith("test_iteration"):
+         return
+     original = Store.command
+@@ -64,3 +67,303 @@ def historical_execution_fixtures(request, monkeypatch):
+         return result
+ 
+     monkeypatch.setattr(Store, "command", command)
++
++
++# --- T1.1m-M0b widened probe (investigation only; uncommitted) -------------
++# Records "<nodeid> <mechanism>" for every legacy mechanism reached by an
++# experiment whose saved contract is not execution_contract == 3.
++import contextvars as _ctx
++import json as _json
++import os as _os
++
++import experimenttracker.artifacts as _artifacts
++import experimenttracker.models as _models
++import experimenttracker.steering as _steering
++from experimenttracker.codex_client import DemoAgent as _DemoAgent
++from experimenttracker.workflow import Workflow as _Workflow
++
++_PROBE_OUT = _os.environ.get("M0B_PROBE_OUT")
++_PROBE_NODE = _ctx.ContextVar("probe_node", default=None)
++_PROBE_EXP = _ctx.ContextVar("probe_exp", default=None)
++_PROBE_SEEN = set()
++
++_EARLY_HOLDS = (
++    "automatic_repair_pending",
++    "agent_stage_blocked",
++    "agent_stage_failed",
++    "implementation_blocked",
++)
++
++
++def _legacy(exp):
++    try:
++        return exp["contract"].get("execution_contract") != 3
++    except Exception:
++        return False
++
++
++def _manifest_legacy(manifest):
++    try:
++        return manifest.get("plan", {}).get("schema_version") != 3
++    except Exception:
++        return False
++
++
++def _note(mechanism, exp=None, eid=None):
++    node = _PROBE_NODE.get()
++    if node is None or _PROBE_OUT is None:
++        return
++    exp = exp if exp is not None else _PROBE_EXP.get()
++    if exp is not None and not _legacy(exp):
++        return
++    key = (node, mechanism)
++    if key in _PROBE_SEEN:
++        return
++    _PROBE_SEEN.add(key)
++    with open(_PROBE_OUT, "a", encoding="utf-8") as stream:
++        stream.write(_json.dumps({"nodeid": node, "mechanism": mechanism,
++                                  "eid": eid or (exp or {}).get("id")}) + "\n")
++
++
++def _wrap_sync(monkeypatch, owner, name, resolver):
++    original = getattr(owner, name)
++
++    def wrapper(*args, **kwargs):
++        try:
++            resolver(*args, **kwargs)
++        except Exception:
++            pass
++        return original(*args, **kwargs)
++
++    monkeypatch.setattr(owner, name, wrapper)
++
++
++def _wrap_async(monkeypatch, owner, name, before, after=None):
++    original = getattr(owner, name)
++
++    async def wrapper(*args, **kwargs):
++        state = None
++        try:
++            state = before(*args, **kwargs)
++        except Exception:
++            pass
++        try:
++            return await original(*args, **kwargs)
++        finally:
++            if after is not None:
++                try:
++                    after(state, *args, **kwargs)
++                except Exception:
++                    pass
++
++    monkeypatch.setattr(owner, name, wrapper)
++
++
++@pytest.fixture(autouse=True)
++def m0b_probe(request, monkeypatch):
++    if _PROBE_OUT is None:
++        yield
++        return
++    node_token = _PROBE_NODE.set(request.node.nodeid)
++    exp_token = _PROBE_EXP.set(None)
++
++    def _advance_before(self, eid, *a, **kw):
++        exp = self.store.experiment(eid)
++        if not _legacy(exp):
++            return exp
++        restart = self.store.one(
++            "SELECT 1 FROM steering WHERE experiment_id=? AND mode='restart' "
++            "AND state IN ('pending','cancelling')",
++            (eid,),
++        )
++        early = (
++            exp["phase"] == "cancelled"
++            or exp["hold_reason"] in _EARLY_HOLDS
++            or (
++                restart
++                and (
++                    exp["snapshot"]
++                    or self.store.one("SELECT 1 FROM jobs WHERE experiment_id=?", (eid,))
++                    or self.store.one(
++                        "SELECT 1 FROM agent_actions WHERE experiment_id=? AND phase='prepare'",
++                        (eid,),
++                    )
++                )
++            )
++        )
++        if not early:
++            _note("advance", exp)
++        return exp
++
++    _wrap_async(
++        monkeypatch,
++        _Workflow,
++        "advance",
++        _advance_before,
++    )
++
++    def _agent_stage_before(self, exp, phase, *a, **kw):
++        _PROBE_EXP.set(exp)
++        _note(f"agent_stage:{phase}", exp)
++        return exp
++
++    _wrap_async(monkeypatch, _Workflow, "agent_stage", _agent_stage_before)
++
++    def _submit_before(exp, stage, *a, **kw):
++        _PROBE_EXP.set(exp)
++        _note("submit_prepared_stage", exp)
++        return exp
++
++    for _name in ("submit_prepared_stage", "_submit_prepared_stage"):
++        _wrap_async(
++            monkeypatch,
++            _Workflow,
++            _name,
++            lambda self, *a, **kw: _submit_before(*a, **kw),
++        )
++
++    def _observe_before(self, *a, **kw):
++        legacy = []
++        for row in self.store.rows(
++            "SELECT DISTINCT e.id FROM jobs j JOIN experiments e ON e.id=j.experiment_id "
++            "WHERE j.state IN ('submitting','submitted')"
++        ):
++            exp = self.store.experiment(row["id"])
++            if _legacy(exp):
++                legacy.append(exp)
++        return legacy
++
++    def _observe_after(state, self, *a, **kw):
++        for exp in state or []:
++            _note("observe_jobs", exp)
++
++    _wrap_async(monkeypatch, _Workflow, "observe_jobs", _observe_before, _observe_after)
++
++    def _scan(store):
++        found = {}
++        for row in store.rows(
++            "SELECT id FROM experiments WHERE deleted_at IS NULL AND phase IN "
++            "('failed','preparing','training','evaluating') AND hold_reason IN "
++            "('compute_failed','validation_failed','automatic_repair_pending','resources_unavailable')"
++        ):
++            exp = store.experiment(row["id"])
++            found[row["id"]] = (exp["contract"].get("auto_repair"), exp["hold_reason"])
++        return found
++
++    def _repair_before(self, *a, **kw):
++        return _scan(self.store)
++
++    def _repair_after(state, self, *a, **kw):
++        for eid, (repair, hold) in _scan(self.store).items():
++            exp = self.store.experiment(eid)
++            if not _legacy(exp):
++                continue
++            before = (state or {}).get(eid)
++            if before is not None and before != (repair, hold):
++                _note("repair_failed_experiments", exp)
++
++    _wrap_async(
++        monkeypatch, _Workflow, "repair_failed_experiments", _repair_before, _repair_after
++    )
++
++    def _reuse_before(self, exp, plan, *a, **kw):
++        _PROBE_EXP.set(exp)
++        if _legacy(exp):
++            _note("reusable_stages", exp)
++        return exp
++
++    _wrap_sync(
++        monkeypatch,
++        _Workflow,
++        "reusable_stages",
++        lambda self, *a, **kw: _reuse_before(self, *a, **kw),
++    )
++
++    def _cleanup_after(state, self, *a, **kw):
++        for eid in set(self.cleanup_tasks) - (state or set()):
++            exp = self.store.experiment(eid)
++            if _legacy(exp):
++                _note("advance_cleanup", exp)
++
++    def _cleanup_before(self, *a, **kw):
++        return set(self.cleanup_tasks)
++
++    _wrap_async(monkeypatch, _Workflow, "advance_cleanup", _cleanup_before, _cleanup_after)
++
++    def _replacement(store, exp, item):
++        if _legacy(exp):
++            _note("steering._create_replacement", exp)
++
++    _wrap_sync(
++        monkeypatch, _steering, "_create_replacement", lambda store, exp, item: _replacement(store, exp, item)
++    )
++
++    def _start_validation(self, eid, *a, **kw):
++        exp = self.experiment(eid)
++        if _legacy(exp):
++            _note("start_validation", exp)
++
++    _wrap_sync(monkeypatch, Store, "start_validation", _start_validation)
++
++    def _freeze_recipe(source, root, contract):
++        if contract.get("execution_contract") != 3:
++            _note("freeze_recipe", None, None)
++
++    _wrap_sync(monkeypatch, _artifacts, "freeze_recipe", _freeze_recipe)
++
++    def _verify_snapshot(root, manifest, *a, **kw):
++        if _manifest_legacy(manifest):
++            _note("verify_snapshot", None, None)
++
++    _wrap_sync(monkeypatch, _artifacts, "verify_snapshot", _verify_snapshot)
++
++    def _validate_stage(root, stage, manifest, *a, **kw):
++        if _manifest_legacy(manifest):
++            _note("validate_stage", None, None)
++
++    _wrap_sync(monkeypatch, _artifacts, "validate_stage", _validate_stage)
++
++    def _prep_validate(value, *a, **kw):
++        _note("preparation_construct", None, None)
++        return _original_prep_validate(value, *a, **kw)
++
++    _original_prep_validate = _models.Preparation.model_validate
++    monkeypatch.setattr(_models.Preparation, "model_validate", _prep_validate)
++
++    _original_prep_schema = _models.Preparation.model_json_schema
++
++    def _prep_schema(*a, **kw):
++        _note("preparation_schema", None, None)
++        return _original_prep_schema(*a, **kw)
++
++    monkeypatch.setattr(_models.Preparation, "model_json_schema", _prep_schema)
++
++    _original_begin = _DemoAgent.begin
++
++    async def _begin(self, *a, **kw):
++        prompt = a[1] if len(a) > 1 else kw.get("prompt", "")
++        try:
++            payload = _json.loads(prompt.split("\nPAYLOAD:\n", 1)[1])
++        except Exception:
++            payload = {}
++        if payload.get("phase") == "prepare" and "output_schema" not in payload:
++            _note("toy_demoagent_prepare", None, None)
++        return await _original_begin(self, *a, **kw)
++
++    monkeypatch.setattr(_DemoAgent, "begin", _begin)
++
++    original_strict = _note
++
++    def _note_with_strict(mechanism, exp=None, eid=None):
++        original_strict(mechanism, exp, eid)
++        target = exp if exp is not None else _PROBE_EXP.get()
++        if target is not None and target["contract"].get("strict_reproducibility"):
++            original_strict("strict_reproducibility", target, eid)
++
++    globals()["_note"] = _note_with_strict
++    try:
++        yield
++    finally:
++        globals()["_note"] = original_strict
++        _PROBE_EXP.reset(exp_token)
++        _PROBE_NODE.reset(node_token)
