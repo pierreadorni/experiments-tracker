@@ -4,7 +4,7 @@ import json
 from uuid import uuid4
 
 import pytest
-from helpers import wait_for_experiment, wait_until
+from helpers import approve_plan, wait_for_experiment, wait_until
 from pydantic import ValidationError
 
 from experimenttracker import artifacts
@@ -130,18 +130,6 @@ class ImplementationAgent(DemoAgent):
             }
         self.results[(thread_id, turn)] = result
         return turn
-
-
-async def approve_plan(workflow, store, eid):
-    await wait_until(
-        lambda: (store.experiment(eid)["plan_review"] or {}).get("state") == "awaiting_review",
-        ticks=lambda: workflow.tick(force_observe=True),
-        describe=lambda: store.experiment(eid),
-    )
-    review = store.experiment(eid)["plan_review"]
-    store.command(
-        uuid4(), "plan_review", {"decision": "approve", "plan_revision": review["revision"]}, eid=eid
-    )
 
 
 async def test_generic_dynamic_graph_restart_and_evidence(runtime):

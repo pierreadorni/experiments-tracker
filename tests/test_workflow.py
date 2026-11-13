@@ -4,7 +4,7 @@ import json
 from uuid import uuid4
 
 import pytest
-from helpers import wait_for_experiment
+from helpers import until
 
 from experimenttracker import artifacts
 from experimenttracker.codex_client import NeedsAttention, TransportError
@@ -22,10 +22,6 @@ def submit(store):
             "recipe_id": "toy_compare_v1",
         },
     )["experiment_id"]
-
-
-async def until(workflow, store, eid, predicate):
-    await wait_for_experiment(workflow, store, eid, predicate)
 
 
 async def test_full_lifecycle_and_duplicate_observations(runtime):
