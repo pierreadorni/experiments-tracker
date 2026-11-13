@@ -8,12 +8,12 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 from helpers import wait_until
-from test_workflow import submit, until
+from legacy_fixture import load_legacy_completed
 
 from experimenttracker.api import create_app
 from experimenttracker.codex_client import NeedsAttention, TransportError
 from experimenttracker.config import ProjectConfig
-from experimenttracker.store import Conflict
+from experimenttracker.store import Conflict, encode
 from experimenttracker.workflow import Workflow
 
 
@@ -111,19 +111,15 @@ async def test_arbitrary_script_plot_recovery_provenance_and_exactly_once_follow
     store, scheduler, agent, workflow = runtime
     checkout = tmp_path / "research"
     checkout.mkdir()
-    project = ProjectConfig(id="anyup-rs", name="anyup-rs", checkout=checkout)
+    project = ProjectConfig(id="anyup-rs", name="anyup-rs", checkout=checkout, writable=False)
     workflow.config.projects.append(project)
     store.projects[project.id] = project
-    eid = store.command(
-        uuid4(),
-        "create",
-        {
-            "brief": "Compare linear and quadratic models on shared synthetic data.",
-            "recipe_id": "toy_compare_v1",
-            "project_id": project.id,
-        },
-    )["experiment_id"]
-    await until(workflow, store, eid, lambda e: e["phase"] == "complete")
+    eid = load_legacy_completed(store, workflow)
+    # A read-only create saves only the project identity, which is what the follow-up inherits.
+    contract = store.experiment(eid)["contract"]
+    contract["project"] = {"id": project.id, "name": project.name}
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(contract), eid))
     nested_histories(store, workflow, eid)
     originals = {a["path"]: file_bytes(a["path"]) for a in store.rows("SELECT * FROM artifacts")}
     await script_reply(agent, workflow, followup=True)
@@ -153,7 +149,7 @@ async def test_arbitrary_script_plot_recovery_provenance_and_exactly_once_follow
     assert child["contract"]["agent"]["model"] == "deterministic-demo"
     assert len(store.rows("SELECT * FROM experiments")) == 2
     assert len(store.rows("SELECT * FROM report_versions")) == 1
-    assert agent.calls == 3 and scheduler.submissions == 3
+    assert agent.calls == 1 and scheduler.submissions == 0
     # Rebuild the report from the sealed artifacts, with script and original data in provenance.
     from experimenttracker import reporting
 
@@ -174,7 +170,7 @@ async def test_arbitrary_script_plot_recovery_provenance_and_exactly_once_follow
 @pytest.mark.parametrize("tamper", ["hash", "symlink", "report_conflict"])
 async def test_script_outputs_fail_atomically_without_changing_evidence(runtime, tamper):
     store, _, agent, workflow = runtime
-    eid = await ready(runtime)
+    eid = load_legacy_completed(store, workflow)
     nested_histories(store, workflow, eid)
     await script_reply(agent, workflow, followup=True)
     identity = send(store, eid, "Add a plot and start a follow-up")
@@ -197,13 +193,6 @@ async def test_script_outputs_fail_atomically_without_changing_evidence(runtime,
     await workflow.close()
 
 
-async def ready(runtime):
-    store, _, _, workflow = runtime
-    eid = submit(store)
-    await until(workflow, store, eid, lambda e: e["phase"] == "complete")
-    return eid
-
-
 def send(store, eid, text, request=None, **selection):
     identity = request or uuid4()
     return store.command(identity, "discuss", {"text": text, **selection}, eid=eid)["request_id"]
@@ -224,7 +213,7 @@ async def response(workflow, store, identity, state="completed"):
 
 async def test_ordered_evidence_discussion_and_report_edit_do_not_repeat_science(runtime):
     store, scheduler, agent, workflow = runtime
-    eid = await ready(runtime)
+    eid = load_legacy_completed(store, workflow)
     root = workflow.root(eid)
     originals = {
         name: (root / name).read_bytes()
@@ -284,7 +273,7 @@ async def test_ordered_evidence_discussion_and_report_edit_do_not_repeat_science
     assert view["report_versions"][0]["state"] == "ready"
     assert view["phase"] == "complete" and not view["hold_reason"]
     assert all((root / name).read_bytes() == content for name, content in originals.items())
-    assert scheduler.submissions == 3 and agent.calls == 5
+    assert scheduler.submissions == 0 and agent.calls == 3
     assert len(view["agent_actions"]) == 2 and len(view["conversation"]) == 3
     assert len(store.rows("SELECT * FROM report_versions")) == 1
     await workflow.close()
@@ -292,14 +281,16 @@ async def test_ordered_evidence_discussion_and_report_edit_do_not_repeat_science
 
 async def test_fresh_quota_hold_and_pause_keep_messages_without_changing_result(runtime):
     store, scheduler, agent, workflow = runtime
-    eid = await ready(runtime)
+    eid = load_legacy_completed(store, workflow)
+    # The loader dispatches nothing, so establish the started workflow a real run leaves behind.
+    await workflow.start()
     identity = send(store, eid, "Discuss the uncertainty")
     workflow.gate.update({"ordinaryUsageAllowed": False})
     await workflow.tick(force_observe=True)
     held = store.one("SELECT * FROM discussions WHERE id=?", (identity,))
     assert held["state"] == "waiting" and held["hold_reason"] == "quota_hold" and held["action_id"] is None
     assert store.experiment(eid)["phase"] == "complete" and not store.experiment(eid)["hold_reason"]
-    assert agent.calls == 2 and scheduler.submissions == 3
+    assert agent.calls == 0 and scheduler.submissions == 0
     await workflow.refresh_quota()
     store.command(uuid4(), "action", {"action": "pause_agent"}, eid=eid)
     await workflow.tick(force_observe=True)
@@ -309,13 +300,13 @@ async def test_fresh_quota_hold_and_pause_keep_messages_without_changing_result(
     )
     store.command(uuid4(), "action", {"action": "resume_agent"}, eid=eid)
     await response(workflow, store, identity)
-    assert agent.calls == 3
+    assert agent.calls == 1
     await workflow.close()
 
 
 async def test_completed_turn_replays_after_restart_with_one_reply_and_one_report(runtime):
     store, _, agent, workflow = runtime
-    eid = await ready(runtime)
+    eid = load_legacy_completed(store, workflow)
     identity = send(store, eid, "Add a plot")
     await workflow.tick(force_observe=True)
     await workflow.agent_task
@@ -326,14 +317,14 @@ async def test_completed_turn_replays_after_restart_with_one_reply_and_one_repor
     await response(restarted, store, identity)
     for _ in range(3):
         await restarted.tick(force_observe=True)
-    assert agent.calls == 3 and len(store.rows("SELECT * FROM report_versions")) == 1
+    assert agent.calls == 1 and len(store.rows("SELECT * FROM report_versions")) == 1
     assert len(store.projection(eid)["conversation"]) == 1
     await restarted.close()
 
 
 async def test_lost_dispatch_is_not_retried_and_exact_turn_can_be_reconciled(runtime):
     store, _, agent, workflow = runtime
-    eid = await ready(runtime)
+    eid = load_legacy_completed(store, workflow)
     begin = agent.begin
 
     async def lose(*args, **kwargs):
@@ -345,7 +336,7 @@ async def test_lost_dispatch_is_not_retried_and_exact_turn_can_be_reconciled(run
     row = await response(workflow, store, identity, "uncertain")
     for _ in range(3):
         await workflow.tick(force_observe=True)
-    assert agent.calls == 3
+    assert agent.calls == 1
     action = store.one("SELECT * FROM agent_actions WHERE id=?", (row["action_id"],))
     assert action["turn_id"] is None
     with pytest.raises(NeedsAttention):
@@ -356,13 +347,13 @@ async def test_lost_dispatch_is_not_retried_and_exact_turn_can_be_reconciled(run
         db.execute("UPDATE agent_actions SET turn_id=? WHERE id=?", (turn, action["id"]))
     await workflow.reconcile_action(action["id"])
     await response(workflow, store, identity)
-    assert agent.calls == 3 and store.experiment(eid)["phase"] == "complete"
+    assert agent.calls == 1 and store.experiment(eid)["phase"] == "complete"
     await workflow.close()
 
 
 async def test_invalid_reply_and_concurrent_report_change_preserve_original(runtime):
     store, _, agent, workflow = runtime
-    eid = await ready(runtime)
+    eid = load_legacy_completed(store, workflow)
     original = (workflow.root(eid) / "report.html").read_bytes()
     finish = agent.finish
 
@@ -393,7 +384,7 @@ async def test_invalid_reply_and_concurrent_report_change_preserve_original(runt
 
 async def test_pagination_and_authenticated_commands(runtime, config):
     store, _, _, workflow = runtime
-    eid = await ready(runtime)
+    eid = load_legacy_completed(store, workflow)
     app = create_app(config, components=(None, store, workflow))
     app.state.store = store
     with TestClient(app) as client:
@@ -423,10 +414,11 @@ async def test_pagination_and_authenticated_commands(runtime, config):
 
 async def test_incomplete_and_deleted_runs_do_not_accept_discussion(runtime):
     store, _, _, workflow = runtime
-    eid = submit(store)
+    eid = load_legacy_completed(store, workflow)
+    store.update(eid, phase="preparing")
     with pytest.raises(Conflict):
         send(store, eid, "Discuss")
-    await until(workflow, store, eid, lambda e: e["phase"] == "complete")
+    store.update(eid, phase="complete")
     store.command(uuid4(), "delete", {}, eid=eid)
     with pytest.raises(Conflict):
         send(store, eid, "Discuss")
@@ -436,7 +428,7 @@ async def test_incomplete_and_deleted_runs_do_not_accept_discussion(runtime):
 @pytest.mark.parametrize("always_missing", [False, True])
 async def test_missing_output_manifest_continues_saved_turn_with_feedback(runtime, always_missing):
     store, scheduler, agent, workflow = runtime
-    eid = await ready(runtime)
+    eid = load_legacy_completed(store, workflow)
     nested_histories(store, workflow, eid)
     await script_reply(agent, workflow)
     finish = agent.finish
@@ -473,7 +465,7 @@ async def test_missing_output_manifest_continues_saved_turn_with_feedback(runtim
     assert actions[0]["turn_id"] != actions[1]["turn_id"]
     assert "generated_artifacts entries" in actions[0]["error"]
     assert "Publication validation feedback:" in actions[1]["input"]
-    assert scheduler.submissions == 3
+    assert scheduler.submissions == 0
     if always_missing:
         assert not store.rows("SELECT * FROM artifacts WHERE stage_id LIKE 'discuss:%'")
         assert row["report_version"] is None
@@ -490,7 +482,7 @@ async def test_missing_output_manifest_continues_saved_turn_with_feedback(runtim
 
 async def test_discussion_context_is_bounded_selective_and_bootstraps_new_threads(runtime):
     store, _, _, workflow = runtime
-    eid = await ready(runtime)
+    eid = load_legacy_completed(store, workflow)
     identity = send(store, eid, "Explain the measurements")
     first = await response(workflow, store, identity)
     action = store.one("SELECT * FROM agent_actions WHERE id=?", (first["action_id"],))
@@ -529,7 +521,7 @@ async def test_discussion_context_is_bounded_selective_and_bootstraps_new_thread
 @pytest.mark.parametrize("invalid", ["schema", "metric"])
 async def test_invalid_report_reply_is_corrected_on_same_saved_thread(runtime, invalid):
     store, scheduler, agent, workflow = runtime
-    eid = await ready(runtime)
+    eid = load_legacy_completed(store, workflow)
     finish = agent.finish
     replies = 0
 
@@ -564,13 +556,13 @@ async def test_invalid_report_reply_is_corrected_on_same_saved_thread(runtime, i
     assert "validation" in actions[0]["error"] and "input_value" not in actions[0]["error"]
     wire = json.loads(actions[1]["input"].split("\nPAYLOAD:\n", 1)[1])["_sent_prompt"]
     assert json.loads(wire.split("\nPAYLOAD:\n", 1)[1])["publication_feedback"] == actions[0]["error"]
-    assert reply["report_version"] == 2 and scheduler.submissions == 3
+    assert reply["report_version"] == 2 and scheduler.submissions == 0
     await workflow.close()
 
 
 async def test_live_discussion_activity_projects_public_summaries_in_order(runtime):
     store, _, _, workflow = runtime
-    eid = await ready(runtime)
+    eid = load_legacy_completed(store, workflow)
     identity = send(store, eid, "Explain these results")
     aid = str(uuid4())
     import time
