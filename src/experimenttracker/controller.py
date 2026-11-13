@@ -5,13 +5,12 @@ import asyncio
 import json
 import socket
 import sys
-import time
 from pathlib import Path
 from uuid import UUID, uuid4
 
 from pydantic import Field
 
-from . import artifacts, early_repair, iteration, reporting
+from . import artifacts, clock, early_repair, iteration, reporting
 from .codex_client import TerminalTurnError
 from .config import StrictModel
 from .models import Analysis, Implementation, ReportDocument, ResearchPlan
@@ -290,7 +289,7 @@ class Controller:
                 if prior["experiment_id"] != eid or prior["reason"] != payload:
                     raise Conflict("wakeup request identity was reused for different work")
                 return dict(prior)
-            now = time.time()
+            now = clock.now()
             # A new request replaces pending checks, while queued turns retain
             # their exact outcome. Keep old receipts for idempotent replay.
             db.execute(
@@ -441,7 +440,7 @@ class Controller:
         progress value can trigger one diagnosis; a durable per-job ceiling
         prevents recurring monitoring from consuming the research allowance.
         """
-        wf, now = self.workflow, time.time()
+        wf, now = self.workflow, clock.now()
         interval = wf.config.codex.monitor_interval_seconds
         prior = wf.store.rows(
             "SELECT input,created_at FROM agent_actions WHERE experiment_id=? AND phase='monitor' AND attempts>0",
@@ -603,7 +602,7 @@ class Controller:
                         wf._action_state(action["id"], "uncertain", error=str(exc))
                     continue
             else:
-                if wake["due_at"] > time.time():
+                if wake["due_at"] > clock.now():
                     continue
                 action = None
                 jobs = self.diagnostic_jobs(exp["id"])
@@ -646,7 +645,7 @@ class Controller:
                         }
                     )
                 )
-                identity, now = str(uuid4()), time.time()
+                identity, now = str(uuid4()), clock.now()
                 with wf.store.tx() as db:
                     db.execute(
                         "INSERT INTO agent_actions(id,experiment_id,phase,evidence_revision,state,input,created_at,updated_at) VALUES(?,?,'monitor',?,'pending',?,?,?)",

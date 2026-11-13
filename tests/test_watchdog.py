@@ -23,7 +23,7 @@ def clock(monkeypatch):
             self.now += minutes * 60
 
     clock = Clock()
-    monkeypatch.setattr("experimenttracker.store.time.time", clock)
+    monkeypatch.setattr("experimenttracker.clock.now", clock)
     return clock
 
 

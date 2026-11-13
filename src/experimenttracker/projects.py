@@ -3,10 +3,10 @@
 import json
 import os
 import re
-import time
 from pathlib import Path
 from uuid import UUID
 
+from . import clock
 from .config import ProjectConfig
 from .execution_settings import ExecutionSettings
 from .models import CreateProject, UpdateProjectSettings
@@ -108,7 +108,7 @@ class Projects:
                 db.execute(
                     "INSERT INTO project_settings_requests(request_id,project_id,payload,created_at,origin) "
                     "VALUES(?,?,?,?,?)",
-                    (identity, project_id, wire, time.time(), origin),
+                    (identity, project_id, wire, clock.now(), origin),
                 )
         return self.settings_receipt(identity)
 
@@ -157,7 +157,7 @@ class Projects:
                         "INSERT INTO project_preferences(project_id,instructions,revision,updated_at,execution) "
                         "VALUES(?,?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET "
                         "instructions=excluded.instructions,revision=excluded.revision,updated_at=excluded.updated_at,execution=excluded.execution",
-                        (row["project_id"], instructions, revision, time.time(), encode(execution)),
+                        (row["project_id"], instructions, revision, clock.now(), encode(execution)),
                     )
                     from .autopilot import Autopilot
 
@@ -237,7 +237,7 @@ class Projects:
                     raise Conflict("at most 50 projects are supported")
                 db.execute(
                     "INSERT INTO project_requests(request_id,project_id,payload,created_at,origin) VALUES(?,?,?,?,?)",
-                    (identity, "project-" + UUID(identity).hex, wire, time.time(), origin),
+                    (identity, "project-" + UUID(identity).hex, wire, clock.now(), origin),
                 )
         return self.receipt(identity)
 
@@ -336,7 +336,7 @@ class Projects:
                     info.st_dev,
                     info.st_ino,
                     int(non_empty),
-                    time.time(),
+                    clock.now(),
                 ),
             )
             db.execute(
@@ -346,7 +346,7 @@ class Projects:
             if payload.get("instructions"):
                 db.execute(
                     "INSERT INTO project_preferences(project_id,instructions,revision,updated_at) VALUES(?,?,1,?)",
-                    (row["project_id"], payload["instructions"], time.time()),
+                    (row["project_id"], payload["instructions"], clock.now()),
                 )
         self.reload()
 

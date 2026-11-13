@@ -7,10 +7,10 @@ import mimetypes
 import runpy
 import shutil
 import stat
-import time
 from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
 
+from . import clock
 from .models import Analysis, ExperimentResult, ExperimentValidation, Implementation
 from .store import encode
 
@@ -485,7 +485,7 @@ def register(
             ):
                 db.execute(
                     "UPDATE report_versions SET state='publishing',artifact_ids=?,report_artifact_id=?,updated_at=? WHERE experiment_id=? AND version=?",
-                    (identities, report_id, time.time(), eid, report_version),
+                    (identities, report_id, clock.now(), eid, report_version),
                 )
                 changed = True
         if changed:
@@ -544,7 +544,7 @@ def render_report(exp, result, analysis: Analysis, figure_id, artifact_ids):
                 "contract": exp["contract"],
                 "snapshot": exp["snapshot"],
                 "model": exp["model"],
-                "generated_at": time.time(),
+                "generated_at": clock.now(),
             },
             indent=2,
         )

@@ -1,7 +1,7 @@
 import math
-import time
 from dataclasses import dataclass
 
+from . import clock
 from .config import QuotaConfig
 
 
@@ -26,7 +26,7 @@ class QuotaGate:
         self.policy_holds = {}
 
     def update(self, payload, now=None):
-        now = time.time() if now is None else now
+        now = clock.now() if now is None else now
         account = payload.get("accountId")
         if self.account_id and account and account != self.account_id:
             self.windows.clear()
@@ -64,7 +64,7 @@ class QuotaGate:
             self.windows[duration] = {**window, "observed_at": now}
 
     def decide(self, now=None):
-        now = time.time() if now is None else now
+        now = clock.now() if now is None else now
         remaining = {str(k): 100 - v["usedPercent"] for k, v in self.windows.items()}
         observed = min((w["observed_at"] for w in self.windows.values()), default=None)
         reason = None

@@ -1,9 +1,9 @@
 """Durable steering of a running experiment into a corrected replacement."""
 
 import json
-import time
 from uuid import NAMESPACE_URL, uuid5
 
+from . import clock
 from .store import encode
 
 TERMINAL_JOBS = (
@@ -85,7 +85,7 @@ async def process_restarts(workflow):
                 with store.tx() as db:
                     db.execute(
                         "UPDATE jobs SET scheduler_state=?,exit_code=?,observed_at=? WHERE intent_id=?",
-                        (observed.state, observed.exit_code, time.time(), job["intent_id"]),
+                        (observed.state, observed.exit_code, clock.now(), job["intent_id"]),
                     )
                     store.emit(
                         db,
@@ -110,7 +110,7 @@ async def process_restarts(workflow):
                         "job_cancellation_intent",
                         {"request_id": item["request_id"], "intent_id": job["intent_id"]},
                     )
-            now = time.time()
+            now = clock.now()
             if now - workflow.last_cancellation.get(item["request_id"], 0) < 30:
                 continue
             workflow.last_cancellation[item["request_id"]] = now
@@ -173,7 +173,7 @@ def _create_replacement(store, exp, item):
         )
         db.execute(
             "UPDATE steering SET state='applied',applied_at=?,replacement_experiment_id=? WHERE request_id=?",
-            (time.time(), replacement_id, item["request_id"]),
+            (clock.now(), replacement_id, item["request_id"]),
         )
         db.execute(
             "UPDATE experiments SET phase='cancelled',hold_reason=NULL,error=NULL WHERE id=?",
@@ -181,7 +181,7 @@ def _create_replacement(store, exp, item):
         )
         db.execute(
             "UPDATE steering SET state='transferred',applied_at=? WHERE experiment_id=? AND mode='later' AND state='pending'",
-            (time.time(), eid),
+            (clock.now(), eid),
         )
         store.emit(db, eid, "steering_restarted", {"replacement_experiment_id": replacement_id})
         store.emit(db, replacement_id, "replaces_experiment", {"experiment_id": eid})
@@ -220,7 +220,7 @@ def queue_late_reports(workflow):
             store.command(identity, "discuss", payload, eid=exp["id"], _db=db)
             db.execute(
                 "UPDATE steering SET state='discussion_queued',applied_at=? WHERE request_id=?",
-                (time.time(), item["request_id"]),
+                (clock.now(), item["request_id"]),
             )
             store.emit(
                 db,

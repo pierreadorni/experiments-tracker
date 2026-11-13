@@ -7,7 +7,6 @@ import logging
 import os
 import secrets
 import subprocess
-import time
 from pathlib import Path
 from uuid import UUID, uuid4
 from zipfile import BadZipFile
@@ -15,6 +14,7 @@ from zipfile import BadZipFile
 import uvicorn
 import yaml
 
+from . import clock
 from .codex_client import CodexAgent, DemoAgent
 from .config import load_config
 from .projects import Projects
@@ -126,9 +126,9 @@ async def demo(config, brief, max_seconds):
         result = store.command(uuid4(), "create", {"brief": brief, "recipe_id": "toy_compare_v1"})
         eid = result["experiment_id"]
         print(f"Experiment: {eid}; mode: {config.mode}", flush=True)
-        started = time.monotonic()
+        started = clock.monotonic()
         previous = None
-        while time.monotonic() - started < max_seconds:
+        while clock.monotonic() - started < max_seconds:
             await workflow.tick()
             exp = store.experiment(eid)
             summary = (exp["phase"], exp["hold_reason"], exp["error"])

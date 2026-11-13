@@ -4,13 +4,12 @@ import asyncio
 import hashlib
 import json
 import sys
-import time
 from pathlib import Path
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from pydantic import ValidationError
 
-from . import artifacts, discussion_outputs, iteration, reporting
+from . import artifacts, clock, discussion_outputs, iteration, reporting
 from .codex_client import NeedsAttention
 from .models import DiscussionReply
 from .store import encode
@@ -322,7 +321,7 @@ class Conversation:
                     version,
                     encode([reporting.artifact_id(exp, n) for n in files]),
                     followup,
-                    time.time(),
+                    clock.now(),
                     message["id"],
                 ),
             )
@@ -412,7 +411,7 @@ class Conversation:
                 except (ValueError, KeyError, OSError) as exc:
                     self.store.discussion_state(message["id"], "failed", error=str(exc))
                     continue
-                identity, now = str(uuid4()), time.time()
+                identity, now = str(uuid4()), clock.now()
                 with self.store.tx() as db:
                     db.execute(
                         "INSERT INTO agent_actions(id,experiment_id,phase,evidence_revision,state,input,created_at,updated_at) VALUES(?,?,?,?,'pending',?,?,?)",
@@ -467,7 +466,7 @@ class Conversation:
         with self.store.tx() as db:
             db.execute(
                 "UPDATE agent_actions SET state='failed',error=?,updated_at=? WHERE id=?",
-                (error, time.time(), action["id"]),
+                (error, clock.now(), action["id"]),
             )
             failed = dict(action, state="failed", error=error)
             continuation = self.store.continue_action(failed, feedback=error, _db=db)
@@ -476,7 +475,7 @@ class Conversation:
             db.execute("UPDATE agent_actions SET input=? WHERE id=?", (prompt, continuation["id"]))
             db.execute(
                 "UPDATE discussions SET action_id=?,state='queued',hold_reason=NULL,error=?,updated_at=? WHERE id=?",
-                (continuation["id"], error, time.time(), message["id"]),
+                (continuation["id"], error, clock.now(), message["id"]),
             )
             self.store.emit(
                 db,
@@ -524,11 +523,11 @@ class Conversation:
                 )
                 db.execute(
                     "UPDATE agent_actions SET thread_id=?,state='dispatching',attempts=attempts+1,updated_at=? WHERE id=?",
-                    (thread_id, time.time(), action["id"]),
+                    (thread_id, clock.now(), action["id"]),
                 )
                 db.execute(
                     "UPDATE discussions SET state='running',model=?,reasoning_effort=?,hold_reason=NULL,error=NULL,updated_at=? WHERE id=?",
-                    (resolved, effort, time.time(), message["id"]),
+                    (resolved, effort, clock.now(), message["id"]),
                 )
                 self.store.emit(
                     db,
@@ -547,7 +546,7 @@ class Conversation:
             with self.store.tx() as db:
                 db.execute(
                     "UPDATE agent_actions SET turn_id=?,state='running',updated_at=? WHERE id=?",
-                    (turn_id, time.time(), action["id"]),
+                    (turn_id, clock.now(), action["id"]),
                 )
                 self.store.emit(db, eid, "discussion_turn_started", {"discussion_id": message["id"]})
             result = await agent.finish(thread_id, turn_id)

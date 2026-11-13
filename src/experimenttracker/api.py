@@ -2,7 +2,6 @@ import asyncio
 import contextlib
 import logging
 import secrets
-import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import UUID
@@ -12,7 +11,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from . import artifacts
+from . import artifacts, clock
 from .cli import runtime
 from .knowledge import KnowledgeCommand
 from .models import (
@@ -48,7 +47,7 @@ def create_app(config, *, components=None, config_path=None, current_release=Non
         app.state.store = store
         app.state.workflow = workflow
         app.state.last_tick = None
-        app.state.started_at = time.time()
+        app.state.started_at = clock.now()
         app.state.last_tick_error = None
         worker = bridge = bridge_task = None
 
@@ -62,7 +61,7 @@ def create_app(config, *, components=None, config_path=None, current_release=Non
             while True:
                 try:
                     await workflow.tick()
-                    app.state.last_tick = time.time()
+                    app.state.last_tick = clock.now()
                     app.state.last_tick_error = None
                     workflow.maintenance.launch()
                 except Exception:
@@ -158,8 +157,8 @@ def create_app(config, *, components=None, config_path=None, current_release=Non
         tick = app.state.last_tick
         fresh = (
             tick is None
-            and time.time() - app.state.started_at < 60
-            or (tick is not None and time.time() - tick < max(60, config.scheduler_seconds * 4))
+            and clock.now() - app.state.started_at < 60
+            or (tick is not None and clock.now() - tick < max(60, config.scheduler_seconds * 4))
         )
         ok = fresh and app.state.last_tick_error is None
         response.status_code = 200 if ok else 503

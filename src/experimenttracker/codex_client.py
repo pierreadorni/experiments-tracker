@@ -2,10 +2,10 @@ import asyncio
 import contextlib
 import hashlib
 import json
-import time
 from collections.abc import Callable
 from pathlib import Path
 
+from . import clock
 from .config import CodexConfig
 from .models import request_answer
 from .slurm import command
@@ -206,7 +206,7 @@ class CodexAgent:
         self.request_handler = None
         self.quota_handler = None
         self.activity_handler = None
-        self.last_progress = time.monotonic()
+        self.last_progress = clock.monotonic()
         self.notification_tasks = set()
         self.models = []
         self.models_observed_at = None
@@ -218,8 +218,6 @@ class CodexAgent:
         account = await self.server.rpc("account/read", {"refreshToken": False})
         if (account.get("account") or {}).get("type") != "chatgpt":
             raise RpcError("a managed ChatGPT login is required; API billing is not supported")
-        import time
-
         catalog = {"data": []}
         cursor = None
         for _ in range(10):
@@ -242,7 +240,7 @@ class CodexAgent:
             for model in catalog["data"]
             if not model.get("hidden")
         ]
-        self.models_observed_at = time.time()
+        self.models_observed_at = clock.now()
         if not self.resolved_model:
             defaults = [m["model"] for m in catalog.get("data", []) if m.get("isDefault")]
             if len(defaults) != 1:
@@ -263,7 +261,7 @@ class CodexAgent:
             and params.get("turnId", self.active[1]) == self.active[1]
         ):
             if message["method"].startswith(("item/", "turn/")):
-                self.last_progress = time.monotonic()
+                self.last_progress = clock.monotonic()
         if (
             message["method"]
             in (
@@ -373,17 +371,17 @@ class CodexAgent:
 
     async def finish(self, thread_id, turn_id):
         last_message = None
-        started = self.last_progress = time.monotonic()
+        started = self.last_progress = clock.monotonic()
         try:
             while True:
-                idle = self.config.turn_timeout_seconds - (time.monotonic() - self.last_progress)
+                idle = self.config.turn_timeout_seconds - (clock.monotonic() - self.last_progress)
                 ceiling = self.config.turn_max_seconds
-                remaining = min(idle, ceiling - (time.monotonic() - started)) if ceiling else idle
+                remaining = min(idle, ceiling - (clock.monotonic() - started)) if ceiling else idle
                 try:
                     message = await asyncio.wait_for(self.server.events.get(), max(0, remaining))
                 except TimeoutError:
-                    if time.monotonic() - self.last_progress < self.config.turn_timeout_seconds and (
-                        ceiling is None or time.monotonic() - started < ceiling
+                    if clock.monotonic() - self.last_progress < self.config.turn_timeout_seconds and (
+                        ceiling is None or clock.monotonic() - started < ceiling
                     ):
                         continue
                     raise
@@ -436,7 +434,8 @@ class CodexAgent:
             raise TerminalTurnError(
                 "turn timeout; interrupted",
                 reason="owner_ceiling"
-                if self.config.turn_max_seconds and time.monotonic() - started >= self.config.turn_max_seconds
+                if self.config.turn_max_seconds
+                and clock.monotonic() - started >= self.config.turn_max_seconds
                 else "inactivity",
             ) from None
         finally:

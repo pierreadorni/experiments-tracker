@@ -1,7 +1,6 @@
 """Stop queued work immediately; reconcile only exact dispatched identities."""
 
-import time
-
+from . import clock
 from .codex_client import TerminalTurnError
 from .steering import TERMINAL_JOBS
 
@@ -12,7 +11,7 @@ async def process_cancellations(workflow):
         eid = row["id"]
         # A failed connection cannot block local cancellation or resurrect transfers.
         key = ("experiment", eid)
-        now = time.time()
+        now = clock.now()
         if now - workflow.last_cancellation.get(key, 0) < 5:
             continue
         workflow.last_cancellation[key] = now

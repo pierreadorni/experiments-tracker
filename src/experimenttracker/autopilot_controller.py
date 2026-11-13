@@ -6,9 +6,9 @@ import json
 import os
 import shutil
 import sys
-import time
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
+from . import clock
 from .autopilot import Autopilot
 from .autopilot_models import ProjectDecision
 from .autopilot_tools import MODELS, Compile
@@ -44,7 +44,7 @@ class ResearchController:
                 "UPDATE autopilot_actions SET state=?,updated_at=?"
                 + "".join("," + key + "=?" for key in fields)
                 + " WHERE id=?",
-                (state, time.time(), *fields.values(), identity),
+                (state, clock.now(), *fields.values(), identity),
             )
 
     def config(self, action_id):
@@ -135,7 +135,7 @@ class ResearchController:
             )
             db.execute(
                 "INSERT INTO autopilot_notices VALUES(?,?,'researcher_input',?,NULL,?)",
-                (pending["id"], row["run_id"], text, time.time()),
+                (pending["id"], row["run_id"], text, clock.now()),
             )
             self.service.emit(db, row["run_id"], "managed_input_requested", {"input_id": pending["id"]})
 
@@ -204,9 +204,9 @@ class ResearchController:
             if row["state"] == "received":
                 self.complete(row)
                 continue
-            if not wf.agent_ready or time.time() - self.last_reconcile.get(row["id"], 0) < 60:
+            if not wf.agent_ready or clock.now() - self.last_reconcile.get(row["id"], 0) < 60:
                 return
-            self.last_reconcile[row["id"]] = time.time()
+            self.last_reconcile[row["id"]] = clock.now()
             if not row["thread_id"] or not row["turn_id"]:
                 self.state(
                     row["id"],
@@ -234,7 +234,7 @@ class ResearchController:
             "SELECT * FROM autopilot_runs WHERE status IN ('active','handoff_ready','handoff_incomplete') AND input_cursor>consumed_cursor ORDER BY updated_at,id"
         ):
             policy = self.service.policy(run)
-            if time.time() < policy.start_at or run["project_id"] not in wf.store.projects:
+            if clock.now() < policy.start_at or run["project_id"] not in wf.store.projects:
                 continue
             quota = self.service.quota(wf.gate, run=run)
             reason = None if quota.admitted else quota.reason
@@ -260,7 +260,7 @@ class ResearchController:
                             "turn-failures:" + run["id"] + ":" + str(run["input_cursor"]),
                             run["id"],
                             "Project decisions repeatedly failed. Inspect saved outcomes and provide guidance before another turn.",
-                            time.time(),
+                            clock.now(),
                         ),
                     )
                 continue
@@ -277,8 +277,8 @@ class ResearchController:
                             run["id"],
                             run["input_cursor"],
                             run["control_revision"],
-                            time.time(),
-                            time.time(),
+                            clock.now(),
+                            clock.now(),
                         ),
                     )
                 row = wf.store.one("SELECT * FROM autopilot_actions WHERE id=?", (identity,))
@@ -310,7 +310,7 @@ class ResearchController:
                 identity,
                 row["run_id"],
                 "Autopilot needs your input.\n\n" + decision.summary + "\n\n" + decision.uncertainty,
-                time.time(),
+                clock.now(),
             ),
         )
         return (
@@ -370,7 +370,7 @@ class ResearchController:
                 self.service.emit(db, run["id"], "research_decision", decision.model_dump())
             db.execute(
                 "UPDATE autopilot_actions SET state='completed',updated_at=? WHERE id=?",
-                (time.time(), row["id"]),
+                (clock.now(), row["id"]),
             )
 
     async def dispatch(self, row):
@@ -466,7 +466,7 @@ class ResearchController:
         with wf.store.tx() as db:
             db.execute(
                 "INSERT OR IGNORE INTO autopilot_requests VALUES(?,?,?,?,?,'compiling',NULL,NULL,?)",
-                (str(args.request_id), run["project_id"], run["id"], encode(payload), author, time.time()),
+                (str(args.request_id), run["project_id"], run["id"], encode(payload), author, clock.now()),
             )
         receipt = root / "result.json"
         if receipt.exists():
@@ -536,7 +536,7 @@ class ResearchController:
                         "paper.pdf",
                         str(pdf),
                         pdf.stat().st_size,
-                        time.time(),
+                        clock.now(),
                     ),
                 )
         with wf.store.tx() as db:

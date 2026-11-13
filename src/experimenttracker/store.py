@@ -5,10 +5,10 @@ import shutil
 import sqlite3
 import tempfile
 import threading
-import time
 from pathlib import Path
 from uuid import uuid4
 
+from . import clock
 from .config import ProjectConfig
 from .models import STAGES, request_answer
 from .title import title_prompt
@@ -451,7 +451,7 @@ class Store:
             ).fetchone()
             if prior:
                 return dict(prior)
-            identity, now = str(request_id or uuid4()), time.time()
+            identity, now = str(request_id or uuid4()), clock.now()
             db.execute(
                 "INSERT INTO agent_actions(id,experiment_id,phase,evidence_revision,state,thread_id,input,error,"
                 "created_at,updated_at,previous_action_id) VALUES(?,?,?,?,'pending',?,?,?,?,?,?)",
@@ -487,7 +487,7 @@ class Store:
             return None
         db.executemany(
             "UPDATE steering SET state='applied',applied_at=? WHERE request_id=?",
-            [(time.time(), row["request_id"]) for row in rows],
+            [(clock.now(), row["request_id"]) for row in rows],
         )
         self.emit(db, eid, "steering_applied", {"request_ids": [row["request_id"] for row in rows]})
         return "\n\n".join(row["text"] for row in rows)
@@ -541,7 +541,7 @@ class Store:
             "UPDATE stages SET state=?,error=NULL,updated_at=? WHERE experiment_id=? AND id=?",
             (
                 "pending" if implementation else "running",
-                time.time(),
+                clock.now(),
                 eid,
                 "prepare" if implementation else saved["phase"].removeprefix("agent:"),
             ),
@@ -728,14 +728,14 @@ class Store:
                 return
             db.execute(
                 "UPDATE discussions SET state=?,hold_reason=?,error=?,updated_at=? WHERE id=?",
-                (state, hold_reason, error[:2000] if error else None, time.time(), identity),
+                (state, hold_reason, error[:2000] if error else None, clock.now(), identity),
             )
             self.emit(
                 db, row["experiment_id"], "discussion_updated", {"discussion_id": identity, "state": state}
             )
 
     def emit(self, db, eid, kind, payload=None):
-        now = time.time()
+        now = clock.now()
         db.execute("UPDATE experiments SET revision=revision+1,updated_at=? WHERE id=?", (now, eid))
         revision = db.execute("SELECT revision FROM experiments WHERE id=?", (eid,)).fetchone()[0]
         event_id = str(uuid4())
@@ -811,7 +811,7 @@ class Store:
                 db.execute(
                     "INSERT INTO stages(experiment_id,id,ordinal,updated_at) VALUES(?,?,?,?) "
                     "ON CONFLICT(experiment_id,id) DO UPDATE SET ordinal=excluded.ordinal",
-                    (eid, stage, ordinal, time.time()),
+                    (eid, stage, ordinal, clock.now()),
                 )
             db.execute(
                 "UPDATE experiments SET contract=?,snapshot=? WHERE id=?",
@@ -834,7 +834,7 @@ class Store:
                 return
             db.execute(
                 "UPDATE stages SET state='running',updated_at=? WHERE experiment_id=? AND id='validate'",
-                (time.time(), eid),
+                (clock.now(), eid),
             )
             db.execute("UPDATE experiments SET phase='validating',hold_reason=NULL WHERE id=?", (eid,))
             self.emit(db, eid, "validation_started")
@@ -852,7 +852,7 @@ class Store:
                 return
             db.execute(
                 "UPDATE stages SET state=?,error=?,output_manifest=?,updated_at=? WHERE experiment_id=? AND id=?",
-                (state, error, encode(outputs) if outputs else None, time.time(), eid, stage_id),
+                (state, error, encode(outputs) if outputs else None, clock.now(), eid, stage_id),
             )
             self.emit(db, eid, "stage_changed", {"stage": stage_id, "state": state, "error": error})
 
@@ -922,7 +922,7 @@ class Store:
                 raise Conflict("request_id was already used for another command")
             if db.execute("SELECT 1 FROM project_turns WHERE id=?", (request_id,)).fetchone():
                 raise Conflict("request_id was already used for a project knowledge command")
-            now = time.time()
+            now = clock.now()
             if kind == "reserve":
                 five = payload["five_hour_percent"]
                 week = payload["weekly_percent"]
@@ -1510,7 +1510,7 @@ class Store:
             return result
 
     def activity(self, action, item_id, kind, summary, state):
-        now = time.time()
+        now = clock.now()
         eid = action["experiment_id"]
         action = {**action, "phase": action["phase"].removeprefix("agent:")}
         with self.tx() as db:
@@ -1538,7 +1538,7 @@ class Store:
     def notify(self, eid, kind, text):
         with self.tx() as db:
             cursor = db.execute(
-                "INSERT OR IGNORE INTO inbox VALUES(?,?,?,?,?)", (str(uuid4()), eid, kind, text, time.time())
+                "INSERT OR IGNORE INTO inbox VALUES(?,?,?,?,?)", (str(uuid4()), eid, kind, text, clock.now())
             )
             if cursor.rowcount:
                 self.emit(db, eid, "notification", {"kind": kind, "text": text})
@@ -1582,7 +1582,7 @@ class Store:
         self.db.close()
 
     def _insert_report(self, db, eid, version, document, request_id):
-        now = time.time()
+        now = clock.now()
         db.execute(
             "INSERT INTO report_versions(experiment_id,version,state,document,request_id,created_at,updated_at) VALUES(?,?,'queued',?,?,?,?)",
             (eid, version, encode(document), request_id, now, now),
@@ -1624,11 +1624,11 @@ class Store:
         with self.tx() as db:
             db.execute(
                 "UPDATE report_versions SET state=?,error=?,updated_at=? WHERE experiment_id=? AND version=?",
-                (state, error, time.time(), eid, version),
+                (state, error, clock.now(), eid, version),
             )
             if state == "ready" and version > 1:
                 db.execute(
                     "INSERT OR IGNORE INTO inbox VALUES(?,?,?,?,?)",
-                    (str(uuid4()), eid, "report_ready", f"Report version {version} is ready.", time.time()),
+                    (str(uuid4()), eid, "report_ready", f"Report version {version} is ready.", clock.now()),
                 )
             self.emit(db, eid, "report_updated", {"report_version": version, "state": state})

@@ -41,7 +41,7 @@ def command(service, kind, **fields):
 
 def activated(runtime, monkeypatch):
     store, _, _, wf = runtime
-    monkeypatch.setattr("time.time", lambda: 1000000)
+    monkeypatch.setattr("experimenttracker.clock.now", lambda: 1000000)
     service = Autopilot(store, wf.config)
     command(service, "configure", policy=policy().model_dump())
     command(service, "activate")
@@ -456,7 +456,7 @@ async def test_common_gate_one_240_hour_experiment_no_inference_on_reset(runtime
     support(service)
     store, _, agent, old = runtime
     clock = [1000000]
-    monkeypatch.setattr("time.time", lambda: clock[0])
+    monkeypatch.setattr("experimenttracker.clock.now", lambda: clock[0])
 
     # Explicit metadata-only fake; never runs a GPU command or changes demo authorization.
     class Scheduler:

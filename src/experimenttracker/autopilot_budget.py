@@ -1,8 +1,8 @@
 """Allocation GPU-seconds. Outstanding exposure follows an intent across weeks."""
 
 import math
-import time
 
+from . import clock
 from .store import encode
 
 WEEK = 604800
@@ -35,7 +35,7 @@ class Budget:
         self.store = store
 
     def view(self, project_id, policy, now=None):
-        now = time.time() if now is None else now
+        now = clock.now() if now is None else now
         start, end = window(policy.anchor_at, now)
         consumed = reserved = unknown = unknown_jobs = 0
         anomalies = []
@@ -69,7 +69,7 @@ class Budget:
         }
 
     def observe(self, job, observation, cluster, now=None):
-        now = time.time() if now is None else now
+        now = clock.now() if now is None else now
         row = self.store.one("SELECT * FROM autopilot_allocations WHERE intent_id=?", (job["intent_id"],))
         if not row:
             return

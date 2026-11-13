@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
 
-from . import artifacts
+from . import artifacts, clock
 from .models import ExperimentResult
 from .store import encode
 
@@ -228,7 +228,7 @@ def queue_agent(wf, exp, stage):
                 exp["evidence_revision"],
                 manifest["snapshot_hash"],
                 manifest["snapshot_hash"],
-                time.time(),
+                clock.now(),
                 str(root),
                 encode(manifest),
             ),
@@ -240,7 +240,7 @@ def queue_agent(wf, exp, stage):
             )
         db.execute(
             "UPDATE stages SET state='running',updated_at=? WHERE experiment_id=? AND id=?",
-            (time.time(), exp["id"], stage),
+            (clock.now(), exp["id"], stage),
         )
         wf.store.emit(db, exp["id"], "agent_stage_intent", {"intent_id": intent, "stage": stage})
     return agent_job(wf, exp, "agent:" + stage)
@@ -299,7 +299,7 @@ def finish_agent(wf, exp, phase, value):
                 (
                     "pending" if result.outcome == "blocked" else "failed",
                     result.summary,
-                    time.time(),
+                    clock.now(),
                     exp["id"],
                     job["stage_id"],
                 ),
@@ -326,11 +326,11 @@ def finish_agent(wf, exp, phase, value):
     with wf.store.tx() as db:
         complete(wf, exp, job, manifest, root, db)
         db.execute(
-            "UPDATE jobs SET state='complete',ended_at=? WHERE intent_id=?", (time.time(), job["intent_id"])
+            "UPDATE jobs SET state='complete',ended_at=? WHERE intent_id=?", (clock.now(), job["intent_id"])
         )
         db.execute(
             "UPDATE stages SET state='complete',error=NULL,updated_at=? WHERE experiment_id=? AND id=?",
-            (time.time(), exp["id"], job["stage_id"]),
+            (clock.now(), exp["id"], job["stage_id"]),
         )
         db.execute("UPDATE experiments SET hold_reason=NULL,error=NULL WHERE id=?", (exp["id"],))
         wf.store.emit(
@@ -411,7 +411,7 @@ def complete(wf, exp, job, manifest, root, db):
                 host,
                 str(Path(producer_root) / record["name"]),
                 record["kind"],
-                time.time(),
+                clock.now(),
             ),
         )
     db.execute(

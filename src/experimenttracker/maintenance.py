@@ -22,6 +22,7 @@ from uuid import UUID
 import httpx
 from pydantic import Field
 
+from . import clock
 from .models import StrictModel
 from .store import Conflict, Store, encode
 
@@ -181,7 +182,7 @@ class Maintenance:
             else None,
             "blockers": blockers(workflow) if workflow else [],
             "running_jobs": self.store.one("SELECT COUNT(*) AS n FROM jobs WHERE state='submitted'")["n"],
-            "observed_at": time.time(),
+            "observed_at": clock.now(),
         }
 
     def register(self, update):
@@ -210,7 +211,7 @@ class Maintenance:
                     "Release preparation failed; inspect the protected preparation log."
                     if update.state == "failed"
                     else None,
-                    time.time(),
+                    clock.now(),
                 ),
             )
 
@@ -236,7 +237,7 @@ class Maintenance:
                 raise Conflict("release is not tested and ready")
             if db.execute(f"SELECT 1 FROM maintenance WHERE {ACTIVE}").fetchone():
                 raise Conflict("an installation is already in progress")
-            now = time.time()
+            now = clock.now()
             db.execute(
                 "INSERT INTO maintenance(request_id,release_id,state,created_at,updated_at) VALUES(?,?,?,?,?)",
                 (identity, command.release_id, "waiting", now, now),
@@ -267,7 +268,7 @@ class Maintenance:
         with self.store.tx() as db:
             db.execute(
                 "UPDATE maintenance SET state=?,error=?,updated_at=? WHERE request_id=?",
-                (new, update.error, time.time(), str(update.request_id)),
+                (new, update.error, clock.now(), str(update.request_id)),
             )
 
     def launch(self):
@@ -281,7 +282,7 @@ class Maintenance:
                         "UPDATE releases SET state='failed',error=?,updated_at=? WHERE commit_id=?",
                         (
                             "Preparation stopped before a successful test receipt. Inspect the protected preparation log.",
-                            time.time(),
+                            clock.now(),
                             release["commit_id"],
                         ),
                     )
@@ -297,7 +298,7 @@ class Maintenance:
                         "UPDATE maintenance SET state='blocked',error=?,updated_at=? WHERE request_id=?",
                         (
                             "Maintenance coordinator outcome is unknown. Inspect the saved request before recovery.",
-                            time.time(),
+                            clock.now(),
                             row["request_id"],
                         ),
                     )
@@ -482,7 +483,7 @@ def _prepare(config, config_path, commit, summary, repository):
                 "commit_id": commit,
                 "checks": "make check passed",
                 "files": software_files(root),
-                "tested_at": time.time(),
+                "tested_at": clock.now(),
             }
             (root / "release.json").write_text(encode(receipt))
             (root / "release.json").chmod(0o400)
@@ -523,9 +524,9 @@ def run(config, config_path, request_id):
                 if current["config_identity"] != config_identity:
                     raise ValueError("configuration changed since owner startup")
                 verify_release(config, release)
-                deadline = time.monotonic() + 86400
+                deadline = clock.monotonic() + 86400
                 while current["maintenance"]["blockers"]:
-                    if time.monotonic() > deadline:
+                    if clock.monotonic() > deadline:
                         raise TimeoutError(
                             "safe boundary not reached within 24 hours; executor remains running"
                         )
@@ -547,13 +548,13 @@ def run(config, config_path, request_id):
                 step("restarting")
                 old_boot = current["boot_id"]
                 rpc(client, "POST", "/stop", json={"request_id": request_id, "release_id": release})
-                deadline = time.monotonic() + 300
+                deadline = clock.monotonic() + 300
                 while True:
                     try:
                         lock = OwnershipLock(config.state_dir)
                         break
                     except RuntimeError:
-                        if time.monotonic() > deadline:
+                        if clock.monotonic() > deadline:
                             raise TimeoutError(
                                 "graceful shutdown did not release ownership; no forced termination attempted"
                             ) from None
@@ -575,14 +576,14 @@ def run(config, config_path, request_id):
                         with store.tx() as db:
                             db.execute(
                                 "UPDATE maintenance SET state='starting',updated_at=? WHERE request_id=? AND state='restarting'",
-                                (time.time(), request_id),
+                                (clock.now(), request_id),
                             )
                     finally:
                         store.close()
                 finally:
                     lock.close()
                 progress["operation"]["state"] = "starting"
-                progress["observed_at"] = time.time()
+                progress["observed_at"] = clock.now()
                 publish_progress(config, {k: v for k, v in progress.items() if k != "schema_version"})
                 with (directory / "executor.log").open("ab") as log:
                     os.chmod(log.name, 0o600)
@@ -607,7 +608,7 @@ def run(config, config_path, request_id):
                     )
                 (directory / "launch.json").write_text(encode({"pid": child.pid, "release_id": release}))
                 (directory / "launch.json").chmod(0o600)
-                deadline = time.monotonic() + 300
+                deadline = clock.monotonic() + 300
                 while True:
                     try:
                         new = rpc(client, "GET", "/internal")
@@ -615,14 +616,14 @@ def run(config, config_path, request_id):
                             break
                     except (httpx.HTTPError, ValueError):
                         pass
-                    if time.monotonic() > deadline or child.poll() is not None:
+                    if clock.monotonic() > deadline or child.poll() is not None:
                         raise TimeoutError(
                             "replacement executor did not become available; inspect saved launch, do not retry blindly"
                         )
                     time.sleep(1)
                 step("verifying")
                 while not new["last_tick"] or new["last_tick"] < new["started_at"] or not new["agent_ready"]:
-                    if time.monotonic() > deadline:
+                    if clock.monotonic() > deadline:
                         raise TimeoutError("replacement did not finish a healthy executor cycle")
                     time.sleep(1)
                     new = rpc(client, "GET", "/internal")
@@ -646,7 +647,7 @@ def run(config, config_path, request_id):
                                         "UPDATE maintenance SET state='blocked',error=?,updated_at=? WHERE request_id=?",
                                         (
                                             "Executor handover stopped. Inspect the saved launch before recovery.",
-                                            time.time(),
+                                            clock.now(),
                                             request_id,
                                         ),
                                     )

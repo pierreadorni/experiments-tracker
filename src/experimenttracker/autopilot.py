@@ -2,9 +2,9 @@
 
 import json
 import math
-import time
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
+from . import clock
 from .autopilot_budget import WEEK, Budget
 from .autopilot_models import AutopilotCommand, AutopilotPolicy
 from .store import Conflict, encode
@@ -159,7 +159,7 @@ class Autopilot:
         return bool(row and row["status"] != "draft")
 
     def emit(self, db, run_id, kind, detail=None):
-        now = time.time()
+        now = clock.now()
         db.execute("UPDATE autopilot_runs SET revision=revision+1,updated_at=? WHERE id=?", (now, run_id))
         run = self.run(run_id=run_id)
         db.execute(
@@ -172,13 +172,13 @@ class Autopilot:
         seq = run["input_cursor"] + 1
         added = db.execute(
             "INSERT OR IGNORE INTO autopilot_inputs VALUES(?,?,?,?,?,?)",
-            (run_id, seq, identity, kind, encode(document or {}), time.time()),
+            (run_id, seq, identity, kind, encode(document or {}), clock.now()),
         ).rowcount
         if added:
             db.execute("UPDATE autopilot_runs SET input_cursor=? WHERE id=?", (seq, run_id))
 
     def view(self, project_id, now=None):
-        now = time.time() if now is None else now
+        now = clock.now() if now is None else now
         try:
             run = self.run(project_id)
         except KeyError:
@@ -305,11 +305,11 @@ class Autopilot:
                 run_id = str(uuid5(NAMESPACE_URL, "autopilot:" + request_id))
                 db.execute(
                     "INSERT INTO autopilot_runs(id,project_id,created_at,updated_at) VALUES(?,?,?,?)",
-                    (run_id, project_id, time.time(), time.time()),
+                    (run_id, project_id, clock.now(), clock.now()),
                 )
                 db.execute(
                     "INSERT INTO autopilot_policies VALUES(?,1,?,?,?)",
-                    (run_id, encode(body.policy.model_dump()), origin, time.time()),
+                    (run_id, encode(body.policy.model_dump()), origin, clock.now()),
                 )
                 run = self.run(run_id=run_id)
             else:
@@ -334,7 +334,7 @@ class Autopilot:
                     revision = run["policy_revision"] + 1
                     db.execute(
                         "INSERT INTO autopilot_policies VALUES(?,?,?,?,?)",
-                        (run_id, revision, encode(body.policy.model_dump()), origin, time.time()),
+                        (run_id, revision, encode(body.policy.model_dump()), origin, clock.now()),
                     )
                     reserve_only = body.policy.model_dump(
                         exclude={"five_hour_reserve", "weekly_reserve"}
@@ -345,7 +345,7 @@ class Autopilot:
                     )
                     if (
                         run["status"] in ("handoff_ready", "handoff_incomplete")
-                        and body.policy.handoff_at > time.time()
+                        and body.policy.handoff_at > clock.now()
                         and body.policy.handoff_at != policy.handoff_at
                     ):
                         db.execute(
@@ -381,7 +381,7 @@ class Autopilot:
                         "stop": "stopped",
                         "complete": "completed",
                     }[body.kind]
-                    if body.kind == "resume" and time.time() >= policy.handoff_at:
+                    if body.kind == "resume" and clock.now() >= policy.handoff_at:
                         state = "handoff_incomplete"
                     db.execute(
                         "UPDATE autopilot_runs SET status=?,control_revision=control_revision+1 WHERE id=?",
@@ -395,7 +395,7 @@ class Autopilot:
                     if body.kind == "answer":
                         if not db.execute(
                             "UPDATE autopilot_notices SET resolved_at=? WHERE id=? AND run_id=? AND resolved_at IS NULL",
-                            (time.time(), body.input_id, run_id),
+                            (clock.now(), body.input_id, run_id),
                         ).rowcount:
                             raise Conflict("input request is not pending")
                     pending_action = (
@@ -436,7 +436,7 @@ class Autopilot:
             }
             db.execute(
                 "INSERT INTO autopilot_requests VALUES(?,?,?,?,?,'applied',?,NULL,?)",
-                (request_id, project_id, run_id, encode(payload), origin, encode(result), time.time()),
+                (request_id, project_id, run_id, encode(payload), origin, encode(result), clock.now()),
             )
             return result
 
@@ -453,7 +453,7 @@ class Autopilot:
             return None
         run = self.run(run_id=member["run_id"])
         policy = self.policy(run)
-        now = time.time() if now is None else now
+        now = clock.now() if now is None else now
         if (
             run["project_id"] not in self.store.projects
             or not self.store.projects[run["project_id"]].public()["available"]
@@ -555,7 +555,7 @@ class Autopilot:
             return
         db.execute(
             "INSERT INTO autopilot_stage_holds VALUES(?,?,?,?,?,?) ON CONFLICT(experiment_id,stage_id,attempt) DO UPDATE SET reason=excluded.reason,detail=excluded.detail,updated_at=excluded.updated_at",
-            (exp["id"], stage, exp["evidence_revision"], reason, wire, time.time()),
+            (exp["id"], stage, exp["evidence_revision"], reason, wire, clock.now()),
         )
         db.execute("UPDATE experiments SET hold_reason=? WHERE id=?", (reason, exp["id"]))
         self.store.emit(db, exp["id"], "autopilot_stage_held", {"stage": stage, "reason": reason, **detail})
@@ -712,7 +712,7 @@ class Autopilot:
                     run["policy_revision"],
                     doc.content,
                     encode([s.model_dump() for s in doc.sources]),
-                    time.time(),
+                    clock.now(),
                 ),
             )
             versions[doc.name] = current + 1
@@ -759,7 +759,7 @@ class Autopilot:
             ):
                 raise Conflict("Autopilot is held or revision is stale")
             policy = self.policy(run)
-            now = time.time()
+            now = clock.now()
             result = {}
             if name == "create_experiment":
                 if now < policy.start_at or now >= policy.handoff_at:
@@ -1072,7 +1072,7 @@ class Autopilot:
 
     def tick(self, now=None):
         """Calendar, current reports and result wakeups never require inference."""
-        now = time.time() if now is None else now
+        now = clock.now() if now is None else now
         for run in self.store.rows(
             "SELECT * FROM autopilot_runs WHERE status IN ('active','paused','handoff_ready','handoff_incomplete')"
         ):

@@ -2,11 +2,10 @@
 
 import json
 import os
-import time
 from pathlib import Path
 from uuid import UUID
 
-from . import artifacts, iteration
+from . import artifacts, clock, iteration
 from .store import encode
 
 TERMINAL = {
@@ -144,7 +143,7 @@ async def queue(wf, exp):
         )
         db.execute(
             "UPDATE stages SET state='pending',attempt=?,updated_at=? WHERE experiment_id=? AND id IN ('prepare','interpret','publish')",
-            (revision, time.time(), eid),
+            (revision, clock.now(), eid),
         )
         wf.store.emit(db, eid, "selective_repair_queued", contract["early_repair"])
 
@@ -196,12 +195,12 @@ def apply(wf, exp, plan, manifest):
             keep = decisions.get(stage.id, {}).get("decision") == "keep"
             db.execute(
                 "INSERT INTO stages(experiment_id,id,ordinal,attempt,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(experiment_id,id) DO UPDATE SET ordinal=excluded.ordinal",
-                (exp["id"], stage.id, ordinal, exp["evidence_revision"], time.time()),
+                (exp["id"], stage.id, ordinal, exp["evidence_revision"], clock.now()),
             )
             if not keep:
                 db.execute(
                     "UPDATE stages SET state='pending',attempt=?,output_manifest=NULL,error=NULL,updated_at=? WHERE experiment_id=? AND id=?",
-                    (exp["evidence_revision"], time.time(), exp["id"], stage.id),
+                    (exp["evidence_revision"], clock.now(), exp["id"], stage.id),
                 )
         wf.store.emit(db, exp["id"], "selective_repair_applied", {"decisions": decisions})
 
@@ -242,9 +241,9 @@ async def reconcile_cancellations(wf, eid=None):
             if saved["state"] == "terminal":
                 continue
             key = ("selective", request)
-            if time.time() - wf.last_cancellation.get(key, 0) < 5:
+            if clock.now() - wf.last_cancellation.get(key, 0) < 5:
                 continue
-            wf.last_cancellation[key] = time.time()
+            wf.last_cancellation[key] = clock.now()
             job = wf.store.one(
                 "SELECT * FROM jobs WHERE experiment_id=? AND intent_id=?", (exp["id"], saved["intent_id"])
             )

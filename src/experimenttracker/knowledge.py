@@ -4,14 +4,13 @@ import asyncio
 import hashlib
 import json
 import math
-import time
 from pathlib import Path
 from typing import Literal
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import Field, model_validator
 
-from . import artifacts
+from . import artifacts, clock
 from .codex_client import RpcRejected, TerminalTurnError
 from .config import StrictModel
 from .maintenance import blocked
@@ -186,7 +185,7 @@ class Knowledge:
     def ensure(self, pid, db):
         if pid not in self.store.projects:
             raise Conflict("project is unknown")
-        now = time.time()
+        now = clock.now()
         db.execute(
             "INSERT OR IGNORE INTO project_knowledge(project_id,next_due,updated_at) VALUES(?,?,?)",
             (pid, now + WEEK, now),
@@ -195,12 +194,12 @@ class Knowledge:
     def emit(self, db, pid, kind):
         db.execute(
             "UPDATE project_knowledge SET revision=revision+1,updated_at=? WHERE project_id=?",
-            (time.time(), pid),
+            (clock.now(), pid),
         )
         value = self.view(pid)
         db.execute(
             "INSERT INTO project_memory_events(project_id,revision,kind,payload,created_at) VALUES(?,?,?,?,?)",
-            (pid, value["revision"], kind, encode(value), time.time()),
+            (pid, value["revision"], kind, encode(value), clock.now()),
         )
 
     def report(self, pid, version=None):
@@ -383,7 +382,7 @@ class Knowledge:
                     and any(json.loads(r["payload"])["kind"] == "synthesize" for r in pending)
                 ):
                     raise Conflict("project work is already queued; wait for its saved outcome")
-            now = time.time()
+            now = clock.now()
             db.execute(
                 "INSERT INTO project_turns(id,project_id,payload,origin,created_at,updated_at) VALUES(?,?,?,?,?,?)",
                 (identity, pid, wire, origin, now, now),
@@ -422,7 +421,7 @@ class Knowledge:
         with self.store.tx() as db:
             db.execute(
                 "UPDATE project_turns SET " + ",".join(k + "=?" for k in fields) + ",updated_at=? WHERE id=?",
-                (*fields.values(), time.time(), identity),
+                (*fields.values(), clock.now(), identity),
             )
             self.emit(db, row["project_id"], "turn_" + state)
 
@@ -550,16 +549,16 @@ class Knowledge:
                         row["id"],
                         encode(document),
                         encode(sources),
-                        time.time(),
+                        clock.now(),
                     ),
                 )
                 db.execute(
                     "UPDATE project_knowledge SET next_due=? WHERE project_id=?",
-                    (time.time() + WEEK, row["project_id"]),
+                    (clock.now() + WEEK, row["project_id"]),
                 )
             db.execute(
                 "UPDATE project_turns SET state='completed',reply=?,report_version=?,hold_reason=NULL,error=NULL,updated_at=? WHERE id=?",
-                (result.reply, version, time.time(), row["id"]),
+                (result.reply, version, clock.now(), row["id"]),
             )
             self.emit(db, row["project_id"], "turn_completed")
 
@@ -683,7 +682,7 @@ class ProjectSupervisor:
             self.active_id = None
         # The initial due date is one week after a project's first completed source.
         for state in memory.store.rows(
-            "SELECT * FROM project_knowledge WHERE weekly=1 AND next_due<=?", (time.time(),)
+            "SELECT * FROM project_knowledge WHERE weekly=1 AND next_due<=?", (clock.now(),)
         ):
             # Deleted or no-longer-configured projects retain their history and
             # schedules, but cannot enqueue optional work or block owner ticks.
@@ -718,10 +717,10 @@ class ProjectSupervisor:
                 if row["state"] == "uncertain" and (
                     not row["thread_id"]
                     or not row["turn_id"]
-                    or time.time() - self.last_reconcile.get(row["id"], 0) < 60
+                    or clock.now() - self.last_reconcile.get(row["id"], 0) < 60
                 ):
                     return
-                self.last_reconcile[row["id"]] = time.time()
+                self.last_reconcile[row["id"]] = clock.now()
                 try:
                     if not row["thread_id"] or not row["turn_id"]:
                         raise ValueError("dispatch response lost; exact turn identity is required")

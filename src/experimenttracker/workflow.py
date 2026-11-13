@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
-from . import artifacts, early_repair, iteration, reporting
+from . import artifacts, clock, early_repair, iteration, reporting
 from .autopilot_controller import ResearchController
 from .cancellation import process_cancellations
 from .codex_client import CodexAgent, NeedsAttention, RpcRejected, SessionUnavailable, TerminalTurnError
@@ -165,12 +165,12 @@ class Workflow:
         cache = self.pool_owner.remote_clusters
         host = settings.get("ssh_host", "jz")
         previous = cache.get(host, {})
-        if time.time() - previous.get("checked_at", 0) >= settings.get("poll_seconds", 600):
+        if clock.now() - previous.get("checked_at", 0) >= settings.get("poll_seconds", 600):
             try:
                 snapshot = await self.scheduler_for(exp).discover()
-                cache[host] = {"snapshot": snapshot, "checked_at": time.time(), "error": None}
+                cache[host] = {"snapshot": snapshot, "checked_at": clock.now(), "error": None}
             except Exception as exc:
-                cache[host] = {"snapshot": None, "checked_at": time.time(), "error": str(exc)}
+                cache[host] = {"snapshot": None, "checked_at": clock.now(), "error": str(exc)}
         return cache.get(host, {}).get("snapshot")
 
     def cluster_for(self, exp):
@@ -364,12 +364,12 @@ class Workflow:
                         action["thread_id"],
                         action["turn_id"],
                         encode({"thread_total": saved["total"], "last_request": saved["last"]}),
-                        time.time(),
+                        clock.now(),
                     ),
                 )
             return
         description = (
-            self.discussion_activity.describe(action["id"], message, time.monotonic())
+            self.discussion_activity.describe(action["id"], message, clock.monotonic())
             if action["phase"].startswith("discuss:")
             else describe_item(message)
         )
@@ -392,7 +392,7 @@ class Workflow:
         self.started = True
 
     async def refresh_cluster(self):
-        self.last_cluster_refresh = time.time()
+        self.last_cluster_refresh = clock.now()
         if self.config.mode == "demo":
             return
         try:
@@ -403,7 +403,7 @@ class Workflow:
             self.cluster_error = str(exc)
 
     async def connect_agent(self):
-        self.last_agent_start = time.time()
+        self.last_agent_start = clock.now()
         try:
             await self.agent.start()
             self.agent_ready = True
@@ -423,9 +423,9 @@ class Workflow:
             with self.store.tx() as db:
                 db.execute(
                     "INSERT INTO quota_snapshots(observed_at,payload,admitted,reason) VALUES(?,?,?,?)",
-                    (time.time(), encode(payload), decision.admitted, decision.reason),
+                    (clock.now(), encode(payload), decision.admitted, decision.reason),
                 )
-            self.last_quota_refresh = time.time()
+            self.last_quota_refresh = clock.now()
             await self.pool_owner.research.interrupt_holds()
             if not decision.admitted:
                 await self.pool_owner.supervisor.interrupt()
@@ -512,7 +512,7 @@ class Workflow:
                 await self.refresh_quota()
         if not self.started:
             await self.start()
-        now = time.time()
+        now = clock.now()
         if self.config.mode == "live" and now - self.last_cluster_refresh >= 60:
             await self.refresh_cluster()
         if self.agent_ready and not self.agent.available:
@@ -569,7 +569,7 @@ class Workflow:
         for row in rows:
             eid = row["id"]
             backoff = self.error_backoff.get(eid)
-            if backoff and time.time() < backoff[1]:
+            if backoff and clock.now() < backoff[1]:
                 continue
             try:
                 await self.advance(eid)
@@ -696,7 +696,7 @@ class Workflow:
                 with self.store.tx() as db:
                     db.execute(
                         "UPDATE agent_actions SET input=?,updated_at=? WHERE id=?",
-                        (encode(saved), time.time(), action["id"]),
+                        (encode(saved), clock.now(), action["id"]),
                     )
                 action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (action["id"],))
             self.active_action = action["id"]
@@ -740,7 +740,7 @@ class Workflow:
                     db.execute(
                         "INSERT INTO agent_actions(id,experiment_id,phase,evidence_revision,state,input,created_at,updated_at) "
                         "VALUES(?,?, 'title',?,'pending',?,?,?)",
-                        (action_id, exp["id"], revision, prompt, time.time(), time.time()),
+                        (action_id, exp["id"], revision, prompt, clock.now(), clock.now()),
                     )
                     self.store.emit(
                         db, exp["id"], "agent_action_queued", {"phase": "title", "action_id": action_id}
@@ -796,7 +796,7 @@ class Workflow:
             with self.store.tx() as db:
                 db.execute(
                     "UPDATE agent_actions SET thread_id=?,state='dispatching',attempts=attempts+1,updated_at=? WHERE id=?",
-                    (thread_id, time.time(), action["id"]),
+                    (thread_id, clock.now(), action["id"]),
                 )
                 self.store.emit(
                     db, eid, "agent_dispatch_intent", {"action_id": action["id"], "thread_id": thread_id}
@@ -807,7 +807,7 @@ class Workflow:
             with self.store.tx() as db:
                 db.execute(
                     "UPDATE agent_actions SET turn_id=?,state='running',updated_at=? WHERE id=?",
-                    (turn_id, time.time(), action["id"]),
+                    (turn_id, clock.now(), action["id"]),
                 )
                 self.store.emit(
                     db, eid, "agent_turn_started", {"action_id": action["id"], "turn_id": turn_id}
@@ -905,7 +905,7 @@ class Workflow:
                 await early_repair.queue(self, exp)
                 continue
             resource_revision = exp["hold_reason"] == "resources_unavailable"
-            if resource_revision and time.time() - max(
+            if resource_revision and clock.now() - max(
                 (stamp for (saved_eid, _, _), stamp in self.last_preflight.items() if saved_eid == eid),
                 default=0,
             ) < (
@@ -1057,7 +1057,7 @@ class Workflow:
                 db.execute(
                     "UPDATE stages SET state='pending',attempt=?,output_manifest=NULL,error=NULL,updated_at=? "
                     "WHERE experiment_id=? AND id!='plan'",
-                    (revision, time.time(), eid),
+                    (revision, clock.now(), eid),
                 )
                 self.store.emit(db, eid, "automatic_repair_queued", {"evidence_revision": revision})
 
@@ -1099,7 +1099,7 @@ class Workflow:
         error = str(exc) or type(exc).__name__
         previous = self.error_backoff.get(eid)
         count = 0 if previous is None else previous[0] + 1
-        self.error_backoff[eid] = (count, time.time() + min(30 * 2**count, 1800))
+        self.error_backoff[eid] = (count, clock.now() + min(30 * 2**count, 1800))
         self.store.update(eid, hold_reason="executor_error", error=error)
         self.store.notify(eid, "executor_error", f"Experiment paused after an internal error: {error}")
 
@@ -1138,11 +1138,11 @@ class Workflow:
                 )
                 db.execute(
                     "UPDATE stages SET state='pending',updated_at=? WHERE experiment_id=? AND id='plan'",
-                    (time.time(), eid),
+                    (clock.now(), eid),
                 )
                 db.execute(
                     "UPDATE steering SET state='applied',applied_at=? WHERE request_id=?",
-                    (time.time(), item["request_id"]),
+                    (clock.now(), item["request_id"]),
                 )
                 self.store.emit(db, eid, "steering_applied", {"request_id": item["request_id"]})
 
@@ -1451,7 +1451,7 @@ class Workflow:
         if budget is not None and count >= budget:
             self.fail(eid, "compute_budget_exhausted", f"{budget}-job budget exhausted")
             return
-        if self.config.mode == "live" and time.time() - self.last_preflight.get(
+        if self.config.mode == "live" and clock.now() - self.last_preflight.get(
             (eid, exp["evidence_revision"], stage), 0
         ) < (exp["contract"].get("execution", {}).get("poll_seconds", 600) if self.is_remote(exp) else 60):
             return {"state": "held", "reason": exp["hold_reason"] or "resources_unavailable"}
@@ -1500,7 +1500,7 @@ class Workflow:
             iteration_mode=iteration.enabled(exp),
         )
         if self.config.mode == "live":
-            self.last_preflight[(eid, exp["evidence_revision"], stage)] = time.time()
+            self.last_preflight[(eid, exp["evidence_revision"], stage)] = clock.now()
             try:
                 await scheduler.preflight(intent_id, script, root, resources)
             except AdmissionPending as exc:
@@ -1577,7 +1577,7 @@ class Workflow:
                     artifacts.sha256(script),
                     encode(resources.model_dump()),
                     submission_manifest["snapshot_hash"],
-                    time.time(),
+                    clock.now(),
                     str(root),
                     encode(execution_manifest),
                 ),
@@ -1592,7 +1592,7 @@ class Workflow:
                 artifacts.register(self.store, eid, stage, root, [record_name], _db=db)
             db.execute(
                 "UPDATE stages SET state='running',updated_at=? WHERE experiment_id=? AND id=?",
-                (time.time(), eid, stage),
+                (clock.now(), eid, stage),
             )
             db.execute(
                 "UPDATE experiments SET phase=?,hold_reason=NULL,error=NULL WHERE id=?",
@@ -1702,7 +1702,7 @@ class Workflow:
             names += await asyncio.to_thread(
                 artifacts.seal_local_outputs, root, job["stage_id"], exp["snapshot"]
             )
-        now = time.time()
+        now = clock.now()
         with self.store.tx() as db:
             artifacts.register(self.store, eid, job["stage_id"], root, names, _db=db)
             db.execute(
@@ -1763,12 +1763,12 @@ class Workflow:
                 exp = self.store.experiment(eid)
                 scheduler = self.scheduler_for(exp, job)
                 if isinstance(scheduler, RemoteSlurmScheduler):
-                    if not scheduler.due(job, time.time()):
+                    if not scheduler.due(job, clock.now()):
                         continue
                     with self.store.tx() as db:
                         db.execute(
                             "UPDATE jobs SET remote_polled_at=? WHERE intent_id=?",
-                            (time.time(), job["intent_id"]),
+                            (clock.now(), job["intent_id"]),
                         )
                 if not job["job_id"]:
                     job_id = await self.scheduler_for(
@@ -1802,7 +1802,7 @@ class Workflow:
                         with self.store.tx() as db:
                             db.execute(
                                 "UPDATE jobs SET scheduler_state=?,exit_code=?,observed_at=? WHERE intent_id=?",
-                                (observed.state, observed.exit_code, time.time(), job["intent_id"]),
+                                (observed.state, observed.exit_code, clock.now(), job["intent_id"]),
                             )
                         self.store.update(
                             eid,
@@ -1824,7 +1824,7 @@ class Workflow:
                     if job.get("execution_manifest")
                     else self.store.experiment(eid)["snapshot"]
                 )
-                now = time.time()
+                now = clock.now()
                 previous_progress = json.loads(job["progress"]) if job["progress"] else None
                 progress = await asyncio.to_thread(
                     read_job_progress,
@@ -2046,7 +2046,7 @@ class Workflow:
                     if observed is not None:
                         db.execute(
                             "UPDATE jobs SET scheduler_state=?,exit_code=?,observed_at=? WHERE intent_id=?",
-                            (observed.state, observed.exit_code, time.time(), job["intent_id"]),
+                            (observed.state, observed.exit_code, clock.now(), job["intent_id"]),
                         )
                     self.store.emit(db, eid, "output_validation_failed", {"error": str(exc)})
                 optional = iteration.enabled(exp) and not next(
@@ -2111,7 +2111,7 @@ class Workflow:
                 db.execute(
                     """INSERT INTO agent_actions(id,experiment_id,phase,evidence_revision,state,input,created_at,updated_at)
                     VALUES(?,?,?,?,'pending',?,?,?)""",
-                    (action_id, eid, phase, action_revision, prompt, time.time(), time.time()),
+                    (action_id, eid, phase, action_revision, prompt, clock.now(), clock.now()),
                 )
                 self.store.emit(db, eid, "agent_action_queued", {"phase": phase, "action_id": action_id})
             action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (action_id,))
@@ -2177,7 +2177,7 @@ class Workflow:
                         with self.store.tx() as db:
                             db.execute(
                                 "UPDATE stages SET state='pending',error=?,updated_at=? WHERE experiment_id=? AND id='prepare'",
-                                (plan.summary, time.time(), eid),
+                                (plan.summary, clock.now(), eid),
                             )
                             db.execute(
                                 "UPDATE experiments SET hold_reason='implementation_blocked',error=? WHERE id=?",
@@ -2393,7 +2393,7 @@ class Workflow:
                         )
                         db.executemany(
                             "UPDATE steering SET state='applied',applied_at=? WHERE experiment_id=? AND request_id=? AND mode='later' AND state='pending'",
-                            [(time.time(), eid, identity) for identity in captured],
+                            [(clock.now(), eid, identity) for identity in captured],
                         )
                         self.store.emit(db, eid, "analysis_saved", {})
                 self.store.stage(eid, phase, "complete")
@@ -2440,7 +2440,7 @@ class Workflow:
                     return
                 if not action["turn_id"] and not action["attempts"]:
                     # No turn was sent. Retry a local/session prerequisite with backoff.
-                    if time.time() - action["updated_at"] < 60:
+                    if clock.now() - action["updated_at"] < 60:
                         self.store.update(eid, hold_reason="agent_prerequisite", error=action["error"])
                         return
                     self._action_state(action["id"], "pending", error=action["error"])
@@ -2707,7 +2707,7 @@ class Workflow:
                 artifacts.register(self.store, eid, stage, self.root(eid), saved["outputs"], _db=db)
                 db.execute(
                     "UPDATE stages SET state='complete',output_manifest=?,updated_at=? WHERE experiment_id=? AND id=?",
-                    (encode(saved["outputs"]), time.time(), eid, stage),
+                    (encode(saved["outputs"]), clock.now(), eid, stage),
                 )
             db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(contract), eid))
             if reused:
@@ -3519,7 +3519,7 @@ class Workflow:
                     state,
                     error,
                     saved_result,
-                    time.time(),
+                    clock.now(),
                     action_id,
                 ),
             )
@@ -3571,14 +3571,14 @@ class Workflow:
         with self.store.tx() as db:
             db.execute(
                 "UPDATE agent_actions SET state='completed',error=NULL,updated_at=? WHERE id=?",
-                (time.time(), action["id"]),
+                (clock.now(), action["id"]),
             )
             db.execute(
                 "UPDATE experiments SET phase='preparing',hold_reason=NULL,error=NULL WHERE id=?", (eid,)
             )
             db.execute(
                 "UPDATE stages SET state='pending',error=NULL,updated_at=? WHERE experiment_id=? AND id=?",
-                (time.time(), eid, action["phase"]),
+                (clock.now(), eid, action["phase"]),
             )
             self.store.emit(
                 db,
@@ -3705,7 +3705,7 @@ class Workflow:
             with self.store.tx() as db:
                 db.execute(
                     "UPDATE agent_actions SET turn_id=?,state='completed',result=?,error=NULL,updated_at=? WHERE id=? AND turn_id IS NULL",
-                    (turn_id, encode(result), time.time(), action_id),
+                    (turn_id, encode(result), clock.now(), action_id),
                 )
                 db.execute(
                     "UPDATE experiments SET hold_reason=NULL,error=NULL,pending_request=NULL WHERE id=?",
@@ -3750,7 +3750,7 @@ class Workflow:
                 self.store.update(eid, hold_reason="agent_paused")
                 return
             if action["phase"] in ("plan", "prepare") and self.config.mode == "live":
-                if time.time() - self.last_cluster_refresh >= 60:
+                if clock.now() - self.last_cluster_refresh >= 60:
                     await self.refresh_cluster()
                 if not await self.ensure_cluster(exp):
                     self.store.update(
@@ -3916,7 +3916,7 @@ class Workflow:
                     )
                 db.execute(
                     "UPDATE agent_actions SET thread_id=?,state='dispatching',attempts=attempts+1,updated_at=? WHERE id=?",
-                    (thread_id, time.time(), action["id"]),
+                    (thread_id, clock.now(), action["id"]),
                 )
                 self.store.emit(
                     db,
@@ -3966,7 +3966,7 @@ class Workflow:
             with self.store.tx() as db:
                 db.execute(
                     "UPDATE agent_actions SET turn_id=?,state='running',updated_at=? WHERE id=?",
-                    (turn_id, time.time(), action["id"]),
+                    (turn_id, clock.now(), action["id"]),
                 )
                 self.store.emit(
                     db, eid, "agent_turn_started", {"action_id": action["id"], "turn_id": turn_id}
@@ -4058,11 +4058,11 @@ class Workflow:
                             feedback = "agent output validation: report rendering: " + report_version["error"]
                             db.execute(
                                 "UPDATE agent_actions SET state='failed',error=?,updated_at=? WHERE id=? AND state='completed'",
-                                (feedback, time.time(), action["id"]),
+                                (feedback, clock.now(), action["id"]),
                             )
                             db.execute(
                                 "UPDATE stages SET state='pending',error=?,updated_at=? WHERE experiment_id=? AND id='interpret'",
-                                (report_version["error"], time.time(), eid),
+                                (report_version["error"], clock.now(), eid),
                             )
                             db.execute(
                                 "UPDATE experiments SET phase='interpreting',hold_reason='agent_continuation',error=? WHERE id=?",
@@ -4114,14 +4114,14 @@ class Workflow:
         with self.store.tx() as db:
             db.execute(
                 "UPDATE stages SET state='complete',updated_at=? WHERE experiment_id=? AND id='publish'",
-                (time.time(), eid),
+                (clock.now(), eid),
             )
             db.execute(
                 "UPDATE experiments SET phase='complete',hold_reason=NULL,error=NULL WHERE id=?", (eid,)
             )
             db.execute(
                 "INSERT OR IGNORE INTO inbox VALUES(?,?,?,?,?)",
-                (str(uuid4()), eid, "result_ready", "Interpreted experiment result is ready.", time.time()),
+                (str(uuid4()), eid, "result_ready", "Interpreted experiment result is ready.", clock.now()),
             )
             self.store.emit(db, eid, "result_ready")
 
@@ -4191,7 +4191,7 @@ class Workflow:
             if (
                 iteration.enabled(exp)
                 or eid in self.cleanup_tasks
-                or time.time() - self.last_cleanup_attempt.get(eid, 0) < 60
+                or clock.now() - self.last_cleanup_attempt.get(eid, 0) < 60
                 or not exp["snapshot"]
                 or not any(
                     s.get("temporary_outputs")
@@ -4211,7 +4211,7 @@ class Workflow:
                 )
             ):
                 continue
-            self.last_cleanup_attempt[eid] = time.time()
+            self.last_cleanup_attempt[eid] = clock.now()
             self.cleanup_tasks[eid] = asyncio.create_task(self.cleanup_outputs(exp))
 
     async def advance_reports(self):

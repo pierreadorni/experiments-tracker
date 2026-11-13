@@ -3,13 +3,12 @@ import hashlib
 import inspect
 import json
 import logging
-import time
 from pathlib import Path
 from uuid import UUID
 
 import httpx
 
-from . import artifacts
+from . import artifacts, clock
 from .knowledge import Knowledge
 from .models import (
     ActionCommand,
@@ -134,7 +133,7 @@ class GatewayClient:
                             command.get("kind", "unknown"),
                             encode(command.get("payload", {})),
                             reason,
-                            time.time(),
+                            clock.now(),
                         ),
                     )
                 rejected.append({"request_id": request_id, "reason": reason})
@@ -155,7 +154,7 @@ class GatewayClient:
             "SELECT o.* FROM experiments x JOIN events e ON e.experiment_id=x.id "
             "AND e.revision=x.revision JOIN outbox o ON o.id=e.id "
             "WHERE o.delivered_at IS NULL AND o.next_attempt_at<=? ORDER BY e.seq LIMIT 20",
-            (time.time(),),
+            (clock.now(),),
         )
         for row in rows:
             with self.store.tx() as db:
@@ -193,7 +192,7 @@ class GatewayClient:
                         ],
                     )
                     db.execute(
-                        "UPDATE outbox SET delivered_at=?,error=NULL WHERE id=?", (time.time(), row["id"])
+                        "UPDATE outbox SET delivered_at=?,error=NULL WHERE id=?", (clock.now(), row["id"])
                     )
                 self.operation_errors.pop("projection:" + eid, None)
             except Exception as exc:
@@ -203,7 +202,7 @@ class GatewayClient:
                         "UPDATE outbox SET attempts=?,next_attempt_at=?,error=? WHERE id=?",
                         (
                             attempts,
-                            time.time() + min(120, 2 ** min(attempts, 7)),
+                            clock.now() + min(120, 2 ** min(attempts, 7)),
                             self.error_text(exc),
                             row["id"],
                         ),
@@ -223,7 +222,7 @@ class GatewayClient:
             "JOIN outbox current ON current.id=latest.id "
             "WHERE o.delivered_at IS NULL AND o.next_attempt_at<=? AND current.delivered_at IS NOT NULL "
             "AND e.revision<x.revision ORDER BY e.seq LIMIT 500",
-            (time.time(),),
+            (clock.now(),),
         )
         if not rows:
             return
@@ -245,7 +244,7 @@ class GatewayClient:
             with self.store.tx() as db:
                 db.executemany(
                     "UPDATE outbox SET delivered_at=?,error=NULL WHERE id=?",
-                    [(time.time(), r["id"]) for r in rows],
+                    [(clock.now(), r["id"]) for r in rows],
                 )
         except Exception as exc:
             with self.store.tx() as db:
@@ -254,7 +253,7 @@ class GatewayClient:
                     [
                         (
                             r["attempts"] + 1,
-                            time.time() + min(120, 2 ** min(r["attempts"] + 1, 7)),
+                            clock.now() + min(120, 2 ** min(r["attempts"] + 1, 7)),
                             self.error_text(exc),
                             r["id"],
                         )
@@ -284,7 +283,7 @@ class GatewayClient:
         )
         attempts = 0
         for row in rows:
-            if self.artifact_retry_at.get(row["id"], 0) > time.time():
+            if self.artifact_retry_at.get(row["id"], 0) > clock.now():
                 continue
             if attempts >= 3:
                 break
@@ -314,7 +313,7 @@ class GatewayClient:
                 self.artifact_retry_at.pop(row["id"], None)
                 self.operation_errors.pop("artifact:" + row["id"], None)
             except Exception as exc:
-                self.artifact_retry_at[row["id"]] = time.time() + 30
+                self.artifact_retry_at[row["id"]] = clock.now() + 30
                 self.operation_errors["artifact:" + row["id"]] = self.error_text(exc)
                 log.warning("gateway artifact %s retained for retry: %s", row["id"], self.error_text(exc))
 
@@ -339,7 +338,7 @@ class GatewayClient:
             log.warning("gateway %s retained for retry: %s", name, self.error_text(exc))
 
     async def heartbeat(self):
-        if time.time() - self.last_heartbeat < 30:
+        if clock.now() - self.last_heartbeat < 30:
             return
         status = (
             self.status_provider()
@@ -377,7 +376,7 @@ class GatewayClient:
                 "heartbeat": status,
             },
         )
-        self.last_heartbeat = time.time()
+        self.last_heartbeat = clock.now()
 
     async def project_commands(self):
         response = await self.request("GET", "/api/executor/project-commands")
@@ -418,7 +417,7 @@ class GatewayClient:
             with self.store.tx() as db:
                 db.executemany(
                     "UPDATE project_requests SET delivered_at=? WHERE request_id=?",
-                    [(time.time(), row["request_id"]) for row in rows],
+                    [(clock.now(), row["request_id"]) for row in rows],
                 )
             self.last_heartbeat = 0
 
@@ -458,7 +457,7 @@ class GatewayClient:
             with self.store.tx() as db:
                 db.executemany(
                     "UPDATE project_settings_requests SET delivered_at=? WHERE request_id=?",
-                    [(time.time(), row["request_id"]) for row in rows],
+                    [(clock.now(), row["request_id"]) for row in rows],
                 )
             self.last_heartbeat = 0
 
@@ -521,7 +520,7 @@ class GatewayClient:
             with self.store.tx() as db:
                 db.execute(
                     "UPDATE project_memory_events SET delivered_at=? WHERE project_id=? AND revision=?",
-                    (time.time(), row["project_id"], row["revision"]),
+                    (clock.now(), row["project_id"], row["revision"]),
                 )
 
     async def autopilot(self):
@@ -551,7 +550,7 @@ class GatewayClient:
                     with self.store.tx() as db:
                         db.execute(
                             "INSERT OR IGNORE INTO autopilot_requests VALUES(?,?,NULL,?,'researcher','rejected',NULL,?,?)",
-                            (identity, row["project_id"], encode(row["payload"]), error, time.time()),
+                            (identity, row["project_id"], encode(row["payload"]), error, clock.now()),
                         )
             ack = await self.request(
                 "POST",
@@ -560,7 +559,7 @@ class GatewayClient:
             )
             if ack.get("accepted") != identity:
                 raise ValueError("Autopilot acknowledgement identity mismatch")
-        if time.time() - self.last_autopilot_publish < 30 and not self.store.one(
+        if clock.now() - self.last_autopilot_publish < 30 and not self.store.one(
             "SELECT 1 FROM autopilot_events WHERE delivered_at IS NULL"
         ):
             return
@@ -588,7 +587,7 @@ class GatewayClient:
                 with self.store.tx() as db:
                     db.execute(
                         "INSERT OR IGNORE INTO autopilot_deliveries VALUES(?,?)",
-                        (f"{run['id']}:{doc['name']}:{doc['version']}", time.time()),
+                        (f"{run['id']}:{doc['name']}:{doc['version']}", clock.now()),
                     )
             for file in self.store.rows(
                 "SELECT f.* FROM autopilot_files f LEFT JOIN autopilot_deliveries p ON p.identity=f.id WHERE f.run_id=? AND p.identity IS NULL",
@@ -609,7 +608,7 @@ class GatewayClient:
                 response.raise_for_status()
                 with self.store.tx() as db:
                     db.execute(
-                        "INSERT OR IGNORE INTO autopilot_deliveries VALUES(?,?)", (file["id"], time.time())
+                        "INSERT OR IGNORE INTO autopilot_deliveries VALUES(?,?)", (file["id"], clock.now())
                     )
             current = service.run(run["project_id"])
             if current["id"] != run["id"]:
@@ -629,10 +628,10 @@ class GatewayClient:
             with self.store.tx() as db:
                 db.execute(
                     "UPDATE autopilot_events SET delivered_at=? WHERE run_id=? AND revision<=? AND delivered_at IS NULL",
-                    (time.time(), run["id"], view["run"]["revision"]),
+                    (clock.now(), run["id"], view["run"]["revision"]),
                 )
 
-        self.last_autopilot_publish = time.time()
+        self.last_autopilot_publish = clock.now()
 
     async def maintenance(self):
         from .maintenance import InstallCommand
@@ -662,7 +661,7 @@ class GatewayClient:
                 with self.store.tx() as db:
                     db.execute(
                         "INSERT OR IGNORE INTO rejected_gateway_commands VALUES(?,?,?,?,?,?)",
-                        (str(command.request_id), "", "maintenance", wire, error, time.time()),
+                        (str(command.request_id), "", "maintenance", wire, error, clock.now()),
                     )
             receipt = await self.request(
                 "POST",

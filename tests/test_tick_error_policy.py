@@ -136,7 +136,7 @@ async def test_backoff_is_per_experiment_and_does_not_block_other_work(runtime, 
 def test_backoff_caps_at_thirty_minutes(runtime, monkeypatch):
     store, _, _, workflow = runtime
     eid = submit(store)
-    monkeypatch.setattr("experimenttracker.workflow.time.time", lambda: 1000.0)
+    monkeypatch.setattr("experimenttracker.clock.now", lambda: 1000.0)
     workflow.error_backoff[eid] = (5, 1000.0)
     workflow.hold_advance_error(eid, OSError("still unavailable"))
     assert workflow.error_backoff[eid] == (6, 2800.0)

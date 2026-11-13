@@ -4,11 +4,11 @@ import json
 import os
 import pwd
 import shlex
-import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from . import clock
 from .config import JobResources, SlurmConfig
 
 
@@ -157,7 +157,7 @@ class SlurmScheduler:
         results = await asyncio.gather(
             *(self.command(*args) for args in probes.values()), return_exceptions=True
         )
-        snapshot = {"observed_at": time.time(), "source": "live Slurm", "errors": {}}
+        snapshot = {"observed_at": clock.now(), "source": "live Slurm", "errors": {}}
         for name, result in zip(probes, results, strict=True):
             if isinstance(result, BaseException):
                 snapshot["errors"][name] = str(result)
@@ -328,7 +328,7 @@ class SlurmScheduler:
                     ended_at=scheduler_time(fields[4]) if len(fields) > 4 else None,
                     allocated_gpus=allocated_gpus(fields[5]) if len(fields) > 5 else None,
                     restarts=1 if autopilot and len(intervals) > 1 else None,
-                    observed_at=time.time(),
+                    observed_at=clock.now(),
                     source="sacct allocation row",
                 )
         return Observation("ACCOUNTING_PENDING")

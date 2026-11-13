@@ -7,11 +7,10 @@ import json
 import re
 import shlex
 import shutil
-import time
 from pathlib import Path
 from uuid import uuid4
 
-from . import artifacts
+from . import artifacts, clock
 from .execution_settings import ExecutionSettings
 from .slurm import ResourceUnavailable, SlurmScheduler, command
 from .store import encode
@@ -208,7 +207,7 @@ class RemoteSlurmScheduler(SlurmScheduler):
                 self.settings.ssh_host,
                 "accounting-autopilot" if "--duplicates" in args else "accounting",
             )
-        if cache_key and time.time() - cache.get(cache_key, (0, ""))[0] < self.settings.poll_seconds:
+        if cache_key and clock.now() - cache.get(cache_key, (0, ""))[0] < self.settings.poll_seconds:
             return cache[cache_key][1]
         invocation = shlex.join([str(arg) for arg in args])
         if clean_slurm:
@@ -217,7 +216,7 @@ class RemoteSlurmScheduler(SlurmScheduler):
             *ssh_args(self.settings.ssh_host), "bash -lc " + shlex.quote(invocation), timeout=timeout
         )
         if cache_key:
-            cache[cache_key] = (time.time(), output)
+            cache[cache_key] = (clock.now(), output)
         return output
 
     async def resolve(self):
@@ -277,7 +276,7 @@ class RemoteSlurmScheduler(SlurmScheduler):
                 raise ValueError("transfer identity changed")
             db.execute(
                 "INSERT OR IGNORE INTO execution_transfers(id,experiment_id,direction,payload,state,updated_at) VALUES(?,?,?,?,'pending',?)",
-                (identity, self.exp["id"], direction, encode(payload), time.time()),
+                (identity, self.exp["id"], direction, encode(payload), clock.now()),
             )
         try:
             task = asyncio.create_task(operation())
@@ -300,13 +299,13 @@ class RemoteSlurmScheduler(SlurmScheduler):
             with self.store.tx() as db:
                 db.execute(
                     "UPDATE execution_transfers SET state='pending',result=?,updated_at=? WHERE id=? AND state!='cancelled'",
-                    (str(exc)[:2000], time.time(), identity),
+                    (str(exc)[:2000], clock.now(), identity),
                 )
             raise TransferPending(f"Jean Zay {direction} transfer pending: {exc}") from exc
         with self.store.tx() as db:
             db.execute(
                 "UPDATE execution_transfers SET state='complete',result=NULL,updated_at=? WHERE id=? AND state!='cancelled'",
-                (time.time(), identity),
+                (clock.now(), identity),
             )
         return result
 
@@ -537,10 +536,10 @@ class RemoteSlurmScheduler(SlurmScheduler):
         async def download():
             downloads = self.workflow.pool_owner.remote_downloads
             key = (self.exp["id"], self.exp["evidence_revision"], self.settings.rsync_down)
-            if terminal or time.time() - downloads.get(key, 0) >= self.settings.poll_seconds:
+            if terminal or clock.now() - downloads.get(key, 0) >= self.settings.poll_seconds:
                 if not self.exp["contract"].get("execution_contract") == 3:
                     await self.custom_transfer("down")
-                downloads[key] = time.time()
+                downloads[key] = clock.now()
             for suffix in ("out", "err"):
                 name = f"et-{job['intent_id']}-{job['job_id']}.{suffix}"
                 try:

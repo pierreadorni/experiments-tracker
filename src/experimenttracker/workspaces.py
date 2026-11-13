@@ -5,9 +5,9 @@ import json
 import os
 import stat
 import subprocess
-import time
 from pathlib import Path
 
+from . import clock
 from .projects import ProjectUnavailable
 from .store import encode
 
@@ -212,7 +212,7 @@ class Workspaces:
                         str(common),
                         git_info.st_dev,
                         git_info.st_ino,
-                        time.time(),
+                        clock.now(),
                     ),
                 )
                 self.store.emit(

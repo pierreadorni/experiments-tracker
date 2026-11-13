@@ -180,10 +180,14 @@ One commit per area, removing only branches that T1.1a marked not needed for rea
 Delete or replace the matching tests. Acceptance for each: the remaining suite passes,
 and archived fixtures still render their report via the API.
 
-### [ ] T1.2a Clock indirection (C12) · F · M
+### [x] T1.2a Clock indirection (C12) · F · M
 - Add `src/experimenttracker/clock.py` with `now()` and `monotonic()`. Replace
   `time.time()` in `src/` mechanically, except in log formatting. Tests can patch
   `clock.now`.
+- **Result:** shared patchable clock exports; all executable wall-clock calls and
+  18 behavioral monotonic sites migrated. Eight diagnostic duration sites and a
+  standalone prompt snippet keep stdlib time. Independent card fits current rules:
+  497 changed source/test lines, source net −2; no accounting exception needed.
 
 ### [ ] T1.2b Scenario harness (C12) · S · M
 - Add `tests/scenario/` with `FakeClock`, a programmable `FakeSlurm` (lost responses,
@@ -356,7 +360,9 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 
 Record completed tasks here: `date · task · commit · notes`.
 
-2026-11-13 · T1.1a · this commit · Flash investigation with coordinator corrections and source/citation audit; no runtime changes. All 51 iteration predicate sites and 21 plan-schema branches are indexed, with reader/deletion boundaries and test coverage. Isolated Node 24 locked setup/check passes (535 Python, 29 web, 41 gateway); baseline synthetic demo report and figure inspected. T1.1b activation and T1.1c implementation await owner decisions on ordering, fixture-migration splits and net-negative accounting; Opus 5.5 reviewed the coordinator's T1.1c plan and blocked implementation pending those decisions. Source/test delta: 0; documentation only.
+2026-11-13 · T1.2a · this commit · Flash implementation with coordinator AST/import and local-name-shadowing audits; normalized source ASTs are unchanged beyond time/clock references and imports. Source +232/−234 (net −2), tests +27/−4; 497 source/test changed lines. Isolated locked Node 24 validation matches the final worktree: Ruff clean, 90 targeted and all 537 Python tests pass; synthetic demo completes with labelled report/figure. No live activation. This independent card obeys existing size and net-source rules; archival and S-card implementation decisions remain pending.
+
+2026-11-13 · T1.1a · 42829f4 · Flash investigation with coordinator corrections and source/citation audit; no runtime changes. All 51 iteration predicate sites and 21 plan-schema branches are indexed, with reader/deletion boundaries and test coverage. Isolated Node 24 locked setup/check passes (535 Python, 29 web, 41 gateway); baseline synthetic demo report and figure inspected. T1.1b activation and T1.1c implementation await owner decisions on ordering, fixture-migration splits and net-negative accounting; Opus 5.5 reviewed the coordinator's T1.1c plan and blocked implementation pending those decisions. Source/test delta: 0; documentation only.
 
 2026-11-12 · T0.7 · dcf22d4 · Linked the refactor workspace from agent and development instructions; link targets, Ruff and all 452 Python tests pass.
 
