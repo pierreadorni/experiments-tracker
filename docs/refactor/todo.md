@@ -169,7 +169,7 @@ subcards remain individually within their size bands; no live activation follows
   experiment. Extend the demo agent so it scripts plan → implementation → result
   for tiny synthetic regression. `make demo` completes within 60 s; browser smoke
   scripts use the same contract. [Reviewed design](notes/t1.1c-design.md).
-- [~] **T1.1c-1:** Python agent/CLI, current-contract demo tests and gateway
+- [x] **T1.1c-1:** (b6c1297) Python agent/CLI, current-contract demo tests and gateway
   acceptance script; retain existing toy paths until their fixtures migrate.
 - [ ] **T1.1c-2:** browser create/review/report-version/export assertions, with
   Node 24 checks and synthetic browser smoke. Reject toy API creation only in h.
@@ -219,8 +219,12 @@ and archived fixtures still render their report via the API.
 - Port 3 existing scenarios: blocked stage plus steering (T0.2), healthy long job with
   zero turns, and a lost submission.
 - [Reviewed design and test-only rollout](notes/t1.2b-scenario-design.md).
-- [~] **T1.2b-1:** fake primitives, driver, fixture, control tests and lost-submission
-  port; new test files only, zero production-source change.
+- [~] **T1.2b-1a:** backend-split fake primitives/gates and control tests, zero
+  production-source change. Unreviewed Flash candidate (488 test lines, 7 tests) is
+  committed only on local branch `refactor/t1-scenario-primitives` (worktree
+  `.worktrees/t1-scenario-primitives`), not on main; review and land it. The initial combined candidate was rejected in review.
+- [ ] **T1.2b-1b:** bounded driver, fixture, failure diagnostics and lost-submission
+  port; committed-intent proof and new adapters across restart.
 - [ ] **T1.2b-2:** blocked-steering and healthy-long-job ports; same boundaries.
 
 ### [x] T1.3a Obligations schema and API (C2) · S · M
@@ -405,6 +409,8 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 ## Log
 
 Record completed tasks here: `date · task · commit · notes`.
+
+2026-11-13 · T1.1c-1 · b6c1297 · Flash implementation; Opus review blocked the first candidate (live-mode auto-approval, held-out points overlapping training points, weak report assertion); all fixed. Contract-3 demo: schema-3 plan, two stdlib CPU stages, backend-written results.json, final report. `make demo` completes in ~3 s with report and figure; live config refuses. Isolated Node 24 locked checkout: Ruff clean, 541 Python tests pass, local Miniflare gateway acceptance passes (3 agent actions, 2 jobs, active final report fetched after executor stop). Source +307/−3, tests +129, docs/scripts separate. Legacy toy branches retained until T1.1e/h. Browser half (T1.1c-2) not started.
 
 2026-11-13 · T1.3a · this commit · Flash implementation with coordinator review and strengthened non-finite-time, new-obligation rollback and migration-DDL rollback proofs. SQLite schema 24 adds only obligations; saved job/action/thread/turn identities, projections and holds remain unchanged, with no backfill. Source +202/−2 (net +200), tests +268/−2; 474 changed source/test lines. Exact staged-index isolated Node 24 locked setup, Ruff, 26 targeted and all 545 Python tests pass. Additive intermediate source is owner-approved; no live migration/activation.
 
