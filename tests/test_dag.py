@@ -2,12 +2,12 @@
 
 import asyncio
 import json
+import sys
 from uuid import uuid4
 
 import pytest
-from helpers import wait_until
+from helpers import IterationAgent, approve_plan, wait_until
 from pydantic import ValidationError
-from test_generic import ImplementationAgent, approve_plan
 from test_workflow import until
 
 from experimenttracker.config import JobResources
@@ -81,22 +81,104 @@ def test_invalid_graphs_stop_before_review_or_compute(needs, error):
         )
 
 
-async def test_dag_branches_submit_together_and_join_after_restart(runtime, monkeypatch):
-    import test_generic
+CURRENT_STAGES = [
+    {"id": "features", "title": "Features", "needs": [], "outputs": ["features.json"]},
+    {"id": "train_a", "title": "Train A", "needs": ["features"], "outputs": ["a.json"]},
+    {"id": "train_b", "title": "Train B", "needs": ["features"], "outputs": ["b.json"]},
+    {
+        "id": "evaluate",
+        "title": "Evaluate",
+        "needs": ["train_a", "train_b"],
+        "outputs": ["results.json"],
+        "result_file": "results.json",
+        "expected_metrics": ["score"],
+    },
+]
+CURRENT_PLAN = {
+    "schema_version": 3,
+    "summary": "Run independent training branches and join their evidence.",
+    "protocol": "Measure two variants from checked shared features.",
+    "synthetic_demo": True,
+    "parameters_json": '{"seed": 42}',
+    "files": ["recipe.py"],
+    "stages": [{**stage, "resources": JobResources().model_dump()} for stage in CURRENT_STAGES],
+    "figures": [],
+}
+CURRENT_SOURCE = """import argparse,json,os
+from pathlib import Path
+p=argparse.ArgumentParser();p.add_argument('stage');p.add_argument('--output');a=p.parse_args()
+r=Path(a.output)
+inputs={x['name']:Path(x['path']) for x in json.loads(Path(os.environ['EXPERIMENT_INPUTS']).read_text())}
+if a.stage=='features':
+    (r/'features.json').write_text(json.dumps({'value': 21}))
+elif a.stage in ('train_a','train_b'):
+    value=json.loads(inputs['features.json'].read_text())['value']
+    (r/('a.json' if a.stage=='train_a' else 'b.json')).write_text(json.dumps({'value': value}))
+else:
+    value=json.loads(inputs['a.json'].read_text())['value']+json.loads(inputs['b.json'].read_text())['value']
+    (r/'results.json').write_text(json.dumps({'schema_version':1,'protocol':PROTOCOL,'metrics':[{'name':'score','variant':'synthetic','value':value,'unit':''}]}))
+""".replace("PROTOCOL", repr(CURRENT_PLAN["protocol"]))
 
-    monkeypatch.setattr(test_generic, "PLAN", PLAN)
-    monkeypatch.setattr(test_generic, "SOURCE", SOURCE)
+
+class DagAgent(IterationAgent):
+    """IterationAgent whose plan and prepare turns carry this module's graph."""
+
+    async def begin(self, thread_id, prompt, schema, *, workspace=None, **kwargs):
+        payload = json.loads(prompt.split("\nPAYLOAD:\n", 1)[1])
+        if payload["phase"] == "interpret":
+            return await super().begin(thread_id, prompt, schema, workspace=workspace, **kwargs)
+        self.calls += 1
+        turn = f"dag-{self.calls}"
+        if payload["phase"] == "plan":
+            result = {
+                "schema_version": 3,
+                "title": "Parallel synthetic branches",
+                "summary": CURRENT_PLAN["summary"],
+                "protocol": CURRENT_PLAN["protocol"],
+                "stages": [
+                    {key: stage[key] for key in ("id", "title", "needs", "resources")}
+                    | {"summary": f"Run {stage['id']}."}
+                    for stage in CURRENT_PLAN["stages"]
+                ],
+            }
+        else:
+            assert payload["phase"] == "prepare"
+            runtime = workspace / "runtime/bin/python"
+            runtime.parent.mkdir(parents=True, exist_ok=True)
+            if not runtime.exists():
+                runtime.symlink_to(sys.executable)
+            (workspace / "recipe.py").write_text(CURRENT_SOURCE)
+            result = {**CURRENT_PLAN, "python_executable": str(runtime)}
+        self.results[(thread_id, turn)] = result
+        return turn
+
+
+class ChangedGraphAgent(DagAgent):
+    """DagAgent whose prepare turn makes the second branch train on the first."""
+
+    async def begin(self, thread_id, prompt, schema, *, workspace=None, **kwargs):
+        turn = await super().begin(thread_id, prompt, schema, workspace=workspace, **kwargs)
+        if json.loads(prompt.split("\nPAYLOAD:\n", 1)[1])["phase"] == "prepare":
+            result = json.loads(json.dumps(self.results[(thread_id, turn)]))
+            result["stages"][2]["needs"] = ["train_a"]
+            self.results[(thread_id, turn)] = result
+        return turn
+
+
+@pytest.mark.current_contract
+async def test_dag_branches_submit_together_and_join_after_restart(runtime):
     store, scheduler, _, old = runtime
     old.config.slurm.max_concurrent_jobs = None
-    agent = ImplementationAgent()
+    agent = DagAgent()
     workflow = Workflow(old.config, store, scheduler, agent)
     eid = store.command(
         uuid4(),
         "create",
         {"brief": "Test an entirely new method and show its frontier.", "recipe_id": "agent_experiment_v1"},
     )["experiment_id"]
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
     await approve_plan(workflow, store, eid)
-    assert store.experiment(eid)["plan_review"]["schema_version"] == 2
+    assert store.experiment(eid)["plan_review"]["schema_version"] == 3
     original_observe = scheduler.observe
 
     async def running(job_id):
@@ -128,19 +210,17 @@ async def test_dag_branches_submit_together_and_join_after_restart(runtime, monk
     await resumed.close()
 
 
-async def test_restart_reconciles_each_active_branch_before_replacement(runtime, monkeypatch):
-    import test_generic
-
-    monkeypatch.setattr(test_generic, "PLAN", PLAN)
-    monkeypatch.setattr(test_generic, "SOURCE", SOURCE)
+@pytest.mark.current_contract
+async def test_restart_reconciles_each_active_branch_before_replacement(runtime):
     store, scheduler, _, old = runtime
     old.config.slurm.max_concurrent_jobs = None
-    workflow = Workflow(old.config, store, scheduler, ImplementationAgent())
+    workflow = Workflow(old.config, store, scheduler, DagAgent())
     eid = store.command(
         uuid4(),
         "create",
         {"brief": "Test an entirely new method and show its frontier.", "recipe_id": "agent_experiment_v1"},
     )["experiment_id"]
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
     await approve_plan(workflow, store, eid)
     original_observe = scheduler.observe
     cancelled = set()
@@ -180,21 +260,8 @@ async def test_restart_reconciles_each_active_branch_before_replacement(runtime,
     await workflow.close()
 
 
-async def test_changed_dependencies_are_autonomous_within_the_approved_objective(runtime, monkeypatch):
-    import test_generic
-
-    monkeypatch.setattr(test_generic, "PLAN", PLAN)
-    monkeypatch.setattr(test_generic, "SOURCE", SOURCE)
-
-    class ChangedGraphAgent(ImplementationAgent):
-        async def begin(self, thread_id, prompt, schema, *, workspace=None):
-            turn = await super().begin(thread_id, prompt, schema, workspace=workspace)
-            if json.loads(prompt.split("\nPAYLOAD:\n", 1)[1])["phase"] == "prepare":
-                result = json.loads(json.dumps(self.results[(thread_id, turn)]))
-                result["stages"][2]["needs"] = ["train_a"]
-                self.results[(thread_id, turn)] = result
-            return turn
-
+@pytest.mark.current_contract
+async def test_changed_dependencies_are_autonomous_within_the_approved_objective(runtime):
     store, scheduler, _, old = runtime
     workflow = Workflow(old.config, store, scheduler, ChangedGraphAgent())
     eid = store.command(
@@ -202,6 +269,7 @@ async def test_changed_dependencies_are_autonomous_within_the_approved_objective
         "create",
         {"brief": "Test an entirely new method and show its frontier.", "recipe_id": "agent_experiment_v1"},
     )["experiment_id"]
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
     await approve_plan(workflow, store, eid)
     await until(workflow, store, eid, lambda e: bool(e["snapshot"]))
     review = store.experiment(eid)["plan_review"]
