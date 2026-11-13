@@ -1,4 +1,4 @@
-# T1 handoff (state at main after T1.1m-M0, 2026-11-13)
+# T1 handoff (T1.1m migration in progress, 2026-11-13)
 
 A clean-context agent continues from here. Read, in order: `docs/refactor/README.md`
 (rules, size budgets, commit style, checks), `docs/refactor/todo.md` (cards, log),
@@ -31,7 +31,7 @@ Root `AGENTS.md` applies (contract 3 only; no scientific hashing/inventories/fre
 T1.1a 42829f4 · T1.2a 864ba91 · T1.3a d644089 · T1.1c-1 b6c1297 · T1.2b (1a 9b7bc8f,
 1b 9bbef58, 2 7e939ac) · T1.1c-2 19ab387 (browser smoke on contract 3; all smoke scripts
 except iteration-smoke migrated) · T1.1m disposition note cbb7c16 · final T1.1m plan
-f716898 · T1.1m-M0 9426245 (shared helpers moved into `tests/helpers.py`).
+f716898 · T1.1m-M0 9426245 (shared helpers moved into `tests/helpers.py`) · seeded-state browser smoke correction 18b5b33 (empty and CLI-seeded synthetic states, full Node 24 checks pass).
 
 ## Current task: T1.1m (fixture migration before archival)
 Plan and Opus decisions: `notes/t1.1m-disposition.md` §7 (sequencing "retire at the
@@ -39,20 +39,11 @@ gate") and **§8 (final; supersedes §5 and §6)**. 122 tests drive the legacy b
 `Workflow.advance`; the per-test disposition (CONVERT / READER / ANALOGUE / RETIRE-ONLY)
 is in §1.
 
-Order: M0 (done) · **M0b next** · M1 · P1 · M2 · M3 · M4 · M5 · M6 · M7a/b · M8a-d ·
-M9-r1..4 · M10 · gate probe · T1.1b-1. M9-r1..4, M10 and T1.1b-1 are pushed together so
-legacy code is never reachable without its tests.
+Order: M0 (done) · M0b investigation (running) · M0c (temporary marker prerequisite) · M1 · P1 · M2 · M3 · M4 · M5 · M6 · M7a/b · M8a-d · M9-r1..4 · M10 · gate probe · T1.1b-1. M9-r1..4, M10 and T1.1b-1 are pushed together so legacy code is never reachable without its tests.
 
-**M0b (not done).** A worker was stopped mid-run; nothing from it is committed except a
-partial, unvalidated probe patch. M0b is a read-only investigation: widen the probe, dry
-run the full suite with the downgrade disabled, classify every extra legacy-dependent
-test, and append the result as `## 9. M0b addendum` in `t1.1m-disposition.md`. The spec
-is in §8 ("Amended card order" and the gate-probe paragraph). The partial probe is
-`notes/t1.1m-m0b-partial-probe.patch`: a `tests/conftest.py` autouse fixture that logs
-nodeids when a legacy mechanism runs on a non-contract-3 experiment, plus an
-`M0B_NO_DOWNGRADE=1` switch for the dry run. Apply it in a scratch worktree only and
-never commit it. Re-launch one Flash worker in a fresh worktree (or do it yourself). The
-dry run takes minutes because it runs the full suite; this is not a hang.
+Fresh Opus decision `09a27616` allows M0c/M1/P1/M2 and bounded M3–M8d conversions to land while M0b finishes. Keep its disposition note frozen until the addendum. Retirement, M10, archival and deletion remain blocked until the addendum is committed/Opus-approved, every baseline nodeid is mapped, and the widened probe is rerun on then-current main. Before M3+, check the provisional widened list for the card's files. M0c registers `current_contract` in conftest only, with no initial uses. Mark converted functions individually and prove contract 3; remove all marker uses and plumbing in M10.
+
+**M0b (running, pinned `34f29ec`).** The partial probe was corrected (its dependencies wrapper must await the original, not replace it); the transparent widened baseline passes all 564 tests and records 153 nodeids (31 extras; advance itself records 121). A full downgrade-disabled suite is running in its own scratch worktree and can spend many minutes in historical test waits; elapsed time alone is not a hang. Supplemental cleanup probes and the per-nodeid classification remain pending. Append final findings as `## 9. M0b addendum` in `t1.1m-disposition.md`, with pinned ref and mappings for any meanwhile-landed conversions. Spec: §8. The old partial patch is investigation-only; never commit probe/env switches. Retirement must wait for completed and reviewed findings.
 
 Card facts to keep (all in §8):
 - P1 is a small PRODUCTION change: discussion follow-ups are created as
