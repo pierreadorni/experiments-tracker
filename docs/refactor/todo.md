@@ -174,7 +174,7 @@ subcards remain individually within their size bands; no live activation follows
 - [x] **T1.1c-2:** browser create/review/report-version/export assertions, with
   Node 24 checks and synthetic browser smoke. Reject toy API creation only in h.
 
-### [ ] T1.1m Migrate execution fixtures before archival (C10) · F+R · M per subcard
+### [~] T1.1m Migrate execution fixtures before archival (C10) · F+R · M per subcard
 - Expand into ordered, file-bounded cards from the T1.1a test map before delegation.
   Use current contract-3 fixtures for execution/recovery coverage, and explicit
   saved legacy fixtures for API/report/export readers. Preserve safety assertions.
@@ -182,6 +182,8 @@ subcards remain individually within their size bands; no live activation follows
   the global historical-contract downgrade once its remaining callers migrate.
 - **Acceptance:** no remaining test depends on advancing a legacy contract; archived
   fixtures still render via the API. Activation of T1.1b waits for this gate.
+- **Plan (Opus-approved):** [disposition and final decision](notes/t1.1m-disposition.md) §7–§8. Order: M0, M0b (widened probe), M1 (frozen legacy fixture), P1 (follow-up producer), M2–M8d (conversions), then M9-r1..4 (retire legacy-only tests at the gate), M10 (remove the downgrade), gate probe, T1.1b-1 in one push.
+- Status: [ ] M0 · [ ] M0b · [ ] M1 · [ ] P1 · [ ] M2 · [ ] M3 · [ ] M4 · [ ] M5 · [ ] M6 · [ ] M7a/b · [ ] M8a–d · [ ] M9-r1–4 · [ ] M10
 
 ### [ ] T1.1b Archive legacy contracts at runtime (C10) · F · S per bounded subcard
 - Depends on T1.1c and T1.1m. At startup (after migrations) and in `tick`, a
