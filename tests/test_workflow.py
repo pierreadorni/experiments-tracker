@@ -4,7 +4,7 @@ import json
 from uuid import uuid4
 
 import pytest
-from helpers import until
+from helpers import prepared, until
 
 from experimenttracker import artifacts
 from experimenttracker.codex_client import NeedsAttention, TransportError
@@ -198,10 +198,11 @@ async def test_uncertain_submission_without_match_holds(runtime):
     await workflow.close()
 
 
+@pytest.mark.current_contract
 async def test_zero_exit_with_missing_output_does_not_continue(runtime):
-    store, scheduler, agent, workflow = runtime
+    store, scheduler, agent, workflow, eid = await prepared(runtime)
 
-    async def corrupt(*args):
+    async def corrupt(*args, **kwargs):
         return "broken"
 
     async def completed(*args):
@@ -209,35 +210,34 @@ async def test_zero_exit_with_missing_output_does_not_continue(runtime):
 
     scheduler.submit = corrupt
     scheduler.observe = completed
-    eid = submit(store)
     await until(workflow, store, eid, lambda e: e["phase"] == "failed")
-    assert agent.calls == 1
+    assert agent.calls == 2  # plan and preparation; no interpretation of invalid outputs
     assert len(store.rows("SELECT * FROM jobs")) == 1
     await workflow.close()
 
 
+@pytest.mark.current_contract
 async def test_accounting_delay_is_pending_not_success(runtime):
-    store, scheduler, agent, workflow = runtime
+    store, scheduler, agent, workflow, eid = await prepared(runtime)
 
     async def unknown(*args):
         return Observation("ACCOUNTING_PENDING")
 
     scheduler.observe = unknown
-    eid = submit(store)
     await until(workflow, store, eid, lambda e: e["hold_reason"] == "accounting_pending")
-    assert agent.calls == 1
+    assert agent.calls == 2
     assert store.one("SELECT state FROM jobs")["state"] == "submitted"
     await workflow.close()
 
 
+@pytest.mark.current_contract
 async def test_unchanged_job_freshness_is_published_without_repeated_domain_events(runtime):
-    store, scheduler, _, workflow = runtime
+    store, scheduler, _, workflow, eid = await prepared(runtime)
 
     async def pending(*args):
         return Observation("PENDING")
 
     scheduler.observe = pending
-    eid = submit(store)
     await until(workflow, store, eid, lambda e: e["phase"] == "training")
     await workflow.tick(force_observe=True)
     job = store.one("SELECT * FROM jobs")
@@ -251,26 +251,31 @@ async def test_unchanged_job_freshness_is_published_without_repeated_domain_even
     await workflow.close()
 
 
+@pytest.mark.current_contract
 async def test_pause_compute_and_agent_are_independent(runtime):
-    store, scheduler, agent, workflow = runtime
-    eid = submit(store)
-    await until(workflow, store, eid, lambda e: e["phase"] == "training")
+    store, scheduler, agent, workflow, eid = await prepared(runtime)
+    await until(
+        workflow, store, eid, lambda e: bool(store.rows("SELECT 1 FROM jobs WHERE experiment_id=?", (eid,)))
+    )
     store.command(uuid4(), "action", {"action": "pause_agent"}, eid=eid)
     # Deterministic evaluation continues even when agent work is paused.
     await until(workflow, store, eid, lambda e: e["hold_reason"] == "agent_paused")
     assert scheduler.submissions == 3
-    assert agent.calls == 1
+    assert agent.calls == 2
     store.command(uuid4(), "action", {"action": "resume_agent"}, eid=eid)
     await until(workflow, store, eid, lambda e: e["phase"] == "complete")
+    assert agent.calls == 3  # only the interpretation turn follows the paused stage
     await workflow.close()
 
 
+@pytest.mark.current_contract
 async def test_pause_new_compute_prevents_next_submission(runtime):
-    store, scheduler, _, workflow = runtime
-    eid = submit(store)
+    store, scheduler, agent, workflow, eid = await prepared(runtime)
     store.command(uuid4(), "action", {"action": "pause_new_compute"}, eid=eid)
     await until(workflow, store, eid, lambda e: e["hold_reason"] == "new_compute_paused")
     assert scheduler.submissions == 0
+    assert agent.calls == 2
+    assert not store.rows("SELECT * FROM jobs")
     await workflow.close()
 
 
@@ -357,6 +362,7 @@ async def test_operator_reconciliation_without_turn_identity_does_not_dispatch(r
     await workflow.close()
 
 
+@pytest.mark.current_contract
 @pytest.mark.parametrize(
     "outcome",
     [
@@ -377,7 +383,7 @@ async def test_lost_start_response_recovers_only_verified_completed_turn(
     from experimenttracker.codex_client import CodexAgent
     from experimenttracker.config import CodexConfig
 
-    store, scheduler, agent, workflow = runtime
+    store, scheduler, agent, workflow, eid = await prepared(runtime)
     original = agent.begin
     saved = {}
 
@@ -387,9 +393,9 @@ async def test_lost_start_response_recovers_only_verified_completed_turn(
         raise TimeoutError()
 
     agent.begin = lose_response
-    eid = submit(store)
     await until(workflow, store, eid, lambda e: e["hold_reason"] == "agent_dispatch_uncertain")
-    action = store.one("SELECT * FROM agent_actions WHERE experiment_id=?", (eid,))
+    # The approved plan turn is also saved; recovery targets the prepare dispatch.
+    action = store.one("SELECT * FROM agent_actions WHERE experiment_id=? AND phase='prepare'", (eid,))
     assert action["turn_id"] is None and action["attempts"] == 1
     assert "turn may have started" in action["error"]
     assert scheduler.submissions == 0
@@ -430,14 +436,17 @@ async def test_lost_start_response_recovers_only_verified_completed_turn(
 
     reader.server.rpc = rpc
     agent.read_turn = reader.read_turn
-    intent = json.loads(store.one("SELECT payload FROM events WHERE kind='agent_dispatch_intent'")["payload"])
+    event = next(
+        row
+        for row in store.rows("SELECT id,payload FROM events WHERE kind='agent_dispatch_intent' ORDER BY seq")
+        if json.loads(row["payload"]).get("action_id") == action["id"]
+    )
+    intent = json.loads(event["payload"])
     assert intent["prompt_sha256"] == hashlib.sha256(saved["prompt"].encode()).hexdigest()
     if outcome in ("historical", "historical_missing"):
         del intent["prompt_sha256"]
         with store.tx() as db:
-            db.execute(
-                "UPDATE events SET payload=? WHERE kind='agent_dispatch_intent'", (json.dumps(intent),)
-            )
+            db.execute("UPDATE events SET payload=? WHERE id=?", (json.dumps(intent), event["id"]))
             if outcome == "historical":
                 previous_id = str(uuid4())
                 error = "turn interrupted: None"

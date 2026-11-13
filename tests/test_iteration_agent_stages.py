@@ -13,7 +13,7 @@ from test_iteration import PLAN, IterationAgent
 from test_workflow import until
 
 from experimenttracker import iteration
-from experimenttracker.codex_client import NeedsAttention
+from experimenttracker.codex_client import NeedsAttention, TransportError
 from experimenttracker.models import Implementation, ResearchPlan
 from experimenttracker.store import Conflict
 from experimenttracker.workflow import Workflow
@@ -328,22 +328,65 @@ async def test_repair_implementation_requires_settled_agent_and_journals_request
     await wf.close()
 
 
-async def test_uncertain_agent_turn_never_repeats_or_submits_dependent_work(runtime):
+@pytest.mark.parametrize("loss", ["start", "completion"])
+async def test_uncertain_agent_turn_never_repeats_or_submits_dependent_work(runtime, loss):
     store, scheduler, agent, wf, eid = await setup_mixed(runtime)
-    agent.lose_response = True
+    if loss == "start":
+        agent.lose_response = True
+    else:
+        # The turn identity is saved before its completion response is lost.
+        finish = agent.finish
+        lost = False
+
+        async def lose_completion(thread, turn):
+            nonlocal lost
+            if turn == "check-1" and not lost:
+                lost = True
+                raise TransportError("connection lost after turn completed")
+            return await finish(thread, turn)
+
+        agent.finish = lose_completion
     await until(wf, store, eid, lambda e: e["hold_reason"] == "agent_dispatch_uncertain")
     for _ in range(4):
         await wf.tick()
     assert agent.check_calls == 1 and scheduler.submissions == 0
     action = store.one("SELECT * FROM agent_actions WHERE phase='agent:model_check'")
     assert action["state"] == "uncertain"
-    # Simulate owner restart: exact recorded turn is adopted, never rerun.
+    assert action["attempts"] == 1
+    thread, turn = action["thread_id"], action["turn_id"]
+    assert turn == (None if loss == "start" else "check-1")
+    producer = iteration.agent_job(wf, store.experiment(eid), "agent:model_check")
+    assert len(store.rows("SELECT * FROM agent_actions WHERE phase='agent:model_check'")) == 1
+    assert not store.rows(
+        "SELECT * FROM jobs WHERE experiment_id=? AND json_extract(execution_manifest, '$.executor') IS NOT 'agent'",
+        (eid,),
+    )
+    # Simulate owner restart: only the exact saved turn is adopted, never rerun.
     await wf.close()
     replacement = Workflow(wf.config, store, scheduler, agent)
     agent.wf = replacement
-    await replacement.reconcile_action(action["id"], turn_id="check-1")
+    if loss == "start":
+        # Without the lost identity nothing is inferred, retried or dispatched.
+        with pytest.raises(NeedsAttention, match="saved turn identity is missing"):
+            await replacement.reconcile_action(action["id"])
+        current = store.one("SELECT * FROM agent_actions WHERE id=?", (action["id"],))
+        assert current["state"] == "uncertain" and current["turn_id"] is None
+        assert agent.check_calls == 1 and scheduler.submissions == 0
+        await replacement.reconcile_action(action["id"], turn_id="check-1")
+    else:
+        # The saved identity is read directly; no replacement turn is inferred.
+        await replacement.reconcile_action(action["id"])
+    adopted = store.one("SELECT * FROM agent_actions WHERE id=?", (action["id"],))
+    assert adopted["state"] == "completed" and adopted["turn_id"] == "check-1"
+    assert adopted["thread_id"] == thread and adopted["attempts"] == 1
+    assert json.loads(adopted["result"]) == {"summary": "Synthetic check fixed and passed."}
+    assert (
+        iteration.agent_job(replacement, store.experiment(eid), "agent:model_check")["intent_id"]
+        == producer["intent_id"]
+    )
     await until(replacement, store, eid, lambda e: e["phase"] == "complete")
     assert agent.check_calls == 1 and scheduler.submissions == 3
+    assert len(store.rows("SELECT * FROM agent_actions WHERE phase='agent:model_check'")) == 1
     await replacement.close()
 
 
