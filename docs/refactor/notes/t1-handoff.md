@@ -31,7 +31,7 @@ Root `AGENTS.md` applies (contract 3 only; no scientific hashing/inventories/fre
 T1.1a 42829f4 · T1.2a 864ba91 · T1.3a d644089 · T1.1c-1 b6c1297 · T1.2b (1a 9b7bc8f,
 1b 9bbef58, 2 7e939ac) · T1.1c-2 19ab387 (browser smoke on contract 3; all smoke scripts
 except iteration-smoke migrated) · T1.1m disposition note cbb7c16 · final T1.1m plan
-f716898 · T1.1m-M0 9426245 (shared helpers moved into `tests/helpers.py`) · seeded-state browser smoke correction 18b5b33 (empty and CLI-seeded synthetic states, full Node 24 checks pass).
+f716898 · T1.1m-M0 9426245 (shared helpers moved into `tests/helpers.py`) · seeded-state browser smoke correction 18b5b33 (empty and CLI-seeded synthetic states, full Node 24 checks pass) · M0c f3fca77 (temporary current-contract marker; 564 Python tests pass).
 
 ## Current task: T1.1m (fixture migration before archival)
 Plan and Opus decisions: `notes/t1.1m-disposition.md` §7 (sequencing "retire at the
@@ -39,7 +39,7 @@ gate") and **§8 (final; supersedes §5 and §6)**. 122 tests drive the legacy b
 `Workflow.advance`; the per-test disposition (CONVERT / READER / ANALOGUE / RETIRE-ONLY)
 is in §1.
 
-Order: M0 (done) · M0b investigation (running) · M0c (temporary marker prerequisite) · M1 · P1 · M2 · M3 · M4 · M5 · M6 · M7a/b · M8a-d · M9-r1..4 · M10 · gate probe · T1.1b-1. M9-r1..4, M10 and T1.1b-1 are pushed together so legacy code is never reachable without its tests.
+Order: M0 (done) · M0b investigation (running) · M0c (done, temporary marker prerequisite) · M1 · P1 · M2 · M3 · M4 · M5 · M6 · M7a/b · M8a-d · M9-r1..4 · M10 · gate probe · T1.1b-1. M9-r1..4, M10 and T1.1b-1 are pushed together so legacy code is never reachable without its tests.
 
 Fresh Opus decision `09a27616` allows M0c/M1/P1/M2 and bounded M3–M8d conversions to land while M0b finishes. Keep its disposition note frozen until the addendum. Retirement, M10, archival and deletion remain blocked until the addendum is committed/Opus-approved, every baseline nodeid is mapped, and the widened probe is rerun on then-current main. Before M3+, check the provisional widened list for the card's files. M0c registers `current_contract` in conftest only, with no initial uses. Mark converted functions individually and prove contract 3; remove all marker uses and plumbing in M10.
 
