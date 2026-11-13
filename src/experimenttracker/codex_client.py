@@ -2,11 +2,12 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
 from . import clock
-from .config import CodexConfig
+from .config import CodexConfig, JobResources
 from .models import request_answer
 from .slurm import command
 
@@ -488,6 +489,146 @@ class CodexAgent:
         await self.server.close()
 
 
+DEMO_PROTOCOL = (
+    "Synthetic demonstration only: fit an intercept+slope model and a quadratic least-squares model "
+    "to a fixed 24-point generated grid, then report held-out mean squared error on 8 fixed points. "
+    "Standard-library code on generated data; results say nothing about real measurements."
+)
+
+DEMO_AGENT_SOURCE = '''\
+"""Standard-library synthetic demo: fixed linear and quadratic least-squares comparison."""
+
+import argparse
+import json
+import math
+import os
+from pathlib import Path
+
+PROTOCOL = __PROTOCOL__
+TRAIN_X = [round(-1.5 + 0.1 * step, 4) for step in range(24)]
+TEST_X = [round(-1.45 + 0.3 * step, 4) for step in range(8)]
+GRID_X = [round(-1.6 + 0.1 * step, 4) for step in range(33)]
+
+
+def target(x):
+    return 2.0 * x * x + 0.5 + 0.1 * math.sin(4 * x)
+
+
+def fit(features, targets):
+    size = len(features[0])
+    rows = [
+        [sum(f[i] * f[j] for f in features) for j in range(size)]
+        + [sum(f[i] * y for f, y in zip(features, targets))]
+        for i in range(size)
+    ]
+    for column in range(size):
+        pivot = max(range(column, size), key=lambda row: abs(rows[row][column]))
+        rows[column], rows[pivot] = rows[pivot], rows[column]
+        for row in range(size):
+            if row != column:
+                factor = rows[row][column] / rows[column][column]
+                for index in range(column, size + 1):
+                    rows[row][index] -= factor * rows[column][index]
+    return [rows[i][size] / rows[i][i] for i in range(size)]
+
+
+def predict(coefficients, features):
+    return sum(c * f for c, f in zip(coefficients, features))
+
+
+def measure(output):
+    targets = [target(x) for x in TRAIN_X]
+    linear = fit([(1.0, x) for x in TRAIN_X], targets)
+    quadratic = fit([(1.0, x, x * x) for x in TRAIN_X], targets)
+    cases = [
+        (x, target(x), predict(linear, (1.0, x)), predict(quadratic, (1.0, x, x * x)))
+        for x in TEST_X
+    ]
+    metrics = [
+        {
+            "name": "mse",
+            "variant": variant,
+            "value": math.fsum((case[index] - case[1]) ** 2 for case in cases) / len(cases),
+            "unit": "target units squared",
+        }
+        for index, variant in ((2, "linear"), (3, "quadratic"))
+    ]
+    (output / "metrics.json").write_text(
+        json.dumps(
+            {"schema_version": 1, "protocol": PROTOCOL, "sample_count": len(cases), "metrics": metrics},
+            indent=2,
+        )
+    )
+    (output / "predictions.json").write_text(
+        json.dumps(
+            {
+                "grid": [
+                    [x, predict(linear, (1.0, x)), predict(quadratic, (1.0, x, x * x))] for x in GRID_X
+                ],
+                "observed": [[case[0], case[1]] for case in cases],
+            },
+            indent=2,
+        )
+    )
+
+
+def figure(output):
+    inputs = json.loads(Path(os.environ["EXPERIMENT_INPUTS"]).read_text())
+    source = next(item["path"] for item in inputs if item["name"] == "predictions.json")
+    data = json.loads(Path(source).read_text())
+    width, height, pad = 360, 240, 24
+    values = [value for row in data["grid"] for value in row[1:]] + [row[1] for row in data["observed"]]
+    x_range = max(row[0] for row in data["grid"]) - min(row[0] for row in data["grid"])
+    y_range = max(values) - min(values)
+
+    def place(x, y):
+        left = pad + (x - min(row[0] for row in data["grid"])) / x_range * (width - 2 * pad)
+        top = height - pad - (y - min(values)) / y_range * (height - 2 * pad)
+        return round(left, 2), round(top, 2)
+
+    curves = "".join(
+        '<polyline fill="none" stroke="{}" stroke-width="2" points="{}"/>'.format(
+            colour,
+            " ".join(f"{x},{y}" for x, y in (place(row[0], row[index]) for row in data["grid"])),
+        )
+        for index, colour in ((1, "#1f77b4"), (2, "#d62728"))
+    )
+    points = "".join(
+        f'<circle cx="{x}" cy="{y}" r="3" fill="#333333"/>'
+        for x, y in (place(*row) for row in data["observed"])
+    )
+    (output / "predictions.svg").write_text(
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}"><rect width="{width}" height="{height}" fill="white"/>'
+        f'<text x="{pad}" y="16" font-family="sans-serif" font-size="11">'
+        "Synthetic fits: blue linear, red quadratic; dots are held-out points</text>"
+        f'<line x1="{pad}" y1="{height - pad}" x2="{width - pad}" y2="{height - pad}" '
+        'stroke="#888888"/>'
+        f"{curves}{points}</svg>"
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("stage")
+    parser.add_argument("--output", required=True)
+    arguments = parser.parse_args()
+    output = Path(arguments.output)
+    if arguments.stage == "measure":
+        measure(output)
+    elif arguments.stage == "figure":
+        figure(output)
+    else:
+        raise SystemExit(f"unknown stage {arguments.stage}")
+
+
+if __name__ == "__main__":
+    main()
+'''.replace("__PROTOCOL__", repr(DEMO_PROTOCOL))
+
+DEMO_RESOURCES = JobResources()
+
+
 class DemoAgent:
     is_demo = True
     available = True
@@ -600,6 +741,10 @@ class DemoAgent:
                 if payload["phase"] == "project_synthesize"
                 else None,
             }
+        elif payload["phase"] == "plan":
+            result = self.demo_plan(payload)
+        elif payload["phase"] == "prepare" and "output_schema" in payload:
+            result = self.demo_implementation(payload)
         elif payload["phase"] == "prepare":
             brief = payload["brief"].lower()
             supported = (
@@ -688,6 +833,8 @@ class DemoAgent:
                 result["reply"] = (
                     "I prepared a report revision with a plot of the saved held-out MSE. This deterministic demo uses the original measurements and adds no training run."
                 )
+        elif isinstance(payload["results"]["metrics"], list):
+            result = self.demo_analysis(payload)
         else:
             ids = [
                 a["id"]
@@ -718,6 +865,146 @@ class DemoAgent:
             }
         self.results[(thread_id, turn_id)] = result
         return turn_id
+
+    @staticmethod
+    def demo_supported(brief):
+        text = brief.lower()
+        return ("linear" in text and "quadratic" in text) and not any(
+            word in text for word in ("tree", "frontier", "forest", "neural", "classifier")
+        )
+
+    def demo_plan(self, payload):
+        """Schema 3 plan for the current contract; questions replace work the demo cannot do."""
+        if not self.demo_supported(payload["brief"]):
+            return {
+                "schema_version": 3,
+                "title": "Synthetic regression demo: clarification needed",
+                "summary": "The deterministic demo only runs its fixed synthetic comparison.",
+                "protocol": DEMO_PROTOCOL,
+                "questions": [
+                    "The deterministic demo can only compare linear and quadratic least-squares fits on "
+                    "its generated grid. Should this brief be narrowed to that comparison?"
+                ],
+                "stages": [],
+            }
+        return {
+            "schema_version": 3,
+            "title": "Synthetic linear and quadratic regression demo",
+            "summary": "Two small CPU tasks on generated data: measure held-out errors, then plot the saved predictions.",
+            "protocol": DEMO_PROTOCOL,
+            "questions": [],
+            "stages": [
+                {
+                    "id": "measure",
+                    "title": "Measure the synthetic fits",
+                    "summary": "Fit both models to the fixed generated grid and write bounded evaluation evidence.",
+                    "executor": "slurm",
+                    "resources": DEMO_RESOURCES.model_dump(),
+                    "needs": [],
+                },
+                {
+                    "id": "figure",
+                    "title": "Plot the saved predictions",
+                    "summary": "Draw the produced prediction data; no retraining and no new measurements.",
+                    "executor": "slurm",
+                    "resources": DEMO_RESOURCES.model_dump(),
+                    "needs": ["measure"],
+                },
+            ],
+        }
+
+    def demo_implementation(self, payload):
+        """Write the declared standard-library source and a work-confined interpreter symlink."""
+        workspace = Path(payload["workspace"])
+        workspace.mkdir(parents=True, exist_ok=True)
+        python = workspace / "bin/python"
+        python.parent.mkdir(parents=True, exist_ok=True)
+        if not python.is_symlink():
+            python.symlink_to(sys.executable)
+        (workspace / "recipe.py").write_text(DEMO_AGENT_SOURCE)
+        return {
+            "schema_version": 3,
+            "title": "Synthetic linear and quadratic regression demo",
+            "summary": "A fixed generated comparison in one source file and two CPU stages.",
+            "protocol": DEMO_PROTOCOL,
+            "synthetic_demo": True,
+            "parameters_json": json.dumps({"train_points": 24, "test_points": 8, "grid_points": 33}),
+            "files": ["recipe.py"],
+            "figures": ["predictions.svg"],
+            "python_executable": str(python),
+            "stages": [
+                {
+                    "id": "measure",
+                    "title": "Measure the synthetic fits",
+                    "needs": [],
+                    "outputs": ["metrics.json", "predictions.json"],
+                    "resources": DEMO_RESOURCES.model_dump(),
+                    "result_file": "metrics.json",
+                    "expected_metrics": ["mse"],
+                    "sample_count": 8,
+                },
+                {
+                    "id": "figure",
+                    "title": "Plot the saved predictions",
+                    "needs": ["measure"],
+                    "outputs": ["predictions.svg"],
+                    "resources": DEMO_RESOURCES.model_dump(),
+                },
+            ],
+        }
+
+    def demo_analysis(self, payload):
+        """Interpret the backend's combined results and cite the registered figure."""
+        metrics = {(m["name"], m["variant"]): m["value"] for m in payload["results"]["metrics"]}
+        measured = next(record["id"] for record in payload["artifacts"] if record["name"] == "metrics.json")
+        figure = next(record["id"] for record in payload["artifacts"] if record["name"] == "predictions.svg")
+        return {
+            "schema_version": 1,
+            "title": "Synthetic regression demo · working report",
+            "summary": "Both models fit the generated grid; the quadratic fit is closer on the fixed held-out points.",
+            "observations": [
+                {
+                    "text": "Held-out MSE: linear {:.6g}; quadratic {:.6g}.".format(
+                        metrics[("mse", "linear")], metrics[("mse", "quadratic")]
+                    ),
+                    "evidence_ids": [measured, figure],
+                }
+            ],
+            "limitations": [
+                "One generated dataset with a deterministic perturbation; no sampling or uncertainty analysis.",
+                "The target was constructed from a quadratic function, which favors the quadratic fit.",
+            ],
+            "next_ideas": [
+                "Repeat the comparison over several generated datasets after a separate researcher instruction."
+            ],
+            "scientific_outcome": "supported",
+            "presentation": {
+                "title": "Synthetic regression demo report",
+                "standfirst": "A deterministic workflow demonstration on generated data, not scientific evidence.",
+                "blocks": [
+                    {
+                        "kind": "table",
+                        "caption": "Held-out MSE on the fixed synthetic test points; one dataset, no uncertainty estimate.",
+                        "columns": ["Fit", "MSE"],
+                        "rows": [
+                            [{"text": variant}, {"metric": {"name": "mse", "variant": variant}}]
+                            for variant in ("linear", "quadratic")
+                        ],
+                    },
+                    {
+                        "kind": "figure",
+                        "caption": "Saved prediction curves over the generated grid.",
+                        "alt": "Linear and quadratic fitted curves over the synthetic held-out points.",
+                        "artifact_id": figure,
+                    },
+                    {
+                        "kind": "paragraph",
+                        "text": "Both fits are measured on the same generated points. The quadratic model was chosen "
+                        "because its family contains the generating function.",
+                    },
+                ],
+            },
+        }
 
     async def finish(self, thread_id, turn_id):
         return self.results[(thread_id, turn_id)]

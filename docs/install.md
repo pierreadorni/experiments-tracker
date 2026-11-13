@@ -23,7 +23,7 @@ uv run --locked experimenttracker --config .local/demo.yaml demo --max-seconds 6
 uv run --locked experimenttracker --config .local/demo.yaml serve
 ```
 
-Open <http://127.0.0.1:8765>. Enter `.local/api-token` privately. The CLI prints paths, not the token. A completed demo should show a report and figure. `demo` returns 2 if its time limit ends before completion; state is preserved. Stop `serve` with Ctrl+C. Do not run two owners of the same state directory.
+Open <http://127.0.0.1:8765>. Enter `.local/api-token` privately. The CLI prints paths, not the token. A completed demo shows a report, a prediction figure and synthetic measurements. `demo` creates the current-contract synthetic experiment, approves that plan itself and runs two small local CPU tasks on generated data; it demonstrates the workflow and is not research. A brief outside the supported linear/quadratic comparison gets planning questions and a nonzero exit before any work starts. `demo` returns 2 if its time limit ends before completion; state is preserved. Stop `serve` with Ctrl+C. Do not run two owners of the same state directory.
 
 `init` takes paths from the current directory. Always run it at the checkout root. Do not copy `config.example.yaml` unchanged: its absolute paths are illustrative. Initialization refuses to replace existing configuration. Demo and live configurations in the same checkout share the local browser token, but have distinct state/output directories.
 

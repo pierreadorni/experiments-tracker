@@ -8,7 +8,7 @@ import os
 import secrets
 import subprocess
 from pathlib import Path
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 from zipfile import BadZipFile
 
 import uvicorn
@@ -121,9 +121,12 @@ async def serve_http(config, app, max_seconds):
 
 
 async def demo(config, brief, max_seconds):
+    if config.mode != "demo":
+        print("demo refuses a live configuration: it auto-approves its own synthetic plan.", flush=True)
+        return 1
     lock, store, workflow = runtime(config)
     try:
-        result = store.command(uuid4(), "create", {"brief": brief, "recipe_id": "toy_compare_v1"})
+        result = store.command(uuid4(), "create", {"brief": brief, "recipe_id": "agent_experiment_v1"})
         eid = result["experiment_id"]
         print(f"Experiment: {eid}; mode: {config.mode}", flush=True)
         started = clock.monotonic()
@@ -131,6 +134,20 @@ async def demo(config, brief, max_seconds):
         while clock.monotonic() - started < max_seconds:
             await workflow.tick()
             exp = store.experiment(eid)
+            review = exp["plan_review"] or {}
+            if review.get("state") == "awaiting_review" and review.get("scope") == "plan":
+                if review.get("questions"):
+                    print(json.dumps({"questions": review["questions"]}), flush=True)
+                    print("The deterministic demo cannot run this brief; no jobs were submitted.", flush=True)
+                    return 1
+                # The CLI approves only the synthetic experiment it just created.
+                store.command(
+                    uuid5(NAMESPACE_URL, f"demo-plan-approval:{eid}:{review['revision']}"),
+                    "plan_review",
+                    {"decision": "approve", "plan_revision": review["revision"]},
+                    eid=eid,
+                )
+                print("Auto-approved the demo plan.", flush=True)
             summary = (exp["phase"], exp["hold_reason"], exp["error"])
             if summary != previous:
                 print(json.dumps({"phase": summary[0], "hold": summary[1], "error": summary[2]}), flush=True)

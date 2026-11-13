@@ -71,12 +71,13 @@ async def main():
             received = await command(
                 "/api/experiments",
                 {
-                    "brief": "Compare the fixed synthetic models and publish their validated evidence.",
-                    "recipe_id": "toy_compare_v1",
+                    "brief": "Compare linear and quadratic regression on the fixed synthetic dataset.",
+                    "recipe_id": "agent_experiment_v1",
                 },
             )
             eid = received["experiment_id"]
             assert received["state"] == "waiting_for_executor"
+            approved = False
             for _ in range(150):
                 await bridge.commands()
                 await workflow.tick(force_observe=True)
@@ -85,18 +86,26 @@ async def main():
                 await bridge.upload_artifacts()
                 await asyncio.sleep(0.025)
                 remote = (await user.get(f"/api/experiments/{eid}")).json()
+                review = remote.get("plan_review") or {}
+                if not approved and review.get("state") == "awaiting_review":
+                    assert not review.get("questions")
+                    await command(
+                        f"/api/experiments/{eid}/plan-review",
+                        {"decision": "approve", "plan_revision": review["revision"]},
+                    )
+                    approved = True
                 if remote["phase"] == "complete":
                     break
             else:
                 raise RuntimeError(f"round trip did not complete: {store.experiment(eid)}")
-            assert store.experiment(eid)["id"] == eid
-            assert workflow.agent.calls == 2 and workflow.scheduler.submissions == 3
+            assert approved and store.experiment(eid)["id"] == eid
+            assert workflow.agent.calls == 3 and workflow.scheduler.submissions == 2
             await command(f"/api/experiments/{eid}/notes", {"text": "A gateway-authored researcher note."})
             await bridge.commands()
             await bridge.publish_outbox()
             remote = (await user.get(f"/api/experiments/{eid}")).json()
             assert len(remote["notes"]) == 1
-            assert workflow.agent.calls == 2 and workflow.scheduler.submissions == 3
+            assert workflow.agent.calls == 3 and workflow.scheduler.submissions == 2
             inbox = (await user.get("/api/inbox")).json()["entries"]
             assert len([n for n in inbox if n["experiment_id"] == eid and n["kind"] == "result_ready"]) == 1
             await workflow.close()
@@ -106,20 +115,28 @@ async def main():
             # Executor is now stopped; the gateway alone serves its persisted projection and artifact bytes.
             after_stop = (await user.get(f"/api/experiments/{eid}")).json()
             assert after_stop["phase"] == "complete"
+            final = [report for report in after_stop["report_versions"] if report["state"] == "ready"][-1]
+            assert after_stop["active_report_id"] == final["report_artifact_id"]
+            final_name = "report.html" if final["version"] == 1 else f"report-v{final['version']}.html"
             fetched = {}
             for artifact in after_stop["artifacts"]:
                 response = await user.get(f"/api/artifacts/{artifact['id']}")
                 response.raise_for_status()
                 assert len(response.content) == artifact["size"]
                 fetched[artifact["name"]] = len(response.content)
+            figure = next(a for a in after_stop["artifacts"] if a["name"] == "predictions.svg")
+            assert fetched["predictions.svg"] == figure["size"]
+            assert fetched[final_name] > 0
             record = {
                 "passed": True,
                 "mode": "local HTTP/D1/R2 with demo scheduler and model",
                 "experiment_id": eid,
-                "jobs": 3,
-                "agent_actions": 2,
+                "jobs": 2,
+                "agent_actions": 3,
                 "notes": 1,
                 "result_inbox_entries": 1,
+                "active_report_version": final["version"],
+                "active_report_file": final_name,
                 "readable_after_executor_stop": True,
                 "fetched_artifacts": fetched,
                 "physical_phone_tested": False,
