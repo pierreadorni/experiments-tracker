@@ -108,6 +108,7 @@ try {
   });
   if (toolsBefore.list.length !== toolsAfter.length)
     throw new Error('Staging launched an experiment');
+  let referenceId = null;
   if (toolsAfter.length) {
     await page.evaluate(
       (id) => window.__etTools.open_experiment.execute({ experiment_id: id }),
@@ -118,17 +119,23 @@ try {
   }
   await page.getByRole('main').getByRole('button', { name: 'New experiment', exact: true }).click();
   await page.getByText('Execution options', { exact: true }).click();
-  if (toolsAfter.length) {
+  const completedRef = toolsAfter.find((e) => e.phase === 'complete');
+  if (completedRef) {
     await page
       .getByRole('button', { name: 'Reference experiment (optional)', exact: true })
       .click();
     const reference = await (
-      await page.request.get(new URL(`/api/experiments/${toolsAfter[0].id}`, target).href)
+      await page.request.get(new URL(`/api/experiments/${completedRef.id}`, target).href)
     ).json();
-    await page
-      .getByRole('option', { name: reference.analysis?.title || reference.brief, exact: true })
-      .first()
-      .click();
+    // Mirror experimentTitle() in web/src/main.tsx (terminal experiments only).
+    const label =
+      reference.title ||
+      reference.analysis?.title ||
+      (reference.brief.length <= 100
+        ? reference.brief
+        : `${reference.brief.slice(0, 97).replace(/\s+\S*$/, '')}…`);
+    await page.getByRole('option', { name: label, exact: true }).first().click();
+    referenceId = reference.id;
   }
   await page.getByRole('button', { name: 'Codex model', exact: true }).click();
   await page.getByRole('option').filter({ hasText: 'Deterministic' }).click();
@@ -166,6 +173,8 @@ try {
     selected.contract.agent.reasoning_effort !== 'medium'
   )
     throw new Error('Model selection did not persist');
+  if ((selected.reference_experiment_id || null) !== referenceId)
+    throw new Error('Reference selection did not persist');
 
   if (process.env.ET_TEST_PROJECT_ID) {
     if (selected.project_id !== 'test-project') throw new Error('Creation lost project identity');
