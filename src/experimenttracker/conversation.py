@@ -304,7 +304,7 @@ class Conversation:
                 request = {
                     "brief": reply.new_experiment.brief,
                     "project_id": exp["contract"].get("project", {}).get("id", "test-project"),
-                    "recipe_id": exp["recipe_id"],
+                    "recipe_id": "agent_experiment_v1",
                     "reference_experiment_id": eid,
                     "model": message["model"],
                     "reasoning_effort": message["reasoning_effort"],
