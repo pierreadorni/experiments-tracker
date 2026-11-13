@@ -164,14 +164,14 @@ subcards remain individually within their size bands; no live activation follows
   `iteration.enabled` sites, 21 plan-schema branches, archive readers, tests and
   background-dispatch hazards. Shared contract-3 resource repair remains protected.
 
-### [~] T1.1c New demo on contract 3 (C10) · S · M per subcard
+### [x] T1.1c New demo on contract 3 (C10) · S · M per subcard
 - Make `experimenttracker demo` create an `agent_experiment_v1`, contract 3
   experiment. Extend the demo agent so it scripts plan → implementation → result
   for tiny synthetic regression. `make demo` completes within 60 s; browser smoke
   scripts use the same contract. [Reviewed design](notes/t1.1c-design.md).
 - [x] **T1.1c-1:** (b6c1297) Python agent/CLI, current-contract demo tests and gateway
   acceptance script; retain existing toy paths until their fixtures migrate.
-- [ ] **T1.1c-2:** browser create/review/report-version/export assertions, with
+- [x] **T1.1c-2:** browser create/review/report-version/export assertions, with
   Node 24 checks and synthetic browser smoke. Reject toy API creation only in h.
 
 ### [ ] T1.1m Migrate execution fixtures before archival (C10) · F+R · M per subcard
@@ -435,3 +435,5 @@ Record completed tasks here: `date · task · commit · notes`.
 2026-11-13 · T1.2b-1b · 9bbef58 · Flash implementation; coordinator review of driver, fixture and port against the approved split (bounded tick+settle, dynamic gate observation, separate-connection committed-intent probe with `not in_transaction`, restart on shared backends, exact adoption with one `job_reconciled` and one submission). Added a release/settle of the second gated task to avoid a leaked pending task. Production source 0; tests +469 (4 files, 12 tests incl. 7 from 1a; under 500). Isolated worktree: Ruff clean, scenario tests stable over 3 runs, all 561 Python tests pass. Hung-tick/gated-tick driver tests use a workflow-shaped stub; the real engine path is exercised by the port. Probe assumes the store's journal_mode=DELETE. No live activation.
 
 2026-11-13 · T1.2b-2 · this commit · Flash implementation; coordinator review of both ports (no row insertion or dispatch mocking; engine-driven blocked agent stage, steering continuation on the saved thread with duplicate-request idempotence; engine-submitted RUNNING job with refreshed fake-clock telemetry, controller sentinel declared and reset, wakeups proven to have run, zero additional begin/monitor/submission, parametrized instrumented/uninstrumented). Worker sanity-checked that dropping telemetry refresh, the sentinel or the duplicate request id makes the tests fail. Production source 0; tests +274 (2 new files, 3 tests). Ruff clean, 15 scenario tests stable, all 564 Python tests pass. Harness T1.2b complete; existing tests retained. No live activation.
+
+2026-11-13 · T1.1c-2 · this commit · Coordinator implementation (small, serialized hot-file card). The UI always creates `agent_experiment_v1`; smoke scripts approve the plan, wait for working and final reports, select versions by saved number, assert the contract-3 results ZIP (`evidence/<id>/<name>`, no frozen recipe) and no longer reproduce a recipe. `smoke.mjs` also needed its staged brief to be supported by the demo and a click on the Next ideas section, which an earlier UI change had left stale. Verified in an isolated worktree on Node 24 with a Playwright browser-path workaround (installed chromium-1248 symlinked as the expected 1243 under `PLAYWRIGHT_BROWSERS_PATH`): `smoke.mjs` (twice), `progress-smoke.mjs`, `maintenance-smoke.mjs` (ready release seeded via the test helper), `cancellation-smoke.mjs` (already contract 3) and `autopilot-smoke.mjs` (dedicated `tests/iteration_browser_server.py` fixture) all pass; web format check, 29 web tests and typecheck pass. Python unchanged. Production source +1/−1 (`web/src/main.tsx`); scripts +63/−48. `iteration-smoke.mjs` untouched. Toy creation still accepted by the API until T1.1h. No live activation.
