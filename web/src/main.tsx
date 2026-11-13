@@ -1651,7 +1651,7 @@ function App() {
                     execution: currentProject?.execution,
                     workspace_mode: workspaceMode,
                     ...(model ? { model, reasoning_effort: effort } : {}),
-                    recipe_id: status?.mode === 'demo' ? 'toy_compare_v1' : 'agent_experiment_v1',
+                    recipe_id: 'agent_experiment_v1',
                     ...(referenceId ? { reference_experiment_id: referenceId } : {}),
                   });
                   setCreating(false);

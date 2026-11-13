@@ -37,7 +37,7 @@ try {
       schema_version: 1,
       request_id: crypto.randomUUID(),
       brief: 'Synthetic maintenance browser acceptance.',
-      recipe_id: 'toy_compare_v1',
+      recipe_id: 'agent_experiment_v1',
     },
   });
   if (!created.ok()) throw new Error('Could not create synthetic experiment');

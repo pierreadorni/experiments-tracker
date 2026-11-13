@@ -33,22 +33,35 @@ try {
       body: JSON.stringify({
         schema_version: 1,
         request_id: crypto.randomUUID(),
-        recipe_id: 'toy_compare_v1',
+        recipe_id: 'agent_experiment_v1',
         brief,
       }),
     });
     if (!response.ok) throw new Error('Synthetic fixture creation failed');
     return (await response.json()).experiment_id;
   }, brief);
+  const saved = async () =>
+    (await page.request.get(new URL(`/api/experiments/${id}`, target).href)).json();
   await expect
-    .poll(
-      async () => {
-        const response = await page.request.get(new URL(`/api/experiments/${id}`, target).href);
-        return (await response.json()).phase;
-      },
-      { timeout: 60000 },
-    )
-    .toBe('complete');
+    .poll(async () => (await saved()).plan_review?.state, { timeout: 30000 })
+    .toBe('awaiting_review');
+  await page.evaluate(
+    async ({ id, revision }) => {
+      const response = await fetch(`/api/experiments/${id}/plan-review`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          schema_version: 1,
+          request_id: crypto.randomUUID(),
+          decision: 'approve',
+          plan_revision: revision,
+        }),
+      });
+      if (!response.ok) throw new Error('Synthetic plan approval failed');
+    },
+    { id, revision: (await saved()).plan_review.revision },
+  );
+  await expect.poll(async () => (await saved()).phase, { timeout: 60000 }).toBe('complete');
   await page.goto(`${target.href}?project=test-project&experiment=${id}`);
   await page.getByRole('button', { name: 'All experiments', exact: true }).waitFor();
   await page.getByRole('tab', { name: 'Progress', exact: true }).click();
@@ -68,7 +81,7 @@ try {
   await expect(more).toHaveAttribute('aria-expanded', 'false');
   await expect(
     page.getByRole('progressbar', { name: 'Stages completed', exact: true }),
-  ).toHaveAttribute('value', '7');
+  ).toHaveAttribute('value', '6');
 
   for (const width of [390, 360, 320]) {
     await page.setViewportSize({ width, height: 844 });
@@ -117,7 +130,7 @@ try {
     if (exp) {
       exp.phase = 'training';
       exp.analysis = null;
-      const job = exp.jobs.find((j) => j.stage_id === 'train_linear');
+      const job = exp.jobs.find((j) => j.stage_id === 'measure');
       job.state = 'submitted';
       job.scheduler_state = 'RUNNING';
       job.started_at = Date.now() / 1000 - 90;
@@ -148,11 +161,11 @@ try {
               reported_at: Date.now() / 1000 - (state === 'stale' ? 180 : 0),
               eta_seconds: 300,
             };
-      exp.stages.find((s) => s.id === 'train_linear').state = 'running';
+      exp.stages.find((s) => s.id === 'measure').state = 'running';
       exp.snapshot.plan = {
         stages: [
           {
-            id: 'train_linear',
+            id: 'measure',
             title:
               'Train a deliberately very long whole-stage title with multiple seeds and variants',
           },
@@ -230,7 +243,7 @@ try {
   await expect(page.locator('.stage-progress-label')).toContainText('checking outputs');
   await expect(
     page.getByRole('progressbar', { name: 'Stages completed', exact: true }),
-  ).toHaveAttribute('value', '6');
+  ).toHaveAttribute('value', '5');
   state = 'missing';
   await page.reload();
   await expect(page.locator('.stage-progress')).toContainText('Progress and ETA unavailable');

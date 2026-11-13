@@ -34,7 +34,7 @@ try {
     data: {
       schema_version: 1,
       request_id: randomUUID(),
-      recipe_id: 'toy_compare_v1',
+      recipe_id: 'agent_experiment_v1',
       brief: 'Synthetic Autopilot browser acceptance; no research.',
     },
   });

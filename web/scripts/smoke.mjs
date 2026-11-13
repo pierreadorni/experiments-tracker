@@ -3,7 +3,6 @@ import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { unzipSync } from 'fflate';
-import { spawnSync } from 'node:child_process';
 
 const root = path.resolve(import.meta.dirname, '../..');
 const target = new URL(process.env.ET_UI_URL || 'http://127.0.0.1:8765');
@@ -93,7 +92,7 @@ try {
     throw new Error('Brief staging tool missing');
   await page.evaluate(() =>
     window.__etTools.start_experiment_creation.execute({
-      brief: 'Compare the fixed models; this is staged by a mocked registry.',
+      brief: 'Compare the linear and quadratic models; this is staged by a mocked registry.',
     }),
   );
   await page.getByRole('dialog').waitFor();
@@ -137,6 +136,7 @@ try {
   await page.getByRole('option', { name: 'Medium', exact: true }).click();
   await page.getByRole('button', { name: 'Prepare and run experiment' }).click();
   await page.getByRole('button', { name: 'All experiments' }).waitFor();
+  await page.getByRole('button', { name: 'Approve plan' }).click();
   await page.locator('.detail-meta .badge.success').waitFor({ timeout: 30000 });
   const tabs = await page.getByRole('tab').allTextContents();
   if (
@@ -150,9 +150,17 @@ try {
   if ((await firstStage.getAttribute('aria-expanded')) !== 'true')
     throw new Error('Stage cannot expand');
   await firstStage.click();
-  const selected = await page.evaluate(
-    async () => (await (await fetch('/api/experiments')).json()).experiments[0],
-  );
+  const selected = await page.evaluate(async () => {
+    // Working reports and the final report are saved before completion settles.
+    for (;;) {
+      const exp = (await (await fetch('/api/experiments')).json()).experiments[0];
+      if (exp.phase === 'complete' && exp.report_versions.every((r) => r.state === 'ready'))
+        return exp;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  });
+  const finalVersion = Math.max(...selected.report_versions.map((r) => r.version));
+  const revisedVersion = finalVersion + 1;
   if (
     selected.contract.agent.model !== 'deterministic-demo' ||
     selected.contract.agent.reasoning_effort !== 'medium'
@@ -264,11 +272,16 @@ try {
     .waitFor();
   await page.getByRole('button', { name: 'Report version', exact: true }).click();
   await page.getByRole('option', { name: 'Original · version 1', exact: true }).click();
-  await frame.getByRole('heading', { name: selected.analysis.title, exact: true }).waitFor();
+  await frame.getByRole('heading', { name: 'Synthetic working results', exact: true }).waitFor();
   if ((await frame.locator('h1').textContent()) === 'A readable synthetic comparison')
     throw new Error('Original report selection did not apply');
   await page.getByRole('button', { name: 'Report version', exact: true }).click();
-  await page.getByRole('option', { name: 'Version 2', exact: true }).click();
+  await page.getByRole('option', { name: `Version ${finalVersion}`, exact: true }).click();
+  await frame
+    .getByRole('heading', { name: 'Synthetic regression demo report', exact: true })
+    .waitFor();
+  await page.getByRole('button', { name: 'Report version', exact: true }).click();
+  await page.getByRole('option', { name: `Version ${revisedVersion}`, exact: true }).click();
 
   await frame.getByRole('heading', { name: 'Measured results' }).waitFor();
   await frame.locator('img').evaluate(
@@ -281,7 +294,7 @@ try {
   );
   await page.getByRole('tab', { name: 'Evidence', exact: true }).click();
   const downloaded = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Download evidence bundle' }).click();
+  await page.getByRole('button', { name: 'Download results' }).click();
   const archive = await downloaded;
   const bundlePath = path.join(root, '.local/browser-evidence.zip');
   await archive.saveAs(bundlePath);
@@ -300,30 +313,19 @@ try {
   if (!(await offlinePage.locator('img').evaluate((img) => img.complete && img.naturalWidth > 0)))
     throw new Error('Offline report figure failed');
   await offlinePage.close();
-  if (!files['evidence/recipe.py'] || !files['evidence/manifest.json'])
-    throw new Error('Frozen source missing from new export');
-  for (const stage of ['train_linear', 'train_quadratic', 'evaluate_and_plot']) {
-    const run = spawnSync(
-      '/usr/bin/python3',
-      [
-        path.join(offlineRoot, 'evidence/recipe.py'),
-        stage,
-        '--output',
-        path.join(offlineRoot, 'reproduction'),
-      ],
-      { encoding: 'utf8', timeout: 20000 },
-    );
-    if (run.status !== 0) throw new Error(`Exported recipe reproduction failed: ${run.stderr}`);
-  }
-  const originalMetrics = JSON.parse(new TextDecoder().decode(files['evidence/results.json']));
-  const reproducedMetrics = JSON.parse(
-    await readFile(path.join(offlineRoot, 'reproduction/results.json'), 'utf8'),
-  );
-  if (JSON.stringify(originalMetrics) !== JSON.stringify(reproducedMetrics))
-    throw new Error('Exported CPU recipe metrics differ');
+  // Contract 3 exports small published objects by saved artifact ID, with no frozen recipe.
+  for (const name of ['metrics.json', 'predictions.svg'])
+    if (!files[`evidence/${selected.artifacts.find((a) => a.name === name).id}/${name}`])
+      throw new Error(`Published ${name} missing from the results export`);
+  if (
+    !files['README.txt'] ||
+    Object.keys(files).some((name) => /recipe\.py|manifest\.json/.test(name))
+  )
+    throw new Error('Results export must not promise a frozen recipe');
   await page.getByRole('button', { name: 'All experiments' }).click();
   await page.getByRole('button', { name: 'Project knowledge' }).click();
   await page.getByRole('heading', { name: 'Project knowledge', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Next ideas', exact: true }).click();
   await page.getByRole('heading', { name: /^Saved next ideas/ }).waitFor();
   const idea = page.locator('.next-idea').first();
   if (await idea.count()) {
@@ -411,7 +413,7 @@ try {
         : []),
       'token login',
       'saved conversation, deterministic reply and collapsible panel',
-      'versioned report command, original selector and current offline export',
+      'working and final report versions, versioned report command, original selector and current offline export',
       'model and medium reasoning persisted',
       'five ordered tabs and stage expansion/collapse',
       'synthetic fixture deletion removes list and inbox entries',
@@ -421,11 +423,11 @@ try {
       'report and figure fetch',
       'desktop render',
       '390px mobile without overflow',
-      'verified evidence ZIP download',
+      'verified results ZIP download',
       'extracted offline report and figure with HTTP disabled',
       'project knowledge and saved idea brief prefill',
       'explicit reference lineage through completion',
-      'exported frozen recipe reproduces exact metrics with local Python only',
+      'results ZIP holds published metrics and figure by artifact ID, without a frozen recipe',
       'mocked WebMCP registration, reads, navigation, safe staging and invalid input',
     ],
     errors,
