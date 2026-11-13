@@ -221,8 +221,8 @@ and archived fixtures still render their report via the API.
 - [Reviewed design and test-only rollout](notes/t1.2b-scenario-design.md).
 - [x] **T1.2b-1a:** backend-split fake primitives/gates and control tests, zero
   production-source change; landed 9b7bc8f (see log).
-- [ ] **T1.2b-1b:** bounded driver, fixture, failure diagnostics and lost-submission
-  port; committed-intent proof and new adapters across restart.
+- [x] **T1.2b-1b:** bounded driver, fixture, failure diagnostics and lost-submission
+  port; committed-intent proof and new adapters across restart. Landed 9bbef58.
 - [ ] **T1.2b-2:** blocked-steering and healthy-long-job ports; same boundaries.
 
 ### [x] T1.3a Obligations schema and API (C2) · S · M
@@ -431,3 +431,5 @@ Record completed tasks here: `date · task · commit · notes`.
 2026-11-12 · T0.4 · this commit · Implemented and reviewed by the coordinator at the owner's request. Events store `{}` references; publication builds a consistent current projection and skips stale revisions. SQLite schema 23 records compact artifact metadata acknowledgements transactionally, preserving upload registration during revision churn and publisher restarts; legacy snapshots remain readable and retention ignores reference-only payloads. Size, stale-selection, migration and legacy compatibility coverage passes: 41 targeted tests and isolated Node 24 `make setup`/`make check` (535 Python, 29 web, 41 unchanged gateway tests). Synthetic lifecycle coverage only; no live activation.
 
 2026-11-13 · T1.2b-1a · 9b7bc8f · Flash candidate (second attempt after the combined candidate was rejected) reviewed by the coordinator against the Opus-approved split: adapter signatures and raised exception types match `slurm.py`/`codex_client.py` (exact-cancel identity, `rsplit` payload parsing, catalog metadata, unique thread counters, unknown-observation failure, accepted/failed/interrupted/unreadable turns, backend sharing across fresh adapters, gate task capture). Production source 0; tests +488 (2 new files, 7 tests; under the 500-line budget). Isolated worktree: Ruff clean, all 556 Python tests pass. No driver, fixture or workflow port yet. No live activation.
+
+2026-11-13 · T1.2b-1b · 9bbef58 · Flash implementation; coordinator review of driver, fixture and port against the approved split (bounded tick+settle, dynamic gate observation, separate-connection committed-intent probe with `not in_transaction`, restart on shared backends, exact adoption with one `job_reconciled` and one submission). Added a release/settle of the second gated task to avoid a leaked pending task. Production source 0; tests +469 (4 files, 12 tests incl. 7 from 1a; under 500). Isolated worktree: Ruff clean, scenario tests stable over 3 runs, all 561 Python tests pass. Hung-tick/gated-tick driver tests use a workflow-shaped stub; the real engine path is exercised by the port. Probe assumes the store's journal_mode=DELETE. No live activation.
