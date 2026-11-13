@@ -8,6 +8,7 @@ starts Slurm, a model runtime or an agent socket, and no scenario claims researc
 import asyncio
 import hashlib
 import json
+from dataclasses import dataclass
 
 from experimenttracker import clock as engine_clock
 from experimenttracker.codex_client import NeedsAttention, TerminalTurnError
@@ -281,3 +282,121 @@ class FakeGate:
         self.task = asyncio.current_task()
         self.entered.set()
         await self.release.wait()
+
+
+DEFAULT_STEP_SECONDS = 5.0
+DEFAULT_TIMEOUT_SECONDS = 20.0
+
+
+class ScenarioTimeout(RuntimeError):
+    """The real-time failure bound expired; it is a detector, never a progress condition."""
+
+
+@dataclass(frozen=True)
+class SettleReport:
+    """Engine tasks a settle left parked at a registered fake gate instead of awaiting."""
+
+    waiting: tuple = ()
+
+
+def engine_tasks(workflow):
+    """The engine's own unfinished task handles, read from the real workflow seams."""
+    handles = [task for lane in workflow.lanes for task in (lane.agent_task, lane.quota_task)]
+    handles.append(workflow.backup_task)
+    handles.extend(task for task, _ in workflow.output_checks.values())
+    handles.extend(workflow.evidence_checks.values())
+    handles.extend(workflow.cleanup_tasks.values())
+    return [task for task in handles if task is not None and not task.done()]
+
+
+async def settle(workflow, *, gates=()):
+    """Await engine task completion; report tasks parked at a registered gate instead.
+
+    Handles are re-read after every completion, so a task created by a tick or by
+    another task is settled without preregistration. A parked gate is observed
+    through its ``entered`` event with FIRST_COMPLETED, so no real time passes and
+    no yield count drives progress.
+    """
+    while True:
+        waiting = [
+            gate.task
+            for gate in gates
+            if gate.task is not None and gate.entered.is_set() and not gate.release.is_set()
+        ]
+        tasks = [handle for handle in engine_tasks(workflow) if handle not in waiting]
+        if not tasks:
+            return SettleReport(waiting=tuple(waiting))
+        observers = [
+            asyncio.ensure_future(gate.entered.wait()) for gate in gates if not gate.entered.is_set()
+        ]
+        try:
+            await asyncio.wait([*tasks, *observers], return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for observer in observers:
+                observer.cancel()
+
+
+def _describe(task):
+    if task is None:
+        return "none"
+    coroutine = task.get_coro()
+    return getattr(coroutine, "__qualname__", repr(coroutine))
+
+
+def _counter(adapter, field):
+    value = getattr(getattr(adapter, "backend", None), field, None)
+    return len(value) if isinstance(value, list) else value
+
+
+def diagnostics(workflow, *, gates=()):
+    """Concise saved state for a scenario timeout, read without mutating anything."""
+    saved = (
+        ("experiments", "SELECT id,phase,hold_reason FROM experiments WHERE deleted_at IS NULL"),
+        ("actions", "SELECT phase,state FROM agent_actions ORDER BY created_at"),
+        ("jobs", "SELECT intent_id,stage_id,state,job_id FROM jobs"),
+    )
+    parts = []
+    store = getattr(workflow, "store", None)
+    if store is not None:
+        try:
+            for label, sql in saved:
+                parts.append(f"{label}={[tuple(row.values()) for row in store.rows(sql)]}")
+        except Exception as exc:  # diagnostics never mask the timeout they describe
+            parts.append(f"saved state unreadable: {exc!r}")
+    parts.append(f"submitted={_counter(workflow.scheduler, 'submit_calls')}")
+    parts.append(f"begin={_counter(workflow.agent, 'turns_started')}")
+    parts.append(f"pending={[_describe(task) for task in engine_tasks(workflow)]}")
+    parts.append(f"gated={[_describe(gate.task) for gate in gates if gate.task is not None]}")
+    return " ".join(parts)
+
+
+async def run_until(
+    workflow,
+    predicate,
+    *,
+    clock,
+    step=DEFAULT_STEP_SECONDS,
+    gates=(),
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+):
+    """Advance fake time and settle engine work until ``predicate()`` returns truthy.
+
+    Each step advances the fake clock, calls only ``tick(force_observe=True)`` and
+    awaits the workflow's own task handles. ``timeout`` bounds a tick and its
+    settling together as a real-time failure detector only.
+    """
+    limit = asyncio.timeout(timeout)
+    try:
+        async with limit:
+            while True:
+                value = predicate()
+                if value:
+                    return value
+                await workflow.tick(force_observe=True)
+                await settle(workflow, gates=gates)
+                clock.advance(step)
+    except TimeoutError:
+        if not limit.expired():
+            raise
+        detail = diagnostics(workflow, gates=gates)
+        raise ScenarioTimeout(f"scenario made no progress within {timeout}s: {detail}") from None
