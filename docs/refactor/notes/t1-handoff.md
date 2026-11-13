@@ -42,12 +42,17 @@ Latest source validation: Ruff and all **571 Python tests pass**. M1's final iso
 
 ## Current task and order
 
-**M4b, M11 and P-a next.** M3 → M4 → M5 have landed in order, each with final-main
-checks and fresh Opus approval. M4b needs a coordinator plan and final Opus decision before
-implementation; M11's bounded test-only scope and P-a's before-gate need are in §9.
-Preserve old schema-2 DAG constants/invalid-graph unit tests for their remaining importers.
+**M4b, M11 and P-a are implementing.** M3 → M4 → M5 landed in order with final checks
+and fresh Opus approval. M4b/P-a designs are finalized in §10 (`f8db76ba`); M6 may prepare
+in parallel under §11 (`bc456c7a`) but lands only after those three dependencies. Preserve
+old schema-2 DAG constants/invalid-graph unit tests for their remaining importers.
 
-The authoritative migration plan is disposition **§8 plus §9**; §9 amends sequencing and
+M11's worker found the bounded declared-source tamper check absent on the contract-3
+remote verify path. Fresh Opus `8d70bb3e` is deciding the guard/bug-card boundary; no source
+fix or assertion removal is authorized yet. Its scope also includes one importer line in
+`tests/test_iteration.py`: `work.mkdir(exist_ok=True)` because the new helper creates it.
+
+The authoritative migration plan is disposition **§8–11**; §9 amends sequencing and
 retirement. After M5, prepare M4b (compact reference), M11 (remote transport) and P-a
 (ticking API producers), then M6, M7a/b, M8a–d and M8e. The three added cards may proceed
 any time after M0, but all block M10/gate. Explicit static legacy fixture rewrites also
@@ -91,8 +96,10 @@ removal in h. Do not treat classification as permission to remove live saved-sta
 - Mark converted functions individually with `current_contract`; prove contract 3 via
   `prepared()` or an explicit assertion after create. No manual contract restoration in
   CONVERT tests. M10 removes all marker uses/registration and the global downgrade.
-- M4b measures the 25 KB prompt bound using a genuine manifest-mode parent before deciding
-  whether production has a bug. Do not weaken the bound or include it in M4.
+- M4b's measured genuine schema-3 prompt is 12902 characters. It is test-only: retire legacy
+  full contract/manifest and reference `verify_snapshot` assertions, not meaningful current
+  context guards. Assert the existing pointer's full plan/analysis/brief/output rows, SHA,
+  stable bytes and corruption refusal. Do not add audit history to agent context; keep 25 KB.
 - M11 preserves all seven remote identity/transport/polling/admission guards; drop reused
   checkpoint byte re-checks outright. Contract 3 has no scientific inventories/hashes.
 - P-a handles TestClient's real ticking loop **before the gate**. P-b cannot just replace
