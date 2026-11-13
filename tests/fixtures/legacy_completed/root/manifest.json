@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "recipe_id": "toy_compare_v1",
+  "files": {
+    "recipe.py": "e00296e4f2f017a722b87e23dc99c7477a290d32f77efdbd2896dc6fd2d24eff"
+  },
+  "parameters": {
+    "n_test": 128,
+    "n_train": 64,
+    "noise_sd": 0.2,
+    "seed": 1729
+  },
+  "parameters_hash": "6d044d4816551802ad065398362d3a00945d954c3a9f0a23cbfd87ad67f04278",
+  "data_hash": "dc00cf833bb34ce0e5292b844ec54b9b6d49aef4987b85878d0f03ccc920e462",
+  "test_hash": "9808d8d321f9b449fa865c48a5cf0c93fe782d6c47a279daa1cfd92e0ad51214",
+  "expected_outputs": {
+    "train_linear": [
+      "linear.json"
+    ],
+    "train_quadratic": [
+      "quadratic.json"
+    ],
+    "evaluate_and_plot": [
+      "results.json",
+      "predictions.json",
+      "predictions.svg"
+    ]
+  },
+  "snapshot_hash": "d70c8183b7080791274cba2e0c3a8b4dc70fffa0dc8d0e47eccd7adb164e9bbb"
+}

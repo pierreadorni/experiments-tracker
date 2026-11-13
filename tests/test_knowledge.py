@@ -4,7 +4,7 @@ from uuid import uuid4
 
 import pytest
 from helpers import wait_until
-from test_workflow import submit, until
+from legacy_fixture import load_legacy_completed
 
 from experimenttracker.config import ProjectConfig
 from experimenttracker.knowledge import WEEK, Knowledge, ProjectSupervisor
@@ -53,12 +53,12 @@ async def finish(supervisor, identity):
 
 async def test_synthesis_versions_tldrs_chat_and_replay(runtime):
     store, scheduler, agent, wf = runtime
-    eid = submit(store)
-    await until(wf, store, eid, lambda e: e["phase"] == "complete")
+    eid = load_legacy_completed(store, wf)
+    await wf.start()
     memory = wf.supervisor.memory
     memory.refresh()
     assert memory.view("test-project")["pending_experiment_ids"] == [eid]
-    assert agent.calls == 2  # indexing does not invoke another model
+    assert agent.calls == 0  # indexing does not invoke another model
     identity = enqueue(memory)
     result = await finish(wf.supervisor, identity)
     assert result["state"] == "completed", result
@@ -71,7 +71,7 @@ async def test_synthesis_versions_tldrs_chat_and_replay(runtime):
     assert table["rows"][0]["cells"][2]["display"]
     assert any(block["kind"] == "figure" for block in blocks)
     assert memory.view("test-project")["pending_experiment_ids"] == []
-    assert scheduler.submissions == 3
+    assert scheduler.submissions == 0
     calls = agent.calls
     memory.complete(result)
     memory.enqueue("test-project", json.loads(result["payload"]))

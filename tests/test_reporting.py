@@ -3,8 +3,9 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from legacy_fixture import load_legacy_completed
 from pydantic import ValidationError
-from test_workflow import submit, until
+from test_workflow import submit
 
 from experimenttracker import artifacts, reporting
 from experimenttracker.api import create_app
@@ -32,8 +33,7 @@ def document():
 
 async def test_report_revision_is_idempotent_survives_restart_and_preserves_science(runtime):
     store, scheduler, agent, workflow = runtime
-    eid = submit(store)
-    await until(workflow, store, eid, lambda e: e["phase"] == "complete")
+    eid = load_legacy_completed(store, workflow)
     root = workflow.root(eid)
     original = {
         name: (root / name).read_bytes()
@@ -56,7 +56,7 @@ async def test_report_revision_is_idempotent_survives_restart_and_preserves_scie
     assert view["active_report_id"] == reporting.artifact_id(view, "report-v2.html")
     assert all((root / name).read_bytes() == data for name, data in original.items())
     assert {name: artifacts.sha256(root / name) for name in files} == hashes
-    assert scheduler.submissions == 3 and agent.calls == 2
+    assert scheduler.submissions == 0 and agent.calls == 0
     assert len(store.rows("SELECT * FROM inbox WHERE kind='report_ready'")) == 1
     page = (root / "report-v2.html").read_text()
     assert page.index("Question and interpretation") < page.index("<table>")
@@ -68,8 +68,7 @@ async def test_report_revision_is_idempotent_survives_restart_and_preserves_scie
 
 async def test_unknown_metric_report_fails_without_replacing_original(runtime):
     store, _, _, workflow = runtime
-    eid = submit(store)
-    await until(workflow, store, eid, lambda e: e["phase"] == "complete")
+    eid = load_legacy_completed(store, workflow)
     doc = document()
     doc["blocks"][1]["rows"][0][1]["metric"]["variant"] = "invented"
     store.command(uuid4(), "present", {"document": doc}, eid=eid)
@@ -189,8 +188,7 @@ def test_error_bars_require_explanation_nonnegative_values_and_matching_units(tm
 
 async def test_report_text_is_escaped_and_unregistered_output_cannot_be_overwritten(runtime):
     store, _, _, workflow = runtime
-    eid = submit(store)
-    await until(workflow, store, eid, lambda e: e["phase"] == "complete")
+    eid = load_legacy_completed(store, workflow)
     doc = document()
     doc["blocks"][0]["text"] = "<script>unsafe</script>"
     records = store.rows("SELECT * FROM artifacts WHERE experiment_id=?", (eid,))
@@ -250,8 +248,7 @@ def test_discussion_output_manifest_is_not_limited_to_twenty_files():
 
 async def test_pending_report_does_not_block_later_builds(config, runtime):
     store, _, _, workflow = runtime
-    eid = submit(store)
-    await until(workflow, store, eid, lambda e: e["phase"] == "complete")
+    eid = load_legacy_completed(store, workflow)
     # Keep the first report waiting on remote publication while another is queued.
     config.gateway.url = "https://gateway.example"
     store.command(uuid4(), "present", {"document": document()}, eid=eid)

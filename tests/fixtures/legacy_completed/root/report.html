@@ -1,0 +1,76 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Quadratic regression · synthetic infrastructure demo</title><style>
+    body{font:17px/1.6 system-ui,sans-serif;color:#172c35;background:#f8faf9;margin:0 auto;padding:32px 20px;max-width:900px}
+    h1{line-height:1.2}small{display:block;color:#536976}table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
+    th,td{border-bottom:1px solid #dce5e5;text-align:left;padding:10px}img{width:100%;background:white;border-radius:12px}
+    pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}a{color:#087a70}li{margin-bottom:12px}
+    </style><body><p>SYNTHETIC EXPERIMENT · Evidence revision 1</p>
+    <h1>Quadratic regression · synthetic infrastructure demo</h1><p>The quadratic model fits this synthetic quadratic data better. Demo interpretation is deterministic, not a Codex turn.</p><h2>Question</h2><p>Compare linear and quadratic models on shared synthetic data.</p>
+    <h2>Measured results</h2><p>Values rendered from validated result JSON. Scientific checks are recorded in the evidence.</p>
+    <table><thead><tr><th>Variant</th><th>MSE (y²)</th><th>RMSE (y)</th><th>Parameters</th><th>Test cases</th></tr></thead>
+    <tbody><tr><th scope='row'>Linear</th><td>2.34575</td><td>1.53158</td><td>2</td><td>128</td></tr><tr><th scope='row'>Quadratic</th><td>0.0421402</td><td>0.205281</td><td>3</td><td>128</td></tr></tbody></table><h2>Figures</h2><figure><img src="/api/artifacts/3201620f-d83a-5025-9c4b-28d77d51a05f" alt="predictions.svg"><figcaption>predictions.svg</figcaption></figure>
+    <h2>Interpretation</h2><ul><li>Held-out MSE: linear 2.34575; quadratic 0.0421402. <small>Evidence: <a href='/api/artifacts/d2ae5347-9dee-59d2-8d23-0f63cea21650'>predictions.json</a>, <a href='/api/artifacts/3201620f-d83a-5025-9c4b-28d77d51a05f'>predictions.svg</a>, <a href='/api/artifacts/86b9574f-f5ac-5fe9-b75e-064ae6d8465b'>results.json</a></small></li></ul><h2>Limitations</h2><ul><li>One synthetic seed; this does not establish performance on real scientific data.</li><li>The target was generated from a quadratic function, favoring that model.</li></ul>
+    <h2>Saved next ideas</h2><p>These suggestions do not launch jobs.</p><ul><li>Repeat across seeds and noise levels after a separate researcher instruction.</li></ul>
+    <h2>Runnable provenance</h2><pre>{
+  &quot;experiment_id&quot;: &quot;51a2d1f0-6f6f-4a1e-9d0b-7c5e2f4b8a61&quot;,
+  &quot;contract&quot;: {
+    &quot;brief_must_match_recipe&quot;: true,
+    &quot;controls&quot;: &quot;shared data and test split&quot;,
+    &quot;execution&quot;: {
+      &quot;context&quot;: &quot;acacia&quot;,
+      &quot;poll_seconds&quot;: 600,
+      &quot;remote_project&quot;: &quot;&quot;,
+      &quot;rsync_down&quot;: &quot;&quot;,
+      &quot;rsync_up&quot;: &quot;&quot;,
+      &quot;ssh_host&quot;: &quot;jz&quot;
+    },
+    &quot;gpus&quot;: 0,
+    &quot;max_jobs&quot;: 3,
+    &quot;parameters&quot;: {
+      &quot;n_test&quot;: 128,
+      &quot;n_train&quot;: 64,
+      &quot;noise_sd&quot;: 0.2,
+      &quot;seed&quot;: 1729
+    },
+    &quot;project&quot;: {
+      &quot;id&quot;: &quot;test-project&quot;,
+      &quot;name&quot;: &quot;Test project&quot;
+    },
+    &quot;recipe_id&quot;: &quot;toy_compare_v1&quot;,
+    &quot;recovery_turns&quot;: 1,
+    &quot;schema_version&quot;: 1,
+    &quot;synthetic_demo&quot;: true
+  },
+  &quot;snapshot&quot;: {
+    &quot;data_hash&quot;: &quot;dc00cf833bb34ce0e5292b844ec54b9b6d49aef4987b85878d0f03ccc920e462&quot;,
+    &quot;expected_outputs&quot;: {
+      &quot;evaluate_and_plot&quot;: [
+        &quot;results.json&quot;,
+        &quot;predictions.json&quot;,
+        &quot;predictions.svg&quot;
+      ],
+      &quot;train_linear&quot;: [
+        &quot;linear.json&quot;
+      ],
+      &quot;train_quadratic&quot;: [
+        &quot;quadratic.json&quot;
+      ]
+    },
+    &quot;files&quot;: {
+      &quot;recipe.py&quot;: &quot;e00296e4f2f017a722b87e23dc99c7477a290d32f77efdbd2896dc6fd2d24eff&quot;
+    },
+    &quot;parameters&quot;: {
+      &quot;n_test&quot;: 128,
+      &quot;n_train&quot;: 64,
+      &quot;noise_sd&quot;: 0.2,
+      &quot;seed&quot;: 1729
+    },
+    &quot;parameters_hash&quot;: &quot;6d044d4816551802ad065398362d3a00945d954c3a9f0a23cbfd87ad67f04278&quot;,
+    &quot;recipe_id&quot;: &quot;toy_compare_v1&quot;,
+    &quot;schema_version&quot;: 1,
+    &quot;snapshot_hash&quot;: &quot;d70c8183b7080791274cba2e0c3a8b4dc70fffa0dc8d0e47eccd7adb164e9bbb&quot;,
+    &quot;test_hash&quot;: &quot;9808d8d321f9b449fa865c48a5cf0c93fe782d6c47a279daa1cfd92e0ad51214&quot;
+  },
+  &quot;model&quot;: &quot;deterministic-demo&quot;,
+  &quot;generated_at&quot;: 1794608709.2147908
+}</pre></body></html>

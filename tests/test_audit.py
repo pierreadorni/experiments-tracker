@@ -3,20 +3,19 @@ import json
 from zipfile import ZipFile
 
 import pytest
-from test_workflow import submit, until
+from legacy_fixture import load_legacy_completed
 
 from experimenttracker.audit import verify_bundle, verify_experiment
 
 
 async def test_restored_evidence_audit_is_read_only_and_detects_content_changes(runtime):
     store, scheduler, agent, workflow = runtime
-    eid = submit(store)
-    await until(workflow, store, eid, lambda e: e["phase"] == "complete")
+    eid = load_legacy_completed(store, workflow)
     revision = store.experiment(eid)["revision"]
     result = verify_experiment(store, eid, workflow.root(eid))
     assert result["scientific_checks"] == "passed" and result["artifacts_verified"] == 13
     assert store.experiment(eid)["revision"] == revision
-    assert scheduler.submissions == 3 and agent.calls == 2
+    assert scheduler.submissions == 0 and agent.calls == 0
     checkpoint = workflow.root(eid) / "linear.json"
     checkpoint.write_bytes(checkpoint.read_bytes() + b" ")  # Valid JSON; a changed immutable file.
     with pytest.raises(ValueError, match="registered artifact changed"):

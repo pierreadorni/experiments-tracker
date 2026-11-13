@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "variant": "quadratic",
+  "coefficients": [
+    0.4755909588378131,
+    0.6945417739823396,
+    1.3077484817177027
+  ],
+  "data_hash": "dc00cf833bb34ce0e5292b844ec54b9b6d49aef4987b85878d0f03ccc920e462",
+  "test_hash": "9808d8d321f9b449fa865c48a5cf0c93fe782d6c47a279daa1cfd92e0ad51214",
+  "parameters_hash": "6d044d4816551802ad065398362d3a00945d954c3a9f0a23cbfd87ad67f04278",
+  "parameters": {
+    "seed": 1729,
+    "n_train": 64,
+    "n_test": 128,
+    "noise_sd": 0.2
+  }
+}
