@@ -212,7 +212,7 @@ and archived fixtures still render their report via the API.
   standalone prompt snippet keep stdlib time. Independent card fits current rules:
   497 changed source/test lines, source net −2; no accounting exception needed.
 
-### [~] T1.2b Scenario harness (C12) · S · M per subcard
+### [x] T1.2b Scenario harness (C12) · S · M per subcard
 - Add `tests/scenario/` with `FakeClock`, a programmable `FakeSlurm` (lost responses,
   accounting lag, duplicate matches) and `FakeCodex` (scripted turns, lost turn
   start, unreadable thread), plus a `run_until` helper.
@@ -223,7 +223,7 @@ and archived fixtures still render their report via the API.
   production-source change; landed 9b7bc8f (see log).
 - [x] **T1.2b-1b:** bounded driver, fixture, failure diagnostics and lost-submission
   port; committed-intent proof and new adapters across restart. Landed 9bbef58.
-- [ ] **T1.2b-2:** blocked-steering and healthy-long-job ports; same boundaries.
+- [x] **T1.2b-2:** blocked-steering and healthy-long-job ports; landed (see log).
 
 ### [x] T1.3a Obligations schema and API (C2) · S · M
 - Add the named schema migration and `core/obligations.py` API (`open`, `satisfy`,
@@ -433,3 +433,5 @@ Record completed tasks here: `date · task · commit · notes`.
 2026-11-13 · T1.2b-1a · 9b7bc8f · Flash candidate (second attempt after the combined candidate was rejected) reviewed by the coordinator against the Opus-approved split: adapter signatures and raised exception types match `slurm.py`/`codex_client.py` (exact-cancel identity, `rsplit` payload parsing, catalog metadata, unique thread counters, unknown-observation failure, accepted/failed/interrupted/unreadable turns, backend sharing across fresh adapters, gate task capture). Production source 0; tests +488 (2 new files, 7 tests; under the 500-line budget). Isolated worktree: Ruff clean, all 556 Python tests pass. No driver, fixture or workflow port yet. No live activation.
 
 2026-11-13 · T1.2b-1b · 9bbef58 · Flash implementation; coordinator review of driver, fixture and port against the approved split (bounded tick+settle, dynamic gate observation, separate-connection committed-intent probe with `not in_transaction`, restart on shared backends, exact adoption with one `job_reconciled` and one submission). Added a release/settle of the second gated task to avoid a leaked pending task. Production source 0; tests +469 (4 files, 12 tests incl. 7 from 1a; under 500). Isolated worktree: Ruff clean, scenario tests stable over 3 runs, all 561 Python tests pass. Hung-tick/gated-tick driver tests use a workflow-shaped stub; the real engine path is exercised by the port. Probe assumes the store's journal_mode=DELETE. No live activation.
+
+2026-11-13 · T1.2b-2 · this commit · Flash implementation; coordinator review of both ports (no row insertion or dispatch mocking; engine-driven blocked agent stage, steering continuation on the saved thread with duplicate-request idempotence; engine-submitted RUNNING job with refreshed fake-clock telemetry, controller sentinel declared and reset, wakeups proven to have run, zero additional begin/monitor/submission, parametrized instrumented/uninstrumented). Worker sanity-checked that dropping telemetry refresh, the sentinel or the duplicate request id makes the tests fail. Production source 0; tests +274 (2 new files, 3 tests). Ruff clean, 15 scenario tests stable, all 564 Python tests pass. Harness T1.2b complete; existing tests retained. No live activation.
