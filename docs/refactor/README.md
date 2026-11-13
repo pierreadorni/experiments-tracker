@@ -18,6 +18,18 @@
    card says F+R or S. The first implementation batch is complete; see
    [todo.md](todo.md) for status and validation. Continue under **Order** below.
 
+## T1 rollout decisions (2026-11-13)
+
+The owner approved [decisions 1–6](notes/t1-owner-decisions.md): production-source
+net reduction is measured across Phase 2, with additive intermediate cards and
+separate source/test/doc counts. Use bounded reviewed subcards; ship the contract-3
+demo and migrate execution fixtures before activating archival. Defer rejecting
+toy creates until T1.1h, preserve archived readers, and use contract-3 browser
+export assertions. Unresolved remote turns conservatively consume turn capacity;
+reconciliation remains ungated. At archival, settle exact in-flight identities
+without advancing legacy stages, and finish queued reports from saved evidence.
+Code publication does not authorize live activation.
+
 ## How we work
 
 - **Roles.** The coordinator (the main session) chooses the next task, writes the

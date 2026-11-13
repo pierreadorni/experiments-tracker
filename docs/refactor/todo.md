@@ -139,6 +139,13 @@ Briefing rules and the brief template are in [README.md](README.md).
 
 ## Phase 2 — Tier 1: consolidation
 
+The owner approved [rollout decisions 1–6](notes/t1-owner-decisions.md) on
+2026-11-13. Ship T1.1c and bounded fixture-migration cards before T1.1b activation;
+then delete legacy execution by area. Independent clock, harness and obligations
+work may proceed once its own dependencies are ready. Measure production-source
+net reduction across the phase, with source/test/doc counts per commit. Reviewed
+subcards remain individually within their size bands; no live activation follows.
+
 ### [x] T1.1a Inventory legacy branches (C10) · F · S
 - Produce `docs/refactor/notes/t1.1-legacy-inventory.md`. List every branch
   conditioned on:
@@ -157,17 +164,33 @@ Briefing rules and the brief template are in [README.md](README.md).
   `iteration.enabled` sites, 21 plan-schema branches, archive readers, tests and
   background-dispatch hazards. Shared contract-3 resource repair remains protected.
 
-### [ ] T1.1b Archive legacy contracts at runtime (C10) · F · S
-- At startup (after migrations) and in `tick`: a non-terminal experiment that is not
-  contract 3 gets hold `legacy_contract_archived` plus an inbox notice. `advance`
-  returns early for it. Cancel still works.
-- **Tests:** one archived fixture (legacy contract created directly in the store).
-
-### [ ] T1.1c New demo on contract 3 (C10) · S · M
+### [~] T1.1c New demo on contract 3 (C10) · S · M per subcard
 - Make `experimenttracker demo` create an `agent_experiment_v1`, contract 3
-  experiment. Extend the demo agent (`codex_client.py`, around line 506) so it scripts
-  plan → implementation → result for a tiny synthetic regression. `make demo` must
-  complete within 60 s, and the browser smoke scripts must use it.
+  experiment. Extend the demo agent so it scripts plan → implementation → result
+  for tiny synthetic regression. `make demo` completes within 60 s; browser smoke
+  scripts use the same contract. [Reviewed design](notes/t1.1c-design.md).
+- [~] **T1.1c-1:** Python agent/CLI, current-contract demo tests and gateway
+  acceptance script; retain existing toy paths until their fixtures migrate.
+- [ ] **T1.1c-2:** browser create/review/report-version/export assertions, with
+  Node 24 checks and synthetic browser smoke. Reject toy API creation only in h.
+
+### [ ] T1.1m Migrate execution fixtures before archival (C10) · F+R · M per subcard
+- Expand into ordered, file-bounded cards from the T1.1a test map before delegation.
+  Use current contract-3 fixtures for execution/recovery coverage, and explicit
+  saved legacy fixtures for API/report/export readers. Preserve safety assertions.
+- Keep each group green; do not bypass archival in test-only execution code. Remove
+  the global historical-contract downgrade once its remaining callers migrate.
+- **Acceptance:** no remaining test depends on advancing a legacy contract; archived
+  fixtures still render via the API. Activation of T1.1b waits for this gate.
+
+### [ ] T1.1b Archive legacy contracts at runtime (C10) · F · S per bounded subcard
+- Depends on T1.1c and T1.1m. At startup (after migrations) and in `tick`, a
+  non-terminal non-contract-3 experiment gets hold `legacy_contract_archived` and
+  an existing-kind inbox notice. `advance` returns early; cancel still works.
+- Settle exact in-flight identities/accounting without advancing legacy stages or
+  failing the archived experiment. Finish queued reports from saved evidence.
+- **Tests:** explicit archived fixture, idempotent startup/ticks, no new dispatch,
+  late outcome settlement and cancellation. Split before exceeding the S budget.
 
 ### [ ] T1.1d–h Delete legacy execution code (C10) · F+R · M each
 One commit per area, removing only branches that T1.1a marked not needed for reading:
@@ -189,21 +212,33 @@ and archived fixtures still render their report via the API.
   standalone prompt snippet keep stdlib time. Independent card fits current rules:
   497 changed source/test lines, source net −2; no accounting exception needed.
 
-### [ ] T1.2b Scenario harness (C12) · S · M
+### [~] T1.2b Scenario harness (C12) · S · M per subcard
 - Add `tests/scenario/` with `FakeClock`, a programmable `FakeSlurm` (lost responses,
   accounting lag, duplicate matches) and `FakeCodex` (scripted turns, lost turn
   start, unreadable thread), plus a `run_until` helper.
 - Port 3 existing scenarios: blocked stage plus steering (T0.2), healthy long job with
   zero turns, and a lost submission.
+- [Reviewed design and test-only rollout](notes/t1.2b-scenario-design.md).
+- [~] **T1.2b-1:** fake primitives, driver, fixture, control tests and lost-submission
+  port; new test files only, zero production-source change.
+- [ ] **T1.2b-2:** blocked-steering and healthy-long-job ports; same boundaries.
 
-### [ ] T1.3a–d Obligations table (C2 target) · S (a) · F+R (b–d)
-- a: schema migration, `core/obligations.py` API (`open`, `satisfy`, `abandon`,
-  `open_for`, `derived_status`), and a priority table.
-- b: open and close obligations at their sources: agent actions, jobs, transfers,
-  pending requests, plan review, publication.
-- c: compute `hold_reason` from obligations in `Store.projection`; stop writing it
-  directly (one call site group per commit).
-- d: the watchdog checks the liveness invariant.
+### [~] T1.3a Obligations schema and API (C2) · S · M
+- Add the named schema migration and `core/obligations.py` API (`open`, `satisfy`,
+  `abandon`, `open_for`, `derived_status`) and priority table.
+- [Approved design](notes/t1.3a-obligations-design.md); no source integration,
+  backfill, derived holds or watchdog behavior yet.
+
+### [ ] T1.3b Obligations at their sources (C2) · F+R · M per source group
+- Open/close obligations transactionally for actions, jobs, transfers, pending
+  requests, plan review and publication; split by source before delegation.
+
+### [ ] T1.3c Derived holds (C2) · F+R · M per call-site group
+- Compute `hold_reason` from obligations in `Store.projection`; remove direct
+  writes one call-site group per commit, retaining compatibility readers.
+
+### [ ] T1.3d Obligation liveness watchdog (C2) · F+R · M
+- Replace the interim heuristic with the liveness invariant.
 
 ### [ ] T1.4a Slurm submission resolver (C5) · F+R · M
 - New `resolver.py`. Apply the rules in design.md C5 (Slurm) to
@@ -218,12 +253,18 @@ and archived fixtures still render their report via the API.
   owner obligation after 6 tries.
 
 ### [ ] T1.5 Independent periodic tasks (C11 runner) · S · M
+- [Approved design and subcards](notes/t1.5-runner-design.md): a mechanical
+  extraction (F), b submission-race groundwork (S), c activation (S). Safety
+  groundwork lands before parallel activation; each card stays below 500 lines.
 - Split `tick()` into isolated periodic coroutines: observe, dispatch, resolver,
   publish, backup and retention, watchdog, research and supervisor. Each has its own
   interval and its own `try/except` with logging. Keep the order constraints that
   matter, and document them in code comments.
 
 ### [ ] T1.6a AgentPool reservations and ownership routing (C4) · S · M
+- [Approved design](notes/t1.6a-reservations-design.md): a-1 derived registry,
+  a-2 all-role process-generation routing, a-3 interruption/readback/shutdown;
+  each subcard below 500 lines, no scheduling changes until b.
 - Follow [T0.5 evidence](notes/t0.5-serialization.md). Introduce role/owner/action
   reservations around the existing agents while preserving scheduling behavior.
 - Route callbacks, input replies, activity, interruption, reconciliation and
@@ -233,6 +274,9 @@ and archived fixtures still render their report via the API.
   reservations retain uncertain work, including after session-count changes.
 
 ### [ ] T1.6b Admit mixed roles through AgentPool (C4) · S · M
+- [Approved design](notes/t1.6b-admission-design.md): b-1 proposal/selector,
+  b-2 binding quota, b-3 capacity/guard replacement; each below 500 lines. The
+  owner accepted conservative possibly-live-turn capacity accounting.
 - Depends on T1.6a. Admit experiment, research, supervisor, conversation, title and
   monitor work through common slots with C4 priority, owner exclusion and fresh
   quota admission. Reserve before asynchronous dispatch.
@@ -243,6 +287,8 @@ and archived fixtures still render their report via the API.
   turns while independent owners can progress.
 
 ### [ ] T1.6c Mixed-role recovery scenarios (C4, C12) · S · M
+- [Approved matrix](notes/t1.6c-recovery-scenarios-design.md): c-1 overlap/owner
+  exclusion, c-2 restart/debt/routing, c-3 binding quota/shutdown; bounded cards.
 - Depends on T1.6b and the T1.2b harness. Cover experiment plus research, experiment
   plus supervisor, discussion plus unrelated experiment, single-slot and same-owner
   exclusion, lost outcome/restart, callback/reply routing, quota interrupts and
@@ -359,6 +405,8 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 ## Log
 
 Record completed tasks here: `date · task · commit · notes`.
+
+2026-11-13 · T1 rollout · this commit · Owner explicitly approved proposals 1–6. Recorded phase-wide production-source accounting, bounded implementation splits, demo/fixture-before-archive order, toy API/export compatibility, conservative possibly-live-turn capacity and in-flight archival settlement. Coordinator-authored S plans received final Opus 5.5 decisions; implementation status remains separate. Existing Node 24 source verification remains applicable: production/test files are unchanged by this documentation commit.
 
 2026-11-13 · T1.2a · this commit · Flash implementation with coordinator AST/import and local-name-shadowing audits; normalized source ASTs are unchanged beyond time/clock references and imports. Source +232/−234 (net −2), tests +27/−4; 497 source/test changed lines. Isolated locked Node 24 validation matches the final worktree: Ruff clean, 90 targeted and all 537 Python tests pass; synthetic demo completes with labelled report/figure. No live activation. This independent card obeys existing size and net-source rules; archival and S-card implementation decisions remain pending.
 
