@@ -139,7 +139,7 @@ Briefing rules and the brief template are in [README.md](README.md).
 
 ## Phase 2 — Tier 1: consolidation
 
-### [ ] T1.1a Inventory legacy branches (C10) · F · S
+### [x] T1.1a Inventory legacy branches (C10) · F · S
 - Produce `docs/refactor/notes/t1.1-legacy-inventory.md`. List every branch
   conditioned on:
   - `recipe_id == "toy_compare_v1"`;
@@ -153,6 +153,9 @@ Briefing rules and the brief template are in [README.md](README.md).
 
   For each: file:line, what it does, its tests, and whether display or export code
   still needs it to read archived experiments.
+- **Result:** [legacy inventory](notes/t1.1-legacy-inventory.md), including all 51
+  `iteration.enabled` sites, 21 plan-schema branches, archive readers, tests and
+  background-dispatch hazards. Shared contract-3 resource repair remains protected.
 
 ### [ ] T1.1b Archive legacy contracts at runtime (C10) · F · S
 - At startup (after migrations) and in `tick`: a non-terminal experiment that is not
@@ -352,6 +355,8 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 ## Log
 
 Record completed tasks here: `date · task · commit · notes`.
+
+2026-11-13 · T1.1a · this commit · Flash investigation with coordinator corrections and source/citation audit; no runtime changes. All 51 iteration predicate sites and 21 plan-schema branches are indexed, with reader/deletion boundaries and test coverage. Isolated Node 24 locked setup/check passes (535 Python, 29 web, 41 gateway); baseline synthetic demo report and figure inspected. T1.1b activation and T1.1c implementation await owner decisions on ordering, fixture-migration splits and net-negative accounting; Opus 5.5 reviewed the coordinator's T1.1c plan and blocked implementation pending those decisions. Source/test delta: 0; documentation only.
 
 2026-11-12 · T0.7 · dcf22d4 · Linked the refactor workspace from agent and development instructions; link targets, Ruff and all 452 Python tests pass.
 
