@@ -1691,6 +1691,51 @@ class Workflow:
         )
         if observed.state != "COMPLETED" or observed.exit_code != "0:0":
             raise ValueError("saved job does not have confirmed successful terminal accounting")
+        if iteration.enabled(exp):
+            # A contract-3 attempt writes into its own saved folder under its own saved
+            # manifest; the observer reads that same pair instead of the experiment root.
+            job_root = Path(job["execution_root"]) if job.get("execution_root") else self.root(eid)
+            job_manifest = (
+                json.loads(job["execution_manifest"])
+                if job.get("execution_manifest")
+                else self.store.experiment(eid)["snapshot"]
+            )
+            names = list(
+                await asyncio.to_thread(
+                    artifacts.validate_stage, job_root, job["stage_id"], job_manifest, seal_outputs=True
+                )
+            )
+            now = clock.now()
+            with self.store.tx() as db:
+                iteration.complete(self, exp, job, job_manifest, job_root, db)
+                db.execute(
+                    "UPDATE jobs SET state='complete',scheduler_state='COMPLETED',exit_code='0:0',error=NULL,"
+                    "observed_at=?,started_at=COALESCE(?,started_at),ended_at=COALESCE(?,ended_at),"
+                    "estimated_start_at=NULL,pending_reason=NULL WHERE intent_id=?",
+                    (now, observed.started_at, observed.ended_at, job["intent_id"]),
+                )
+                db.execute(
+                    "UPDATE stages SET state='complete',error=NULL,output_manifest=?,updated_at=? WHERE experiment_id=? AND id=?",
+                    (encode(names), now, eid, job["stage_id"]),
+                )
+                db.execute(
+                    "UPDATE experiments SET phase='training',hold_reason='new_compute_paused',error=NULL,"
+                    "pause_compute=1,observed_at=?,updated_at=? WHERE id=?",
+                    (now, now, eid),
+                )
+                iteration.queue_working_report(self, exp, job, db)
+                self.store.emit(
+                    db,
+                    eid,
+                    "output_validation_reconciled",
+                    {"intent_id": job["intent_id"], "job_id": job["job_id"], "stage": job["stage_id"]},
+                )
+            return {
+                "experiment_id": eid,
+                "job_id": job["job_id"],
+                "stage": job["stage_id"],
+                "pause_compute": True,
+            }
         root = self.root(eid)
         artifacts.verify_project_sources(root, exp["snapshot"], self.project_context(exp)["checkout"])
         for stage in preceding:

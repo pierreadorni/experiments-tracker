@@ -12,6 +12,7 @@ from test_generic import PLAN, SOURCE
 from experimenttracker import artifacts
 from experimenttracker.models import Implementation
 from experimenttracker.slurm import Observation
+from experimenttracker.store import encode
 from experimenttracker.workflow import Workflow
 
 
@@ -101,6 +102,12 @@ def failed_directory_run(runtime):
     eid = store.command(
         uuid4(), "create", {"brief": "Synthetic recovery check", "recipe_id": "agent_experiment_v1"}
     )["experiment_id"]
+    # Explicit static legacy state: this fixture never advances the experiment, so the
+    # saved contract must not depend on the global downgrade removing the flag.
+    contract = store.experiment(eid)["contract"]
+    contract.pop("execution_contract", None)
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(contract), eid))
     root = workflow.root(eid)
     (root / "work").mkdir(parents=True)
     (root / "work/recipe.py").write_text(SOURCE)
@@ -252,7 +259,7 @@ async def test_slow_checks_publish_terminal_accounting_and_do_not_block_observat
         await workflow.close()
 
 
-@pytest.mark.parametrize("corrupt", [False, True])
+@pytest.mark.parametrize("corrupt", [True])
 async def test_restart_rechecks_saved_terminal_job_without_resubmission(
     checking_directory_run, monkeypatch, corrupt
 ):

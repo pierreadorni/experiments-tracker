@@ -114,7 +114,10 @@ removal in h. Do not treat classification as permission to remove live saved-sta
   not retained reader helpers. Report cleanup, legacy observation/reconciliation and
   reader calls separately with **explicit static fixture origin** (G1–G4 in §9.6).
 - Keep the three cleanup tests until h.5 deletes that live historical path. Keep legacy
-  recovery refusal/rollback tests until the `1695-1703` branch is deleted: failed is
+  recovery refusal/rollback tests until that legacy body is deleted — the
+  `reconcile_outputs` block after the shared guards (`root = self.root(eid)`,
+  `verify_project_sources`/`validate_stage`/`seal_local_outputs`, its own registration
+  transaction and return), which M8d now precedes with the contract-3 branch: failed is
   terminal and not covered by the non-terminal archive sweep. **M8d adds separate
   contract-3 counterparts**, not an in-place conversion of their legacy fixture.
 - Keep sealed restart `[True]` through M10/gate. T1.1b-1 explicitly decides whether it stays
