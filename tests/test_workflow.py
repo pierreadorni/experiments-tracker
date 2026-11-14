@@ -171,6 +171,12 @@ async def test_lost_start_response_recovers_only_verified_completed_turn(
 
     agent.begin = lose_response
     await until(workflow, store, eid, lambda e: e["hold_reason"] == "agent_dispatch_uncertain")
+    task = workflow.agent_task
+    if task:
+        await task
+    await workflow.tick(force_observe=True)
+    assert workflow.agent_task is None
+    assert store.experiment(eid)["hold_reason"] == "agent_dispatch_uncertain"
     # The approved plan turn is also saved; recovery targets the prepare dispatch.
     action = store.one("SELECT * FROM agent_actions WHERE experiment_id=? AND phase='prepare'", (eid,))
     assert action["turn_id"] is None and action["attempts"] == 1

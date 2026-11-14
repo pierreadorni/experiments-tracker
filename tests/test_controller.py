@@ -11,7 +11,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from helpers import IterationAgent, wait_for_experiment, wait_until
+from helpers import IterationAgent, wait_until
 from helpers import approve_plan as approve_current_plan
 from helpers import until as until_current
 
@@ -287,17 +287,32 @@ async def test_known_quota_interruption_resumes_automatically_after_owner_restar
     await approve_current_plan(wf, store, eid)
     finish = agent.finish
     interrupted = False
+    entered = asyncio.Event()
+    release = asyncio.Event()
 
     async def interrupt_once(thread, turn):
         nonlocal interrupted
         if not interrupted:
             interrupted = True
             store.update(eid, hold_reason="quota_hold")
+            entered.set()
+            await release.wait()
             raise TerminalTurnError("turn interrupted: None")
         return await finish(thread, turn)
 
     agent.finish = interrupt_once
-    await wait_for_experiment(wf, store, eid, lambda e: failed_prepare(store, eid) is not None)
+    try:
+        await wait_until(
+            entered.is_set,
+            ticks=lambda: wf.tick(force_observe=True),
+            describe=lambda: store.experiment(eid),
+        )
+        task = wf.agent_task
+        assert task is not None
+        release.set()
+        await task
+    finally:
+        release.set()
     prior = failed_prepare(store, eid)
     assert prior and prior["state"] == "failed" and prior["turn_id"]
     assert prior["attempts"] == 1 and prior["interrupt_reason"] == "quota_hold"
