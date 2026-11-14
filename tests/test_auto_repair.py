@@ -276,9 +276,10 @@ async def test_repaired_readiness_does_not_wait_for_retired_artifact_uploads(run
 
 def test_repeated_identical_action_state_does_not_flood_outbox(runtime):
     store, _, _, workflow = runtime
-    eid = store.command(uuid4(), "create", {"brief": "Compare fixed models.", "recipe_id": "toy_compare_v1"})[
-        "experiment_id"
-    ]
+    eid = store.command(
+        uuid4(), "create", {"brief": "Compare fixed models.", "recipe_id": "agent_experiment_v1"}
+    )["experiment_id"]
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
     action_id = str(uuid4())
     with store.tx() as db:
         db.execute(

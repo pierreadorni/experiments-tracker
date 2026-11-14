@@ -14,15 +14,17 @@ from experimenttracker.workflow import Workflow
 
 
 def create(store, **extra):
-    return store.command(
+    eid = store.command(
         uuid4(),
         "create",
         {
             "brief": "Compare the fixed synthetic models.",
-            "recipe_id": "toy_compare_v1",
+            "recipe_id": "agent_experiment_v1",
             **extra,
         },
     )["experiment_id"]
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
+    return eid
 
 
 def test_delete_is_transactional_idempotent_and_preserves_history(runtime):

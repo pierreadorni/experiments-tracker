@@ -8,7 +8,7 @@ from legacy_fixture import load_legacy_completed
 
 from experimenttracker.config import ProjectConfig
 from experimenttracker.knowledge import WEEK, Knowledge, ProjectSupervisor
-from experimenttracker.store import Conflict
+from experimenttracker.store import Conflict, encode
 
 
 def completed(store, *, project="test-project", summary="A measured result with limited scope."):
@@ -17,10 +17,11 @@ def completed(store, *, project="test-project", summary="A measured result with 
         "create",
         {
             "brief": "Compare linear and quadratic models.",
-            "recipe_id": "toy_compare_v1",
+            "recipe_id": "agent_experiment_v1",
             "project_id": project,
         },
     )["experiment_id"]
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
     store.update(
         eid,
         phase="complete",
@@ -31,6 +32,29 @@ def completed(store, *, project="test-project", summary="A measured result with 
             "next_ideas": [],
         },
     )
+    # Knowledge reads a saved completed legacy record here; retain its synthetic scope
+    # explicitly without creating or advancing a legacy experiment.
+    contract = store.experiment(eid)["contract"]
+    assert contract["project"]["id"] == project
+    assert "execution" in contract
+    contract.pop("execution_contract")
+    contract.update(
+        {
+            "recipe_id": "toy_compare_v1",
+            "synthetic_demo": True,
+            "parameters": {"seed": 1729, "n_train": 64, "n_test": 128, "noise_sd": 0.2},
+            "max_jobs": 3,
+            "gpus": 0,
+            "recovery_turns": 1,
+            "controls": "shared data and test split",
+            "brief_must_match_recipe": True,
+        }
+    )
+    with store.tx() as db:
+        db.execute(
+            "UPDATE experiments SET recipe_id='toy_compare_v1',contract=? WHERE id=?",
+            (encode(contract), eid),
+        )
     return eid
 
 
