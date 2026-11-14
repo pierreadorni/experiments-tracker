@@ -40,9 +40,11 @@ def failed_prepare(store, eid):
     )
 
 
+@pytest.mark.current_contract
 async def test_slow_shared_backup_keeps_owner_commands_and_event_loop_responsive(runtime, monkeypatch):
     store, _, _, wf = runtime
     eid = create(store)
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
     entered, release = threading.Event(), threading.Event()
     from experimenttracker import store as store_module
 

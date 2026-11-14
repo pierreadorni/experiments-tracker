@@ -5,10 +5,10 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from test_generic import ImplementationAgent, approve_plan
+from helpers import IterationAgent, approve_plan, until
 from test_projects import register
-from test_workflow import until
 
+from experimenttracker.codex_client import DemoAgent
 from experimenttracker.slurm import Observation
 from experimenttracker.workflow import Workflow
 from experimenttracker.workspaces import Workspaces, WorkspaceUnavailable, git, initialize_project
@@ -41,15 +41,27 @@ def source_repo(config, store, tmp_path):
     return source
 
 
+@pytest.mark.current_contract
 async def test_auto_worktree_implementation_during_training(runtime, tmp_path):
     store, scheduler, _, old = runtime
     source = source_repo(old.config, store, tmp_path)
 
-    class ProjectAgent(ImplementationAgent):
-        async def begin(self, thread, prompt, schema, *, workspace=None, project_workspace=None):
+    class ProjectAgent(IterationAgent):
+        async def session(self, thread_id, workspace, *, writable=False, **kwargs):
+            self.cwd, self.writable = workspace, writable
+            return await DemoAgent.session(self, thread_id, workspace, writable=writable)
+
+        async def begin(self, thread, prompt, schema, *, workspace=None, project_workspace=None, **kwargs):
+            phase = json.loads(prompt.split("\nPAYLOAD:\n", 1)[1])["phase"]
+            if phase == "plan":
+                assert not self.writable
+            elif phase == "prepare":
+                assert self.writable and self.cwd == project_workspace
             if workspace:
                 self.workspace = workspace
-            return await super().begin(thread, prompt, schema, workspace=workspace)
+            return await super().begin(
+                thread, prompt, schema, workspace=workspace, project_workspace=project_workspace, **kwargs
+            )
 
     workflow = Workflow(old.config, store, scheduler, ProjectAgent())
 
@@ -58,10 +70,12 @@ async def test_auto_worktree_implementation_during_training(runtime, tmp_path):
 
     scheduler.observe = running
     first = experiment(store)
+    assert store.experiment(first)["contract"]["execution_contract"] == 3
     await approve_plan(workflow, store, first)
     await until(workflow, store, first, lambda e: e["phase"] == "training")
     source_before = git(source, "status", "--porcelain", "-z")
     second = experiment(store)
+    assert store.experiment(second)["contract"]["execution_contract"] == 3
     await approve_plan(workflow, store, second)
     await until(workflow, store, second, lambda e: e["hold_reason"] == "compute_busy")
     row = workflow.workspaces.row(second)
@@ -87,7 +101,7 @@ async def test_auto_worktree_implementation_during_training(runtime, tmp_path):
     # Ready worktrees retain agent changes rather than reapplying their baseline.
     (checkout / "tracked.py").write_text("value = 4\n")
     await workflow.close()
-    restored = Workflow(old.config, store, scheduler, ImplementationAgent())
+    restored = Workflow(old.config, store, scheduler, IterationAgent())
     await restored.tick(force_observe=True)
     assert restored.workspaces.checkout(second) == str(checkout)
     assert (checkout / "tracked.py").read_text() == "value = 4\n"

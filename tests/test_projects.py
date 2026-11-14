@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -70,6 +71,7 @@ def test_cross_project_references_and_missing_checkouts_are_atomic(config, runti
     assert before == {table: len(store.rows(f"SELECT * FROM {table}")) for table in before}
 
 
+@pytest.mark.current_contract
 def test_project_prompt_and_public_catalog(config, runtime, tmp_path):
     store, _, _, workflow = runtime
     checkout = register(config, store, tmp_path)
@@ -83,14 +85,16 @@ def test_project_prompt_and_public_catalog(config, runtime, tmp_path):
     )
     workflow.projects.settings_tick()
     eid = create(store, project_id="anyup-rs")
-    prompt = workflow.generic_prompt(store.experiment(eid), "prepare", {"phase": "prepare"})
+    current = store.experiment(eid)
+    assert current["contract"]["execution_contract"] == 3
+    prompt = workflow.prompt(current, "prepare")
     payload = json.loads(prompt.split("\nPAYLOAD:\n", 1)[1])
     assert payload["project_context"]["checkout"] == str(checkout)
     assert payload["project_context"]["access"] == "read-write"
     assert (
         payload["project_instructions"] == "Choose any capable available GPU before waiting for a busy A6000."
     )
-    assert "rather than substituting a synthetic fixture" in prompt
+    assert "Implement the actual research brief without a model-family whitelist" in prompt
     assert next(p for p in workflow.status(None)["projects"] if p["id"] == "anyup-rs")["folder"] == str(
         checkout
     )
@@ -100,9 +104,11 @@ def test_project_prompt_and_public_catalog(config, runtime, tmp_path):
         request_id=uuid4(), brief="Legacy pending command"
     ).model_dump(mode="json", exclude_none=True)
     legacy = create(store)
-    # Historical contracts without project metadata still belong to the test project.
+    # A saved historical contract without project metadata still belongs to the test
+    # project. It is static legacy state: no execution_contract, and it is never advanced.
     exp = store.experiment(legacy)
     exp["contract"].pop("project")
+    exp["contract"].pop("execution_contract")
     with store.tx() as db:
         db.execute("UPDATE experiments SET contract=? WHERE id=?", (json.dumps(exp["contract"]), legacy))
     assert store.projection(legacy)["project_id"] == "test-project"
@@ -248,9 +254,9 @@ def test_project_creation_never_overwrites_or_retries_an_uncertain_folder(config
     assert workflow.projects.receipt(denied["request_id"])["state"] == "rejected"
 
 
+@pytest.mark.current_contract
 async def test_agent_edits_selected_folder_and_freezes_project_run_evidence(config, runtime, tmp_path):
-    from test_generic import ImplementationAgent, approve_plan
-    from test_workflow import until
+    from helpers import IterationAgent, approve_plan, until
 
     from experimenttracker.audit import verify_experiment
     from experimenttracker.codex_client import DemoAgent
@@ -264,23 +270,43 @@ async def test_agent_edits_selected_folder_and_freezes_project_run_evidence(conf
     receipt, payload = project_request(old, mode="existing", folder=folder)
     old.projects.tick()
     assert old.projects.receipt(payload["request_id"])["state"] == "applied"
+    scratch = folder / "discussion-scratch.txt"
 
-    class EditingAgent(ImplementationAgent):
-        async def session(self, thread_id, workspace, *, writable=False):
+    class EditingAgent(IterationAgent):
+        async def session(self, thread_id, workspace, *, writable=False, **kwargs):
             self.cwd, self.writable = workspace, writable
             return await DemoAgent.session(self, thread_id, workspace, writable=writable)
 
-        async def begin(self, thread_id, prompt, schema, *, workspace=None, project_workspace=None):
-            if workspace:
-                assert self.cwd == project_workspace == folder
-                assert (
-                    json.loads(prompt.split("\nPAYLOAD:\n", 1)[1])["project_context"]["access"]
-                    == "read-write"
-                )
-                # The actual file write proves this is a working folder, rather than context alone.
+        async def begin(self, thread_id, prompt, schema, *, workspace=None, project_workspace=None, **kwargs):
+            turn_payload = json.loads(prompt.split("\nPAYLOAD:\n", 1)[1])
+            phase = turn_payload["phase"]
+            if phase == "plan":
+                assert not self.writable
+            elif phase == "prepare":
+                assert self.writable and self.cwd == project_workspace == folder
+                assert turn_payload["project_context"]["access"] == "read-write"
+                # The actual file write proves this is a working folder, not context alone.
                 source.write_text("version = 2\n")
-                self.workspace = workspace
-            return await super().begin(thread_id, prompt, schema, workspace=workspace)
+            elif phase == "discuss":
+                assert self.writable and self.cwd == project_workspace == folder
+                assert not scratch.exists()
+                scratch.write_text("Discussion notes for the saved synthetic measurement.\n")
+                return await DemoAgent.begin(
+                    self,
+                    thread_id,
+                    prompt,
+                    schema,
+                    workspace=workspace,
+                    project_workspace=project_workspace,
+                    **kwargs,
+                )
+            turn = await super().begin(
+                thread_id, prompt, schema, workspace=workspace, project_workspace=project_workspace, **kwargs
+            )
+            if phase == "prepare":
+                # The edited project source is declared, so each attempt freezes a bounded copy.
+                self.results[(thread_id, turn)]["project_files"] = ["method.py"]
+            return turn
 
     agent = EditingAgent()
     workflow = Workflow(config, store, scheduler, agent)
@@ -294,17 +320,63 @@ async def test_agent_edits_selected_folder_and_freezes_project_run_evidence(conf
         },
     )["experiment_id"]
     try:
+        assert store.experiment(eid)["contract"]["execution_contract"] == 3
         await approve_plan(workflow, store, eid)
         await until(workflow, store, eid, lambda exp: exp["phase"] == "complete")
         assert source.read_text() == "version = 2\n"
         assert workflow.root(eid).is_relative_to(folder)
-        assert (workflow.root(eid) / "snapshot/recipe.py").is_file()
-        assert verify_experiment(store, eid, workflow.root(eid))["scientific_checks"] == "passed"
+        jobs = store.rows("SELECT * FROM jobs WHERE experiment_id=?", (eid,))
+        assert jobs
+        for job in jobs:
+            attempt = Path(job["execution_root"])
+            assert attempt.is_relative_to(folder)
+            assert (attempt / "snapshot/recipe.py").is_file()
+            assert (attempt / "snapshot/project/method.py").read_text() == "version = 2\n"
+        audit = verify_experiment(store, eid, workflow.root(eid))
+        assert audit["artifacts_verified"] > 0
+        assert audit["scope"] == (
+            "small published object transport checks only; scientific data and reproducibility are not verified"
+        )
+        assert "scientific_checks" not in audit
         assert not (config.job_output_root / eid).exists()
+        submissions = scheduler.submissions
+        job_rows = store.rows(
+            "SELECT intent_id,state FROM jobs WHERE experiment_id=? ORDER BY intent_id", (eid,)
+        )
+        artifact_rows = store.rows(
+            "SELECT id,sha256,size FROM artifacts WHERE experiment_id=? ORDER BY id", (eid,)
+        )
+        request = store.command(
+            uuid4(), "discuss", {"text": "Summarize the saved synthetic measurement."}, eid=eid
+        )["request_id"]
+        await until(
+            workflow,
+            store,
+            eid,
+            lambda exp: (
+                store.one("SELECT state FROM discussions WHERE id=?", (request,))["state"] == "completed"
+            ),
+        )
+        # The agent wrote the new scratch file; no jobs or published objects changed.
+        assert scratch.read_text() == "Discussion notes for the saved synthetic measurement.\n"
+        assert source.read_text() == "version = 2\n"
+        assert scheduler.submissions == submissions
+        assert (
+            store.rows("SELECT intent_id,state FROM jobs WHERE experiment_id=? ORDER BY intent_id", (eid,))
+            == job_rows
+        )
+        assert (
+            store.rows("SELECT id,sha256,size FROM artifacts WHERE experiment_id=? ORDER BY id", (eid,))
+            == artifact_rows
+        )
+        again = verify_experiment(store, eid, workflow.root(eid))
+        assert again["artifacts_verified"] == audit["artifacts_verified"]
+        assert "scientific_checks" not in again
     finally:
         await workflow.close()
 
 
+@pytest.mark.current_contract
 async def test_changed_project_folder_holds_without_turn_or_job(runtime, tmp_path):
     store, scheduler, agent, workflow = runtime
     folder = tmp_path / "held-project"
@@ -312,6 +384,7 @@ async def test_changed_project_folder_holds_without_turn_or_job(runtime, tmp_pat
     receipt, payload = project_request(workflow, mode="existing", folder=folder)
     workflow.projects.tick()
     eid = create(store, project_id=receipt["project_id"])
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
     saved = tmp_path / "saved-project"
     folder.rename(saved)
     try:
