@@ -1,4 +1,43 @@
-# T1 handoff (after M8c, 2026-11-13)
+# T1 handoff
+
+## Current continuation (2026-11-14)
+
+Main `8899608` includes M8d/e, static fixtures, M9 retirements, M10 downgrade
+removal and the zero-execution-hit gate (557 Python / 29 web / 41 gateway).
+The older handoff below is historical; its P-budget/M8d next-task text is stale.
+T1.1b is next, under [the archival design](t1.1b-archive-design.md). Astra reviewed
+the exact settlement and callback boundary; Luna implements F/F+R cards under
+the owner's current instruction, with coordinator review. No further Astra use
+is needed for the approved design. Decisions are recorded in that note.
+
+Inert P1 (`5da0df5`), P2 (`57cd5bc`) and P3 (`76c1a66`) are now committed;
+main is `6d4bd82`. P-b1 (`365548a`) and P-b2 (`6d4bd82`) producer migrations
+are committed. Two pre-existing test races are stabilized in `e7c0ff3` by awaiting
+saved task completion and explicitly gating the pre-restart boundary. The final
+combined isolated Python suite passed **580 tests**; Ruff is clean. Source from
+P1/P2/P3 is +223/−0, tests +460/−0, still inert with no runtime callers.
+
+P4 is implementing in `.worktrees/t1-archive-activation` with Luna `archive_jobs`.
+It contains copied P1/P2/P3 prerequisites on old HEAD; measure P4 against the
+copies in `/tmp/t1-archive-activation-baseline/`, or apply its scoped changes onto
+current main before final measurement. Do not count prerequisites again or rebase
+the dirty worktree. P-b3 four-file producer conversion is ready in
+`.worktrees/t1-producers`, pending coordinator checks; its workflow.py **test file**
+also contains the already-landed timing fix. Source activation remains off.
+
+Keep coherent P4 activation after the prerequisites. M budgets for settlement
+and activation are an explicit reviewed sizing amendment. Preserve terminal
+legacy manual recovery and completed-record readers; retire sealed restart
+`[True]` only with its late-settlement replacement. Deletion estimates are in
+[the d–h split note](t1.1-deletion-splits.md); remeasure before implementation.
+Independent P-b simple producer migrations may proceed before h.6.
+
+Validation uses `.worktrees/t1-validation`, with Node 24.18.0 from
+`/share/home/adorni/.nvm/versions/node/v24.18.0/bin`. Locked `make setup` and four
+isolated synthetic demo tests passed in this continuation. Python subprocess
+checks run outside restrictive NSS isolation. No live resources were accessed.
+
+## Historical handoff after M8c (2026-11-13)
 
 Read `docs/refactor/README.md`, `todo.md`, `notes/t1-owner-decisions.md`, then the
 current card's note. Root `AGENTS.md` applies. Source publication is not live activation.

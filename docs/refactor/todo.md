@@ -187,7 +187,12 @@ subcards remain individually within their size bands; no live activation follows
 - **Completed investigation:** pinned `34f29ec` baseline: 564 passing, 156 probe nodeids (132 entrypoint / 24 non-gate); no-downgrade dry run: 76 failed / 488 passed in 1797.49 s. Opus `94dbc071`/`d5467d95` approved corrected §9 with coordinator amendments. Before retirement, map every baseline nodeid and rerun the widened probe on current main. Gate zero applies to §8 execution entrypoints, with explicit static-origin reporting for retained reader/observation/reconciliation and cleanup tests. Keep live legacy recovery guards/rollback until their branch is deleted; M8d adds separate contract-3 counterparts. Keep cleanup tests until h.5. Keep sealed restart `[True]` through the gate for T1.1b-1's explicit late-settlement disposition. Do not retire the ten schema-1/2 model-validation tests.
 - Status: [x] M0 · [x] M0b · [x] M0c · [x] M1 · [x] P1 · [x] M2 · [x] M3 · [x] M4 · [x] M5 · [x] M4b · [x] M11 · [x] P-a · [x] M6 · [x] M7a · [x] M7b · [x] M8a/b · [x] M8c · [x] P-budget · [x] M8d · [x] M8e · [x] static legacy fixture rewrites · [x] M9-r1/r2/r3a/r3b/r4/r5 · [x] M10 · [x] gate · [ ] P-b (deferred to before T1.1h.6)
 
-### [ ] T1.1b Archive legacy contracts at runtime (C10) · F · S per bounded subcard
+### [~] T1.1b Archive legacy contracts at runtime (C10) · F · S/M per bounded subcard
+- **Implementation plan:** [archive boundary and bounded prerequisites](notes/t1.1b-archive-design.md).
+  Stage inert Store/job/action helpers, then activate all execution guards together.
+  The reviewed settlement/activation cards use M budgets; no partial activation.
+- Status: [x] P1 Store primitive · [x] P2 exact job settlement · [x] P3 raw turn
+  settlement/check drainage · [~] P4 coherent activation · [ ] final acceptance.
 - Depends on T1.1c and T1.1m. At startup (after migrations) and in `tick`, a
   non-terminal non-contract-3 experiment gets hold `legacy_contract_archived` and
   an existing-kind inbox notice. `advance` returns early; cancel still works.
@@ -411,6 +416,12 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 ## Log
 
 Record completed tasks here: `date · task · commit · notes`.
+
+2026-11-14 · T1.1b-P1/P2/P3 · 5da0df5, 57cd5bc, 76c1a66 · Luna implementation, coordinator review against one Astra archival design. Inert prerequisites only: atomic/idempotent archive hold+notice; exact scheduler identity/accounting settlement without scientific reads/stage updates; raw saved-turn settlement and completed-check drainage. Review corrected invalid fixture JSON, rollback baselines, a future import cycle, and NULL-vs-zero deletion semantics. Per-card source/tests: P1 +24/+90 (114 changed); P2 +128/+195 (323); P3 +71/+175 (246). No deletions or runtime callers yet. Combined final isolated Ruff and full Python pass (580 tests); 22 archive targets pass. Locked Node 24 setup and four synthetic demo tests pass. P4 activation remains pending; no live activation.
+
+2026-11-14 · T1.1m-P-b1/P-b2 · 365548a, 6d4bd82 · Luna fixture migrations with coordinator review. Simple producers now create contract 3; graph-backed progress/TensorBoard fixtures resolve validated schema-3 manifests with their original stage IDs. Maintenance history is explicitly static legacy state. The upload test covers both legacy revision filtering and current cross-revision artifact retention, preserving backoff and sibling progress. Source 0; b1 tests +45/−12 (57 changed), b2 +90/−11 (101). Final combined isolated full Python passes (580); P-b3 remaining producers precede h.6. No live activation.
+
+2026-11-14 · T1.1m-timing · e7c0ff3 · Luna fixes for two observed full-suite races, reviewed by coordinator: exact task completion/tick consumption before lost-start operator recovery; explicit interrupted-turn event gate and durable failure before owner shutdown. Existing turn identity, one continuation, no duplicate dispatch and restart assertions remain; no production guard was weakened. Source 0; tests +23/−2 (25 changed). Focused recovery tests and final combined 580-test suite pass outside NSS isolation.
 
 2026-11-13 · T1.1c-1 · b6c1297 · Flash implementation; Opus review blocked the first candidate (live-mode auto-approval, held-out points overlapping training points, weak report assertion); all fixed. Contract-3 demo: schema-3 plan, two stdlib CPU stages, backend-written results.json, final report. `make demo` completes in ~3 s with report and figure; live config refuses. Isolated Node 24 locked checkout: Ruff clean, 541 Python tests pass, local Miniflare gateway acceptance passes (3 agent actions, 2 jobs, active final report fetched after executor stop). Source +307/−3, tests +129, docs/scripts separate. Legacy toy branches retained until T1.1e/h. Browser half (T1.1c-2) not started.
 
