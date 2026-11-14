@@ -3,8 +3,8 @@
 ``tests/fixtures/legacy_completed`` holds one ``toy_compare_v1`` experiment that
 no current contract produces any more. Reader tests load it instead of driving
 the legacy execution path, so they keep proving what the saved data can prove
-while nothing dispatches. ``generate.py`` in that directory wrote the files; it
-is temporary and nothing here imports it.
+while nothing dispatches. The files were written once by a generator that was
+removed with the legacy tests (see the README); they are static data.
 
 The load is a copy, not a link, and one transaction: seven saved tables plus the
 saved tree. No event, outbox, history, digest or manifest row is synthesized.

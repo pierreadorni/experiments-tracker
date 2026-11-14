@@ -4,9 +4,10 @@ tests keep checking reports, audits and project memory without driving that path
 data, not scientific research. Do not hand-edit: the audit checks `root/snapshot/recipe.py` and
 every registered artifact against the saved rows.
 
-- From commit `2f311f3462cdca4b9c67db6e982ba9e84f7857cf` by
-  `uv run --locked python tests/fixtures/legacy_completed/generate.py`, outside NSS-isolating
-  sandboxes (AGENTS.md); this card adds tests and one ruff exclude only.
+- Generated once from commit `2f311f3462cdca4b9c67db6e982ba9e84f7857cf` by
+  `tests/fixtures/legacy_completed/generate.py`, outside NSS-isolating sandboxes (AGENTS.md). The
+  generator drove the legacy execution path and was deleted with the legacy tests (T1.1m-M9);
+  recover it from commit `96e0812` if a regeneration is ever needed. Treat the data as static.
 - Fixed id `51a2d1f0-6f6f-4a1e-9d0b-7c5e2f4b8a61`, with no `execution_contract` marker in the
   saved contract, which is what makes this the legacy path. Counts: 3 submissions, 2 agent
   calls, 13 artifacts, 7 stages, 1 inbox notice, 1 `create` command, schema version 24.
