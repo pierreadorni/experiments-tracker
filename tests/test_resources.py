@@ -198,7 +198,6 @@ class GPUAgent(IterationAgent):
         return turn
 
 
-@pytest.mark.current_contract
 async def test_gpu_plan_persists_before_dispatch_and_restart_never_resubmits(runtime):
     store, _, _, old = runtime
     config = old.config.model_copy(update={"mode": "live"})
@@ -241,7 +240,6 @@ async def test_gpu_plan_persists_before_dispatch_and_restart_never_resubmits(run
     await workflow.close()
 
 
-@pytest.mark.current_contract
 async def test_unavailable_preflight_creates_no_submission_intent_and_no_duplicate_notices(runtime):
     store, _, _, old = runtime
     config = old.config.model_copy(update={"mode": "live"})
@@ -308,7 +306,6 @@ def test_shell_wrapper_derives_threads_from_resources_and_launches_the_declared_
     assert script.rstrip().endswith(f"exec /bin/bash {root}/snapshot/train.sh")
 
 
-@pytest.mark.current_contract
 async def test_plan_can_exceed_three_stages_and_owner_gpu_hour_budget_is_enforced(runtime):
     store, scheduler, _, workflow = runtime
     plan = ResearchPlan.model_validate(

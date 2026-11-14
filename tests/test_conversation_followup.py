@@ -2,7 +2,6 @@
 
 from pathlib import Path
 
-import pytest
 from legacy_fixture import load_legacy_completed
 from test_conversation import send
 
@@ -37,7 +36,6 @@ def followup_brief(agent):
     agent.begin = create
 
 
-@pytest.mark.current_contract
 async def test_completed_legacy_discussion_creates_current_contract_followup(runtime, tmp_path):
     store, scheduler, agent, workflow = runtime
     eid = load_legacy_completed(store, workflow)

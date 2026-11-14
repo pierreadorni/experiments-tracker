@@ -194,7 +194,6 @@ class BrokenSourceAgent(IterationAgent):
         return turn
 
 
-@pytest.mark.current_contract
 async def test_invalid_prepared_source_fails_bounded_repair_before_compute(runtime):
     store, scheduler, _, old = runtime
     agent = BrokenSourceAgent()

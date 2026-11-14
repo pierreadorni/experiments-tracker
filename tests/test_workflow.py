@@ -40,7 +40,6 @@ def test_commands_are_idempotent_and_conflicts_rejected(runtime):
         store.command(request_id, "create", payload, origin="gateway", experiment_id=str(uuid4()))
 
 
-@pytest.mark.current_contract
 async def test_zero_exit_with_missing_output_does_not_continue(runtime):
     store, scheduler, agent, workflow, eid = await prepared(runtime)
 
@@ -58,7 +57,6 @@ async def test_zero_exit_with_missing_output_does_not_continue(runtime):
     await workflow.close()
 
 
-@pytest.mark.current_contract
 async def test_accounting_delay_is_pending_not_success(runtime):
     store, scheduler, agent, workflow, eid = await prepared(runtime)
 
@@ -72,7 +70,6 @@ async def test_accounting_delay_is_pending_not_success(runtime):
     await workflow.close()
 
 
-@pytest.mark.current_contract
 async def test_unchanged_job_freshness_is_published_without_repeated_domain_events(runtime):
     store, scheduler, _, workflow, eid = await prepared(runtime)
 
@@ -93,7 +90,6 @@ async def test_unchanged_job_freshness_is_published_without_repeated_domain_even
     await workflow.close()
 
 
-@pytest.mark.current_contract
 async def test_pause_compute_and_agent_are_independent(runtime):
     store, scheduler, agent, workflow, eid = await prepared(runtime)
     await until(
@@ -110,7 +106,6 @@ async def test_pause_compute_and_agent_are_independent(runtime):
     await workflow.close()
 
 
-@pytest.mark.current_contract
 async def test_pause_new_compute_prevents_next_submission(runtime):
     store, scheduler, agent, workflow, eid = await prepared(runtime)
     store.command(uuid4(), "action", {"action": "pause_new_compute"}, eid=eid)
@@ -145,7 +140,6 @@ def test_artifact_paths_and_nonfinite_json_rejected(tmp_path):
         artifacts.read_json(inside, root)
 
 
-@pytest.mark.current_contract
 @pytest.mark.parametrize(
     "outcome",
     [

@@ -1,4 +1,3 @@
-import contextlib
 from pathlib import Path
 
 import pytest
@@ -6,17 +5,10 @@ import pytest
 from experimenttracker.codex_client import DemoAgent
 from experimenttracker.config import Config
 from experimenttracker.slurm import DemoScheduler
-from experimenttracker.store import Store, encode
+from experimenttracker.store import Store
 from experimenttracker.workflow import Workflow
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def pytest_configure(config):
-    config.addinivalue_line(
-        "markers",
-        "current_contract: T1.1m-converted test keeps contract 3 (removed in M10)",
-    )
 
 
 @pytest.fixture
@@ -42,35 +34,3 @@ def runtime(config):
     workflow = Workflow(config, store, scheduler, agent)
     yield store, scheduler, agent, workflow
     store.close()
-
-
-@pytest.fixture(autouse=True)
-def historical_execution_fixtures(request, monkeypatch):
-    """Existing suites exercise saved v1/v2 contracts, not the new default.
-
-    New-contract behavior lives in test_iteration* and in tests marked
-    current_contract. Creation still uses the real command boundary; only these
-    historical fixture contracts are downgraded.
-    """
-    if request.node.get_closest_marker("current_contract") is not None:
-        return
-    if request.node.path.name.startswith("test_iteration"):
-        return
-    original = Store.command
-
-    def command(store, *args, **kwargs):
-        result = original(store, *args, **kwargs)
-        if len(args) > 1 and args[1] == "create" and result.get("experiment_id"):
-            eid = result["experiment_id"]
-            contract = store.experiment(eid)["contract"]
-            if contract.pop("execution_contract", None) is not None:
-                with (
-                    contextlib.nullcontext(kwargs["_db"])
-                    if kwargs.get("_db") is not None
-                    else store.tx() as db
-                ):
-                    db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(contract), eid))
-                    store.emit(db, eid, "historical_fixture_loaded")
-        return result
-
-    monkeypatch.setattr(Store, "command", command)

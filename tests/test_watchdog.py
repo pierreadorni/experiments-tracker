@@ -242,7 +242,6 @@ def test_stuck_report_logs_a_warning_once(store, clock, caplog):
     assert len(warnings) == 1 and "stuck in agent_stage_blocked" in warnings[0].getMessage()
 
 
-@pytest.mark.current_contract
 async def test_tick_reports_a_stuck_hold_after_the_advance_loop(runtime, clock):
     store, _, _, workflow = runtime
     eid = create(store)

@@ -21,7 +21,6 @@ def create(store):
     )["experiment_id"]
 
 
-@pytest.mark.current_contract
 def test_compact_reference_retains_protocol_and_full_pointers(runtime):
     store, _, _, workflow = runtime
     parent_id = create(store)
@@ -97,7 +96,6 @@ def test_compact_reference_retains_protocol_and_full_pointers(runtime):
         workflow.prompt(store.experiment(child_id), "prepare")
 
 
-@pytest.mark.current_contract
 async def test_first_implementation_starts_fresh_after_planning(runtime):
     store, scheduler, _, old = runtime
 

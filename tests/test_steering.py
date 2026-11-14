@@ -17,7 +17,6 @@ async def wait_for(workflow, store, eid, predicate):
     await wait_for_experiment(workflow, store, eid, predicate)
 
 
-@pytest.mark.current_contract
 async def test_plan_is_reviewed_before_source_is_written(runtime):
     store, scheduler, _, old = runtime
     workflow = Workflow(old.config, store, scheduler, IterationAgent())
@@ -53,7 +52,6 @@ async def test_plan_is_reviewed_before_source_is_written(runtime):
     await workflow.close()
 
 
-@pytest.mark.current_contract
 async def test_long_steering_survives_planning_revision(runtime):
     store, scheduler, _, old = runtime
     workflow = Workflow(old.config, store, scheduler, IterationAgent())
@@ -107,7 +105,6 @@ class WaitingScheduler:
         return "12345"
 
 
-@pytest.mark.current_contract
 async def test_restart_cancels_only_saved_job_and_creates_one_replacement(runtime):
     store, _, _, old = runtime
     scheduler = WaitingScheduler()
@@ -147,7 +144,6 @@ async def test_restart_cancels_only_saved_job_and_creates_one_replacement(runtim
     await workflow.close()
 
 
-@pytest.mark.current_contract
 async def test_implementation_drift_requires_a_second_approval(runtime):
     store, scheduler, _, old = runtime
 
@@ -184,7 +180,6 @@ async def test_implementation_drift_requires_a_second_approval(runtime):
     await workflow.close()
 
 
-@pytest.mark.current_contract
 async def test_failed_run_restart_reconciles_a_job_that_was_last_seen_running(runtime):
     store, _, _, old = runtime
     scheduler = WaitingScheduler()
@@ -222,7 +217,6 @@ async def test_failed_run_restart_reconciles_a_job_that_was_last_seen_running(ru
     await workflow.close()
 
 
-@pytest.mark.current_contract
 async def test_message_arriving_during_interpretation_is_queued_for_discussion(runtime):
     store, scheduler, _, old = runtime
     steering_id = str(uuid4())
@@ -269,7 +263,6 @@ def test_subscription_reserve_survives_workflow_restart(runtime):
     assert old.config.quota.five_hour_min_remaining == 25
 
 
-@pytest.mark.current_contract
 async def test_planning_clarification_waits_for_durable_answer(runtime):
     store, scheduler, _, old = runtime
 

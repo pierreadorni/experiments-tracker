@@ -8,7 +8,6 @@ from experimenttracker.config import GatewayConfig
 from experimenttracker.execution_settings import ExecutionSettings
 
 
-@pytest.mark.current_contract
 def test_api_authentication_csrf_and_idempotency(config, runtime):
     store, scheduler, _, workflow = runtime
     app = create_app(config, components=(None, store, workflow))
@@ -71,7 +70,6 @@ def test_api_authentication_csrf_and_idempotency(config, runtime):
     assert scheduler.submissions == 0
 
 
-@pytest.mark.current_contract
 def test_stale_answer_rejected(config, runtime):
     store, scheduler, _, workflow = runtime
     app = create_app(config, components=(None, store, workflow))
@@ -144,8 +142,6 @@ def test_executor_loop_failure_has_unhealthy_status(config, runtime):
 
 def test_gateway_startup_failure_closes_owned_runtime(config, runtime, tmp_path):
     import sqlite3
-
-    import pytest
 
     store, _, agent, workflow = runtime
     closed = False

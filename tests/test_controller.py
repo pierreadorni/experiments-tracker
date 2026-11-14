@@ -54,7 +54,6 @@ class PermissionAgent(IterationAgent):
         return await super().begin(thread_id, prompt, schema, workspace=workspace, **kwargs)
 
 
-@pytest.mark.current_contract
 async def test_slow_shared_backup_keeps_owner_commands_and_event_loop_responsive(runtime, monkeypatch):
     store, _, _, wf = runtime
     eid = create(store)
@@ -210,7 +209,6 @@ async def test_manual_planning_retry_has_same_revision_and_duplicate_receipt(run
     await wf.close()
 
 
-@pytest.mark.current_contract
 @pytest.mark.parametrize("uncertain", [False, True])
 async def test_explicit_retry_grants_one_turn_at_owner_budget_with_idempotent_receipt(runtime, uncertain):
     store, scheduler, _, old = runtime
@@ -280,7 +278,6 @@ async def test_explicit_retry_grants_one_turn_at_owner_budget_with_idempotent_re
     await wf.close()
 
 
-@pytest.mark.current_contract
 async def test_known_quota_interruption_resumes_automatically_after_owner_restart(runtime):
     store, scheduler, _, old = runtime
     agent = PermissionAgent()
@@ -334,7 +331,6 @@ async def test_known_quota_interruption_resumes_automatically_after_owner_restar
     await wf.close()
 
 
-@pytest.mark.current_contract
 async def test_manifest_tool_wakeups_and_tracked_submission_are_idempotent(runtime):
     store, scheduler, _, old = runtime
     agent = PermissionAgent()
@@ -412,7 +408,6 @@ async def test_agent_progress_extends_inactivity_window_without_unbounded_event_
     assert await task == {} and agent.server.events.qsize() == 0
 
 
-@pytest.mark.current_contract
 async def test_configured_sessions_let_another_plan_progress_while_one_turn_waits(runtime):
     store, scheduler, _, old = runtime
     old.config.codex.max_sessions = 2

@@ -165,7 +165,6 @@ class ChangedGraphAgent(DagAgent):
         return turn
 
 
-@pytest.mark.current_contract
 async def test_dag_branches_submit_together_and_join_after_restart(runtime):
     store, scheduler, _, old = runtime
     old.config.slurm.max_concurrent_jobs = None
@@ -210,7 +209,6 @@ async def test_dag_branches_submit_together_and_join_after_restart(runtime):
     await resumed.close()
 
 
-@pytest.mark.current_contract
 async def test_restart_reconciles_each_active_branch_before_replacement(runtime):
     store, scheduler, _, old = runtime
     old.config.slurm.max_concurrent_jobs = None
@@ -260,7 +258,6 @@ async def test_restart_reconciles_each_active_branch_before_replacement(runtime)
     await workflow.close()
 
 
-@pytest.mark.current_contract
 async def test_changed_dependencies_are_autonomous_within_the_approved_objective(runtime):
     store, scheduler, _, old = runtime
     workflow = Workflow(old.config, store, scheduler, ChangedGraphAgent())

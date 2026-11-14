@@ -92,7 +92,6 @@ async def saved_plan_failure(runtime):
     return store, scheduler, agent, workflow, eid, action
 
 
-@pytest.mark.current_contract
 async def test_revalidate_exact_plan_is_idempotent_and_survives_restart(runtime):
     store, scheduler, agent, workflow, eid, action = await saved_plan_failure(runtime)
     calls = agent.calls
@@ -112,7 +111,6 @@ async def test_revalidate_exact_plan_is_idempotent_and_survives_restart(runtime)
     await workflow.close()
 
 
-@pytest.mark.current_contract
 @pytest.mark.parametrize("block", ["uncertain", "mismatch", "nonterminal", "steering"])
 async def test_output_recovery_refuses_unestablished_outcomes(runtime, block):
     store, scheduler, agent, workflow, eid, action = await saved_plan_failure(runtime)
