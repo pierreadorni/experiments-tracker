@@ -4,12 +4,13 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from helpers import wait_for_experiment
+from helpers import IterationAgent, approve_plan, wait_for_experiment
 
 from experimenttracker.api import create_app
 from experimenttracker.progress import describe_item
 from experimenttracker.slurm import SlurmScheduler, scheduler_time
 from experimenttracker.store import Conflict, Store
+from experimenttracker.workflow import Workflow
 
 
 def create(store, **extra):
@@ -72,9 +73,15 @@ def test_deleted_run_disappears_from_api_and_inbox(config, runtime):
         assert client.get(f"/api/experiments/{eid}", headers=headers).status_code == 410
 
 
+@pytest.mark.current_contract
 async def test_selected_model_and_effort_survive_restart_and_both_turns(runtime):
-    store, scheduler, agent, workflow = runtime
-    eid = create(store, model="deterministic-demo", reasoning_effort="medium")
+    store, scheduler, _, old = runtime
+    agent = IterationAgent()
+    workflow = Workflow(old.config, store, scheduler, agent)
+    eid = create(
+        store, recipe_id="agent_experiment_v1", model="deterministic-demo", reasoning_effort="medium"
+    )
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
     sessions, efforts = [], []
     original_session, original_begin = agent.session, agent.begin
 
@@ -94,15 +101,18 @@ async def test_selected_model_and_effort_survive_restart_and_both_turns(runtime)
         "reasoning_effort": "medium",
     }
     reopened.close()
+    await approve_plan(workflow, store, eid)
     await wait_for_experiment(workflow, store, eid, lambda e: e["phase"] == "complete")
-    assert sessions == ["deterministic-demo"] * 2 and efforts == ["medium"] * 2
+    assert sessions == ["deterministic-demo"] * 3 and efforts == ["medium"] * 3
     assert scheduler.submissions == 3
     await workflow.close()
 
 
+@pytest.mark.current_contract
 async def test_unavailable_model_stops_before_thread_or_job_dispatch(runtime):
     store, scheduler, agent, workflow = runtime
-    eid = create(store, model="unadvertised", reasoning_effort="medium")
+    eid = create(store, recipe_id="agent_experiment_v1", model="unadvertised", reasoning_effort="medium")
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
     await wait_for_experiment(workflow, store, eid, lambda e: e["hold_reason"] == "model_unavailable")
     assert agent.calls == scheduler.submissions == 0
     assert not store.experiment(eid)["thread_id"]
@@ -199,14 +209,25 @@ async def test_scheduler_queue_running_and_exact_accounting_timestamps(config, m
     assert scheduler_time("Unknown") is None
 
 
+@pytest.mark.current_contract
 async def test_deleted_reference_remains_usable_for_existing_child(runtime):
-    store, _, _, workflow = runtime
-    parent = create(store)
+    store, scheduler, _, old = runtime
+    agent = IterationAgent()
+    workflow = Workflow(old.config, store, scheduler, agent)
+    parent = create(store, recipe_id="agent_experiment_v1")
+    assert store.experiment(parent)["contract"]["execution_contract"] == 3
+    await approve_plan(workflow, store, parent)
     await wait_for_experiment(workflow, store, parent, lambda e: e["phase"] == "complete")
-    child = create(store, reference_experiment_id=parent)
+    child = create(store, recipe_id="agent_experiment_v1", reference_experiment_id=parent)
+    assert store.experiment(child)["contract"]["execution_contract"] == 3
+    before = len(store.rows("SELECT id FROM experiments"))
+    with pytest.raises(Conflict, match="completed"):
+        create(store, recipe_id="agent_experiment_v1", reference_experiment_id=child)
+    assert len(store.rows("SELECT id FROM experiments")) == before
     store.command(uuid4(), "delete", {}, eid=parent)
     with pytest.raises(Conflict, match="completed"):
-        create(store, reference_experiment_id=parent)
+        create(store, recipe_id="agent_experiment_v1", reference_experiment_id=parent)
+    await approve_plan(workflow, store, child)
     await wait_for_experiment(workflow, store, child, lambda e: e["phase"] == "complete")
     assert store.experiment(child)["contract"]["reference"]["experiment_id"] == parent
     assert store.experiment(parent)["snapshot"]
