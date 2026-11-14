@@ -36,21 +36,23 @@ Current migration:
 - M4 `d440fb8`: nine steering, fresh-implementation-thread and saved-title tests on contract 3.
 - M5 `86b7e59`: branching DAG execution on contract 3; old reader-model constants retained.
 - M0b `7254d2e`: final widened-probe addendum, Opus-approved with coordinator amendments.
+- P-a `5fc3004`: ticking API create fixtures now explicitly keep contract 3.
 
 Latest source validation: Ruff and all **571 Python tests pass**. M1's final isolated
 `make check` also passed 29 web / 41 gateway tests. No live acceptance or activation.
 
 ## Current task and order
 
-**M4b, M11 and P-a are implementing.** M3 → M4 → M5 landed in order with final checks
-and fresh Opus approval. M4b/P-a designs are finalized in §10 (`f8db76ba`); M6 may prepare
-in parallel under §11 (`bc456c7a`) but lands only after those three dependencies. Preserve
-old schema-2 DAG constants/invalid-graph unit tests for their remaining importers.
+**M4b and M11 next; P-a has landed.** M4b's candidate is in its own worktree and needs
+coordinator final-main checks/review under its approved §10 plan. M6's candidate is ready
+but lands only after M4b/M11/P-a, with fresh review and rebased checks (§11).
+Preserve old schema-2 DAG constants/invalid-graph unit tests for their remaining importers.
 
-M11's worker found the bounded declared-source tamper check absent on the contract-3
-remote verify path. Fresh Opus `8d70bb3e` is deciding the guard/bug-card boundary; no source
-fix or assertion removal is authorized yet. Its scope also includes one importer line in
-`tests/test_iteration.py`: `work.mkdir(exist_ok=True)` because the new helper creates it.
+M11's declared-source allocation re-hash is deliberately legacy-only (Opus `8d70bb3e`):
+no production bug card or new runtime guard. Keep that test on explicit static schema-2
+state until h deletes the legacy worker body, and add a current-contract manifest-identity
+failure test. Its scope includes one importer line in `tests/test_iteration.py`:
+`work.mkdir(exist_ok=True)` because the new helper creates it. See the decision's §12.
 
 The authoritative migration plan is disposition **§8–11**; §9 amends sequencing and
 retirement. After M5, prepare M4b (compact reference), M11 (remote transport) and P-a
