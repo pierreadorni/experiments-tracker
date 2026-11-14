@@ -37,15 +37,16 @@ Current migration:
 - M5 `86b7e59`: branching DAG execution on contract 3; old reader-model constants retained.
 - M0b `7254d2e`: final widened-probe addendum, Opus-approved with coordinator amendments.
 - P-a `5fc3004`: ticking API create fixtures now explicitly keep contract 3.
+- M4b `74e7cf0`: compact current-reference pointer coverage, without legacy audit re-hash claims.
 
 Latest source validation: Ruff and all **571 Python tests pass**. M1's final isolated
 `make check` also passed 29 web / 41 gateway tests. No live acceptance or activation.
 
 ## Current task and order
 
-**M4b and M11 next; P-a has landed.** M4b's candidate is in its own worktree and needs
-coordinator final-main checks/review under its approved §10 plan. M6's candidate is ready
-but lands only after M4b/M11/P-a, with fresh review and rebased checks (§11).
+**M11 next; M4b and P-a have landed.** M11's revised candidate is ready and needs final
+rebase, fresh F+R review and checks. M6's candidate is ready but lands only after M11,
+with fresh review and rebased checks (§11).
 Preserve old schema-2 DAG constants/invalid-graph unit tests for their remaining importers.
 
 M11's declared-source allocation re-hash is deliberately legacy-only (Opus `8d70bb3e`):
@@ -54,7 +55,7 @@ state until h deletes the legacy worker body, and add a current-contract manifes
 failure test. Its scope includes one importer line in `tests/test_iteration.py`:
 `work.mkdir(exist_ok=True)` because the new helper creates it. See the decision's §12.
 
-The authoritative migration plan is disposition **§8–11**; §9 amends sequencing and
+The authoritative migration plan is disposition **§8–12**; §9 amends sequencing and
 retirement. After M5, prepare M4b (compact reference), M11 (remote transport) and P-a
 (ticking API producers), then M6, M7a/b, M8a–d and M8e. The three added cards may proceed
 any time after M0, but all block M10/gate. Explicit static legacy fixture rewrites also
