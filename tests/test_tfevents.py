@@ -2,6 +2,7 @@ import base64
 import io
 import json
 import struct
+import sys
 import time
 from uuid import uuid4
 
@@ -12,7 +13,8 @@ from tensorboard.compat.proto.summary_pb2 import Summary
 from tensorboard.compat.proto.tensor_pb2 import TensorProto
 from tensorboard.compat.tensorflow_stub.pywrap_tensorflow import masked_crc32c
 
-from experimenttracker.models import TensorBoardDisplay
+from experimenttracker import artifacts
+from experimenttracker.models import Implementation, TensorBoardDisplay
 from experimenttracker.slurm import Observation
 from experimenttracker.tfevents import _CACHE, read_previews
 
@@ -27,6 +29,50 @@ def png(color="red"):
     stream = io.BytesIO()
     Image.new("RGB", (800, 600), color).save(stream, format="PNG")
     return stream.getvalue()
+
+
+def tensorboard_experiment(store, workflow):
+    eid = store.command(
+        uuid4(), "create", {"brief": "Synthetic TensorBoard fixture", "recipe_id": "agent_experiment_v1"}
+    )["experiment_id"]
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
+    root = workflow.root(eid)
+    work = root / "work"
+    work.mkdir(parents=True, exist_ok=True)
+    (work / "recipe.py").write_text("pass\n")
+    plan = Implementation.model_validate(
+        {
+            "schema_version": 3,
+            "summary": "Synthetic TensorBoard publication fixture.",
+            "protocol": "Infrastructure fixture, not scientific research.",
+            "synthetic_demo": True,
+            "parameters_json": "{}",
+            "files": ["recipe.py"],
+            "figures": [],
+            "stages": [
+                {
+                    "id": "train_linear",
+                    "title": "Synthetic training",
+                    "needs": [],
+                    "tensorboard": {"log_dir": "tensorboard/fit", "scalar_tag": "loss"},
+                },
+                {
+                    "id": "evaluate",
+                    "title": "Synthetic evaluation",
+                    "needs": ["train_linear"],
+                    "outputs": ["metrics.json"],
+                    "result_file": "metrics.json",
+                    "expected_metrics": ["score"],
+                    "sample_count": 12,
+                },
+            ],
+        }
+    )
+    manifest = artifacts.freeze_implementation(
+        root, plan, "", python=sys.executable, project=None, workspace=work
+    )
+    store.resolve_implementation(eid, manifest)
+    return eid
 
 
 @pytest.fixture
@@ -150,9 +196,7 @@ def test_event_directory_is_confined(directory):
 
 async def test_preview_is_persisted_with_projection_and_survives_restart(runtime, monkeypatch):
     store, scheduler, _, workflow = runtime
-    eid = store.command(
-        uuid4(), "create", {"brief": "Synthetic TensorBoard fixture", "recipe_id": "toy_compare_v1"}
-    )["experiment_id"]
+    eid = tensorboard_experiment(store, workflow)
     now, intent = time.time(), str(uuid4())
     root = workflow.root(eid)
     directory = root / "tensorboard/fit"

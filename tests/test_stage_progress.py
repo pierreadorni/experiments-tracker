@@ -1,14 +1,46 @@
+import copy
 import json
 import os
+import sys
 import time
 from datetime import UTC, datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
+from helpers import PLAN
 
+from experimenttracker import artifacts
+from experimenttracker.models import Implementation
 from experimenttracker.progress import LOG_TAIL_BYTES, read_job_progress
 from experimenttracker.slurm import Observation
 from experimenttracker.store import Store, encode
+
+
+def progress_experiment(store, workflow):
+    eid = store.command(
+        uuid4(), "create", {"brief": "Synthetic progress", "recipe_id": "agent_experiment_v1"}
+    )["experiment_id"]
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
+    root = workflow.root(eid)
+    work = root / "work"
+    work.mkdir(parents=True, exist_ok=True)
+    (work / "recipe.py").write_text("pass\n")
+    aliases = {"train": "train_linear", "evaluate": "train_quadratic", "plot": "evaluate_and_plot"}
+    payload = copy.deepcopy(PLAN)
+    payload["stages"] = [
+        {
+            **stage,
+            "id": aliases[stage["id"]],
+            "needs": [aliases[need] for need in stage["needs"]],
+        }
+        for stage in payload["stages"]
+    ]
+    plan = Implementation.model_validate(payload)
+    manifest = artifacts.freeze_implementation(
+        root, plan, "", python=sys.executable, project=None, workspace=work
+    )
+    store.resolve_implementation(eid, manifest)
+    return eid
 
 
 def sample(job, now, **extra):
@@ -120,9 +152,7 @@ def test_iso_timestamps_are_normalized_and_subject_to_same_bounds(log_job):
 
 async def test_progress_publication_restart_replay_and_readiness(runtime, monkeypatch):
     store, scheduler, agent, workflow = runtime
-    eid = store.command(uuid4(), "create", {"brief": "Synthetic progress", "recipe_id": "toy_compare_v1"})[
-        "experiment_id"
-    ]
+    eid = progress_experiment(store, workflow)
     now = time.time()
     intent = str(uuid4())
     store.stage(eid, "train_linear", "running")
@@ -193,9 +223,7 @@ async def test_progress_publication_restart_replay_and_readiness(runtime, monkey
 
 async def test_progress_and_outbox_roll_back_together(runtime, monkeypatch):
     store, scheduler, _, workflow = runtime
-    eid = store.command(uuid4(), "create", {"brief": "Synthetic progress", "recipe_id": "toy_compare_v1"})[
-        "experiment_id"
-    ]
+    eid = progress_experiment(store, workflow)
     now, intent = time.time(), str(uuid4())
     with store.tx() as db:
         db.execute(

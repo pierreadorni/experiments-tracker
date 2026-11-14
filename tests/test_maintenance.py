@@ -247,10 +247,17 @@ def test_real_demo_process_handover_without_model_or_scheduler(config, tmp_path)
     root = release(config, runnable=True)
     seed = Store(config.state_dir / "workflow.sqlite")
     eid = seed.command(
-        uuid4(), "create", {"brief": "Synthetic preserved history", "recipe_id": "toy_compare_v1"}
+        uuid4(), "create", {"brief": "Synthetic preserved history", "recipe_id": "agent_experiment_v1"}
     )["experiment_id"]
+    contract = seed.experiment(eid)["contract"]
+    contract.pop("execution_contract")
     seed.update(eid, phase="complete", pause_agent=1, pause_compute=1)
     with seed.tx() as db:
+        db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(contract), eid))
+        db.execute(
+            "INSERT INTO stages(experiment_id,id,ordinal,state,updated_at) VALUES(?,'train_linear',1,'complete',0)",
+            (eid,),
+        )
         db.execute(
             "INSERT INTO jobs(intent_id,experiment_id,stage_id,state,job_id,script_hash,resources,snapshot_hash,created_at) VALUES(?,?,'train_linear','complete','synthetic-job','source','{}','snapshot',0)",
             (str(uuid4()), eid),
