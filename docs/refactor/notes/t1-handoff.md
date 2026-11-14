@@ -1,4 +1,4 @@
-# T1 handoff (after M7b, 2026-11-13)
+# T1 handoff (after M8b, 2026-11-13)
 
 Read `docs/refactor/README.md`, `todo.md`, `notes/t1-owner-decisions.md`, then the
 current card's note. Root `AGENTS.md` applies. Source publication is not live activation.
@@ -42,27 +42,39 @@ Current migration:
 - M6 `dca9d2d`: admission, permissions, model settings and reference controls on contract 3.
 - M7a `fbbc289`: watchdog, backup, selected-folder/project discussion and Git workspaces.
 - M7b `98ece19`: GPU resource persistence/admission/owner limits and bounded invalid source.
+- M8a `659a136`: owner-budget/uncertainty, controller tools and exact saved-output recovery.
+- M8b `3217d00`: compact owned-job status, same-action session retry and repaired readiness.
 
 Latest complete isolated Node 24 `make check` (M11): **572 Python / 29 web / 41 gateway**.
-After M7a and M7b, isolated Ruff plus targeted/full Python pass again (**572 Python**).
+After M8a and M8b, isolated Ruff plus targeted/full Python pass again (**573 Python**).
 No live acceptance or activation.
 
 ## Current task and order
 
-**M8a then M8b next.** Flash workers are preparing `.worktrees/t1-1m-m8a` and
-`.worktrees/t1-1m-m8b`, base `fbbc289`, under final Opus `0ecc03e6` approval. Workflow
-`4a240ee2-8b2d-40b6-86c7-50d95009035c` owns both. Final rebase, fresh code review,
-Ruff, targets and full Python checks land M8a → M8b after the now-landed M7a/M7b.
-Briefs `/tmp/t1-m8a-brief.md` and `/tmp/t1-m8b-brief.md` plus the full Opus artifact are
-mandatory; disposition §14 records amendments. M8a adds the uncertain owner-budget
-parameter at the second hold, preserving all three saved jobs and denying any grant,
-command receipt or dispatch; positive flow needs two separate idempotent grants.
-M8b measures fake-live repair completion first; only if unrelated finalization fails may
-it switch to demo after queueing, recording why. Its failed initial train and unexecuted
-descendants are all retried, so old unused preparation.json is legitimately retired—not
-reused evidence. Preserve compact-job exact keys, exact saved-turn recovery/refusal,
-permission guards and old schema-2 constants/units/exports. M8c–e, explicit static legacy
-fixtures and all retirement/gate work remain. Ask fresh Opus for any design split.
+**M8c next**, Flash worker `672c1c7a-4263-4191-8026-8b8c8fc076a4` in
+`.worktrees/t1-1m-m8c` (base `57d218f`), workflow `5b23ad26-a968-406a-8229-0bd7461fe189`.
+Read corrected `/tmp/t1-m8c-brief.md` and FULL Opus `0386e2cb` report before review;
+disposition §15 records mandatory corrections. One <500-line test-only card adds real
+mixed-graph resource-hold gate/positive controls, configured three-repair ceiling plus
+one idempotent manual fourth grant, and 1024→2048 resource amendment without a second
+human approval. Stay fake Live through preflight (Demo bypasses it), use later steering
+(not restart), count both queue events separately and deep-copy shared stage data.
+The mixed resource positive is queue-only; do not silently drive it into the bug below.
+Final rebase/fresh review/Ruff/targets/full Python land after M8b. Existing legacy guards
+stay; M8d/e, static fixtures and grouped retirement/gate work remain.
+
+**Separate confirmed budget bug**, not a source fix inside M8c: probe worker `f1a880ee`
+in `.worktrees/t1-1m-budget-probe` proves an approved C3 graph of three Slurm stages plus
+one agent stage fails preparation at owner cap three (four model calls, zero jobs), while
+the cap-four control completes three Slurm jobs plus one agent producer. Preparation's
+non-early count includes agent stages/rows, unlike sibling gates. Evidence
+`/tmp/t1-agent-budget-probe.log` and the worker artifact; scratch probe is uncommitted.
+Fresh final S-plan reviewer `d7f2292e-49bc-4fa7-a152-4ec4a4242edd` is reviewing
+`/tmp/t1-p-budget-brief.md`: propose <150 total source/test lines after M8c, preserve
+legacy and early-repair retained/live accounting exactly, initial-cap-three and existing
+agent-row resource-repair regressions plus a true-cap denial. Error attribution/extra
+correction behaviour is explicitly out of scope. Await the final design before Flash
+implementation; no owner question is needed for a testable bounded bug.
 
 M11's declared-source allocation re-hash is deliberately legacy-only (Opus `8d70bb3e`):
 no production bug card or new runtime guard. Keep that test on explicit static schema-2
@@ -70,7 +82,7 @@ state until h deletes the legacy worker body, and add a current-contract manifes
 failure test. Its scope includes one importer line in `tests/test_iteration.py`:
 `work.mkdir(exist_ok=True)` because the new helper creates it. See the decision's §12.
 
-The authoritative migration plan is disposition **§8–14**; §9 amends sequencing and
+The authoritative migration plan is disposition **§8–15**; §9 amends sequencing and
 retirement. After M5, prepare M4b (compact reference), M11 (remote transport) and P-a
 (ticking API producers), then M6, M7a/b, M8a–d and M8e. The three added cards may proceed
 any time after M0, but all block M10/gate. Explicit static legacy fixture rewrites also
@@ -86,7 +98,7 @@ removal in h. Do not treat classification as permission to remove live saved-sta
 - Original no-downgrade full run: 76 failed / 488 passed in 1797.49 s. It survived the
   worker's harness deadline and was not rerun. Its final probe has 568 records / 92 nodeids,
   including 58 toy-chain gate hits. Toy creates never had the downgraded contract flag.
-- M1/M2/M3/M6 have moved 45 of those 58 off execution; 13 remain at this mapping point.
+- M1/M2/M3/M6/M8b have moved 47 of those 58 off execution; 11 remain at this mapping point.
   These are pinned measurements, not a current-main gate result.
 - The final probe is **uncommitted** at `/tmp/m0b/m0b-probe-final.patch`; raw logs and
   JSONL are beside it. The tracked old partial patch is not valid gate evidence. Its
