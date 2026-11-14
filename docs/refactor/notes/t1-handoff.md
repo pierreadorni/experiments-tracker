@@ -1,4 +1,4 @@
-# T1 handoff (after M8b, 2026-11-13)
+# T1 handoff (after M8c, 2026-11-13)
 
 Read `docs/refactor/README.md`, `todo.md`, `notes/t1-owner-decisions.md`, then the
 current card's note. Root `AGENTS.md` applies. Source publication is not live activation.
@@ -44,37 +44,42 @@ Current migration:
 - M7b `98ece19`: GPU resource persistence/admission/owner limits and bounded invalid source.
 - M8a `659a136`: owner-budget/uncertainty, controller tools and exact saved-output recovery.
 - M8b `3217d00`: compact owned-job status, same-action session retry and repaired readiness.
+- M8c `4e67dd5`: current repair gates, configured ceilings and resource amendments.
 
 Latest complete isolated Node 24 `make check` (M11): **572 Python / 29 web / 41 gateway**.
-After M8a and M8b, isolated Ruff plus targeted/full Python pass again (**573 Python**).
+After M8c, isolated Ruff plus 21 targeted/full Python pass again (**587 Python**).
 No live acceptance or activation.
 
 ## Current task and order
 
-**M8c next**, Flash worker `672c1c7a-4263-4191-8026-8b8c8fc076a4` in
-`.worktrees/t1-1m-m8c` (base `57d218f`), workflow `5b23ad26-a968-406a-8229-0bd7461fe189`.
-Read corrected `/tmp/t1-m8c-brief.md` and FULL Opus `0386e2cb` report before review;
-disposition §15 records mandatory corrections. One <500-line test-only card adds real
-mixed-graph resource-hold gate/positive controls, configured three-repair ceiling plus
-one idempotent manual fourth grant, and 1024→2048 resource amendment without a second
-human approval. Stay fake Live through preflight (Demo bypasses it), use later steering
-(not restart), count both queue events separately and deep-copy shared stage data.
-The mixed resource positive is queue-only; do not silently drive it into the bug below.
-Final rebase/fresh review/Ruff/targets/full Python land after M8b. Existing legacy guards
-stay; M8d/e, static fixtures and grouped retirement/gate work remain.
+**P-budget next**, Flash worker `cca75ffd` resumed as
+`8b6b5204-bbe1-4e07-a173-b41a67270ef2` in `.worktrees/t1-1m-p-budget`, rebased onto
+`4e67dd5`. Part one has a minimal workflow.py conditional Slurm-only budget correction
+and a new tests/test_iteration_job_budget.py initial-cap regression. Part two now adds
+the M8c resource_hold regressions, old-source red/fixed-source green targets and full
+Python (expected 590). Read `/tmp/t1-p-budget-brief.md` plus final Opus `d7f2292e` report
+and disposition §16. Entire source+test card must stay below 150 changed lines, including
+the untracked new file. Preserve legacy counting and early kept/retained/live accounting
+exactly; no error/quota/classification changes. Fresh code review, isolated checks and
+commit follow; run complete make check for this production correction. M8c is already
+reviewed/landed; its real mixed helper needs no fallback and explicitly reuses model_check.
+Existing legacy guards stay; M8d/e, static fixtures and grouped retirement/gate work remain.
 
-**Separate confirmed budget bug**, not a source fix inside M8c: probe worker `f1a880ee`
-in `.worktrees/t1-1m-budget-probe` proves an approved C3 graph of three Slurm stages plus
-one agent stage fails preparation at owner cap three (four model calls, zero jobs), while
-the cap-four control completes three Slurm jobs plus one agent producer. Preparation's
-non-early count includes agent stages/rows, unlike sibling gates. Evidence
-`/tmp/t1-agent-budget-probe.log` and the worker artifact; scratch probe is uncommitted.
-Fresh final S-plan reviewer `d7f2292e-49bc-4fa7-a152-4ec4a4242edd` is reviewing
-`/tmp/t1-p-budget-brief.md`: propose <150 total source/test lines after M8c, preserve
-legacy and early-repair retained/live accounting exactly, initial-cap-three and existing
-agent-row resource-repair regressions plus a true-cap denial. Error attribution/extra
-correction behaviour is explicitly out of scope. Await the final design before Flash
-implementation; no owner question is needed for a testable bounded bug.
+M8d measure-first design reviewer `3a219881-89d3-41b3-9d47-5161ad01b8d8` is reading
+current reconcile_outputs versus iteration.complete and the legacy refusal/rollback/
+observation tests. Await the probe decision before Flash measurement: the shared recovery
+method appears to use canonical root paths and legacy registration rather than current
+attempt-root refs/producers/partial metrics. Proposed real current train/evaluate fixture
+corrupts/restores only bounded metrics JSON after successful fake accounting, then measures
+reconcile; no production change is authorized before evidence and a final bounded design.
+Keep the legacy failed fixture explicit/static and observation [True] through the gate.
+
+**Confirmed budget evidence:** probe worker `f1a880ee` proved an approved C3 graph of
+three Slurm stages plus one agent stage fails preparation at owner cap three (four model
+calls, zero jobs), while cap four completes three Slurm jobs plus one agent producer.
+Preparation's non-early count includes agent stages/rows, unlike sibling gates. Evidence
+`/tmp/t1-agent-budget-probe.log`, `/tmp/t1-agent-budget-probe.py` and the worker artifact;
+probe worktree/branch were removed. P-budget's final design is approved, not pending.
 
 M11's declared-source allocation re-hash is deliberately legacy-only (Opus `8d70bb3e`):
 no production bug card or new runtime guard. Keep that test on explicit static schema-2
@@ -82,7 +87,7 @@ state until h deletes the legacy worker body, and add a current-contract manifes
 failure test. Its scope includes one importer line in `tests/test_iteration.py`:
 `work.mkdir(exist_ok=True)` because the new helper creates it. See the decision's §12.
 
-The authoritative migration plan is disposition **§8–15**; §9 amends sequencing and
+The authoritative migration plan is disposition **§8–16**; §9 amends sequencing and
 retirement. After M5, prepare M4b (compact reference), M11 (remote transport) and P-a
 (ticking API producers), then M6, M7a/b, M8a–d and M8e. The three added cards may proceed
 any time after M0, but all block M10/gate. Explicit static legacy fixture rewrites also
