@@ -229,7 +229,7 @@ async def test_remote_attempt_does_not_seal_or_sync_project_and_delivery_retries
     wf, exp, _ = remote_prepared(runtime, tmp_path)
     root = wf.root(exp["id"])
     work = root / "work"
-    work.mkdir()
+    work.mkdir(exist_ok=True)
     (work / "train.sbatch").write_text(
         (root / "snapshot/train.sbatch").read_text()
         + '\nln -s /inaccessible-scientific-input "$EXPERIMENT_ROOT/checkpoint/never-inspect"\n'

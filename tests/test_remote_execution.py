@@ -13,17 +13,51 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from experimenttracker import artifacts, remote
+from experimenttracker import artifacts, iteration, remote
 from experimenttracker.config import JobResources, ProjectConfig
 from experimenttracker.execution_settings import ExecutionSettings
 from experimenttracker.models import Implementation
 from experimenttracker.remote import RemoteSlurmScheduler, sbatch_directives
 from experimenttracker.slurm import command, wrapper
-from experimenttracker.store import Store
+from experimenttracker.store import Store, encode
 from experimenttracker.workflow import Workflow
 
 UP = "rsync -az --exclude=.experimenttracker/ --exclude=.git/ {local_project}/ {host}:{remote_project}/"
 DOWN = "rsync -az --include=*/ --include=*.tfevents* --exclude=* {host}:{remote_run}/ {local_run}/"
+SCRIPT = """#!/bin/bash
+#SBATCH -c 1
+#SBATCH --time 00:05:00
+#SBATCH --ntasks=1
+set -eu
+mkdir -p "$EXPERIMENT_ROOT/checkpoint" "$EXPERIMENT_ROOT/tensorboard/measure"
+printf checkpoint > "$EXPERIMENT_ROOT/checkpoint/weights.bin"
+printf event > "$EXPERIMENT_ROOT/tensorboard/measure/events.out.tfevents.synthetic"
+printf 'ET_PROGRESS {"stage":"measure","completed":1,"total":1,"timestamp":1000}\\n'
+python3 - <<'INNER'
+import json, os
+from pathlib import Path
+r = Path(os.environ["EXPERIMENT_ROOT"])
+(r / "results.json").write_text(json.dumps({"schema_version":1,"protocol":"Transport acceptance","sample_count":1,"metrics":[{"name":"value","variant":"synthetic","value":42,"unit":""}]}))
+INNER
+"""
+
+LEGACY_SCRIPT = """#!/bin/bash
+#SBATCH -c 1
+#SBATCH --time 00:05:00
+#SBATCH --ntasks=1
+set -eu
+mkdir -p "$EXPERIMENT_ROOT/checkpoint" "$EXPERIMENT_ROOT/events"
+printf checkpoint > "$EXPERIMENT_ROOT/checkpoint/weights.bin"
+printf event > "$EXPERIMENT_ROOT/events/test.tfevents.test"
+printf 'ET_PROGRESS {"stage":"measure","completed":1,"total":1,"timestamp":1000}\\n'
+python3 - <<'INNER'
+import json, os
+from pathlib import Path
+r = Path(os.environ["EXPERIMENT_ROOT"])
+(r / "results.json").write_text(json.dumps({"schema_version":1,"protocol":"Transport acceptance","metrics":[{"name":"value","variant":"synthetic","value":42,"unit":""}]}))
+(r / "validation.json").write_text(json.dumps({"schema_version":1,"passed":True,"checks":[{"name":"test","passed":True,"detail":"Synthetic transport check"}]}))
+INNER
+"""
 
 
 def settings(workflow, project, **values):
@@ -58,25 +92,80 @@ def prepared(runtime, tmp_path):
             "project_id": cfg.id,
         },
     )["experiment_id"]
+    exp = store.experiment(eid)
+    assert exp["contract"]["execution_contract"] == 3
+    work = wf.working_directory(exp)
+    work.mkdir(parents=True)
+    (work / "train.sbatch").write_text(SCRIPT)
+    root = wf.root(eid)
+    root.mkdir(parents=True, exist_ok=True)
+    plan = Implementation(
+        schema_version=3,
+        summary="Transport check",
+        protocol="Transport acceptance",
+        synthetic_demo=True,
+        parameters_json="{}",
+        files=["train.sbatch"],
+        stages=[
+            {
+                "id": "measure",
+                "title": "Measurement",
+                "script": "train.sbatch",
+                "outputs": ["results.json"],
+                "local_outputs": ["checkpoint"],
+                "needs": [],
+                "resources": JobResources(partition="cpu_p1").model_dump(),
+                "result_file": "results.json",
+                "expected_metrics": ["value"],
+                "sample_count": 1,
+                "tensorboard": {"log_dir": "tensorboard/measure", "scalar_tag": "loss"},
+            }
+        ],
+        figures=[],
+    )
+    manifest = artifacts.freeze_implementation(
+        root, plan, "", python=Path(sys.executable), workspace=work, remote_execution=True
+    )
+    assert manifest["plan"]["schema_version"] == 3 and manifest["remote_execution"] is True
+    store.resolve_implementation(eid, manifest)
+    for stage in ("plan", "prepare"):
+        store.stage(eid, stage, "complete")
+    return wf, store.experiment(eid), values
+
+
+def legacy_prepared(runtime, tmp_path):
+    """Saved schema-2 attempt for the legacy worker body; no advance entrypoint runs.
+
+    The saved contract drops execution_contract here instead of using the autouse
+    downgrade, so this static legacy fixture survives M10.
+    """
+    store, _, _, wf = runtime
+    wf.config.mode = "live"
+    project = tmp_path / "source"
+    project.mkdir(exist_ok=True)
+    cfg = ProjectConfig(id="remote-project", name="Remote project", checkout=project)
+    wf.config.projects.append(cfg)
+    wf.projects.reload()
+    settings(
+        wf, cfg.id, context="jean-zay", remote_project=str(tmp_path / "remote"), rsync_up=UP, rsync_down=DOWN
+    )
+    eid = store.command(
+        uuid4(),
+        "create",
+        {
+            "brief": "Synthetic remote transport acceptance",
+            "recipe_id": "agent_experiment_v1",
+            "project_id": cfg.id,
+        },
+    )["experiment_id"]
+    with store.tx() as db:
+        contract = store.experiment(eid)["contract"]
+        contract.pop("execution_contract", None)
+        db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(contract), eid))
+    assert "execution_contract" not in store.experiment(eid)["contract"]
     root = wf.root(eid)
     root.mkdir(parents=True)
-    (project / "train.sbatch").write_text("""#!/bin/bash
-#SBATCH -c 1
-#SBATCH --time 00:05:00
-#SBATCH --ntasks=1
-set -eu
-mkdir -p "$EXPERIMENT_ROOT/checkpoint" "$EXPERIMENT_ROOT/events"
-printf checkpoint > "$EXPERIMENT_ROOT/checkpoint/weights.bin"
-printf event > "$EXPERIMENT_ROOT/events/test.tfevents.test"
-printf 'ET_PROGRESS {"stage":"measure","completed":1,"total":1,"timestamp":1000}\n'
-python3 - <<'INNER'
-import json, os
-from pathlib import Path
-r = Path(os.environ["EXPERIMENT_ROOT"])
-(r / "results.json").write_text(json.dumps({"schema_version":1,"protocol":"Transport acceptance","metrics":[{"name":"value","variant":"synthetic","value":42,"unit":""}]}))
-(r / "validation.json").write_text(json.dumps({"schema_version":1,"passed":True,"checks":[{"name":"test","passed":True,"detail":"Synthetic transport check"}]}))
-INNER
-""")
+    (project / "train.sbatch").write_text(LEGACY_SCRIPT)
     plan = Implementation(
         schema_version=2,
         summary="Transport check",
@@ -103,7 +192,7 @@ INNER
     store.resolve_implementation(eid, manifest)
     for stage in ("plan", "prepare"):
         store.stage(eid, stage, "complete")
-    return wf, store.experiment(eid), values
+    return wf, store.experiment(eid)
 
 
 class Machines:
@@ -227,30 +316,54 @@ def test_sbatch_resource_match_and_no_extra_gpu_allocation(tmp_path):
         sbatch_directives(source, resources)
 
 
+@pytest.mark.current_contract
 async def test_remote_roundtrip_seals_checkpoints_without_downloading_bytes(runtime, tmp_path, monkeypatch):
     wf, exp, _ = prepared(runtime, tmp_path)
+    assert exp["contract"]["execution_contract"] == 3
     machines = Machines(monkeypatch, wf.store)
     result = await wf.submit_prepared_stage(exp, "measure")
     assert result["job_id"] == "101"
     await wf.observe_jobs()
     job = wf.store.one("SELECT * FROM jobs")
     assert job["state"] == "complete"
-    root = wf.root(exp["id"])
-    assert not (root / "checkpoint/weights.bin").exists()
-    assert (root / "events/test.tfevents.test").read_text() == "event"
-    manifest = wf.store.experiment(exp["id"])["snapshot"]
-    artifacts.validate_stage(root, "measure", manifest)
-    provenance = artifacts.read_json(root / "local-output-measure.json", root)
-    assert provenance["storage"] == "jean-zay" and provenance["outputs"][0]["files"][0]["size"] == 10
-    assert (Path(provenance["root"]) / "checkpoint/weights.bin").is_file()
+    attempt = Path(job["execution_root"])
+    remote_run = json.loads(job["execution_manifest"])["execution"]["layout"]["remote_run"]
+    # The declared checkpoint stays on the cluster; only small outputs return.
+    assert not (attempt / "checkpoint/weights.bin").exists()
+    assert not (wf.root(exp["id"]) / "checkpoint").exists()
+    assert (Path(remote_run) / "checkpoint/weights.bin").is_file()
+    assert list((attempt / "tensorboard/measure").glob("events.out.tfevents.*"))
+    refs = {
+        row["name"]: row
+        for row in wf.store.rows("SELECT * FROM output_refs WHERE intent_id=?", (job["intent_id"],))
+    }
+    assert {(name, row["kind"]) for name, row in refs.items()} == {
+        ("checkpoint", "directory"),
+        ("results.json", "file"),
+    }
+    assert all(row["context"] == "jean-zay" and row["host"] == "jz" for row in refs.values())
+    assert refs["checkpoint"]["path"] == remote_run + "/checkpoint"
+    assert refs["results.json"]["path"] == remote_run + "/results.json"
+    assert (
+        wf.store.one(
+            "SELECT intent_id FROM stage_producers WHERE experiment_id=? AND stage_id='measure'",
+            (exp["id"],),
+        )["intent_id"]
+        == job["intent_id"]
+    )
+    partial = wf.store.projection(exp["id"])["partial_results"]["tasks"]["measure"]["result"]
+    assert [metric["value"] for metric in partial["metrics"]] == [42]
+    assert (wf.root(exp["id"]) / "results.json").is_file()
     assert len(machines.jobs) == 1
     # Saved routing wins even after the project selection changes.
     settings(wf, "remote-project", context="acacia")
     assert isinstance(wf.scheduler_for(wf.store.experiment(exp["id"]), job), RemoteSlurmScheduler)
 
 
+@pytest.mark.current_contract
 async def test_lost_submission_reconciles_exactly_once_across_restart(runtime, tmp_path, monkeypatch):
     wf, exp, _ = prepared(runtime, tmp_path)
+    assert exp["contract"]["execution_contract"] == 3
     machines = Machines(monkeypatch, wf.store)
     machines.lost_submit = True
     outcome = await wf.submit_prepared_stage(exp, "measure")
@@ -264,8 +377,10 @@ async def test_lost_submission_reconciles_exactly_once_across_restart(runtime, t
     assert len(machines.jobs) == 1
 
 
+@pytest.mark.current_contract
 async def test_completed_job_waits_for_transfer_and_polling_is_persisted(runtime, tmp_path, monkeypatch):
     wf, exp, _ = prepared(runtime, tmp_path)
+    assert exp["contract"]["execution_contract"] == 3
     machines = Machines(monkeypatch, wf.store)
     await wf.submit_prepared_stage(exp, "measure")
     machines.fail_download = True
@@ -287,7 +402,9 @@ async def test_completed_job_waits_for_transfer_and_polling_is_persisted(runtime
 
 
 async def test_snapshot_tampering_is_detected_inside_job_allocation(runtime, tmp_path, monkeypatch):
-    wf, exp, _ = prepared(runtime, tmp_path)
+    # Contract 3 reads no declared-source bytes in the allocation, so this guard
+    # stays on its saved legacy fixture: the legacy worker body only.
+    wf, exp = legacy_prepared(runtime, tmp_path)
     machines = Machines(monkeypatch, wf.store)
     scheduler = wf.scheduler_for(exp)
     root = wf.root(exp["id"])
@@ -298,13 +415,56 @@ async def test_snapshot_tampering_is_detected_inside_job_allocation(runtime, tmp
     remote_source = Path(scheduler.layout["remote_run"], "snapshot/train.sbatch")
     remote_source.chmod(0o644)  # noqa: ASYNC240
     remote_source.write_text("echo tampered")  # noqa: ASYNC240
+    # Legacy worker body; retire in the h commit deleting the remote_worker.py
+    # legacy body (inventory §14.1).
     with pytest.raises(RuntimeError, match="remote source hash mismatch"):
         await command("/bin/bash", str(Path(scheduler.layout["remote_run"]) / script.name))
     assert not machines.jobs
 
 
+@pytest.mark.current_contract
+async def test_remote_manifest_identity_guard_refuses_tampered_attempt_manifest(
+    runtime, tmp_path, monkeypatch
+):
+    wf, exp, _ = prepared(runtime, tmp_path)
+    assert exp["contract"]["execution_contract"] == 3
+    machines = Machines(monkeypatch, wf.store)
+    intent = str(uuid4())
+    root, manifest, _ = iteration.stage_attempt(wf, exp, "measure", intent)
+    resources = JobResources(partition="cpu_p1")
+    scheduler = wf.scheduler_for(
+        {**exp, "snapshot": manifest, "_attempt_id": intent, "_attempt_root": str(root)}
+    )
+    script = wrapper(
+        root,
+        "measure",
+        intent,
+        resources=resources,
+        script="train.sbatch",
+        project=root / "snapshot/project",
+        iteration_mode=True,
+    )
+    await scheduler.preflight(intent, script, root, resources)
+    remote_run = Path(scheduler.layout["remote_run"])
+    worker = remote_run / "remote-worker.py"
+    # The submitted attempt identity is part of the control payload.
+    with pytest.raises(RuntimeError, match="attempt identity mismatch"):
+        await command("/usr/bin/python3", str(worker), "verify", str(remote_run), "measure", str(uuid4()))
+    saved = remote_run / "snapshot/manifest.json"
+    saved.chmod(0o644)  # noqa: ASYNC240
+    tampered = json.loads(saved.read_text())
+    tampered["source_bytes"] = tampered["source_bytes"] + 1
+    saved.write_text(json.dumps(tampered))  # noqa: ASYNC240
+    with pytest.raises(RuntimeError, match="remote manifest identity mismatch"):
+        await command("/bin/bash", str(remote_run / script.name))
+    assert not machines.jobs
+    assert not list(remote_run.glob("remote-receipt-*"))  # noqa: ASYNC240
+
+
+@pytest.mark.current_contract
 async def test_agent_transfer_tool_is_durable_and_scoped(runtime, tmp_path):
     wf, exp, _ = prepared(runtime, tmp_path)
+    assert exp["contract"]["execution_contract"] == 3
     action_id = str(uuid4())
     with wf.store.tx() as db:
         db.execute(
@@ -327,10 +487,12 @@ async def test_agent_transfer_tool_is_durable_and_scoped(runtime, tmp_path):
         await wf.controller.call(exp["id"], "set_project_execution", args)
 
 
+@pytest.mark.current_contract
 async def test_remote_reads_are_batched_and_transport_failures_keep_observations_stale(
     runtime, tmp_path, monkeypatch
 ):
     wf, exp, _ = prepared(runtime, tmp_path)
+    assert exp["contract"]["execution_contract"] == 3
     machines = Machines(monkeypatch, wf.store)
     await wf.submit_prepared_stage(exp, "measure")
     scheduler = wf.scheduler_for(exp)
@@ -357,62 +519,46 @@ async def test_remote_reads_are_batched_and_transport_failures_keep_observations
     assert len(machines.jobs) == 1
 
 
-async def test_remote_successful_checkpoint_reuse_stays_remote_and_rechecks_bytes(
-    runtime, tmp_path, monkeypatch
-):
+@pytest.mark.current_contract
+async def test_remote_successful_checkpoint_reuse_stays_remote(runtime, tmp_path, monkeypatch):
     wf, exp, _ = prepared(runtime, tmp_path)
-    Machines(monkeypatch, wf.store)
+    assert exp["contract"]["execution_contract"] == 3
+    machines = Machines(monkeypatch, wf.store)
     await wf.submit_prepared_stage(exp, "measure")
     await wf.observe_jobs()
     job = wf.store.one("SELECT * FROM jobs")
-    previous = json.loads(job["execution_manifest"])["execution"]["layout"]["remote_run"]
-    old = wf.store.experiment(exp["id"])["snapshot"]
-    project = Path(wf.project_context(exp)["checkout"])
-    next_root = tmp_path / "next-allocation"
-    next_root.mkdir()
-    plan = Implementation.model_validate(old["plan"])
-    artifacts.freeze_implementation(
-        next_root,
-        plan,
-        "",
-        python=Path(sys.executable),
-        workspace=project,
-        remote_execution=True,
-        reused={
-            "measure": {
-                "root": str(wf.root(exp["id"])),
-                "remote_root": previous,
-                "snapshot_hash": old["snapshot_hash"],
-                "intent_id": job["intent_id"],
-            }
-        },
+    assert job["state"] == "complete"
+    attempt = Path(job["execution_root"])
+    manifest = json.loads(job["execution_manifest"])
+    remote_run = manifest["execution"]["layout"]["remote_run"]
+    # Each attempt binds only its own declared source copies.
+    assert attempt.name == job["intent_id"]
+    assert manifest["intent_id"] == job["intent_id"]
+    assert manifest["source_mode"] == "declared-copies"
+    assert set(manifest["files"]) == {"train.sbatch"}
+    assert manifest["source_bytes"] == (attempt / "snapshot/train.sbatch").stat().st_size
+    plan = Implementation.model_validate(exp["snapshot"]["plan"]).model_copy(
+        update={
+            "reuse_stages": ["measure"],
+            "reuse_rationale": "Keep the measured synthetic stage; nothing to recompute.",
+        }
     )
-    worker = Path(remote.__file__).with_name("remote_worker.py")
-    await command(
-        "env",
-        "EXPERIMENT_PROJECT=" + str(project),
-        sys.executable,
-        str(worker),
-        "verify",
-        str(next_root),
-        "measure",
-        str(uuid4()),
+    reused = iteration.reuse(wf, wf.store.experiment(exp["id"]), plan)
+    record = reused["measure"]
+    assert record["intent_id"] == job["intent_id"]
+    assert record["outputs"] == ["results.json"]
+    assert record["rationale"] == plan.reuse_rationale
+    assert set(record["output_ids"]) == {
+        row["id"]
+        for row in wf.store.rows("SELECT id FROM output_refs WHERE intent_id=?", (job["intent_id"],))
+    }
+    # Reuse reads the saved remote evidence directly; nothing is downloaded again.
+    assert (Path(remote_run) / "checkpoint/weights.bin").read_bytes() == b"checkpoint"
+    assert not (wf.root(exp["id"]) / "checkpoint").exists()
+    assert (wf.root(exp["id"]) / "results.json").is_file()
+    assert not any(
+        args[0] == "rsync" and "checkpoint" in " ".join(str(arg) for arg in args) for args in machines.calls
     )
-    assert (next_root / "checkpoint").is_symlink()
-    assert (next_root / "checkpoint/weights.bin").read_bytes() == b"checkpoint"
-    assert (Path(previous) / "checkpoint/weights.bin").read_bytes() == b"checkpoint"
-    Path(previous, "checkpoint/weights.bin").write_text("altered")  # noqa: ASYNC240
-    with pytest.raises(RuntimeError, match="reused remote evidence changed"):
-        await command(
-            "env",
-            "EXPERIMENT_PROJECT=" + str(project),
-            sys.executable,
-            str(worker),
-            "verify",
-            str(next_root),
-            "measure",
-            str(uuid4()),
-        )
 
 
 def test_browser_creation_preserves_the_selected_execution_snapshot(runtime):
@@ -432,10 +578,12 @@ def test_browser_creation_preserves_the_selected_execution_snapshot(runtime):
     assert store.command(identity, "create", payload) == result
 
 
+@pytest.mark.current_contract
 async def test_remote_association_limit_waits_without_replanning_or_fast_retry(
     runtime, tmp_path, monkeypatch
 ):
     wf, exp, _ = prepared(runtime, tmp_path)
+    assert exp["contract"]["execution_contract"] == 3
     machines = Machines(monkeypatch, wf.store)
     run = machines.run
 
@@ -455,6 +603,7 @@ async def test_remote_association_limit_waits_without_replanning_or_fast_retry(
     assert not wf.store.rows("SELECT * FROM agent_actions")
 
 
+@pytest.mark.current_contract
 async def test_tensorboard_events_return_without_custom_download_template(runtime, tmp_path, monkeypatch):
     from tensorboard.compat.proto.event_pb2 import Event
     from tensorboard.summary.writer.event_file_writer import EventFileWriter
@@ -462,20 +611,19 @@ async def test_tensorboard_events_return_without_custom_download_template(runtim
     from experimenttracker.slurm import Observation
 
     wf, exp, _ = prepared(runtime, tmp_path)
+    assert exp["contract"]["execution_contract"] == 3
     machines = Machines(monkeypatch, wf.store)
     await wf.submit_prepared_stage(exp, "measure")
     job = wf.store.one("SELECT * FROM jobs")
-    manifest = json.loads(job["execution_manifest"])
-    manifest["plan"]["stages"][0]["tensorboard"] = {"log_dir": "tensorboard/measure", "scalar_tag": "loss"}
-    job["execution_manifest"] = json.dumps(manifest)
     scheduler = wf.scheduler_for(exp, job)
     layout = await scheduler.resolve()
     writer = EventFileWriter(str(Path(layout["remote_run"]) / "tensorboard/measure"))
     writer.add_event(Event(wall_time=time.time(), step=1))
     writer.close()
+    # No custom download template: the built-in filtered preview transfer returns the events.
     scheduler.settings.rsync_down = ""
     await scheduler.fetch(job, Observation("RUNNING"))
-    local = wf.root(exp["id"]) / "tensorboard/measure"
+    local = Path(layout["local_run"]) / "tensorboard/measure"
     assert list(local.glob("events.out.tfevents.*"))
     calls = [args for args in machines.calls if "--max-size=512m" in args]
     assert calls and "--safe-links" in calls[0]
