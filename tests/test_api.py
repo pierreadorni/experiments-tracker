@@ -1,5 +1,6 @@
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 
 from experimenttracker.api import create_app
@@ -7,8 +8,9 @@ from experimenttracker.config import GatewayConfig
 from experimenttracker.execution_settings import ExecutionSettings
 
 
+@pytest.mark.current_contract
 def test_api_authentication_csrf_and_idempotency(config, runtime):
-    store, _, _, workflow = runtime
+    store, scheduler, _, workflow = runtime
     app = create_app(config, components=(None, store, workflow))
     # TestClient owns closing the store; fixture finalization tolerates close again.
     with TestClient(app) as client:
@@ -19,7 +21,7 @@ def test_api_authentication_csrf_and_idempotency(config, runtime):
             "schema_version": 1,
             "request_id": str(uuid4()),
             "brief": "Compare synthetic models safely.",
-            "recipe_id": "toy_compare_v1",
+            "recipe_id": "agent_experiment_v1",
         }
         first = client.post("/api/experiments", json=body, headers=headers)
         assert first.status_code == 202
@@ -43,6 +45,7 @@ def test_api_authentication_csrf_and_idempotency(config, runtime):
             == 422
         )
         eid = first.json()["experiment_id"]
+        assert store.experiment(eid)["contract"]["execution_contract"] == 3
         assert client.post("/api/session", headers=headers).status_code == 200
         note = {"request_id": str(uuid4()), "text": "Preserve my text"}
         assert (
@@ -64,10 +67,13 @@ def test_api_authentication_csrf_and_idempotency(config, runtime):
             client.get(f"/api/experiments/{eid}", headers=headers).json()["notes"][0]["author"]
             == "researcher"
         )
+    # A background tick must not submit work for a contract-3 plan still under review.
+    assert scheduler.submissions == 0
 
 
+@pytest.mark.current_contract
 def test_stale_answer_rejected(config, runtime):
-    store, _, _, workflow = runtime
+    store, scheduler, _, workflow = runtime
     app = create_app(config, components=(None, store, workflow))
     with TestClient(app) as client:
         headers = {"Authorization": "Bearer " + "t" * 40}
@@ -77,15 +83,17 @@ def test_stale_answer_rejected(config, runtime):
             json={
                 "request_id": str(uuid4()),
                 "brief": "A safe synthetic comparison.",
-                "recipe_id": "toy_compare_v1",
+                "recipe_id": "agent_experiment_v1",
             },
         ).json()
+        assert store.experiment(result["experiment_id"])["contract"]["execution_contract"] == 3
         response = client.post(
             f"/api/experiments/{result['experiment_id']}/answers",
             headers=headers,
             json={"request_id": str(uuid4()), "pending_request_id": "old-request", "answer": "accept"},
         )
         assert response.status_code == 409
+    assert scheduler.submissions == 0
 
 
 def test_project_settings_api_has_durable_receipt(config, runtime):
