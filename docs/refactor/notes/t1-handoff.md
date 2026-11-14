@@ -1,4 +1,4 @@
-# T1 handoff (after M11, 2026-11-13)
+# T1 handoff (after M6, 2026-11-13)
 
 Read `docs/refactor/README.md`, `todo.md`, `notes/t1-owner-decisions.md`, then the
 current card's note. Root `AGENTS.md` applies. Source publication is not live activation.
@@ -39,16 +39,20 @@ Current migration:
 - P-a `5fc3004`: ticking API create fixtures now explicitly keep contract 3.
 - M4b `74e7cf0`: compact current-reference pointer coverage, without legacy audit re-hash claims.
 - M11 `abb980c`: remote transport on contract 3; explicit legacy tamper helper retained until h.
+- M6 `dca9d2d`: admission, permissions, model settings and reference controls on contract 3.
 
 Latest isolated Node 24 validation: Ruff and `make check` pass **572 Python / 29 web /
 41 gateway tests**. No live acceptance or activation.
 
 ## Current task and order
 
-**M6 next.** Its candidate is ready in `.worktrees/t1-1m-m6`; M4b/M11/P-a dependencies
-have landed. Rebase by file onto main, then fresh F+R review and final targeted/full checks
-(§11). M7a/M7b parallel-preparation plans are awaiting fresh Opus `fe1b0532` decision;
-their final landings must follow M6 → M7a → M7b.
+**M7a then M7b next.** Their Flash workers are preparing in separate worktrees under
+Opus `fe1b0532` approval. Final rebase/review/checks/landings follow M6 → M7a → M7b.
+Required fixture details: explicit plan/prepare permission assertions (IterationAgent lacks
+the old helper's implicit guards), phase-aware project/discussion callbacks, neutral
+non-report discussion text, per-attempt project-source copies and transport-only audit;
+GPU repair replies must not attempt to reuse nonexistent producers. Briefs and the Opus
+report are in the current session's scratch/artifacts; source scopes remain in §8/§9.
 Preserve old schema-2 DAG constants/invalid-graph unit tests for their remaining importers.
 
 M11's declared-source allocation re-hash is deliberately legacy-only (Opus `8d70bb3e`):
@@ -73,7 +77,7 @@ removal in h. Do not treat classification as permission to remove live saved-sta
 - Original no-downgrade full run: 76 failed / 488 passed in 1797.49 s. It survived the
   worker's harness deadline and was not rerun. Its final probe has 568 records / 92 nodeids,
   including 58 toy-chain gate hits. Toy creates never had the downgraded contract flag.
-- M1/M2/M3 have moved 37 of those 58 off execution; 21 remained at that mapping point.
+- M1/M2/M3/M6 have moved 45 of those 58 off execution; 13 remain at this mapping point.
   These are pinned measurements, not a current-main gate result.
 - The final probe is **uncommitted** at `/tmp/m0b/m0b-probe-final.patch`; raw logs and
   JSONL are beside it. The tracked old partial patch is not valid gate evidence. Its
