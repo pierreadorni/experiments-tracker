@@ -1,4 +1,4 @@
-# T1 handoff (after M6, 2026-11-13)
+# T1 handoff (after M7b, 2026-11-13)
 
 Read `docs/refactor/README.md`, `todo.md`, `notes/t1-owner-decisions.md`, then the
 current card's note. Root `AGENTS.md` applies. Source publication is not live activation.
@@ -40,20 +40,29 @@ Current migration:
 - M4b `74e7cf0`: compact current-reference pointer coverage, without legacy audit re-hash claims.
 - M11 `abb980c`: remote transport on contract 3; explicit legacy tamper helper retained until h.
 - M6 `dca9d2d`: admission, permissions, model settings and reference controls on contract 3.
+- M7a `fbbc289`: watchdog, backup, selected-folder/project discussion and Git workspaces.
+- M7b `98ece19`: GPU resource persistence/admission/owner limits and bounded invalid source.
 
-Latest isolated Node 24 validation: Ruff and `make check` pass **572 Python / 29 web /
-41 gateway tests**. No live acceptance or activation.
+Latest complete isolated Node 24 `make check` (M11): **572 Python / 29 web / 41 gateway**.
+After M7a and M7b, isolated Ruff plus targeted/full Python pass again (**572 Python**).
+No live acceptance or activation.
 
 ## Current task and order
 
-**M7a then M7b next.** Their Flash workers are preparing in separate worktrees under
-Opus `fe1b0532` approval. Final rebase/review/checks/landings follow M6 → M7a → M7b.
-Required fixture details: explicit plan/prepare permission assertions (IterationAgent lacks
-the old helper's implicit guards), phase-aware project/discussion callbacks, neutral
-non-report discussion text, per-attempt project-source copies and transport-only audit;
-GPU repair replies must not attempt to reuse nonexistent producers. Briefs and the Opus
-report are in the current session's scratch/artifacts; source scopes remain in §8/§9.
-Preserve old schema-2 DAG constants/invalid-graph unit tests for their remaining importers.
+**M8a then M8b next.** Flash workers are preparing `.worktrees/t1-1m-m8a` and
+`.worktrees/t1-1m-m8b`, base `fbbc289`, under final Opus `0ecc03e6` approval. Workflow
+`4a240ee2-8b2d-40b6-86c7-50d95009035c` owns both. Final rebase, fresh code review,
+Ruff, targets and full Python checks land M8a → M8b after the now-landed M7a/M7b.
+Briefs `/tmp/t1-m8a-brief.md` and `/tmp/t1-m8b-brief.md` plus the full Opus artifact are
+mandatory; disposition §14 records amendments. M8a adds the uncertain owner-budget
+parameter at the second hold, preserving all three saved jobs and denying any grant,
+command receipt or dispatch; positive flow needs two separate idempotent grants.
+M8b measures fake-live repair completion first; only if unrelated finalization fails may
+it switch to demo after queueing, recording why. Its failed initial train and unexecuted
+descendants are all retried, so old unused preparation.json is legitimately retired—not
+reused evidence. Preserve compact-job exact keys, exact saved-turn recovery/refusal,
+permission guards and old schema-2 constants/units/exports. M8c–e, explicit static legacy
+fixtures and all retirement/gate work remain. Ask fresh Opus for any design split.
 
 M11's declared-source allocation re-hash is deliberately legacy-only (Opus `8d70bb3e`):
 no production bug card or new runtime guard. Keep that test on explicit static schema-2
@@ -61,7 +70,7 @@ state until h deletes the legacy worker body, and add a current-contract manifes
 failure test. Its scope includes one importer line in `tests/test_iteration.py`:
 `work.mkdir(exist_ok=True)` because the new helper creates it. See the decision's §12.
 
-The authoritative migration plan is disposition **§8–12**; §9 amends sequencing and
+The authoritative migration plan is disposition **§8–14**; §9 amends sequencing and
 retirement. After M5, prepare M4b (compact reference), M11 (remote transport) and P-a
 (ticking API producers), then M6, M7a/b, M8a–d and M8e. The three added cards may proceed
 any time after M0, but all block M10/gate. Explicit static legacy fixture rewrites also
