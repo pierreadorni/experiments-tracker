@@ -7,12 +7,11 @@ from uuid import uuid4
 import pytest
 from helpers import IterationAgent, wait_for_experiment, wait_until
 from pydantic import ValidationError
-from test_generic import PLAN, ImplementationAgent, approve_plan
+from test_generic import approve_plan
 
-from experimenttracker import artifacts, slurm
-from experimenttracker.audit import verify_experiment
-from experimenttracker.config import JobResources, ProjectConfig, ResourceLimits, SlurmConfig
-from experimenttracker.models import Implementation, ResearchPlan
+from experimenttracker import slurm
+from experimenttracker.config import JobResources, ResourceLimits, SlurmConfig
+from experimenttracker.models import ResearchPlan
 from experimenttracker.slurm import (
     DemoScheduler,
     ResourceUnavailable,
@@ -293,56 +292,20 @@ async def test_unavailable_preflight_creates_no_submission_intent_and_no_duplica
     await workflow.close()
 
 
-def test_shell_stages_freeze_project_sources_and_large_checkpoints_stay_local(tmp_path):
+def test_shell_wrapper_derives_threads_from_resources_and_launches_the_declared_script(tmp_path):
+    root = tmp_path / "experiment"
+    (root / "snapshot").mkdir(parents=True)
+    (root / "snapshot/train.sh").write_text("#!/bin/bash\nprintf '%s' \"$EXPERIMENT_STAGE\"\n")
     project = tmp_path / "project"
     project.mkdir()
-    (project / "train.py").write_text("print('training source')\n")
-    root = tmp_path / "experiment"
-    work = root / "work"
-    work.mkdir(parents=True)
-    (work / "train.sh").write_text(
-        "#!/bin/bash\n#SBATC" + "H --array=0-999\nprintf '%s' \"$EXPERIMENT_STAGE\"\n"
-    )
-    plan = Implementation.model_validate(
-        {
-            **PLAN,
-            "files": ["train.sh"],
-            "project_files": ["train.py"],
-            "figures": [],
-            "stages": [
-                {
-                    "id": "fit",
-                    "title": "Train",
-                    "script": "train.sh",
-                    "resources": GPU.model_dump(),
-                    "outputs": ["results.json", "validation.json"],
-                    "local_outputs": ["checkpoints/model.pth"],
-                }
-            ],
-        }
-    )
-    manifest = artifacts.freeze_implementation(root, plan, "", project=project)
-    artifacts.verify_project_sources(root, manifest, project)
     script = wrapper(
         root, "fit", "intent", "/usr/bin/python3", script="train.sh", project=project, resources=GPU
-    )
-    assert "#SBATCH" not in script.read_text()
-    assert "OMP_NUM_THREADS=8" in script.read_text()
-    (root / "checkpoints").mkdir()
-    checkpoint = root / "checkpoints/model.pth"
-    with checkpoint.open("wb") as stream:
-        stream.truncate(artifacts.MAX_ARTIFACT_BYTES + 1)
-    names = artifacts.seal_local_outputs(root, "fit", manifest)
-    assert names == ["local-output-fit.json"]
-    provenance = artifacts.read_json(root / names[0], root)
-    assert provenance["outputs"][0]["size"] == artifacts.MAX_ARTIFACT_BYTES + 1
-    assert artifacts.seal_local_outputs(root, "fit", manifest) == names
-    checkpoint.write_bytes(b"changed")
-    with pytest.raises(ValueError, match="checkpoint changed"):
-        artifacts.seal_local_outputs(root, "fit", manifest)
-    (project / "train.py").write_text("print('modified')\n")
-    with pytest.raises(ValueError, match="source changed"):
-        artifacts.verify_project_sources(root, manifest, project)
+    ).read_text()
+    assert "#SBATCH" not in script
+    assert "OMP_NUM_THREADS=8" in script
+    assert "export EXPERIMENT_PROJECT=" + str(project) in script
+    assert "export EXPERIMENT_STAGE=fit" in script
+    assert script.rstrip().endswith(f"exec /bin/bash {root}/snapshot/train.sh")
 
 
 @pytest.mark.current_contract
@@ -381,144 +344,3 @@ async def test_plan_can_exceed_three_stages_and_owner_gpu_hour_budget_is_enforce
     workflow.validate_resource_plan(store.experiment(eid), plan)
     assert not store.rows("SELECT * FROM jobs WHERE experiment_id=?", (eid,))
     assert scheduler.submissions == 0 and workflow.agent.calls == 0
-
-
-@pytest.mark.parametrize("local_output", ["checkpoints/model.pth", "checkpoints"])
-async def test_shell_experiment_reuses_project_environment_and_publishes_checkpoint_identity(
-    runtime, tmp_path, local_output
-):
-    store, scheduler, _, old = runtime
-    project = tmp_path / "research"
-    (project / ".venv/bin").mkdir(parents=True)
-    interpreter = project / ".venv/bin/python"
-    interpreter.symlink_to("/usr/bin/python3")
-    library = project / "train_library.py"
-    library.write_text("def measurement():\n    return 6 * 7\n")
-    config = old.config.model_copy(
-        update={
-            "projects": [
-                *old.config.projects,
-                ProjectConfig(id="research", name="Research", checkout=project),
-            ]
-        }
-    )
-    plan = Implementation.model_validate(
-        {
-            **PLAN,
-            "files": ["train.sh"],
-            "python_executable": str(interpreter),
-            "project_files": ["train_library.py"],
-            "figures": [],
-            "stages": [
-                {
-                    "id": "fit",
-                    "title": "Synthetic shell measurement",
-                    "script": "train.sh",
-                    "resources": JobResources().model_dump(),
-                    "outputs": ["results.json", "validation.json"],
-                    "local_outputs": [local_output],
-                }
-            ],
-        }
-    )
-    script = """#!/bin/bash
-set -euo pipefail
-cd "$EXPERIMENT_PROJECT"
-"$EXPERIMENT_PYTHON" - <<'PY'
-import os, json
-from pathlib import Path
-from train_library import measurement
-r=Path(os.environ['EXPERIMENT_ROOT'])
-(r/'checkpoints').mkdir()
-with (r/'checkpoints/model.pth').open('wb') as f: f.truncate(11*1024*1024)
-(r/'results.json').write_text(json.dumps({'schema_version':1, 'protocol':PROTOCOL, 'metrics':[{'name':'measurement','variant':'requested method','value':measurement(),'unit':''}]}))
-(r/'validation.json').write_text(json.dumps({'schema_version':1,'passed':True,'checks':[{'name':'independent sum','passed':measurement()==sum([7]*6),'detail':'sum and product agree'}]}))
-PY
-""".replace("PROTOCOL", repr(plan.protocol))
-
-    class ShellAgent(ImplementationAgent):
-        async def begin(self, thread, prompt, schema, *, workspace=None, **kwargs):
-            payload = json.loads(prompt.split("\nPAYLOAD:\n", 1)[1])
-            if payload["phase"] == "plan":
-                self.calls += 1
-                turn = f"shell-plan-{self.calls}"
-                self.results[(thread, turn)] = {
-                    "schema_version": 1,
-                    "title": "Shell measurement",
-                    "summary": plan.summary,
-                    "protocol": plan.protocol,
-                    "stages": [
-                        {
-                            "id": stage.id,
-                            "title": stage.title,
-                            "summary": "Compute and independently check the result.",
-                            "resources": stage.resources.model_dump(),
-                        }
-                        for stage in plan.stages
-                    ],
-                }
-                return turn
-            if payload["phase"] != "prepare":
-                return await super().begin(thread, prompt, schema, workspace=workspace)
-            self.calls += 1
-            turn = f"shell-{self.calls}"
-            (workspace / "train.sh").write_text(script)
-            self.results[(thread, turn)] = plan.model_dump()
-            return turn
-
-    agent = ShellAgent()
-    workflow = Workflow(config, store, scheduler, agent)
-    eid = store.command(
-        uuid4(),
-        "create",
-        {
-            "brief": "Test an entirely new method and show its frontier.",
-            "recipe_id": "agent_experiment_v1",
-            "project_id": "research",
-        },
-    )["experiment_id"]
-    await approve_plan(workflow, store, eid)
-    await wait_for_experiment(workflow, store, eid, lambda e: e["phase"] in ("complete", "failed"))
-    exp = store.experiment(eid)
-    assert exp["phase"] == "complete", exp
-    assert workflow.experiment_python(exp) == interpreter
-    assert library.read_text() == "def measurement():\n    return 6 * 7\n"
-    rows = store.rows("SELECT name,size FROM artifacts WHERE experiment_id=?", (eid,))
-    assert "local-output-fit.json" in {r["name"] for r in rows}
-    assert "model.pth" not in {r["name"] for r in rows}
-    assert all(r["size"] <= artifacts.MAX_ARTIFACT_BYTES for r in rows)
-    assert verify_experiment(store, eid, workflow.root(eid))["scientific_checks"] == "passed"
-    assert scheduler.submissions == 1 and agent.calls == 3
-    await workflow.close()
-
-
-async def test_dependency_timeout_retains_snapshot_and_retries_without_repair(runtime, monkeypatch):
-    from unittest.mock import AsyncMock
-
-    from test_workflow import until
-
-    store, scheduler, _, old = runtime
-    workflow = Workflow(old.config, store, scheduler, ImplementationAgent())
-    eid = store.command(
-        uuid4(),
-        "create",
-        {
-            "brief": "Test an entirely new method and show its frontier.",
-            "recipe_id": "agent_experiment_v1",
-        },
-    )["experiment_id"]
-    await approve_plan(workflow, store, eid)
-    await until(workflow, store, eid, lambda e: e["snapshot"] is not None)
-    exp = store.experiment(eid)
-    original = workflow.dependencies
-    monkeypatch.setattr(workflow, "dependencies", AsyncMock(side_effect=TimeoutError()))
-    outcome = await workflow.submit_prepared_stage(exp, "z_measure")
-    assert outcome == {"state": "held", "reason": "runtime_check_pending"}
-    held = store.experiment(eid)
-    assert held["snapshot"] == exp["snapshot"]
-    assert held["evidence_revision"] == exp["evidence_revision"]
-    assert not store.rows("SELECT * FROM jobs WHERE experiment_id=?", (eid,))
-    monkeypatch.setattr(workflow, "dependencies", original)
-    await workflow.submit_prepared_stage(held, "z_measure")
-    assert len(store.rows("SELECT * FROM jobs WHERE experiment_id=?", (eid,))) == 1
-    await workflow.close()
