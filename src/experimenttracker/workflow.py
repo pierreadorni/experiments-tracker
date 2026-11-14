@@ -2251,16 +2251,23 @@ class Workflow:
                         early_repair.validate(self, exp, plan)
                     reused = self.reusable_stages(exp, plan)
                     budget = exp["contract"].get("max_jobs", self.config.slurm.max_jobs_per_experiment)
+                    # Contract-3 preparation counts scheduled work; an interactive agent stage is not a job.
+                    current = iteration.enabled(exp) or early_repair.preparing(exp)
                     submitted = self.store.one(
-                        "SELECT COUNT(*) AS n FROM jobs WHERE experiment_id=?", (eid,)
+                        "SELECT COUNT(*) AS n FROM jobs WHERE experiment_id=?"
+                        + (
+                            " AND json_extract(execution_manifest, '$.executor') IS NOT 'agent'"
+                            if current
+                            else ""
+                        ),
+                        (eid,),
                     )["n"]
-                    remaining = len(plan.stages) - len(reused)
+                    remaining = (
+                        sum(s.executor == "slurm" and s.id not in reused for s in plan.stages)
+                        if current
+                        else len(plan.stages) - len(reused)
+                    )
                     if early_repair.preparing(exp):
-                        submitted = self.store.one(
-                            "SELECT COUNT(*) AS n FROM jobs WHERE experiment_id=? "
-                            "AND json_extract(execution_manifest, '$.executor') IS NOT 'agent'",
-                            (eid,),
-                        )["n"]
                         kept = {d.stage_id for d in plan.repair_decisions if d.decision == "keep"}
                         retained = {
                             row["stage_id"]
