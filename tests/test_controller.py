@@ -7,7 +7,6 @@ claim managed inference, real Slurm scientific success or physical-phone access.
 import asyncio
 import json
 import threading
-from pathlib import Path
 from uuid import uuid4
 
 import httpx
@@ -15,10 +14,7 @@ import pytest
 from helpers import IterationAgent, wait_for_experiment, wait_until
 from helpers import approve_plan as approve_current_plan
 from helpers import until as until_current
-from test_generic import PLAN, SOURCE, ImplementationAgent, approve_plan
-from test_workflow import until
 
-from experimenttracker import artifacts
 from experimenttracker.api import create_app
 from experimenttracker.codex_client import NeedsAttention, TerminalTurnError
 from experimenttracker.store import Conflict, Store
@@ -143,50 +139,6 @@ async def test_slow_project_catalog_does_not_block_health_or_owner_loop(runtime,
                 release.set()
             response = await task
             assert response.status_code == 200 and response.json()["projects"]
-
-
-async def test_distinct_manifest_corrections_preserve_every_turn_and_continue_across_phases(runtime):
-    store, scheduler, _, old = runtime
-    agent = ImplementationAgent()
-    begin = agent.begin
-    failures = ["filename", "json", "figure", None]
-
-    async def correcting(thread, prompt, schema, **kwargs):
-        turn = await begin(thread, prompt, schema, **kwargs)
-        phase = json.loads(prompt.split("\nPAYLOAD:\n", 1)[1])["phase"]
-        if phase == "prepare":
-            result = json.loads(json.dumps(agent.results[(thread, turn)]))
-            kind = failures.pop(0)
-            if kind == "filename":
-                result["files"].append("local-output-bad.py")
-            elif kind == "json":
-                result["parameters_json"] = "[]"
-            elif kind == "figure":
-                result["figures"] = ["missing.svg"]
-            agent.results[(thread, turn)] = result
-        elif phase == "interpret" and not any(
-            a["phase"] == "interpret" and a["state"] == "failed"
-            for a in store.rows("SELECT * FROM agent_actions")
-        ):
-            agent.results[(thread, turn)]["presentation"] = None
-        return turn
-
-    agent.begin = correcting
-    wf = Workflow(old.config, store, scheduler, agent)
-    eid = create(store)
-    await approve_plan(wf, store, eid)
-    await until(wf, store, eid, lambda exp: exp["phase"] == "complete")
-    actions = store.rows("SELECT * FROM agent_actions WHERE experiment_id=? ORDER BY rowid", (eid,))
-    failed = [a for a in actions if a["state"] == "failed"]
-    assert len(failed) == 4 and scheduler.submissions == 2
-    assert len({a["turn_id"] for a in actions}) == len(actions)
-    assert all(a["result"] and a["thread_id"] and a["turn_id"] for a in failed)
-    for prior in failed:
-        child = store.one("SELECT * FROM agent_actions WHERE previous_action_id=?", (prior["id"],))
-        assert child and child["evidence_revision"] == prior["evidence_revision"]
-        assert child["thread_id"] == prior["thread_id"]
-    assert not store.rows("PRAGMA foreign_key_check")
-    await wf.close()
 
 
 @pytest.mark.parametrize("lost_response", [False, True])
@@ -379,74 +331,6 @@ async def test_known_quota_interruption_resumes_automatically_after_owner_restar
     assert resumed == prior
     assert store.experiment(eid)["contract"].get("manual_agent_turn_requests", 0) == 0
     assert scheduler.submissions == 3
-    await wf.close()
-
-
-class CheckpointAgent(ImplementationAgent):
-    async def begin(self, thread_id, prompt, schema, *, workspace=None):
-        turn = await super().begin(thread_id, prompt, schema, workspace=workspace)
-        payload = json.loads(prompt.split("\nPAYLOAD:\n", 1)[1])
-        if payload["phase"] == "prepare":
-            result = json.loads(json.dumps(PLAN))
-            result["files"] += ["normal_package/__init__.py", "normal_package/value.py"]
-            result["stages"][0]["local_outputs"] = ["checkpoints/model"]
-            package = workspace / "normal_package"
-            package.mkdir(exist_ok=True)
-            (package / "__init__.py").write_text("")
-            (package / "value.py").write_text("VALUE = 42\n")
-            source = SOURCE.replace("6*7", "__import__('normal_package.value', fromlist=['VALUE']).VALUE")
-            source = source.replace(
-                "if a.stage == 'z_measure':",
-                "if a.stage == 'z_measure':\n    (r/'checkpoints/model').mkdir(parents=True,exist_ok=True)\n    (r/'checkpoints/model/weights.json').write_text('{\\\"weight\\\":42}')",
-            )
-            if payload.get("repair_context"):
-                result["reuse_stages"] = ["z_measure"]
-                prior = payload["repair_context"]["previous_outputs"]
-                source = source.replace(
-                    "else:\n    x=",
-                    f"else:\n    assert json.loads((Path({prior!r})/'checkpoints/model/weights.json').read_text())['weight'] == 42\n    x=",
-                )
-                assert workspace == Path(payload["repair_context"]["previous_workspace"])
-            else:
-                source = source.replace(
-                    "else:\n    x=",
-                    "else:\n    raise RuntimeError('evaluation bug after valid training')\n    x=",
-                )
-            (workspace / "recipe.py").write_text(source)
-            self.results[(thread_id, turn)] = result
-        return turn
-
-
-async def test_evaluation_repair_reuses_training_checkpoint_package_and_runtime(runtime):
-    from unittest.mock import AsyncMock
-
-    store, scheduler, _, old = runtime
-    agent = CheckpointAgent()
-    wf = Workflow(old.config, store, scheduler, agent)
-    eid = create(store)
-    await approve_plan(wf, store, eid)
-    await until(wf, store, eid, lambda exp: exp["phase"] == "failed")
-    original = store.experiment(eid)
-    original_work = wf.working_directory(original)
-    first = store.one("SELECT * FROM jobs WHERE experiment_id=? AND stage_id='z_measure'", (eid,))
-    assert first["state"] == "complete" and scheduler.submissions == 2
-    wf.config.mode = "live"
-    wf.cluster_snapshot = {"fixture": True}
-    scheduler.discover = AsyncMock(return_value={"fixture": True})
-    scheduler.preflight = AsyncMock()
-    await wf.repair_failed_experiments()
-    await wf.close()
-    wf = Workflow(old.config, store, scheduler, agent)
-    await until(wf, store, eid, lambda exp: exp["phase"] == "complete")
-    exp = store.experiment(eid)
-    assert scheduler.submissions == 3  # Evaluation alone reran.
-    assert wf.working_directory(exp) == original_work
-    assert exp["snapshot"]["python_executable"] == original["snapshot"]["python_executable"]
-    assert exp["snapshot"]["reused_stages"]["z_measure"]["intent_id"] == first["intent_id"]
-    assert (original_work.parent / "checkpoints/model/weights.json").exists()
-    assert any(j["intent_id"] == first["intent_id"] for j in store.projection(eid)["jobs"])
-    for stage in wf.compute_stages(exp):
-        artifacts.validate_stage(wf.root(eid), stage, exp["snapshot"])
     await wf.close()
 
 

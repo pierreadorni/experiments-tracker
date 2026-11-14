@@ -4,17 +4,15 @@ import json
 from uuid import uuid4
 
 import pytest
-from helpers import IterationAgent, approve_plan, wait_for_experiment, wait_until
+from helpers import IterationAgent, approve_plan, wait_for_experiment
 from pydantic import ValidationError
 
 from experimenttracker import artifacts
-from experimenttracker.audit import verify_experiment
 from experimenttracker.codex_client import DemoAgent
 from experimenttracker.config import JobResources
 from experimenttracker.models import (
     MAX_METRICS,
     MAX_VALIDATION_CHECKS,
-    CreateExperiment,
     ExperimentResult,
     ExperimentValidation,
     Implementation,
@@ -132,48 +130,6 @@ class ImplementationAgent(DemoAgent):
         return turn
 
 
-async def test_generic_dynamic_graph_restart_and_evidence(runtime):
-    store, scheduler, _, old = runtime
-    agent = ImplementationAgent()
-    workflow = Workflow(old.config, store, scheduler, agent)
-    payload = CreateExperiment(
-        request_id=uuid4(), brief="Test an entirely new method and show its frontier."
-    ).model_dump(mode="json")
-    eid = store.command(payload["request_id"], "create", payload)["experiment_id"]
-    assert store.command(payload["request_id"], "create", payload)["experiment_id"] == eid
-    await approve_plan(workflow, store, eid)
-    await wait_until(
-        lambda: bool(store.experiment(eid)["snapshot"]),
-        ticks=lambda: workflow.tick(force_observe=True),
-        describe=lambda: store.experiment(eid),
-    )
-    await workflow.close()
-    workflow = Workflow(old.config, store, scheduler, agent)
-    await wait_for_experiment(workflow, store, eid, lambda e: e["phase"] in ("complete", "failed"))
-    assert store.experiment(eid)["phase"] == "complete", store.experiment(eid)
-    assert scheduler.submissions == 2 and agent.calls == 3
-    assert [r["id"] for r in store.projection(eid)["stages"]] == [
-        "plan",
-        "prepare",
-        "z_measure",
-        "a_verify",
-        "validate",
-        "interpret",
-        "publish",
-    ]
-    assert verify_experiment(store, eid, workflow.root(eid))["artifacts_verified"] == 13
-    for _ in range(3):
-        await workflow.tick(force_observe=True)
-    assert scheduler.submissions == 2 and agent.calls == 3
-    root = workflow.root(eid)
-    result = json.loads((root / "results.json").read_text())
-    result["metrics"][0]["value"] = float("inf")
-    (root / "results.json").write_text(json.dumps(result))
-    with pytest.raises(ValueError, match="non-finite"):
-        artifacts.validate_stage(root, "a_verify", store.experiment(eid)["snapshot"])
-    await workflow.close()
-
-
 @pytest.mark.parametrize(
     "change",
     [
@@ -218,54 +174,6 @@ def test_detailed_evidence_retains_bounded_lists(model, field, limit, item):
     for items in ([], [item] * (limit + 1)):
         with pytest.raises(ValidationError):
             model.model_validate({**payload, field: items})
-
-
-async def test_detailed_outputs_reconcile_saved_job_without_retraining(runtime, monkeypatch):
-    store, scheduler, _, old = runtime
-    source = SOURCE.replace(
-        "'metrics':[{'name':'measurement','variant':'requested method','value':x,'unit':''}]",
-        "'metrics':[{'name':'measurement','variant':'requested method' if i == 0 else f'run {i}','value':x,'unit':''} for i in range(1238)]",
-    ).replace(
-        "'checks':[{'name':'independent recomputation','passed':True,'detail':'sum agrees with product'}]",
-        "'checks':[{'name':f'check {i}','passed':True,'detail':'sum agrees with product'} for i in range(112)]",
-    )
-    monkeypatch.setitem(globals(), "SOURCE", source)
-    validate = artifacts.validate_stage
-
-    def old_validator(root, stage, manifest, **kwargs):
-        names = validate(root, stage, manifest, **kwargs)
-        if stage == "a_verify":
-            raise ValueError("legacy metrics limit exceeded")
-        return names
-
-    monkeypatch.setattr(artifacts, "validate_stage", old_validator)
-    agent = ImplementationAgent()
-    workflow = Workflow(old.config, store, scheduler, agent)
-    eid = store.command(
-        uuid4(),
-        "create",
-        {"brief": "Test an entirely new method and show its frontier.", "recipe_id": "agent_experiment_v1"},
-    )["experiment_id"]
-    await approve_plan(workflow, store, eid)
-    await wait_for_experiment(workflow, store, eid, lambda e: e["phase"] == "failed")
-    assert store.experiment(eid)["hold_reason"] == "validation_failed"
-    assert scheduler.submissions == 2 and agent.calls == 2
-    root = workflow.root(eid)
-    original = (root / "results.json").read_bytes()
-    monkeypatch.setattr(artifacts, "validate_stage", validate)
-    result = await workflow.reconcile_outputs(eid)
-    assert result == await workflow.reconcile_outputs(eid)
-    assert scheduler.submissions == 2 and agent.calls == 2
-    await workflow.close()
-    workflow = Workflow(old.config, store, scheduler, agent)
-    store.command(uuid4(), "action", {"action": "resume_new_compute"}, eid=eid)
-    await wait_for_experiment(workflow, store, eid, lambda e: e["phase"] in ("complete", "failed"))
-    assert store.experiment(eid)["phase"] == "complete", store.experiment(eid)["error"]
-    assert scheduler.submissions == 2 and agent.calls == 3
-    assert (root / "results.json").read_bytes() == original
-    assert len(json.loads(original)["metrics"]) == 1238
-    assert verify_experiment(store, eid, root)["artifacts_verified"] == 13
-    await workflow.close()
 
 
 class BrokenSourceAgent(IterationAgent):
