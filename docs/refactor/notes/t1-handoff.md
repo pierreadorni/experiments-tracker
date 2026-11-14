@@ -11,8 +11,8 @@ the owner's current instruction, with coordinator review. No further Astra use
 is needed for the approved design. Decisions are recorded in that note.
 
 Inert P1 (`5da0df5`), P2 (`57cd5bc`) and P3 (`76c1a66`) are now committed;
-main is `6d4bd82`. P-b1 (`365548a`) and P-b2 (`6d4bd82`) producer migrations
-are committed. Two pre-existing test races are stabilized in `e7c0ff3` by awaiting
+main is `3faf68b`. P-b1 (`365548a`), P-b2 (`6d4bd82`) and P-b3 (`3faf68b`)
+producer migrations are committed. Two pre-existing test races are stabilized in `e7c0ff3` by awaiting
 saved task completion and explicitly gating the pre-restart boundary. The final
 combined isolated Python suite passed **580 tests**; Ruff is clean. Source from
 P1/P2/P3 is +223/−0, tests +460/−0, still inert with no runtime callers.
@@ -21,9 +21,15 @@ P4 is implementing in `.worktrees/t1-archive-activation` with Luna `archive_jobs
 It contains copied P1/P2/P3 prerequisites on old HEAD; measure P4 against the
 copies in `/tmp/t1-archive-activation-baseline/`, or apply its scoped changes onto
 current main before final measurement. Do not count prerequisites again or rebase
-the dirty worktree. P-b3 four-file producer conversion is ready in
-`.worktrees/t1-producers`, pending coordinator checks; its workflow.py **test file**
-also contains the already-landed timing fix. Source activation remains off.
+the dirty worktree. P-b3 passed 44 focused and all 580 Python tests. Source
+activation remains off. Automatic observation must route **all noncancelled,
+nondeleted frozen legacy jobs** to settlement-only handling, including terminal
+failed/complete experiments; otherwise those records still reach old scientific
+validation. This coordinator correction preserves explicit terminal manual recovery.
+The P4 worker is adding that route and remaining compact integration acceptance.
+
+`docs/refactor/notes/t1.3b-source-inventory.md` contains Luna's read-only C2 writer
+inventory and unresolved design questions; it is not implementation approval.
 
 Keep coherent P4 activation after the prerequisites. M budgets for settlement
 and activation are an explicit reviewed sizing amendment. Preserve terminal
