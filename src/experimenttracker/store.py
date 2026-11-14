@@ -757,6 +757,30 @@ class Store:
         )
         db.execute("INSERT INTO outbox(id,payload) VALUES(?,'{}')", (event_id,))
 
+    def archive_legacy_experiments(self):
+        """Put unfinished historical contracts on a read-only owner decision hold."""
+        text = (
+            "This legacy execution is archived and read-only. You may cancel it; "
+            "saved in-flight work can only be settled against its exact identity."
+        )
+        with self.tx() as db:
+            rows = db.execute(
+                "SELECT id FROM experiments WHERE deleted_at IS NULL "
+                "AND phase NOT IN ('complete','failed','cancelled') "
+                "AND json_extract(contract,'$.execution_contract') IS NOT 3 "
+                "AND hold_reason IS NOT 'legacy_contract_archived'"
+            ).fetchall()
+            for row in rows:
+                eid = row["id"]
+                db.execute("UPDATE experiments SET hold_reason='legacy_contract_archived' WHERE id=?", (eid,))
+                self.emit(db, eid, "state_changed", {"hold_reason": "legacy_contract_archived"})
+                cursor = db.execute(
+                    "INSERT OR IGNORE INTO inbox VALUES(?,?,?,?,?)",
+                    (str(uuid4()), eid, "required_decision", text, clock.now()),
+                )
+                if cursor.rowcount:
+                    self.emit(db, eid, "notification", {"kind": "required_decision", "text": text})
+
     def update(self, eid, *, kind="state_changed", **fields):
         allowed = {
             "phase",
