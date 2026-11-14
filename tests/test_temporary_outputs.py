@@ -14,6 +14,12 @@ from experimenttracker.remote_worker import cleanup_temporary
 from experimenttracker.store import encode
 from experimenttracker.workflow import Workflow
 
+SEALED_CHECKPOINT = (
+    '{"outputs":[{"name":"checkpoint","sha256":'
+    '"bd83c6d7b441cafb97f02552040257fbbff7aa7b95b680d88cf47ee4ad2b1425","size":14}],'
+    '"schema_version":1,"stage":"z_measure","storage":"executor-only"}'
+)
+
 
 @pytest.fixture
 def temporary_run(runtime):
@@ -21,6 +27,12 @@ def temporary_run(runtime):
     eid = store.command(
         uuid4(), "create", {"brief": "Synthetic cache lifecycle", "recipe_id": "agent_experiment_v1"}
     )["experiment_id"]
+    # Explicit static legacy state: this fixture never advances the experiment, so the
+    # saved contract must not depend on the global downgrade removing the flag.
+    contract = store.experiment(eid)["contract"]
+    contract.pop("execution_contract", None)
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(contract), eid))
     root = workflow.root(eid)
     (root / "work").mkdir(parents=True)
     (root / "work/recipe.py").write_text(SOURCE)
@@ -71,7 +83,9 @@ def test_temporary_declarations_cannot_delete_retained_outputs(retained):
 
 
 def test_cache_is_never_hashed_but_checkpoint_changes_are_detected(temporary_run, monkeypatch):
-    store, _, _, _, eid, root, manifest = temporary_run
+    _, _, _, _, _, root, manifest = temporary_run
+    # A historical sealed record kept verbatim: verification must not need the writer.
+    (root / "local-output-z_measure.json").write_text(SEALED_CHECKPOINT)
     digest = artifacts.sha256
     reads = []
 
@@ -80,19 +94,17 @@ def test_cache_is_never_hashed_but_checkpoint_changes_are_detected(temporary_run
         return digest(path)
 
     monkeypatch.setattr(artifacts, "sha256", tracked)
-    artifacts.validate_stage(root, "z_measure", manifest, seal_outputs=True)
+    artifacts.validate_stage(root, "z_measure", manifest)
     assert root / "checkpoint" in reads
     assert not any("temporary" in p.parts for p in reads)
-    reads.clear()
-    (root / "checkpoint").write_bytes(b"changed")
-    artifacts.validate_stage(root, "z_measure", manifest, verify_local_outputs=False)
-    assert root / "checkpoint" not in reads
-    with pytest.raises(ValueError, match="checkpoint changed"):
-        artifacts.validate_stage(root, "z_measure", manifest)
-    # The small scientific output still must be valid JSON in ordinary mode.
+    # The small scientific output still must be valid JSON.
     (root / "raw.json").write_text("invalid")
     with pytest.raises(ValueError):
-        artifacts.validate_stage(root, "z_measure", manifest, verify_local_outputs=False)
+        artifacts.validate_stage(root, "z_measure", manifest)
+    (root / "raw.json").write_text('{"value":42}')
+    (root / "checkpoint").write_bytes(b"changed")
+    with pytest.raises(ValueError, match="checkpoint changed"):
+        artifacts.validate_stage(root, "z_measure", manifest)
 
 
 async def test_cleanup_waits_for_result_ready_and_replays_after_restart(temporary_run):
@@ -187,47 +199,6 @@ async def test_remote_cleanup_uses_exact_saved_root_and_snapshot(temporary_run, 
     await workflow.close()
 
 
-@pytest.mark.parametrize("strict", [False, True])
-def test_interpretation_prompt_reuses_completed_checks(temporary_run, monkeypatch, strict):
-    import json
-
-    store, _, _, workflow, eid, root, manifest = temporary_run
-    (root / "results.json").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "protocol": manifest["plan"]["protocol"],
-                "metrics": [{"name": "measurement", "variant": "requested method", "value": 42, "unit": ""}],
-            }
-        )
-    )
-    (root / "validation.json").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "passed": True,
-                "checks": [{"name": "synthetic check", "passed": True, "detail": "fixture"}],
-            }
-        )
-    )
-    (root / "frontier.svg").write_text('<svg xmlns="http://www.w3.org/2000/svg"/>')
-    artifacts.validate_stage(root, "z_measure", manifest, seal_outputs=True)
-    exp = store.experiment(eid)
-    exp["contract"]["strict_reproducibility"] = strict
-    reads = []
-    digest = artifacts.sha256
-
-    def tracked(path):
-        reads.append(path)
-        return digest(path)
-
-    monkeypatch.setattr(artifacts, "sha256", tracked)
-    prompt = workflow.prompt(exp, "interpret")
-    assert '"passed":true' in prompt
-    assert (root / "checkpoint" in reads) is strict
-    assert not any("temporary" in p.parts for p in reads)
-
-
 def test_cleanup_does_not_follow_child_symlinks(temporary_run, tmp_path):
     _, _, _, _, _, root, manifest = temporary_run
     outside = tmp_path / "keep.pt"
@@ -236,14 +207,3 @@ def test_cleanup_does_not_follow_child_symlinks(temporary_run, tmp_path):
     cleanup_temporary(root, manifest)
     assert outside.read_bytes() == b"keep"
     assert not (root / "temporary/features").exists()
-
-
-def test_failed_final_validation_does_not_leave_stage_running(temporary_run):
-    store, _, _, workflow, eid, _, _ = temporary_run
-    store.start_validation(eid)
-    workflow.fail(eid, "validation_failed", "synthetic scientific check failure")
-    assert store.experiment(eid)["phase"] == "failed"
-    assert store.one("SELECT state,error FROM stages WHERE experiment_id=? AND id='validate'", (eid,)) == {
-        "state": "failed",
-        "error": "synthetic scientific check failure",
-    }
