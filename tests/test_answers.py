@@ -19,8 +19,9 @@ def test_multiple_questions_require_complete_explicit_answers():
 def test_invalid_approval_is_rejected_before_command_commit(runtime):
     store, _, _, _ = runtime
     eid = store.command(
-        uuid4(), "create", {"brief": "Compare fixed synthetic models.", "recipe_id": "toy_compare_v1"}
+        uuid4(), "create", {"brief": "Compare fixed synthetic models.", "recipe_id": "agent_experiment_v1"}
     )["experiment_id"]
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
     pending = {"id": "pending", "method": "item/fileChange/requestApproval", "params": {}, "expired": False}
     store.update(eid, pending_request=pending)
     request_id = uuid4()

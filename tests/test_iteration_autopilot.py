@@ -852,10 +852,15 @@ def test_request_identity_cannot_cross_project_and_experiment_commands(runtime, 
     service.command("test-project", payload)
     with pytest.raises(Conflict, match="Autopilot"):
         service.store.command(
-            request, "create", {"brief": "Cross-domain identity must conflict", "recipe_id": "toy_compare_v1"}
+            request,
+            "create",
+            {"brief": "Cross-domain identity must conflict", "recipe_id": "agent_experiment_v1"},
         )
     old = str(uuid4())
-    service.store.command(old, "create", {"brief": "Synthetic fixture", "recipe_id": "toy_compare_v1"})
+    eid = service.store.command(
+        old, "create", {"brief": "Synthetic fixture", "recipe_id": "agent_experiment_v1"}
+    )["experiment_id"]
+    assert service.store.experiment(eid)["contract"]["execution_contract"] == 3
     with pytest.raises(Conflict, match="another domain"):
         service.command(
             "test-project",

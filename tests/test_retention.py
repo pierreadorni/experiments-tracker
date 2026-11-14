@@ -9,8 +9,9 @@ from experimenttracker.store import encode
 
 def history(store):
     eid = store.command(
-        uuid4(), "create", {"brief": "Synthetic retention fixture", "recipe_id": "toy_compare_v1"}
+        uuid4(), "create", {"brief": "Synthetic retention fixture", "recipe_id": "agent_experiment_v1"}
     )["experiment_id"]
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
     # Legacy owners persisted a complete view per event. Keep these fixtures
     # explicit now that emit writes references only.
     for i in range(6):

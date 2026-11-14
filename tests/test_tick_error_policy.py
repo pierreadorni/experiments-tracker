@@ -12,14 +12,16 @@ from experimenttracker.workflow import Workflow
 
 
 def submit(store):
-    return store.command(
+    eid = store.command(
         uuid4(),
         "create",
         {
             "brief": "Compare linear and quadratic models on shared synthetic data.",
-            "recipe_id": "toy_compare_v1",
+            "recipe_id": "agent_experiment_v1",
         },
     )["experiment_id"]
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
+    return eid
 
 
 def raising(exc):

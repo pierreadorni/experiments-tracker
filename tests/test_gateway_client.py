@@ -23,7 +23,7 @@ async def test_lost_ack_redelivery_and_publication_retry(config, runtime, tmp_pa
             "schema_version": 1,
             "request_id": request_id,
             "brief": "Compare shared synthetic models.",
-            "recipe_id": "toy_compare_v1",
+            "recipe_id": "agent_experiment_v1",
         },
     }
     ack_attempts = 0
@@ -57,6 +57,7 @@ async def test_lost_ack_redelivery_and_publication_retry(config, runtime, tmp_pa
         await client.commands()
         assert len(store.rows("SELECT * FROM experiments")) == 1
         assert store.experiment(eid)["id"] == eid
+        assert store.experiment(eid)["contract"]["execution_contract"] == 3
         await client.publish_outbox()
         pending = store.one("SELECT * FROM outbox")
         assert pending["delivered_at"] is None and pending["attempts"] == 1
@@ -74,8 +75,9 @@ async def test_expired_command_refusal_is_durable_before_lost_ack(config, runtim
     credential.write_text("e" * 40)
     config.gateway = GatewayConfig(url="https://gateway.example", credential_file=credential)
     eid = store.command(
-        uuid4(), "create", {"brief": "Compare the fixed models.", "recipe_id": "toy_compare_v1"}
+        uuid4(), "create", {"brief": "Compare the fixed models.", "recipe_id": "agent_experiment_v1"}
     )["experiment_id"]
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
     request_id = str(uuid4())
     queued = {
         "request_id": request_id,
@@ -262,14 +264,16 @@ def publication_client(config, store, tmp_path, handler):
 
 
 def publication_experiment(store):
-    return store.command(
+    eid = store.command(
         uuid4(),
         "create",
         {
             "brief": "Compare the fixed synthetic models.",
-            "recipe_id": "toy_compare_v1",
+            "recipe_id": "agent_experiment_v1",
         },
     )["experiment_id"]
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
+    return eid
 
 
 async def test_repair_publication_compacts_new_and_preexisting_outbox(config, runtime, tmp_path):
@@ -421,13 +425,21 @@ async def test_failed_bridge_operations_do_not_block_other_experiments_or_heartb
     await client.close()
 
 
+@pytest.mark.parametrize("execution_contract", [2, 3])
 async def test_artifacts_wait_for_registration_and_failed_upload_cannot_starve_siblings(
-    config, runtime, tmp_path
+    config, runtime, tmp_path, execution_contract
 ):
     from experimenttracker import artifacts
 
     store, _, _, workflow = runtime
     eid = publication_experiment(store)
+    if execution_contract == 2:
+        from experimenttracker.store import encode
+
+        contract = {**store.experiment(eid)["contract"], "execution_contract": 2}
+        with store.tx() as db:
+            db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(contract), eid))
+    assert store.experiment(eid)["contract"]["execution_contract"] == execution_contract
     root = workflow.root(eid)
     root.mkdir(parents=True)
     names = ["bad.json", "good.json", "later.json", "retired.json"]
@@ -475,7 +487,19 @@ async def test_artifacts_wait_for_registration_and_failed_upload_cannot_starve_s
     )
     await client.publish_outbox()
     await client.upload_artifacts()
-    assert len(uploads) == 3  # failed upload is backed off; siblings already succeeded
+    if execution_contract == 3:
+        assert len(uploads) == 4
+        assert (
+            store.one("SELECT remote_published FROM artifacts WHERE name='retired.json'")["remote_published"]
+            == 1
+        )
+    else:
+        assert len(uploads) == 3  # failed upload is backed off; siblings already succeeded
+        assert (
+            store.one("SELECT remote_published FROM artifacts WHERE name='retired.json'")["remote_published"]
+            == 0
+        )
+    assert uploads.count(bad_id) == 1
     assert "artifact:" + bad_id in client.operation_errors
     await client.close()
 
