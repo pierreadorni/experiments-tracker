@@ -4,7 +4,7 @@ import json
 from uuid import uuid4
 
 import pytest
-from helpers import approve_plan, wait_for_experiment, wait_until
+from helpers import IterationAgent, approve_plan, wait_for_experiment, wait_until
 from pydantic import ValidationError
 
 from experimenttracker import artifacts
@@ -268,22 +268,43 @@ async def test_detailed_outputs_reconcile_saved_job_without_retraining(runtime, 
     await workflow.close()
 
 
-async def test_invalid_prepared_source_fails_bounded_repair_before_compute(runtime, monkeypatch):
+class BrokenSourceAgent(IterationAgent):
+    """Keep the helper's valid preparation, then save a source that cannot compile."""
+
+    async def session(self, thread_id, workspace, *, writable=False, **kwargs):
+        self.writable = writable
+        return await super().session(thread_id, workspace, **kwargs)
+
+    async def begin(self, thread_id, prompt, schema, *, workspace=None, **kwargs):
+        payload = json.loads(prompt.split("\nPAYLOAD:\n", 1)[1])
+        turn = await super().begin(thread_id, prompt, schema, workspace=workspace, **kwargs)
+        if payload["phase"] == "plan":
+            assert not self.writable
+        elif payload["phase"] == "prepare":
+            assert self.writable and workspace == self.workspace
+            (workspace / "recipe.py").write_text("def broken(:\n")
+        return turn
+
+
+@pytest.mark.current_contract
+async def test_invalid_prepared_source_fails_bounded_repair_before_compute(runtime):
     store, scheduler, _, old = runtime
-    monkeypatch.setitem(globals(), "SOURCE", "def broken(:\n")
-    agent = ImplementationAgent()
+    agent = BrokenSourceAgent()
     workflow = Workflow(old.config, store, scheduler, agent)
     eid = store.command(
         uuid4(),
         "create",
         {
-            "brief": "Test an entirely new method and show its frontier.",
+            "brief": "Exercise synthetic iteration mechanisms.",
             "recipe_id": "agent_experiment_v1",
         },
     )["experiment_id"]
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
     await approve_plan(workflow, store, eid)
     await wait_for_experiment(workflow, store, eid, lambda e: e["phase"] == "failed")
-    assert "does not compile" in store.experiment(eid)["error"]
+    exp = store.experiment(eid)
+    assert "does not compile" in exp["error"]
+    assert exp["snapshot"] is None
     assert scheduler.submissions == 0 and agent.calls == 4
-    assert store.experiment(eid)["snapshot"] is None
+    assert not store.rows("SELECT * FROM jobs WHERE experiment_id=?", (eid,))
     await workflow.close()

@@ -5,14 +5,14 @@ import json
 from uuid import uuid4
 
 import pytest
-from helpers import wait_for_experiment, wait_until
+from helpers import IterationAgent, wait_for_experiment, wait_until
 from pydantic import ValidationError
 from test_generic import PLAN, ImplementationAgent, approve_plan
 
 from experimenttracker import artifacts, slurm
 from experimenttracker.audit import verify_experiment
 from experimenttracker.config import JobResources, ProjectConfig, ResourceLimits, SlurmConfig
-from experimenttracker.models import Implementation
+from experimenttracker.models import Implementation, ResearchPlan
 from experimenttracker.slurm import (
     DemoScheduler,
     ResourceUnavailable,
@@ -160,22 +160,60 @@ class RecordedScheduler(DemoScheduler):
         return result
 
 
-async def test_gpu_plan_persists_before_dispatch_and_restart_never_resubmits(runtime, monkeypatch):
+class GPUAgent(IterationAgent):
+    """Two GPU stages keep the helper's train/evaluate source and synthetic metric."""
+
+    async def session(self, thread_id, workspace, *, writable=False, **kwargs):
+        self.writable = writable
+        return await super().session(thread_id, workspace, **kwargs)
+
+    async def begin(self, thread_id, prompt, schema, *, workspace=None, **kwargs):
+        payload = json.loads(prompt.split("\nPAYLOAD:\n", 1)[1])
+        turn = await super().begin(thread_id, prompt, schema, workspace=workspace, **kwargs)
+        result = copy.deepcopy(self.results[(thread_id, turn)])
+        if payload["phase"] in ("plan", "prepare"):
+            result["stages"] = [
+                {**stage, "resources": GPU.model_dump()}
+                for stage in result["stages"]
+                if stage["id"] in ("train", "evaluate")
+            ]
+            if payload["phase"] == "plan":
+                assert not self.writable
+            else:
+                assert self.writable and workspace == self.workspace
+        if payload["phase"] == "prepare":
+            result["figures"] = []
+            if payload.get("repair_context"):
+                # A refused admission ran no stage, so no producer can be reused.
+                result["reuse_stages"] = []
+                result["reuse_rationale"] = "No stage ran before the refused admission; retry both stages."
+                result["repair_decisions"] = [
+                    {
+                        "stage_id": stage["id"],
+                        "decision": "retry",
+                        "rationale": "Nothing ran under the refused admission; retry the same work.",
+                    }
+                    for stage in result["stages"]
+                ]
+        self.results[(thread_id, turn)] = result
+        return turn
+
+
+@pytest.mark.current_contract
+async def test_gpu_plan_persists_before_dispatch_and_restart_never_resubmits(runtime):
     store, _, _, old = runtime
-    plan = copy.deepcopy(PLAN)
-    for stage in plan["stages"]:
-        stage["resources"] = GPU.model_dump()
-    monkeypatch.setattr("test_generic.PLAN", plan)
     config = old.config.model_copy(update={"mode": "live"})
     scheduler = RecordedScheduler(config.state_dir / "resource-fixture", store)
-    agent = ImplementationAgent()
+    agent = GPUAgent()
     workflow = Workflow(config, store, scheduler, agent)
     eid = store.command(
         uuid4(),
         "create",
-        {"brief": "Test an entirely new method and show its frontier.", "recipe_id": "agent_experiment_v1"},
+        {"brief": "Exercise synthetic iteration mechanisms.", "recipe_id": "agent_experiment_v1"},
     )["experiment_id"]
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
     await approve_plan(workflow, store, eid)
+    assert store.experiment(eid)["plan_review"]["schema_version"] == 3
     await wait_until(
         lambda: bool(scheduler.submissions),
         ticks=lambda: workflow.tick(force_observe=True),
@@ -183,8 +221,9 @@ async def test_gpu_plan_persists_before_dispatch_and_restart_never_resubmits(run
     )
     assert scheduler.submissions == 1
     first = store.one("SELECT * FROM jobs WHERE experiment_id=?", (eid,))
+    assert first["stage_id"] == "train"
     assert first["state"] == "submitting" and first["job_id"] is None
-    assert json.loads(first["resources"])["gpu_type"] == "a100"
+    assert json.loads(first["resources"]) == GPU.model_dump()
     await workflow.close()
     # A changed fallback configuration cannot rewrite the frozen stage request.
     config = config.model_copy(
@@ -195,47 +234,62 @@ async def test_gpu_plan_persists_before_dispatch_and_restart_never_resubmits(run
     assert store.experiment(eid)["phase"] == "complete", store.experiment(eid)
     assert scheduler.submissions == 2
     assert scheduler.preflights == 2
-    assert store.one("SELECT * FROM jobs WHERE intent_id=?", (first["intent_id"],))["job_id"]
-    assert all(
-        json.loads(j["resources"])["walltime_minutes_per_job"] == 720
-        for j in store.rows("SELECT resources FROM jobs WHERE experiment_id=?", (eid,))
-    )
+    adopted = store.one("SELECT * FROM jobs WHERE intent_id=?", (first["intent_id"],))
+    assert adopted["job_id"] == f"demo-{first['intent_id']}"
+    jobs = store.rows("SELECT resources FROM jobs WHERE experiment_id=?", (eid,))
+    assert len(jobs) == 2
+    assert all(json.loads(job["resources"]) == GPU.model_dump() for job in jobs)
     await workflow.close()
 
 
-async def test_unavailable_preflight_creates_no_submission_intent_and_no_duplicate_notices(
-    runtime, monkeypatch
-):
+@pytest.mark.current_contract
+async def test_unavailable_preflight_creates_no_submission_intent_and_no_duplicate_notices(runtime):
     store, _, _, old = runtime
-    plan = copy.deepcopy(PLAN)
-    for stage in plan["stages"]:
-        stage["resources"] = GPU.model_dump()
-    monkeypatch.setattr("test_generic.PLAN", plan)
-    scheduler = RecordedScheduler(old.config.state_dir / "unavailable-fixture", store)
+    config = old.config.model_copy(update={"mode": "live"})
+    scheduler = RecordedScheduler(config.state_dir / "unavailable-fixture", store)
+    attempts = []
 
-    async def unavailable(*args):
+    async def unavailable(intent, script, root, resources):
+        attempts.append(resources)
         raise ResourceUnavailable("requested GPU is drained")
 
     scheduler.preflight = unavailable
-    workflow = Workflow(
-        old.config.model_copy(update={"mode": "live"}), store, scheduler, ImplementationAgent()
-    )
+    agent = GPUAgent()
+    workflow = Workflow(config, store, scheduler, agent)
     eid = store.command(
         uuid4(),
         "create",
-        {"brief": "Test an entirely new method and show its frontier.", "recipe_id": "agent_experiment_v1"},
+        {"brief": "Exercise synthetic iteration mechanisms.", "recipe_id": "agent_experiment_v1"},
     )["experiment_id"]
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
     await approve_plan(workflow, store, eid)
     await wait_for_experiment(workflow, store, eid, lambda e: e["hold_reason"] == "resources_unavailable")
-    for _ in range(3):
+    for expected in (2, 3, 4):
         workflow.last_preflight.clear()
-        await workflow.tick(force_observe=True)
+        await wait_until(
+            lambda value=expected: len(attempts) == value,
+            ticks=lambda: workflow.tick(force_observe=True),
+            describe=lambda: store.experiment(eid),
+        )
     assert not store.rows("SELECT * FROM jobs WHERE experiment_id=?", (eid,))
+    assert not store.rows("SELECT * FROM events WHERE experiment_id=? AND kind='submission_intent'", (eid,))
     assert scheduler.submissions == 0
+    assert all(resources == GPU for resources in attempts)
     assert (
         len(store.rows("SELECT * FROM inbox WHERE experiment_id=? AND text LIKE 'Slurm cannot%'", (eid,)))
         == 1
     )
+    exp = store.experiment(eid)
+    assert exp["phase"] == "preparing" and exp["hold_reason"] == "resources_unavailable"
+    assert exp["error"] == "requested GPU is drained"
+    saved_plan = exp["snapshot"]["plan"]
+    assert [stage["id"] for stage in saved_plan["stages"]] == ["train", "evaluate"]
+    assert saved_plan["figures"] == []
+    assert saved_plan["reuse_stages"] == [] and len(saved_plan["repair_decisions"]) == 2
+    repairs = len(
+        store.rows("SELECT * FROM events WHERE experiment_id=? AND kind='automatic_repair_started'", (eid,))
+    )
+    assert (repairs, agent.calls) == (3, 5)
     await workflow.close()
 
 
@@ -291,19 +345,33 @@ def test_shell_stages_freeze_project_sources_and_large_checkpoints_stay_local(tm
         artifacts.verify_project_sources(root, manifest, project)
 
 
-def test_plan_can_exceed_three_stages_and_owner_gpu_hour_budget_is_enforced(runtime):
-    store, _, _, workflow = runtime
-    stages = [
-        {"id": f"fit_{i}", "title": "Fit", "outputs": [f"raw_{i}.json"], "resources": GPU.model_dump()}
-        for i in range(5)
-    ]
-    stages[-1]["outputs"] = ["results.json", "validation.json"]
-    plan = Implementation.model_validate({**PLAN, "figures": [], "stages": stages})
+@pytest.mark.current_contract
+async def test_plan_can_exceed_three_stages_and_owner_gpu_hour_budget_is_enforced(runtime):
+    store, scheduler, _, workflow = runtime
+    plan = ResearchPlan.model_validate(
+        {
+            "schema_version": 3,
+            "title": "Five GPU fits",
+            "summary": "Fit five synthetic GPU stages with an explicit dependency chain.",
+            "protocol": "Synthetic mechanism check, not scientific research.",
+            "stages": [
+                {
+                    "id": f"fit_{index}",
+                    "title": f"Synthetic fit {index}",
+                    "summary": f"Measure synthetic stage {index} on its declared GPU allocation.",
+                    "resources": GPU.model_dump(),
+                    "needs": [f"fit_{index - 1}"] if index else [],
+                }
+                for index in range(5)
+            ],
+        }
+    )
     eid = store.command(
         uuid4(),
         "create",
-        {"brief": "Test an entirely new method and show its frontier.", "recipe_id": "agent_experiment_v1"},
+        {"brief": "Exercise synthetic iteration mechanisms.", "recipe_id": "agent_experiment_v1"},
     )["experiment_id"]
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
     workflow.config = workflow.config.model_copy(
         update={"mode": "live", "slurm": SlurmConfig(limits=ResourceLimits(gpu_hours_per_experiment=24))}
     )
@@ -311,6 +379,8 @@ def test_plan_can_exceed_three_stages_and_owner_gpu_hour_budget_is_enforced(runt
         workflow.validate_resource_plan(store.experiment(eid), plan)
     workflow.config = workflow.config.model_copy(update={"slurm": SlurmConfig()})
     workflow.validate_resource_plan(store.experiment(eid), plan)
+    assert not store.rows("SELECT * FROM jobs WHERE experiment_id=?", (eid,))
+    assert scheduler.submissions == 0 and workflow.agent.calls == 0
 
 
 @pytest.mark.parametrize("local_output", ["checkpoints/model.pth", "checkpoints"])
