@@ -12,7 +12,9 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from helpers import wait_for_experiment, wait_until
+from helpers import IterationAgent, wait_for_experiment, wait_until
+from helpers import approve_plan as approve_current_plan
+from helpers import until as until_current
 from test_generic import PLAN, SOURCE, ImplementationAgent, approve_plan
 from test_workflow import until
 
@@ -38,6 +40,22 @@ def failed_prepare(store, eid):
     return store.one(
         "SELECT * FROM agent_actions WHERE experiment_id=? AND phase='prepare' AND state='failed'", (eid,)
     )
+
+
+class PermissionAgent(IterationAgent):
+    """Iteration agent that keeps the plan read-only and prepare workspace writable."""
+
+    async def session(self, thread_id, workspace, **kwargs):
+        self.writable = kwargs.get("writable", False)
+        return await super().session(thread_id, workspace, **kwargs)
+
+    async def begin(self, thread_id, prompt, schema, *, workspace=None, **kwargs):
+        phase = json.loads(prompt.split("\nPAYLOAD:\n", 1)[1])["phase"]
+        if phase == "plan":
+            assert not self.writable
+        elif phase == "prepare":
+            assert self.writable and workspace == self.workspace
+        return await super().begin(thread_id, prompt, schema, workspace=workspace, **kwargs)
 
 
 @pytest.mark.current_contract
@@ -240,36 +258,84 @@ async def test_manual_planning_retry_has_same_revision_and_duplicate_receipt(run
     await wf.close()
 
 
-async def test_explicit_retry_grants_one_turn_at_owner_budget_with_idempotent_receipt(runtime):
+@pytest.mark.current_contract
+@pytest.mark.parametrize("uncertain", [False, True])
+async def test_explicit_retry_grants_one_turn_at_owner_budget_with_idempotent_receipt(runtime, uncertain):
     store, scheduler, _, old = runtime
     old.config.codex.max_agent_turns = 1
-    agent = ImplementationAgent()
+    agent = PermissionAgent()
     wf = Workflow(old.config, store, scheduler, agent)
     eid = create(store)
-    await approve_plan(wf, store, eid)
-    await until(wf, store, eid, lambda exp: exp["phase"] == "failed")
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
+    await approve_current_plan(wf, store, eid)
+    await until_current(wf, store, eid, lambda exp: exp["phase"] == "failed")
     assert store.experiment(eid)["hold_reason"] == "agent_budget_exhausted"
     assert agent.calls == 1 and scheduler.submissions == 0
     request = uuid4()
     receipt = store.command(request, "action", {"action": "retry_agent"}, eid=eid)
     assert store.command(request, "action", {"action": "retry_agent"}, eid=eid) == receipt
     assert store.experiment(eid)["contract"]["manual_agent_turn_requests"] == 1
-    await until(wf, store, eid, lambda exp: exp["phase"] == "failed")
-    assert agent.calls == 2 and scheduler.submissions == 2
+    await until_current(wf, store, eid, lambda exp: exp["phase"] == "failed")
+    assert agent.calls == 2 and scheduler.submissions == 3
     assert store.experiment(eid)["hold_reason"] == "agent_budget_exhausted"
-    store.command(uuid4(), "action", {"action": "retry_agent"}, eid=eid)
-    await until(wf, store, eid, lambda exp: exp["phase"] == "complete")
-    assert agent.calls == 3 and scheduler.submissions == 2
+    if uncertain:
+        # Retired legacy repair/report guards (test_auto_repair.py:322, :418) become this
+        # analogue: a turn-bearing action with an unestablished outcome cannot be retried.
+        prepare = store.one(
+            "SELECT * FROM agent_actions WHERE experiment_id=? AND phase='prepare' ORDER BY rowid DESC LIMIT 1",
+            (eid,),
+        )
+        assert (
+            prepare["state"] == "completed"
+            and prepare["previous_action_id"]
+            and prepare["turn_id"]
+            and prepare["result"]
+        )
+        wf._action_state(prepare["id"], "uncertain")
+        before = store.experiment(eid)
+        action_ids = {
+            a["id"] for a in store.rows("SELECT id FROM agent_actions WHERE experiment_id=?", (eid,))
+        }
+        jobs = store.rows(
+            "SELECT intent_id,job_id,state FROM jobs WHERE experiment_id=? ORDER BY rowid", (eid,)
+        )
+        request = uuid4()
+        with pytest.raises(Conflict):
+            store.command(request, "action", {"action": "retry_agent"}, eid=eid)
+        after = store.experiment(eid)
+        assert (after["phase"], after["hold_reason"]) == ("failed", "agent_budget_exhausted")
+        assert after["contract"] == before["contract"]
+        assert after["contract"]["manual_agent_turn_requests"] == 1
+        saved_prepare = store.one("SELECT state FROM agent_actions WHERE id=?", (prepare["id"],))
+        assert saved_prepare["state"] == "uncertain"
+        assert {
+            a["id"] for a in store.rows("SELECT id FROM agent_actions WHERE experiment_id=?", (eid,))
+        } == action_ids
+        assert not store.rows("SELECT * FROM commands WHERE request_id=?", (str(request),))
+        assert agent.calls == 2 and scheduler.submissions == 3
+        assert (
+            store.rows("SELECT intent_id,job_id,state FROM jobs WHERE experiment_id=? ORDER BY rowid", (eid,))
+            == jobs
+        )
+        await wf.close()
+        return
+    second_request = uuid4()
+    second_receipt = store.command(second_request, "action", {"action": "retry_agent"}, eid=eid)
+    assert store.command(second_request, "action", {"action": "retry_agent"}, eid=eid) == second_receipt
+    await until_current(wf, store, eid, lambda exp: exp["phase"] == "complete")
+    assert agent.calls == 3 and scheduler.submissions == 3
     assert store.experiment(eid)["contract"]["manual_agent_turn_requests"] == 2
     await wf.close()
 
 
+@pytest.mark.current_contract
 async def test_known_quota_interruption_resumes_automatically_after_owner_restart(runtime):
     store, scheduler, _, old = runtime
-    agent = ImplementationAgent()
+    agent = PermissionAgent()
     wf = Workflow(old.config, store, scheduler, agent)
     eid = create(store)
-    await approve_plan(wf, store, eid)
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
+    await approve_current_plan(wf, store, eid)
     finish = agent.finish
     interrupted = False
 
@@ -284,7 +350,12 @@ async def test_known_quota_interruption_resumes_automatically_after_owner_restar
     agent.finish = interrupt_once
     await wait_for_experiment(wf, store, eid, lambda e: failed_prepare(store, eid) is not None)
     prior = failed_prepare(store, eid)
-    assert prior and prior["turn_id"] and prior["attempts"] == 1
+    assert prior and prior["state"] == "failed" and prior["turn_id"]
+    assert prior["attempts"] == 1 and prior["interrupt_reason"] == "quota_hold"
+    # The interrupted turn keeps its identity but adopts no result; its exact runtime
+    # result stays readable and is never retried as an unknown outcome.
+    assert prior["result"] is None
+    assert agent.results[(prior["thread_id"], prior["turn_id"])]["schema_version"] == 3
     await wf.close()
     # The saved failure is the whole recovery state: no owner retry was issued.
     assert not store.rows("SELECT 1 FROM agent_actions WHERE previous_action_id=?", (prior["id"],))
@@ -301,13 +372,13 @@ async def test_known_quota_interruption_resumes_automatically_after_owner_restar
         continuation["phase"] == "prepare" and continuation["evidence_revision"] == prior["evidence_revision"]
     )
     assert continuation["thread_id"] == prior["thread_id"]
-    await until(wf, store, eid, lambda exp: exp["phase"] == "complete")
+    await until_current(wf, store, eid, lambda exp: exp["phase"] == "complete")
     links = store.rows("SELECT * FROM agent_actions WHERE previous_action_id=?", (prior["id"],))
-    assert links and links[0]["id"] == continuation["id"]
+    assert [link["id"] for link in links] == [continuation["id"]]
     resumed = store.one("SELECT * FROM agent_actions WHERE id=?", (prior["id"],))
     assert resumed == prior
     assert store.experiment(eid)["contract"].get("manual_agent_turn_requests", 0) == 0
-    assert scheduler.submissions == 2
+    assert scheduler.submissions == 3
     await wf.close()
 
 
@@ -379,29 +450,38 @@ async def test_evaluation_repair_reuses_training_checkpoint_package_and_runtime(
     await wf.close()
 
 
+@pytest.mark.current_contract
 async def test_manifest_tool_wakeups_and_tracked_submission_are_idempotent(runtime):
     store, scheduler, _, old = runtime
-    agent = ImplementationAgent()
+    agent = PermissionAgent()
     wf = Workflow(old.config, store, scheduler, agent)
     eid = create(store)
-    await approve_plan(wf, store, eid)
-    await until(wf, store, eid, lambda exp: bool(exp["snapshot"]))
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
+    await approve_current_plan(wf, store, eid)
+    await until_current(wf, store, eid, lambda exp: bool(exp["snapshot"]))
     exp = store.experiment(eid)
-    assert (await wf.controller.check(exp, "prepare", PLAN))["valid"]
+    assert exp["snapshot"]["plan"]["schema_version"] == 3
+    assert exp["snapshot"]["plan"]["python_executable"]
+    assert (await wf.controller.check(exp, "prepare", exp["snapshot"]["plan"]))["valid"]
     with pytest.raises(ValueError, match="reserved"):
-        await wf.controller.check(exp, "prepare", {**PLAN, "files": ["recipe.py", "local-output-bad.json"]})
+        await wf.controller.check(
+            exp, "prepare", {**exp["snapshot"]["plan"], "files": ["recipe.py", "local-output-bad.json"]}
+        )
     request = uuid4()
     saved = wf.controller.schedule(eid, request, 60, "Read progress")
     assert wf.controller.schedule(eid, request, 60, "Read progress") == saved
     with pytest.raises(Conflict):
         wf.controller.schedule(eid, request, 120, "Read progress")
     job_request = str(uuid4())
-    one = await wf.submit_prepared_stage(exp, "z_measure", job_request)
-    two = await wf.submit_prepared_stage(exp, "z_measure", job_request)
+    one = await wf.submit_prepared_stage(exp, "train", job_request)
+    two = await wf.submit_prepared_stage(exp, "train", job_request)
     assert one == two and scheduler.submissions == 1
     assert store.one("SELECT * FROM jobs WHERE intent_id=?", (job_request,))["execution_manifest"]
+    held = await wf.submit_prepared_stage(exp, "evaluate", str(uuid4()))
+    assert held == {"state": "held", "reason": "dependencies_pending"}
+    assert not store.rows("SELECT * FROM jobs WHERE experiment_id=? AND stage_id='evaluate'", (eid,))
     root = wf.root(eid)
-    (root / "analysis").mkdir()
+    (root / "analysis").mkdir(exist_ok=True)
     (root / "analysis/figure.svg").write_text('<svg xmlns="http://www.w3.org/2000/svg"/>')
     a = wf.register_analysis_file(exp, "figure.svg")
     assert wf.register_analysis_file(exp, "figure.svg") == a
@@ -448,28 +528,31 @@ async def test_agent_progress_extends_inactivity_window_without_unbounded_event_
     assert await task == {} and agent.server.events.qsize() == 0
 
 
+@pytest.mark.current_contract
 async def test_configured_sessions_let_another_plan_progress_while_one_turn_waits(runtime):
-    from experimenttracker.codex_client import DemoAgent
-
     store, scheduler, _, old = runtime
     old.config.codex.max_sessions = 2
-
     release_turns = asyncio.Event()
+    phases = {}
 
-    class WaitingAgent(ImplementationAgent):
-        async def session(self, thread, workspace, *, writable=False):
-            identity = thread or str(uuid4())
-            self.workspace, self.writable = workspace, writable
-            return identity, "deterministic-demo"
+    class WaitingAgent(PermissionAgent):
+        async def session(self, thread_id, workspace, **kwargs):
+            return await super().session(thread_id or str(uuid4()), workspace, **kwargs)
 
-        async def finish(self, thread, turn):
-            payload = self.results[(thread, turn)]
-            if payload.get("title") == "Requested method frontier":
+        async def begin(self, thread_id, prompt, schema, *, workspace=None, **kwargs):
+            turn = await super().begin(thread_id, prompt, schema, workspace=workspace, **kwargs)
+            phases[(thread_id, turn)] = json.loads(prompt.split("\nPAYLOAD:\n", 1)[1])["phase"]
+            return turn
+
+        async def finish(self, thread_id, turn_id):
+            if phases[(thread_id, turn_id)] == "plan":
                 await release_turns.wait()
-            return await DemoAgent.finish(self, thread, turn)
+            return await super().finish(thread_id, turn_id)
 
     wf = Workflow(old.config, store, scheduler, WaitingAgent())
     first, second = create(store), create(store)
+    assert store.experiment(first)["contract"]["execution_contract"] == 3
+    assert store.experiment(second)["contract"]["execution_contract"] == 3
 
     def two_running():
         running = store.rows("SELECT * FROM agent_actions WHERE state='running'")
@@ -481,19 +564,24 @@ async def test_configured_sessions_let_another_plan_progress_while_one_turn_wait
             for eid in [first, second]
         )
 
-    running = await wait_until(
-        two_running,
-        ticks=lambda: wf.tick(force_observe=True),
-        describe=lambda: store.rows("SELECT * FROM agent_actions WHERE state='running'"),
-    )
-    assert {a["experiment_id"] for a in running} == {first, second}
-    release_turns.set()
-    assert wf.lanes[0].gate is wf.lanes[1].gate
-    await wait_until(
-        both_awaiting_review,
-        ticks=lambda: wf.tick(force_observe=True),
-        describe=lambda: [store.experiment(eid)["plan_review"] for eid in [first, second]],
-    )
-    assert both_awaiting_review()
-    assert scheduler.submissions == 0
-    await wf.close()
+    try:
+        running = await wait_until(
+            two_running,
+            ticks=lambda: wf.tick(force_observe=True),
+            describe=lambda: store.rows("SELECT * FROM agent_actions WHERE state='running'"),
+        )
+        assert {a["experiment_id"] for a in running} == {first, second}
+        assert {a["phase"] for a in running} == {"plan"}
+        assert len({a["thread_id"] for a in running}) == 2
+        assert wf.lanes[0].gate is wf.lanes[1].gate
+        release_turns.set()
+        await wait_until(
+            both_awaiting_review,
+            ticks=lambda: wf.tick(force_observe=True),
+            describe=lambda: [store.experiment(eid)["plan_review"] for eid in [first, second]],
+        )
+        assert both_awaiting_review()
+        assert scheduler.submissions == 0
+    finally:
+        release_turns.set()
+        await wf.close()

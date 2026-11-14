@@ -7,18 +7,21 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from helpers import PLAN as CURRENT_PLAN
+from helpers import IterationAgent
+from helpers import until as until_current
 from pydantic import ValidationError
 from test_dag import PLAN as DAG_PLAN
-from test_generic import PLAN, ImplementationAgent
-from test_workflow import until
+from test_generic import PLAN
 
 from experimenttracker.models import Implementation, ResearchPlan
 from experimenttracker.workflow import Workflow
 
 
-def research_plan():
+def research_plan(schema_version=2):
+    """Saved failed plan; the default keeps the historical schema 2 unit fixture."""
     return {
-        "schema_version": 2,
+        "schema_version": schema_version,
         "title": "A compute preparation stage",
         "summary": "Prepare features then evaluate.",
         "protocol": DAG_PLAN["protocol"],
@@ -28,14 +31,14 @@ def research_plan():
                 "needs": [],
                 "title": "Features",
                 "summary": "Prepare features.",
-                "resources": DAG_PLAN["stages"][0]["resources"],
+                "resources": CURRENT_PLAN["stages"][0]["resources"],
             },
             {
                 "id": "compute_prepare",
                 "needs": ["prepare"],
                 "title": "Results",
                 "summary": "Check outputs.",
-                "resources": DAG_PLAN["stages"][0]["resources"],
+                "resources": CURRENT_PLAN["stages"][0]["resources"],
             },
         ],
     }
@@ -54,18 +57,28 @@ def test_plan_namespaces_executor_names_and_edges_without_mutating_raw_result():
         ResearchPlan.model_validate(duplicate)
 
 
+class PlanOnlyAgent(IterationAgent):
+    """Iteration agent whose plan session stays read-only; the fixture runs only plan."""
+
+    async def session(self, thread_id, workspace, **kwargs):
+        assert not kwargs.get("writable", False)
+        return await super().session(thread_id, workspace, **kwargs)
+
+
 async def saved_plan_failure(runtime):
     store, scheduler, _, old = runtime
-    agent = ImplementationAgent()
+    agent = PlanOnlyAgent()
     workflow = Workflow(old.config, store, scheduler, agent)
     eid = store.command(
         uuid4(),
         "create",
         {"brief": "Test an entirely new method and show its frontier.", "recipe_id": "agent_experiment_v1"},
     )["experiment_id"]
-    await until(workflow, store, eid, lambda e: e["hold_reason"] == "plan_review")
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
+    await until_current(workflow, store, eid, lambda e: e["hold_reason"] == "plan_review")
     action = store.one("SELECT * FROM agent_actions WHERE experiment_id=? AND phase='plan'", (eid,))
-    value = research_plan()
+    assert action["state"] == "completed" and action["turn_id"] and action["result"]
+    value = research_plan(3)
     agent.results[(action["thread_id"], action["turn_id"])] = value
     workflow._action_state(
         action["id"], "failed", result=value, error="agent output validation: reserved stage name"
@@ -79,6 +92,7 @@ async def saved_plan_failure(runtime):
     return store, scheduler, agent, workflow, eid, action
 
 
+@pytest.mark.current_contract
 async def test_revalidate_exact_plan_is_idempotent_and_survives_restart(runtime):
     store, scheduler, agent, workflow, eid, action = await saved_plan_failure(runtime)
     calls = agent.calls
@@ -86,24 +100,28 @@ async def test_revalidate_exact_plan_is_idempotent_and_survives_restart(runtime)
     await workflow.reconcile_agent_output(eid)
     await workflow.close()
     workflow = Workflow(workflow.config, store, scheduler, agent)
-    await until(workflow, store, eid, lambda e: e["hold_reason"] == "plan_review")
+    await until_current(workflow, store, eid, lambda e: e["hold_reason"] == "plan_review")
     assert agent.calls == calls and scheduler.submissions == 0
     saved = store.one("SELECT * FROM agent_actions WHERE id=?", (action["id"],))
     assert saved["attempts"] == action["attempts"] and saved["turn_id"] == action["turn_id"]
-    assert json.loads(saved["result"]) == research_plan()
-    assert store.experiment(eid)["plan_review"]["stages"][0]["id"] == "compute_prepare_1"
+    assert json.loads(saved["result"]) == research_plan(3)
+    review = store.experiment(eid)["plan_review"]
+    assert [stage["id"] for stage in review["stages"]] == ["compute_prepare_1", "compute_prepare"]
+    assert review["stages"][1]["needs"] == ["compute_prepare_1"]
     assert len(store.rows("SELECT * FROM events WHERE kind='agent_output_reconciled'")) == 1
     await workflow.close()
 
 
+@pytest.mark.current_contract
 @pytest.mark.parametrize("block", ["uncertain", "mismatch", "nonterminal", "steering"])
 async def test_output_recovery_refuses_unestablished_outcomes(runtime, block):
-    store, _, agent, workflow, eid, action = await saved_plan_failure(runtime)
+    store, scheduler, agent, workflow, eid, action = await saved_plan_failure(runtime)
+    calls = agent.calls
     if block == "uncertain":
         workflow._action_state(action["id"], "uncertain")
     elif block == "mismatch":
         agent.results[(action["thread_id"], action["turn_id"])] = {
-            **research_plan(),
+            **research_plan(3),
             "title": "Different turn result",
         }
     elif block == "nonterminal":
@@ -113,6 +131,8 @@ async def test_output_recovery_refuses_unestablished_outcomes(runtime, block):
     with pytest.raises(ValueError):
         await workflow.reconcile_agent_output(eid)
     assert store.experiment(eid)["phase"] == "failed"
+    assert not store.rows("SELECT * FROM events WHERE kind='agent_output_reconciled'")
+    assert agent.calls == calls and scheduler.submissions == 0
     await workflow.close()
 
 
