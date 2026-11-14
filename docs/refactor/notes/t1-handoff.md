@@ -1,4 +1,4 @@
-# T1 handoff (after M0b and M5, 2026-11-13)
+# T1 handoff (after M11, 2026-11-13)
 
 Read `docs/refactor/README.md`, `todo.md`, `notes/t1-owner-decisions.md`, then the
 current card's note. Root `AGENTS.md` applies. Source publication is not live activation.
@@ -38,15 +38,17 @@ Current migration:
 - M0b `7254d2e`: final widened-probe addendum, Opus-approved with coordinator amendments.
 - P-a `5fc3004`: ticking API create fixtures now explicitly keep contract 3.
 - M4b `74e7cf0`: compact current-reference pointer coverage, without legacy audit re-hash claims.
+- M11 `abb980c`: remote transport on contract 3; explicit legacy tamper helper retained until h.
 
-Latest source validation: Ruff and all **571 Python tests pass**. M1's final isolated
-`make check` also passed 29 web / 41 gateway tests. No live acceptance or activation.
+Latest isolated Node 24 validation: Ruff and `make check` pass **572 Python / 29 web /
+41 gateway tests**. No live acceptance or activation.
 
 ## Current task and order
 
-**M11 next; M4b and P-a have landed.** M11's revised candidate is ready and needs final
-rebase, fresh F+R review and checks. M6's candidate is ready but lands only after M11,
-with fresh review and rebased checks (§11).
+**M6 next.** Its candidate is ready in `.worktrees/t1-1m-m6`; M4b/M11/P-a dependencies
+have landed. Rebase by file onto main, then fresh F+R review and final targeted/full checks
+(§11). M7a/M7b parallel-preparation plans are awaiting fresh Opus `fe1b0532` decision;
+their final landings must follow M6 → M7a → M7b.
 Preserve old schema-2 DAG constants/invalid-graph unit tests for their remaining importers.
 
 M11's declared-source allocation re-hash is deliberately legacy-only (Opus `8d70bb3e`):
