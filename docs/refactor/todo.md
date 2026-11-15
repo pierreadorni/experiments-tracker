@@ -245,7 +245,7 @@ and archived fixtures still render their report via the API.
 - Open/close obligations transactionally for actions, jobs, transfers, pending
   requests, plan review and publication; split by source before delegation.
 - [Rollout decisions and bounded cards](notes/t1.3b-rollout-design.md): [x] b1 inert
-  episode/lookup helpers; [ ] b2–b14 source integration and bounded backfill.
+  episode/lookup helpers; [x] b2a inert action mapping; [ ] b2b–b14 source integration and bounded backfill.
 
 ### [ ] T1.3c Derived holds (C2) · F+R · M per call-site group
 - Compute `hold_reason` from obligations in `Store.projection`; remove direct
@@ -525,3 +525,5 @@ Record completed tasks here: `date · task · commit · notes`.
 2026-11-15 · T1.1h.5 · Luna implementation plus coordinator review. Removed automatic completion cleanup and obsolete task registry together with maintenance/scenario consumers; retained temporary declarations and historical sealed-checkpoint verification. Retired matching cleanup/helper tests. Coordinator added explicit verify/seal operation allowlist so retired cleanup cannot fall through to receipt generation, with two refusal cases. Source +5/−136; tests +9/−107; 257 changed lines. Isolated Node24 Ruff, 79 targets and all592 Python tests pass in365.37s. No live activation.
 
 2026-11-15 · T1.1h.1c · Luna implementation and coordinator review narrowed scope to preserve original validated-plan/dependency submission gate. Removed schema1/2 implementation/dependency freeze writer and empty current marker; old schemas refuse before filesystem effects, reader fixtures use static legacy records, current3 manual recovery stays and legacy adoption refuses after completed replay. Source +3/−101; tests +89/−10; 203 changed lines. Initial full run found one obsolete dependencies monkeypatch; removed it with method, keeping reader guards, then all14 iteration cases pass. Ruff,127 targets plus30 controller/resource checks and combined full618 tests with inert b2a pass. No live activation.
+
+2026-11-15 · T1.3b-b2a · Luna implementation/review correction and coordinator acceptance. Added inert SQLite-only action responsibility mapping with before/current source proof, exact running identity, backend reconciliation, immutable source scope/phase/evidence and allowed owner/kind pairs. Terminal missing history stays missing, unproven active/terminal conflicts diagnose, frozen/deleted/cancelled pending work abandons stale obligations. No source mutation, dispatch, runtime hooks or projection changes. Source +122/−0; tests +290/−0; 412 changed lines. Ruff,23 new/41 core-helper cases and full618 combined with independent h1c pass. Source writer audit is read-only; wiring awaits final T1.1 tree.
