@@ -34,7 +34,12 @@ def archive_active(exp):
 
 async def settle_job(workflow, exp, job):
     """Record scheduler facts for one saved legacy job without advancing its stage."""
-    if not archive_active(exp) or job["state"] not in ("submitting", "submitted"):
+    if (
+        not execution_frozen(exp)
+        or exp.get("deleted_at") is not None
+        or exp["phase"] == "cancelled"
+        or job["state"] not in ("submitting", "submitted")
+    ):
         return False
 
     intent_id = job["intent_id"]

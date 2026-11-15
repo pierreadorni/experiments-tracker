@@ -11,7 +11,6 @@ from experimenttracker import artifacts
 from experimenttracker.models import Implementation
 from experimenttracker.slurm import Observation
 from experimenttracker.store import encode
-from experimenttracker.workflow import Workflow
 
 SEALED_RECORD = (
     '{"outputs":[{"directories":["cache"],"files":[{"name":"cache/data.pt","sha256":'
@@ -114,36 +113,35 @@ def checking_directory_run(failed_directory_run):
     return store, agent, workflow, eid, root
 
 
-@pytest.mark.parametrize("corrupt", [True])
-async def test_restart_rechecks_saved_terminal_job_without_resubmission(
-    checking_directory_run, monkeypatch, corrupt
+@pytest.mark.parametrize(
+    ("phase", "hold"),
+    [("training", "accounting_pending"), ("failed", "validation_failed"), ("complete", None)],
+)
+async def test_archived_saved_job_settles_without_reading_checkpoint_bytes(
+    checking_directory_run, phase, hold
 ):
-    store, agent, old, eid, root = checking_directory_run
-    await old.observe_jobs()
-    await asyncio.gather(*(task for task, _ in old.output_checks.values()))
-    # Simulate shutdown before the owner has committed the worker's result.
-    await old.close()
-    assert store.one("SELECT state,scheduler_state FROM jobs WHERE experiment_id=?", (eid,)) == {
-        "state": "submitted",
-        "scheduler_state": "COMPLETED",
-    }
-    if corrupt:
-        (root / "cache/data.pt").write_bytes(b"changed after seal")
-    restarted = Workflow(old.config, store, old.scheduler, agent)
-    try:
-        await restarted.observe_jobs()
-        await asyncio.gather(*(task for task, _ in restarted.output_checks.values()), return_exceptions=True)
-        await restarted.observe_jobs()
-        assert store.one("SELECT state FROM jobs WHERE experiment_id=?", (eid,))["state"] == (
-            "failed" if corrupt else "complete"
-        )
-        assert len(store.rows("SELECT * FROM jobs WHERE experiment_id=?", (eid,))) == 1
-        assert agent.calls == 0
-        assert len(store.rows("SELECT * FROM artifacts WHERE name='local-output-z_measure.json'")) == (
-            0 if corrupt else 1
-        )
-    finally:
-        await restarted.close()
+    store, agent, workflow, eid, root = checking_directory_run
+    (root / "cache/data.pt").write_bytes(b"changed after the saved run")
+    store.update(eid, phase=phase, hold_reason=hold)
+    store.archive_legacy_experiments()
+    before = store.experiment(eid)
+    stages = store.rows("SELECT * FROM stages WHERE experiment_id=? ORDER BY id", (eid,))
+    artifacts_before = store.rows("SELECT * FROM artifacts WHERE experiment_id=?", (eid,))
+    outstanding = asyncio.get_running_loop().create_future()
+    intent = store.one("SELECT intent_id FROM jobs WHERE experiment_id=?", (eid,))["intent_id"]
+    workflow.output_checks[intent] = (outstanding, Observation("COMPLETED", "0:0"))
+
+    await workflow.observe_jobs()
+
+    job = store.one("SELECT state,scheduler_state,exit_code FROM jobs WHERE experiment_id=?", (eid,))
+    assert job == {"state": "complete", "scheduler_state": "COMPLETED", "exit_code": "0:0"}
+    after = store.experiment(eid)
+    assert (after["phase"], after["hold_reason"]) == (before["phase"], before["hold_reason"])
+    assert store.rows("SELECT * FROM stages WHERE experiment_id=? ORDER BY id", (eid,)) == stages
+    assert store.rows("SELECT * FROM artifacts WHERE experiment_id=?", (eid,)) == artifacts_before
+    assert agent.calls == 0
+    assert len(store.rows("SELECT * FROM jobs WHERE experiment_id=?", (eid,))) == 1
+    outstanding.cancel()
 
 
 @pytest.mark.parametrize("failure", ["identity", "running", "exit", "invalid_output", "symlink"])

@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from . import clock
 from .config import ProjectConfig
+from .legacy_archive import archive_active
 from .models import STAGES, request_answer
 from .title import title_prompt
 
@@ -806,6 +807,13 @@ class Store:
         previous = self.one("SELECT * FROM experiments WHERE id=?", (eid,))
         if not previous:
             raise KeyError(eid)
+        archived = archive_active({**previous, "contract": json.loads(previous["contract"])}) and (
+            previous["hold_reason"] == "legacy_contract_archived"
+        )
+        if archived:
+            fields.pop("phase", None)
+            if "hold_reason" in fields:
+                fields["hold_reason"] = "legacy_contract_archived"
         # Async work may finish after a cancellation command committed.
         if previous["phase"] == "cancelled" and kind != "cancellation_status":
             return
@@ -1085,6 +1093,11 @@ class Store:
                 exp = self.experiment(eid)
                 if exp["deleted_at"] and kind != "delete":
                     raise Conflict("experiment has been deleted")
+                if archive_active(exp) and (
+                    kind in ("answer", "plan_review", "steer")
+                    or (kind == "action" and payload["action"] != "cancel")
+                ):
+                    raise Conflict("legacy execution is archived; only cancellation is available")
                 if (
                     exp["phase"] == "cancelled"
                     and kind not in ("note", "delete")

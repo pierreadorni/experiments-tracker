@@ -192,7 +192,7 @@ subcards remain individually within their size bands; no live activation follows
   Stage inert Store/job/action helpers, then activate all execution guards together.
   The reviewed settlement/activation cards use M budgets; no partial activation.
 - Status: [x] P1 Store primitive · [x] P2 exact job settlement · [x] P3 raw turn
-  settlement/check drainage · [~] P4 coherent activation · [ ] final acceptance.
+  settlement/check drainage · [x] P4 coherent activation · [ ] final acceptance.
 - Depends on T1.1c and T1.1m. At startup (after migrations) and in `tick`, a
   non-terminal non-contract-3 experiment gets hold `legacy_contract_archived` and
   an existing-kind inbox notice. `advance` returns early; cancel still works.
@@ -500,3 +500,5 @@ Record completed tasks here: `date · task · commit · notes`.
 2026-11-13 · T1.1c-2 follow-up · 18b5b33 · Flash implementation after fresh Opus decision; coordinator reproduced and fixed the seeded-state reference-picker smoke failure. The script now mirrors the UI title fallback, chooses a completed reference and asserts its saved identity. Isolated Node 24 locked validation: empty-state and CLI-demo-seeded browser smoke pass (including offline report/figure export), Ruff clean, 564 Python, 29 web and 41 gateway tests pass; web typecheck passes. Production source 0; scripts +15/−6. No live activation.
 
 2026-11-13 · T1.1m plan + M0 · cbb7c16, f716898, 9426245 · Flash disposition investigation of the 122 legacy-driving tests (56 CONVERT / 23 READER / 35 ANALOGUE / 7 RETIRE-ONLY / 1 ambiguous). Opus 5.5 decisions on sequencing (retire at the gate), 31 sampled rows, the §6 flags and the card order (REVISE; amendments recorded in §8). M0 moved `until`, `approve_plan` and `IterationAgent`/`PLAN`/`SOURCE`/`prepared` into `tests/helpers.py` with re-exports: tests +168/−156, production 0; Ruff clean, 564 tests collected and passing before and after. M0b was started but stopped for a handoff; its partial probe is saved in `notes/t1.1m-m0b-partial-probe.patch`. No live activation.
+
+2026-11-15 · T1.1b-P4 · Luna implementation, coordinator review. Startup/tick archival, execution/continuation guards and raw exact job/turn settlement activated together; terminal legacy automatic job observation also avoids scientific output validation. Preserved manual terminal recovery, cancellation and readers. Replaced obsolete sealed restart check with damaged-output settlement for training/failed/complete records. Source +164/−19; tests +264/−30; 477 changed lines. Isolated Node 24 Ruff, 98 targeted tests and all 590 Python tests pass. No live activation. Queued report acceptance is separate b-A.

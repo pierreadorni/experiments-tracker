@@ -13,6 +13,7 @@ from pydantic import Field
 from . import artifacts, clock, early_repair, iteration, reporting
 from .codex_client import TerminalTurnError
 from .config import StrictModel
+from .legacy_archive import archive_active, execution_frozen
 from .models import Analysis, Implementation, ReportDocument, ResearchPlan
 from .store import Conflict, encode
 
@@ -317,6 +318,8 @@ class Controller:
         if not action or action["experiment_id"] != eid or action["state"] not in ("dispatching", "running"):
             raise ValueError("tool call requires this experiment's active owned session")
         exp = wf.store.experiment(eid)
+        if execution_frozen(exp) and name != "job_status":
+            raise ValueError("legacy execution is archived; only status reads are available")
         if (
             name not in ("job_status", "check_manifest", "check_agent_stage")
             and action.get("autopilot_control_revision") is not None
@@ -518,12 +521,16 @@ class Controller:
             "SELECT DISTINCT experiment_id FROM jobs WHERE state='submitted' AND scheduler_state='RUNNING'"
         ):
             eid = row["experiment_id"]
+            if archive_active(wf.store.experiment(eid)):
+                continue
             if not wf.store.one(
                 "SELECT 1 FROM agent_wakeups WHERE experiment_id=? AND state IN ('pending','queued')", (eid,)
             ):
                 self.schedule(eid, uuid4(), wf.config.codex.monitor_interval_seconds, "Backend compute check")
         # Coalesce backlog from older owners without discarding queued outcomes.
         for row in wf.store.rows("SELECT DISTINCT experiment_id FROM agent_wakeups WHERE state='pending'"):
+            if archive_active(wf.store.experiment(row["experiment_id"])):
+                continue
             pending = wf.store.rows(
                 "SELECT id FROM agent_wakeups WHERE experiment_id=? AND state='pending' ORDER BY due_at,created_at,id",
                 (row["experiment_id"],),
@@ -535,6 +542,8 @@ class Controller:
             "SELECT * FROM agent_wakeups WHERE state IN ('pending','queued') ORDER BY due_at LIMIT 50"
         ):
             exp = wf.store.experiment(wake["experiment_id"])
+            if archive_active(exp):
+                continue
             terminal = exp["deleted_at"] or exp["phase"] in ("complete", "failed", "cancelled")
             if terminal and wake["state"] == "pending":
                 with wf.store.tx() as db:

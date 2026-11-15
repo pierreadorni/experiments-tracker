@@ -3,10 +3,7 @@
 import asyncio
 
 from .codex_client import TerminalTurnError
-
-
-def _legacy(exp):
-    return exp["contract"].get("execution_contract") != 3
+from .legacy_archive import execution_frozen
 
 
 def _live_action(workflow, action_id):
@@ -27,7 +24,7 @@ async def settle_actions(workflow):
     )
     for action in rows:
         exp = store.experiment(action["experiment_id"])
-        if not _legacy(exp) or _live_action(workflow, action["id"]):
+        if not execution_frozen(exp) or _live_action(workflow, action["id"]):
             continue
         if not action["thread_id"] or not action["turn_id"]:
             continue
@@ -55,7 +52,7 @@ async def settle_actions(workflow):
                 eid = job["experiment_id"]
             exp = store.experiment(eid)
             if (
-                not _legacy(exp)
+                not execution_frozen(exp)
                 or exp["deleted_at"] is not None
                 or exp["phase"] in ("complete", "failed", "cancelled")
                 or exp["hold_reason"] != "legacy_contract_archived"

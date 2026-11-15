@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
-from . import artifacts, clock, early_repair, iteration, reporting
+from . import artifacts, clock, early_repair, iteration, legacy_archive, legacy_archive_actions, reporting
 from .autopilot_controller import ResearchController
 from .cancellation import process_cancellations
 from .codex_client import CodexAgent, NeedsAttention, RpcRejected, SessionUnavailable, TerminalTurnError
@@ -377,6 +377,7 @@ class Workflow:
             self.store.activity(action, *description)
 
     async def start(self):
+        self.store.archive_legacy_experiments()
         self.config.job_output_root.mkdir(parents=True, exist_ok=True)
         await self.refresh_cluster()
         await self.connect_agent()
@@ -486,6 +487,7 @@ class Workflow:
         )
 
     async def tick(self, *, force_observe=False):
+        self.store.archive_legacy_experiments()
         self.research.service.tick()
         await self.research.reply_inputs()
         await self.research.interrupt_holds()
@@ -531,7 +533,11 @@ class Workflow:
         for row in self.store.rows("SELECT id FROM experiments WHERE pending_request IS NOT NULL"):
             exp = self.store.experiment(row["id"])
             pending = exp["pending_request"]
-            if pending.get("answer") and not pending.get("expired"):
+            if (
+                pending.get("answer")
+                and not pending.get("expired")
+                and not legacy_archive.execution_frozen(exp)
+            ):
                 try:
                     await self.agent.reply(pending)
                     self.store.update(exp["id"], pending_request=None, hold_reason=None)
@@ -551,6 +557,7 @@ class Workflow:
             if not lane.agent_ready and not lane.agent_task and now - lane.last_agent_start >= 60:
                 await lane.agent.close()
                 await lane.connect_agent()
+        await legacy_archive_actions.settle_actions(self)
         if blocked(self.store):
             return
         self.apply_planning_steering()
@@ -643,12 +650,17 @@ class Workflow:
             "SELECT * FROM agent_actions WHERE phase IN ('title','summarize_title') ORDER BY created_at"
         ):
             exp = self.store.experiment(action["experiment_id"])
+            if legacy_archive.archive_active(exp):
+                continue
             if action["state"] in ("running", "dispatching"):
                 if self.agent_task or not self.agent_ready:
                     return
                 if action["thread_id"] and action["turn_id"]:
                     try:
                         result = await self.agent.read_turn(action["thread_id"], action["turn_id"])
+                        if legacy_archive.execution_frozen(self.store.experiment(exp["id"])):
+                            self._action_state(action["id"], "completed", result=result)
+                            return
                         TitleSummary.model_validate(result)
                         self._action_state(action["id"], "completed", result=result)
                     except Exception as exc:
@@ -679,6 +691,8 @@ class Workflow:
             "SELECT * FROM agent_actions WHERE phase='summarize_title' AND state='pending' ORDER BY created_at"
         ):
             exp = self.store.experiment(action["experiment_id"])
+            if legacy_archive.archive_active(exp):
+                continue
             if not self.title_applicable(exp, action, dispatch=True) or exp["pause_agent"]:
                 continue
             if (
@@ -707,6 +721,8 @@ class Workflow:
             "AND phase='preparing' ORDER BY created_at"
         ):
             exp = self.store.experiment(row["id"])
+            if legacy_archive.archive_active(exp):
+                continue
             review = exp["plan_review"] or {}
             if review.get("state") != "awaiting_review" or review.get("questions") or exp["pause_agent"]:
                 continue
@@ -752,7 +768,7 @@ class Workflow:
 
     @staticmethod
     def title_applicable(exp, action, *, dispatch=False):
-        if exp["deleted_at"]:
+        if exp["deleted_at"] or legacy_archive.execution_frozen(exp):
             return False
         if action["phase"] == "summarize_title":
             return True
@@ -771,7 +787,11 @@ class Workflow:
         """Persist exact title turn identities; a lost outcome is never retried."""
         eid = action["experiment_id"]
         try:
+            if legacy_archive.execution_frozen(self.store.experiment(eid)):
+                return
             decision = await self.refresh_quota()
+            if legacy_archive.execution_frozen(self.store.experiment(eid)):
+                return
             if blocked(self.store):
                 return
             if not decision.admitted:
@@ -793,6 +813,8 @@ class Workflow:
             thread_id, _ = await self.agent.session(None, self.root(eid), model=saved["model"])
             if blocked(self.store) or self.store.experiment(eid)["phase"] == "cancelled":
                 return
+            if legacy_archive.execution_frozen(self.store.experiment(eid)):
+                return
             with self.store.tx() as db:
                 db.execute(
                     "UPDATE agent_actions SET thread_id=?,state='dispatching',attempts=attempts+1,updated_at=? WHERE id=?",
@@ -812,7 +834,12 @@ class Workflow:
                 self.store.emit(
                     db, eid, "agent_turn_started", {"action_id": action["id"], "turn_id": turn_id}
                 )
+            if legacy_archive.execution_frozen(self.store.experiment(eid)):
+                return
             result = await self.agent.finish(thread_id, turn_id)
+            if legacy_archive.execution_frozen(self.store.experiment(eid)):
+                self._action_state(action["id"], "completed", result=result)
+                return
             try:
                 TitleSummary.model_validate(result)
             except ValueError as exc:
@@ -843,7 +870,11 @@ class Workflow:
             "SELECT id FROM experiments WHERE deleted_at IS NULL AND phase='failed' AND hold_reason='agent_recovery_exhausted'"
         ):
             exp = self.store.experiment(row["id"])
-            if exp["recipe_id"] != "agent_experiment_v1" or exp["pending_request"]:
+            if (
+                legacy_archive.execution_frozen(exp)
+                or exp["recipe_id"] != "agent_experiment_v1"
+                or exp["pending_request"]
+            ):
                 continue
             if self.store.one(
                 "SELECT 1 FROM agent_actions WHERE experiment_id=? AND state IN ('dispatching','running','uncertain')",
@@ -899,6 +930,8 @@ class Workflow:
         ):
             eid = row["id"]
             exp = self.store.experiment(eid)
+            if legacy_archive.execution_frozen(exp):
+                continue
             if self.config.mode != "live" or exp["recipe_id"] != "agent_experiment_v1" or not exp["snapshot"]:
                 continue
             if iteration.enabled(exp) and exp["hold_reason"] != "resources_unavailable":
@@ -1111,6 +1144,8 @@ class Workflow:
         for item in pending:
             eid = item["experiment_id"]
             exp = self.store.experiment(eid)
+            if legacy_archive.execution_frozen(exp):
+                continue
             review = exp["plan_review"]
             if (
                 exp["recipe_id"] != "agent_experiment_v1"
@@ -1148,6 +1183,8 @@ class Workflow:
 
     async def advance(self, eid):
         exp = self.store.experiment(eid)
+        if legacy_archive.execution_frozen(exp):
+            return
         if exp["phase"] == "cancelled" or exp["hold_reason"] in (
             "automatic_repair_pending",
             "agent_stage_blocked",
@@ -1171,7 +1208,8 @@ class Workflow:
         }
         root = await asyncio.to_thread(self.root, eid)
         await asyncio.to_thread(root.mkdir, parents=True, exist_ok=True)
-        if self.store.experiment(eid)["phase"] == "cancelled":
+        exp = self.store.experiment(eid)
+        if legacy_archive.execution_frozen(exp) or exp["phase"] == "cancelled":
             return
         generic = exp["recipe_id"] == "agent_experiment_v1"
         if generic and exp["contract"].get("planning_version") and stages["plan"] != "complete":
@@ -1200,8 +1238,11 @@ class Workflow:
             )
             return
         await asyncio.to_thread(artifacts.verify_snapshot, root, exp["snapshot"])
+        if legacy_archive.execution_frozen(self.store.experiment(eid)):
+            return
         await asyncio.to_thread(artifacts.register_snapshot, self.store, eid, root)
-        if self.store.experiment(eid)["phase"] == "cancelled":
+        exp = self.store.experiment(eid)
+        if legacy_archive.execution_frozen(exp) or exp["phase"] == "cancelled":
             return
         if stages["prepare"] != "complete":
             await self.agent_stage(exp, "prepare")
@@ -1253,10 +1294,14 @@ class Workflow:
                             root, exp["snapshot"], self.project_context(exp)["checkout"]
                         )
                     names = await asyncio.to_thread(artifacts.validate_stage, root, stage, exp["snapshot"])
+                    if legacy_archive.execution_frozen(self.store.experiment(eid)):
+                        return
                     if generic:
                         names += await asyncio.to_thread(
                             artifacts.seal_local_outputs, root, stage, exp["snapshot"]
                         )
+                        if legacy_archive.execution_frozen(self.store.experiment(eid)):
+                            return
                     artifacts.register(self.store, eid, stage, root, names)
                     self.store.stage(eid, stage, "complete", outputs=names)
                 elif job["state"] == "failed":
@@ -1292,6 +1337,8 @@ class Workflow:
                 )
                 return
             outcome = await self.submit_prepared_stage(exp, stage)
+            if legacy_archive.execution_frozen(self.store.experiment(eid)):
+                return
             if outcome and outcome.get("state") == "uncertain":
                 return
             if dag:
@@ -1338,6 +1385,10 @@ class Workflow:
                         exp["snapshot"],
                         verify_local_outputs=bool(exp["contract"].get("strict_reproducibility")),
                     )
+                    if legacy_archive.execution_frozen(self.store.experiment(eid)):
+                        return
+            if legacy_archive.execution_frozen(self.store.experiment(eid)):
+                return
             self.store.stage(eid, "validate", "complete")
             return
         if stages["interpret"] != "complete":
@@ -1380,7 +1431,16 @@ class Workflow:
     async def _submit_prepared_stage(self, exp, stage, request_id):
         eid = exp["id"]
         exp = self.store.experiment(eid)
-        if not exp["snapshot"] or exp["phase"] in ("failed", "cancelled", "complete"):
+        if (
+            legacy_archive.execution_frozen(exp)
+            or not exp["snapshot"]
+            or exp["phase"]
+            in (
+                "failed",
+                "cancelled",
+                "complete",
+            )
+        ):
             raise ValueError("submission requires an active saved implementation")
         root = self.root(eid)
         if iteration.enabled(exp):
@@ -1520,7 +1580,8 @@ class Workflow:
                 return {"state": "held", "reason": "resources_unavailable"}
         admitted = self.store.experiment(eid)
         if (
-            blocked(self.store)
+            legacy_archive.execution_frozen(admitted)
+            or blocked(self.store)
             or admitted["pause_compute"]
             or admitted["phase"] in ("failed", "cancelled", "complete")
             or admitted["snapshot"]["snapshot_hash"] != exp["snapshot"]["snapshot_hash"]
@@ -1802,10 +1863,17 @@ class Workflow:
             eid = job["experiment_id"]
             observed = None
             try:
+                exp = self.store.experiment(eid)
+                if (
+                    legacy_archive.execution_frozen(exp)
+                    and exp["deleted_at"] is None
+                    and exp["phase"] != "cancelled"
+                ):
+                    await legacy_archive.settle_job(self, exp, job)
+                    continue
                 check = self.output_checks.get(job["intent_id"])
                 if check and not check[0].done():
                     continue
-                exp = self.store.experiment(eid)
                 scheduler = self.scheduler_for(exp, job)
                 if isinstance(scheduler, RemoteSlurmScheduler):
                     if not scheduler.due(job, clock.now()):
@@ -2108,7 +2176,7 @@ class Workflow:
         # A dispatched task may have reached its quota/turn ceiling while advance
         # awaited filesystem work. Never overwrite that terminal admission hold.
         exp = self.store.experiment(eid)
-        if exp["phase"] in ("complete", "failed", "cancelled"):
+        if legacy_archive.execution_frozen(exp) or exp["phase"] in ("complete", "failed", "cancelled"):
             return
         if self.pool_owner is self and exp["recipe_id"] == "agent_experiment_v1" and len(self.lanes) > 1:
             lane = self.agent_lane(eid)
@@ -2149,7 +2217,8 @@ class Workflow:
                     )
                     return
             prompt = await asyncio.to_thread(self.prompt, exp, phase)
-            if self.store.experiment(eid)["phase"] == "cancelled":
+            fresh = self.store.experiment(eid)
+            if legacy_archive.execution_frozen(fresh) or fresh["phase"] == "cancelled":
                 return
             action_id = str(uuid4())
             with self.store.tx() as db:
@@ -2290,7 +2359,8 @@ class Workflow:
                     requirements = (
                         "" if iteration.enabled(exp) else await self.dependencies(self.root(eid), python)
                     )
-                    if self.store.experiment(eid)["phase"] == "cancelled":
+                    fresh = self.store.experiment(eid)
+                    if legacy_archive.execution_frozen(fresh) or fresh["phase"] == "cancelled":
                         return
                     if early_repair.preparing(exp):
                         early_repair.validate(self, exp, plan)
@@ -2452,6 +2522,8 @@ class Workflow:
                 self.store.update(eid, hold_reason=None, error=None)
                 return
             except ValueError as exc:
+                if legacy_archive.execution_frozen(self.store.experiment(eid)):
+                    return
                 self._action_state(
                     action["id"], "failed", error=f"agent output validation: {self.validation_feedback(exc)}"
                 )
@@ -2563,6 +2635,8 @@ class Workflow:
         if phase == "prepare" and exp["recipe_id"] == "agent_experiment_v1":
             if not await self.prepare_workspace(exp):
                 return
+        if legacy_archive.execution_frozen(self.store.experiment(eid)):
+            return
         if self.research.busy:
             return
         decision = self.research.service.quota(self.gate, eid=eid)
@@ -3722,6 +3796,27 @@ class Workflow:
                 "turn_id": action["turn_id"],
                 "state": "completed",
             }
+        elif legacy_archive.execution_frozen(exp):
+            if recovering_identity:
+                with self.store.tx() as db:
+                    db.execute(
+                        "UPDATE agent_actions SET turn_id=?,state='completed',result=?,error=NULL,updated_at=? WHERE id=? AND turn_id IS NULL",
+                        (turn_id, encode(result), clock.now(), action_id),
+                    )
+                    self.store.emit(
+                        db,
+                        exp["id"],
+                        "agent_turn_identity_reconciled",
+                        {"action_id": action_id, "thread_id": action["thread_id"], "turn_id": turn_id},
+                    )
+            else:
+                self._action_state(action_id, "completed", result=result)
+            return {
+                "action_id": action_id,
+                "thread_id": action["thread_id"],
+                "turn_id": turn_id or action["turn_id"],
+                "state": "completed",
+            }
         elif action["phase"] in ("title", "summarize_title"):
             TitleSummary.model_validate(result)
         elif action["phase"].startswith("agent:"):
@@ -3786,7 +3881,11 @@ class Workflow:
     async def dispatch(self, action):
         eid = action["experiment_id"]
         try:
+            if legacy_archive.execution_frozen(self.store.experiment(eid)):
+                return
             decision = await self.refresh_quota()
+            if legacy_archive.execution_frozen(self.store.experiment(eid)):
+                return
             if self.research.service.member(eid):
                 decision = self.research.service.quota(self.gate, eid=eid)
             if blocked(self.store):
@@ -3804,7 +3903,11 @@ class Workflow:
             if action["phase"] in ("plan", "prepare") and self.config.mode == "live":
                 if clock.now() - self.last_cluster_refresh >= 60:
                     await self.refresh_cluster()
+                if legacy_archive.execution_frozen(self.store.experiment(eid)):
+                    return
                 if not await self.ensure_cluster(exp):
+                    if legacy_archive.execution_frozen(self.store.experiment(eid)):
+                        return
                     self.store.update(
                         eid,
                         hold_reason="cluster_unavailable",
@@ -3812,12 +3915,16 @@ class Workflow:
                     )
                     return
                 prompt = await asyncio.to_thread(self.prompt, exp, action["phase"])
+                if legacy_archive.execution_frozen(self.store.experiment(eid)):
+                    return
                 with self.store.tx() as db:
                     db.execute("UPDATE agent_actions SET input=? WHERE id=?", (prompt, action["id"]))
                     self.store.emit(db, eid, "agent_input_refreshed", {"action_id": action["id"]})
                 action = {**action, "input": prompt}
             if action["phase"] == "interpret" and exp["recipe_id"] == "agent_experiment_v1":
                 prompt = await asyncio.to_thread(self.prompt, exp, "interpret")
+                if legacy_archive.execution_frozen(self.store.experiment(eid)):
+                    return
                 with self.store.tx() as db:
                     db.execute("UPDATE agent_actions SET input=? WHERE id=?", (prompt, action["id"]))
                     self.store.emit(db, eid, "agent_input_refreshed", {"action_id": action["id"]})
@@ -3869,6 +3976,8 @@ class Workflow:
             isolated = self.workspaces.row(eid)
             if isolated and action["phase"] == "prepare":
                 prompt = await asyncio.to_thread(self.prompt, exp, "prepare")
+                if legacy_archive.execution_frozen(self.store.experiment(eid)):
+                    return
                 with self.store.tx() as db:
                     db.execute("UPDATE agent_actions SET input=? WHERE id=?", (prompt, action["id"]))
                     self.store.emit(db, eid, "agent_input_refreshed", {"action_id": action["id"]})
@@ -3898,6 +4007,8 @@ class Workflow:
                 workspace.mkdir(parents=True, exist_ok=True)
                 if not (workspace / ".venv/bin/python").exists():
                     await command("uv", "venv", "--python", "/usr/bin/python3", str(workspace / ".venv"))
+                if legacy_archive.execution_frozen(self.store.experiment(eid)):
+                    return
                 thread_id, model = await self.agent.session(
                     action["thread_id"]
                     or (
@@ -3931,6 +4042,8 @@ class Workflow:
                     **session_options,
                 )
             if blocked(self.store) or self.store.experiment(eid)["phase"] == "cancelled":
+                return
+            if legacy_archive.execution_frozen(self.store.experiment(eid)):
                 return
             prompt = action["input"]
             if action["error"] and not self.input_rejected(action):
@@ -4023,6 +4136,8 @@ class Workflow:
                 self.store.emit(
                     db, eid, "agent_turn_started", {"action_id": action["id"], "turn_id": turn_id}
                 )
+            if legacy_archive.execution_frozen(self.store.experiment(eid)):
+                return
             result = await self.agent.finish(thread_id, turn_id)
             self._action_state(action["id"], "completed", result=result)
         except SessionUnavailable as exc:
@@ -4068,6 +4183,8 @@ class Workflow:
 
     async def publish(self, exp):
         eid = exp["id"]
+        if legacy_archive.execution_frozen(self.store.experiment(eid)):
+            return
         if self.store.experiment(eid)["phase"] == "cancelled":
             return
         root = self.root(eid)

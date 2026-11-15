@@ -4,6 +4,7 @@ import json
 from uuid import NAMESPACE_URL, uuid5
 
 from . import clock
+from .legacy_archive import execution_frozen
 from .store import encode
 
 TERMINAL_JOBS = (
@@ -26,6 +27,8 @@ async def process_restarts(workflow):
     ):
         eid = item["experiment_id"]
         exp = store.experiment(eid)
+        if execution_frozen(exp):
+            continue
         if (
             not exp["snapshot"]
             and not store.one("SELECT 1 FROM jobs WHERE experiment_id=?", (eid,))

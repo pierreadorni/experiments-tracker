@@ -15,6 +15,7 @@ OWNER_HOLDS = (
     "quota_hold",
     "agent_busy",
     "cancellation_pending",
+    "legacy_contract_archived",
 )
 LIVE_ACTIONS = ("pending", "dispatching", "running")
 LIVE_JOBS = ("submitting", "submitted")
