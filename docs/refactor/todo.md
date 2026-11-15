@@ -204,8 +204,8 @@ subcards remain individually within their size bands; no live activation follows
 ### [ ] T1.1d–h Delete legacy execution code (C10) · F+R · M each
 One commit per area, removing only branches that T1.1a marked not needed for reading:
 - [x] d: `advance()`;
-- [~] e: `agent_stage` legacy `prepare` / `Preparation`;
-- f: the validate stage and `strict_reproducibility`;
+- [x] e: `agent_stage` legacy `prepare` / `Preparation`;
+- [~] f: the validate stage and `strict_reproducibility`;
 - g: contract ≤2 repair (`repair_failed_experiments` legacy parts, `repairs/` roots);
 - h: `artifacts.py` freeze and verify helpers, `recipes/toy_compare`.
 
@@ -506,3 +506,5 @@ Record completed tasks here: `date · task · commit · notes`.
 2026-11-15 · T1.1b-A · Luna tests, coordinator review and outside-NSS validation. Queued reports on a nonterminal archived static legacy record render from saved evidence; an actual missing metric fails only the report. Both preserve archived phase/hold and exact job/action rows with zero submissions/inference. Source 0; tests +58/−0. Ruff and 59 targeted reporting/cancellation/watchdog/synthetic-demo tests pass; P4 full suite passed 590 immediately before adding these two focused cases. T1.1b complete; ordered d–h deletion next. No live activation.
 
 2026-11-15 · T1.1d · Luna inherited deletion, coordinator review and scope correction. Removed automatic legacy freeze/reference comparison and serial-chain/schema branches; retained current requested/dependency and uncertain-submission guards, positional pause phases and manual legacy compute lookup. Source +5/−36 (net −31), tests 0; 41 changed lines. Isolated Node 24 Ruff, 78 focused current/recovery/archive/API/report tests and all 592 Python tests pass. Reader/writer deletion boundaries recorded in the split note. No live activation.
+
+2026-11-15 · T1.1e · Luna implementation and coordinator review. Removed unreachable Preparation execution/revalidation, toy retry and DemoAgent toy preparation response. Preserved saved models/schema readers, current Implementation and explicit terminal operator recovery. Source +1/−60 (net −59), tests 0; 61 changed lines. Isolated Node 24 Ruff and 54 focused tests pass; full tree with the independent inert b1 helper passes 599 Python tests. No live activation.

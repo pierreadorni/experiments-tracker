@@ -745,26 +745,6 @@ class DemoAgent:
             result = self.demo_plan(payload)
         elif payload["phase"] == "prepare" and "output_schema" in payload:
             result = self.demo_implementation(payload)
-        elif payload["phase"] == "prepare":
-            brief = payload["brief"].lower()
-            supported = (
-                ("linear" in brief and "quadratic" in brief)
-                or ("fixed" in brief and any(word in brief for word in ("models", "compare", "protocol")))
-                or ("repeat" in brief and "protocol" in brief)
-            ) and not any(word in brief for word in ("tree", "frontier", "forest", "neural", "classifier"))
-            result = {
-                "schema_version": 1,
-                "recipe_id": "toy_compare_v1",
-                "snapshot_hash": payload["manifest"]["snapshot_hash"],
-                "parameters_hash": payload["manifest"]["parameters_hash"],
-                "summary": "Deterministic demo preparation of fixed shared synthetic data and three CPU stages.",
-                "scope_status": "supported" if supported else "unsupported",
-                "scope_reason": (
-                    "The deterministic demo recognizes the explicitly requested fixed linear/quadratic comparison."
-                    if supported
-                    else "The deterministic demo only supports an explicitly requested fixed linear/quadratic comparison; this brief was not recognized as that recipe."
-                ),
-            }
         elif payload["phase"] == "discuss":
             if "context_mode" in payload:
                 contexts = getattr(self, "discussion_contexts", {})

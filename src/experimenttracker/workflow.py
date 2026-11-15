@@ -26,7 +26,6 @@ from .models import (
     ExperimentResult,
     ExperimentValidation,
     Implementation,
-    Preparation,
     ResearchPlan,
     stage_dependencies,
 )
@@ -2404,32 +2403,6 @@ class Workflow:
                     artifacts.register_snapshot(self.store, eid, self.root(eid))
                     (self.root(eid) / "preparation.json").write_text(encode(value))
                     artifacts.register(self.store, eid, phase, self.root(eid), ["preparation.json"])
-                elif phase == "prepare":
-                    prep = Preparation.model_validate(value)
-                    if (
-                        prep.snapshot_hash != exp["snapshot"]["snapshot_hash"]
-                        or prep.parameters_hash != exp["snapshot"]["parameters_hash"]
-                    ):
-                        raise ValueError("preparation manifest does not match immutable recipe")
-                    if prep.scope_status == "unsupported":
-                        reason = (
-                            prep.scope_reason
-                            or "The available recipe does not satisfy the requested experiment."
-                        )
-                        self.store.stage(eid, phase, "failed", error=reason)
-                        self.store.update(
-                            eid, phase="failed", hold_reason="unsupported_request", error=reason
-                        )
-                        self.store.notify(eid, "required_decision", f"Request not run: {reason}")
-                        return
-                    if exp["contract"].get("brief_must_match_recipe") and (
-                        prep.scope_status != "supported" or not prep.scope_reason
-                    ):
-                        raise ValueError(
-                            "preparation must explicitly confirm that the recipe satisfies the brief"
-                        )
-                    (self.root(eid) / "preparation.json").write_text(encode(value))
-                    artifacts.register(self.store, eid, phase, self.root(eid), ["preparation.json"])
                 else:
                     for name in value.get("analysis_files", []):
                         self.register_analysis_file(exp, name)
@@ -2574,11 +2547,6 @@ class Workflow:
                         return
                     action = self.store.continue_action(action)
                     self.store.update(eid, hold_reason="agent_continuation", error=error)
-            else:
-                if action["attempts"] >= 2:
-                    self.fail(eid, "agent_recovery_exhausted", action["error"])
-                    return
-                self._action_state(action["id"], "pending")
         if exp["pause_agent"]:
             self.store.update(eid, hold_reason="agent_paused")
             return
@@ -3798,13 +3766,6 @@ class Workflow:
             plan = Implementation.model_validate(result)
             for name in plan.files:
                 artifacts.allowed_path(self.working_directory(exp) / name, self.working_directory(exp))
-        elif action["phase"] == "prepare":
-            prep = Preparation.model_validate(result)
-            if (
-                prep.snapshot_hash != exp["snapshot"]["snapshot_hash"]
-                or prep.parameters_hash != exp["snapshot"]["parameters_hash"]
-            ):
-                raise ValueError("saved preparation does not match the frozen experiment")
         else:
             records = self.store.rows(
                 "SELECT * FROM artifacts WHERE experiment_id=? AND evidence_revision=?",
@@ -4071,7 +4032,7 @@ class Workflow:
                 if action["phase"] == "monitor"
                 else ResearchPlan.model_json_schema()
                 if action["phase"] == "plan"
-                else (Implementation if generic_prepare else Preparation).model_json_schema()
+                else Implementation.model_json_schema()
                 if action["phase"] == "prepare"
                 else Analysis.model_json_schema()
             )
