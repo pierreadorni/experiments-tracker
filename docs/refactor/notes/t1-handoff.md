@@ -1,45 +1,43 @@
 # T1 handoff
 
-## Latest working state (2026-11-15, after g)
+## Latest working state (2026-11-15, after h.5)
 
-Main `a56f6cd` (g committed, not pushed); last pushed `e664f6a` includes d/e/f
-and inert C2 b1. g +14/-125 passed Ruff, 103 targets and all602 tests in398.17s.
-Root now has reviewed **h.1ab** only: artifacts +3/-97, workflow +6/-56,
-tests +24/-44 =230 changed lines; same Luna child implemented both measured
-subcards so they combine into one M commit. 69 focused demo/archive/audit/
-conversation/report/recovery tests passed. Full isolated suite passed597 in384.14s after retiring6 legacy manual-recovery
-cases and adding1 explicit archived refusal; ready to commit. Do not overwrite validation until that finishes.
+Main `07b0e8d` includes h.5, not yet pushed; last pushed `e664f6a`. Preserved h5
+files matched isolated validation across resume; full592 passed in365.37s before
+interruption, then committed. Root/validation now have **h1c** and independent
+inert C2b2a only (plus documentation WIP for later h2/wholeT1.1):
+- h1c narrowed by coordinator to preserve ORIGINAL validated-plan/graph submission
+  gate unchanged. Source +3/-101, tests +89/-9 =202 changed lines (not original223).
+  127 focused tests passed before scope narrowing, then30 controller/resources
+  passed again with original gate. Removes old freezer/dependency snapshot writer;
+  archived reader fixtures still static and checked; no source/checkpoint hash
+  writer for future experiments. Current3 source copies/readers remain.
+- C2b2a source122/tests290 =412 lines. Reviewed helper fixes owner/kind pair,
+  terminal-history conflict and stale frozen-pending closure. 41 pure new/core
+  obligation tests passed. No runtime integration/imports except new test.
+Combined full Python suite starting now (new tool session; expect618).
+Do not change validation until it finishes; commit h1c and b2a separately.
 
-Prepared candidates contain copied prerequisites on old HEAD; apply only scoped
-changes/current appropriate source, never their whole old-HEAD gitdiff:
-- h.4 `.worktrees/t1-delete-remote-legacy` ref2b3c932: remote.py/worker/tests
-  +9/-258 total267. Reviewed; retains current script-less recipe.py invocation,
-  routing/receipt/output refs. Coordinator targets/full still required.
-- h.5 `.worktrees/t1-delete-cleanup` inherits h1ab/g/f/e/h4. Corrected final
-  delta +4/-243=247 inclmaintenance and scenario registry removal. Baselines
-  `/tmp/t1-delete-cleanup-{workflow,remote_worker}.py`, remote test baseline.
-  Temporary model validation and historical sealed reader fixture remain.
-- h.2a/r `.worktrees/t1-delete-recipe`: frozen shipped recipe/config/doctor/CLI
-  deletion + old recipe_dir YAML adapter, source/test ~232, example -1. Workflow
-  has copied prerequisites; **only -1 stage_resources line belongs to h2**,
-  compare `/tmp/t1-delete-recipe-workflow.py`. Do not copy fullworkflow later.
-  Config worker targets16 passed. Shared per-experiment recipe runner stays.
+Remaining frozen candidates (copied prerequisite edits on old HEAD; apply scoped
+changes only, never full old-HEAD diffs):
+- h2 `.worktrees/t1-delete-recipe`: ~232 source/test +example -1, narrow old
+  recipe_dir YAML adapter. ONLY workflow -1 stage_resources line vs
+  /tmp/t1-delete-recipe-workflow.py belongs to h2; do not overwrite h1c/h3.
+  Main AGENTS/install/architecture/agent-install docs WIP belongs to this and
+  final T1.1 acceptance, intentionally not staged with h5/h1c.
+- h3 `.worktrees/t1-delete-legacy-prompts`: workflow +26/-385 +newtest32,
+  guide deletions28 =>471 inclguides. Use scoped patch
+  /tmp/t1-delete-legacy-prompts-workflow-delta.diff after h1c. Keeps current
+  iteration guide bytes/site policy, archived read-only Conversation context.
+- h6 `.worktrees/t1-retire-toy-create`: 144 scoped lines inclnew48
+  test_store_creation.py; models/store/gatewaycreate +gateway createfixtures.
+  Preserves legacy projection/model/migration/replay; new stages include plan
+  and omitvalidate. Contains h2cfg prereqs, don't count/apply them again.
 
-Active Luna preparations:
-- delete_advance: h.1c in `.worktrees/t1-delete-dependency-freeze` inheriting
-  h5/h4/h1ab/g/f/e; baselines /tmp/t1-delete-dependency-freeze-*. Remove old
-  freeze_implementation/dependencies writer, adapt current caller signatures,
-  preserve static legacy reader fixtures; freeze legacy agent-output adoption
-  after completed replay while preserving current manual recovery.
-- reports_acceptance: h.3 in `.worktrees/t1-delete-legacy-prompts`, same parent
-  candidates; baseline `/tmp/t1-delete-legacy-prompts-workflow.py`. Deletes
-  legacy generic/toy prompt and guides but keeps Conversation archived context
-  via read-only guide text. Current iteration guides/site IDs/policy unchanged.
-  h1c/h3 affect disjoint methods; later apply h3 SCOPED PATCH after h1c, not a
-  full workflow copy. Both must stay below500 source/test lines.
-
-No live state accessed. C2 b1 module source171/tests276 is inert/no runtime callers;
-source integration b2–b14 and all later T1 work remain incomplete.
+Luna action_mapping_review now performs READ-ONLY audit of all action source
+writers for future wiring b2b/b3/b4; no code edits. Re-audit final post-h source
+and measure cards with tests before integration. C2b1/b2a remain inert; b2b–b14
+and later T1 are incomplete. No live resources/owner configuration accessed.
 
 ## Resume on 2026-11-15
 
