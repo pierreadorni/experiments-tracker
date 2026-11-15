@@ -36,39 +36,6 @@ def checked(root, name):
     return path
 
 
-def identity(root, name):
-    path = checked(root, name)
-
-    def record(file):
-        checked(root, file.relative_to(root).as_posix())
-        return {
-            "name": file.relative_to(root).as_posix(),
-            "size": file.stat().st_size,
-            "sha256": digest(file),
-        }
-
-    if path.is_file():
-        return record(path)
-    files, directories, pending = [], [], [path]
-    while pending:
-        directory = pending.pop()
-        directories.append(directory.relative_to(root).as_posix())
-        for child in sorted(directory.iterdir()):
-            checked(root, child.relative_to(root).as_posix())
-            if child.is_dir():
-                pending.append(child)
-            else:
-                files.append(record(child))
-    contents = {"directories": sorted(directories), "files": sorted(files, key=lambda r: r["name"])}
-    return {
-        "name": name,
-        "type": "directory",
-        "size": sum(f["size"] for f in files),
-        "sha256": hashlib.sha256(encode(contents).encode()).hexdigest(),
-        **contents,
-    }
-
-
 def cleanup_temporary(root, manifest):
     """Delete only declared scratch paths; missing entries make replay harmless.
 
@@ -154,73 +121,7 @@ def main():
     if manifest.get("plan", {}).get("schema_version") == 3:
         iteration_operation(operation, root, stage, intent, manifest)
         return
-    for name, expected in manifest["files"].items():
-        if digest(checked(root / "snapshot", name)) != expected:
-            raise ValueError("remote source hash mismatch: " + name)
-    if operation == "verify":
-        # Validate retained dependency bytes on allocated compute resources, then
-        # expose them without copying multi-gigabyte checkpoints between revisions.
-        for dependency, reused in manifest.get("reused_stages", {}).items():
-            previous = Path(reused["remote_root"]).resolve(strict=True)
-            receipt = json.loads(
-                (
-                    previous / ("remote-receipt-" + dependency + "-" + reused["intent_id"] + ".json")
-                ).read_text()
-            )
-            if (
-                receipt["snapshot_hash"] != reused["snapshot_hash"]
-                or receipt["intent_id"] != reused["intent_id"]
-            ):
-                raise ValueError("reused remote execution identity mismatch")
-            for record in receipt["outputs"] + receipt["local_outputs"]:
-                if identity(previous, record["name"]) != record:
-                    raise ValueError("reused remote evidence changed")
-                destination = root / record["name"]
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                if destination.is_symlink():
-                    if destination.resolve() != (previous / record["name"]).resolve():
-                        raise ValueError("reused dependency link changed")
-                elif destination.exists():
-                    if identity(root, record["name"]) != record:
-                        raise ValueError("reused dependency copy changed")
-                else:
-                    try:
-                        destination.symlink_to(
-                            previous / record["name"], target_is_directory=record.get("type") == "directory"
-                        )
-                    except FileExistsError:
-                        if (
-                            not destination.is_symlink()
-                            or destination.resolve() != (previous / record["name"]).resolve()
-                        ):
-                            raise
-        # Project files were copied from the frozen snapshot into this run's checkout.
-        project = Path(os.environ["EXPERIMENT_PROJECT"])
-        for name, frozen in manifest.get("project_sources", {}).items():
-            if digest(checked(project, name)) != manifest["files"][frozen]:
-                raise ValueError("remote project source changed: " + name)
-        return
-    plan = next(s for s in manifest["plan"]["stages"] if s["id"] == stage)
-    outputs = [identity(root, name) for name in plan["outputs"]]
-    if any(record.get("type") or record["size"] > 10 * 1024 * 1024 for record in outputs):
-        raise ValueError("published evidence must be a regular file at most 10 MiB")
-    local_outputs = [identity(root, name) for name in plan.get("local_outputs", [])]
-    receipt = {
-        "schema_version": 1,
-        "stage": stage,
-        "intent_id": intent,
-        "snapshot_hash": manifest["snapshot_hash"],
-        "outputs": outputs,
-        "local_outputs": local_outputs,
-    }
-    value = encode(receipt)
-    if len(value.encode()) > 10 * 1024 * 1024:
-        raise ValueError("remote evidence receipt exceeds 10 MiB")
-    target = root / ("remote-receipt-" + stage + "-" + intent + ".json")
-    pending = target.with_suffix(".pending")
-    pending.write_text(value)
-    pending.chmod(0o444)
-    pending.replace(target)
+    raise ValueError("unsupported legacy remote execution manifest")
 
 
 if __name__ == "__main__":

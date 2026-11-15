@@ -38,11 +38,6 @@ def ssh_args(host):
     return args + ["-o", "BatchMode=yes", "-o", "ConnectTimeout=15", host]
 
 
-def transfer_args(template, values):
-    args = shlex.split(template)
-    return [arg.format_map(values) for arg in args]
-
-
 def sbatch_directives(path, resources=None):
     """Only literal supported directives; managed CLI flags override names/logs/resources."""
     allowed = {
@@ -329,24 +324,6 @@ class RemoteSlurmScheduler(SlurmScheduler):
             timeout=180,
         )
 
-    async def custom_transfer(self, direction):
-        template = getattr(self.settings, "rsync_" + direction)
-        if template.strip():
-            args = transfer_args(template, await self.resolve())
-            protected = (
-                ["--exclude=.experimenttracker/"]
-                if direction == "up"
-                else [
-                    "--exclude=/snapshot/",
-                    "--exclude=/work/",
-                    "--exclude=/analysis/",
-                    "--exclude=/agent-context/",
-                    "--exclude=/job-source-*.json",
-                    "--exclude=/local-output-*.json",
-                ]
-            )
-            await self.rsync(*protected, *args[1:])
-
     def metadata(self):
         if not self.layout:
             raise ValueError("remote execution has not been staged")
@@ -369,15 +346,11 @@ class RemoteSlurmScheduler(SlurmScheduler):
 
     async def stage(self, intent_id, script, resources, stage):
         layout = await self.resolve()
+        if self.exp["snapshot"].get("plan", {}).get("schema_version") != 3:
+            raise ResourceUnavailable("Jean Zay remote execution requires a schema-3 implementation")
         if self.config.limits.memory_mb_per_job is not None:
             raise ResourceUnavailable(
                 "Jean Zay assigns memory from the allocation and rejects --mem; an executor memory ceiling cannot be enforced. Remove that optional ceiling or use acacia."
-            )
-        if self.exp["contract"].get("execution_contract") != 3 and (
-            not self.settings.rsync_up.strip() or not self.settings.rsync_down.strip()
-        ):
-            raise ResourceUnavailable(
-                "Set both project rsync commands; use the project execution tool or Project settings"
             )
         root = Path(layout["local_run"])
         remote_root = Path(layout["remote_run"])
@@ -395,12 +368,11 @@ class RemoteSlurmScheduler(SlurmScheduler):
             "PYTHONUNBUFFERED": "1",
             "OMP_NUM_THREADS": str(resources.cpus_per_job),
         }
-        if self.exp["contract"].get("execution_contract") == 3:
-            exports.update(
-                EXPERIMENT_INPUTS=str(remote_root / "inputs.json"),
-                EXPERIMENT_HOST=layout["host"],
-                PYTHONPATH=str(remote_root / "snapshot") + ":" + layout["remote_project"],
-            )
+        exports.update(
+            EXPERIMENT_INPUTS=str(remote_root / "inputs.json"),
+            EXPERIMENT_HOST=layout["host"],
+            PYTHONPATH=str(remote_root / "snapshot") + ":" + layout["remote_project"],
+        )
         invoke = (
             ["/bin/bash", str(remote_root / "snapshot" / stage["script"])]
             if source
@@ -441,8 +413,6 @@ class RemoteSlurmScheduler(SlurmScheduler):
         # into the source tree and never copy acacia's Python virtual environment.
         async def upload():
             await self.remote_command("mkdir", "-p", layout["remote_project"], layout["remote_run"])
-            if self.exp["snapshot"].get("plan", {}).get("schema_version") != 3:
-                await self.custom_transfer("up")
             pending = layout["remote_run"] + "/snapshot.pending"
             await self.remote_command("mkdir", "-p", pending)
             await self.rsync("-rlt", str(root / "snapshot") + "/", layout["host"] + ":" + pending + "/")
@@ -537,8 +507,6 @@ class RemoteSlurmScheduler(SlurmScheduler):
             downloads = self.workflow.pool_owner.remote_downloads
             key = (self.exp["id"], self.exp["evidence_revision"], self.settings.rsync_down)
             if terminal or clock.now() - downloads.get(key, 0) >= self.settings.poll_seconds:
-                if not self.exp["contract"].get("execution_contract") == 3:
-                    await self.custom_transfer("down")
                 downloads[key] = clock.now()
             for suffix in ("out", "err"):
                 name = f"et-{job['intent_id']}-{job['job_id']}.{suffix}"
@@ -617,22 +585,6 @@ class RemoteSlurmScheduler(SlurmScheduler):
                     raise ValueError("downloaded output hash mismatch: " + name)
             for record in receipt["outputs"]:
                 (pending / record["name"]).replace(root / record["name"])
-            value = {
-                "schema_version": 1,
-                "stage": job["stage_id"],
-                "storage": "jean-zay",
-                "host": layout["host"],
-                "root": layout["remote_run"],
-                "snapshot_hash": receipt["snapshot_hash"],
-                "intent_id": job["intent_id"],
-                "outputs": receipt["local_outputs"],
-            }
-            provenance = root / ("local-output-" + job["stage_id"] + ".json")
-            if receipt["local_outputs"] and manifest.get("plan", {}).get("schema_version") != 3:
-                if provenance.exists() and artifacts.read_json(provenance, root) != value:
-                    raise ValueError("remote checkpoint identity changed")
-                provenance.write_text(encode(value))
-                provenance.chmod(0o444)
             (pending / receipt_name).replace(root / receipt_name)
 
         identity = (

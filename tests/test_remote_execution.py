@@ -19,7 +19,7 @@ from experimenttracker.execution_settings import ExecutionSettings
 from experimenttracker.models import Implementation
 from experimenttracker.remote import RemoteSlurmScheduler, sbatch_directives
 from experimenttracker.slurm import command, wrapper
-from experimenttracker.store import Store, encode
+from experimenttracker.store import Store
 from experimenttracker.workflow import Workflow
 
 UP = "rsync -az --exclude=.experimenttracker/ --exclude=.git/ {local_project}/ {host}:{remote_project}/"
@@ -38,24 +38,6 @@ import json, os
 from pathlib import Path
 r = Path(os.environ["EXPERIMENT_ROOT"])
 (r / "results.json").write_text(json.dumps({"schema_version":1,"protocol":"Transport acceptance","sample_count":1,"metrics":[{"name":"value","variant":"synthetic","value":42,"unit":""}]}))
-INNER
-"""
-
-LEGACY_SCRIPT = """#!/bin/bash
-#SBATCH -c 1
-#SBATCH --time 00:05:00
-#SBATCH --ntasks=1
-set -eu
-mkdir -p "$EXPERIMENT_ROOT/checkpoint" "$EXPERIMENT_ROOT/events"
-printf checkpoint > "$EXPERIMENT_ROOT/checkpoint/weights.bin"
-printf event > "$EXPERIMENT_ROOT/events/test.tfevents.test"
-printf 'ET_PROGRESS {"stage":"measure","completed":1,"total":1,"timestamp":1000}\\n'
-python3 - <<'INNER'
-import json, os
-from pathlib import Path
-r = Path(os.environ["EXPERIMENT_ROOT"])
-(r / "results.json").write_text(json.dumps({"schema_version":1,"protocol":"Transport acceptance","metrics":[{"name":"value","variant":"synthetic","value":42,"unit":""}]}))
-(r / "validation.json").write_text(json.dumps({"schema_version":1,"passed":True,"checks":[{"name":"test","passed":True,"detail":"Synthetic transport check"}]}))
 INNER
 """
 
@@ -131,68 +113,6 @@ def prepared(runtime, tmp_path):
     for stage in ("plan", "prepare"):
         store.stage(eid, stage, "complete")
     return wf, store.experiment(eid), values
-
-
-def legacy_prepared(runtime, tmp_path):
-    """Saved schema-2 attempt for the legacy worker body; no advance entrypoint runs.
-
-    The saved contract drops execution_contract here instead of using the autouse
-    downgrade, so this static legacy fixture survives M10.
-    """
-    store, _, _, wf = runtime
-    wf.config.mode = "live"
-    project = tmp_path / "source"
-    project.mkdir(exist_ok=True)
-    cfg = ProjectConfig(id="remote-project", name="Remote project", checkout=project)
-    wf.config.projects.append(cfg)
-    wf.projects.reload()
-    settings(
-        wf, cfg.id, context="jean-zay", remote_project=str(tmp_path / "remote"), rsync_up=UP, rsync_down=DOWN
-    )
-    eid = store.command(
-        uuid4(),
-        "create",
-        {
-            "brief": "Synthetic remote transport acceptance",
-            "recipe_id": "agent_experiment_v1",
-            "project_id": cfg.id,
-        },
-    )["experiment_id"]
-    with store.tx() as db:
-        contract = store.experiment(eid)["contract"]
-        contract.pop("execution_contract", None)
-        db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(contract), eid))
-    assert "execution_contract" not in store.experiment(eid)["contract"]
-    root = wf.root(eid)
-    root.mkdir(parents=True)
-    (project / "train.sbatch").write_text(LEGACY_SCRIPT)
-    plan = Implementation(
-        schema_version=2,
-        summary="Transport check",
-        protocol="Transport acceptance",
-        synthetic_demo=True,
-        parameters_json="{}",
-        files=["train.sbatch"],
-        stages=[
-            {
-                "id": "measure",
-                "title": "Measurement",
-                "script": "train.sbatch",
-                "outputs": ["results.json", "validation.json"],
-                "local_outputs": ["checkpoint"],
-                "needs": [],
-                "resources": JobResources(partition="cpu_p1").model_dump(),
-            }
-        ],
-        figures=[],
-    )
-    manifest = artifacts.freeze_implementation(
-        root, plan, "", python=Path(sys.executable), workspace=project, remote_execution=True
-    )
-    store.resolve_implementation(eid, manifest)
-    for stage in ("plan", "prepare"):
-        store.stage(eid, stage, "complete")
-    return wf, store.experiment(eid)
 
 
 class Machines:
@@ -396,27 +316,6 @@ async def test_completed_job_waits_for_transfer_and_polling_is_persisted(runtime
     await restarted.observe_jobs()
     assert wf.store.one("SELECT state FROM jobs")["state"] == "complete"
     assert len(machines.jobs) == 1
-
-
-async def test_snapshot_tampering_is_detected_inside_job_allocation(runtime, tmp_path, monkeypatch):
-    # Contract 3 reads no declared-source bytes in the allocation, so this guard
-    # stays on its saved legacy fixture: the legacy worker body only.
-    wf, exp = legacy_prepared(runtime, tmp_path)
-    machines = Machines(monkeypatch, wf.store)
-    scheduler = wf.scheduler_for(exp)
-    root = wf.root(exp["id"])
-    script = wrapper(
-        root, "measure", str(uuid4()), resources=JobResources(partition="cpu_p1"), script="train.sbatch"
-    )
-    await scheduler.preflight(str(uuid4()), script, root, JobResources(partition="cpu_p1"))
-    remote_source = Path(scheduler.layout["remote_run"], "snapshot/train.sbatch")
-    remote_source.chmod(0o644)  # noqa: ASYNC240
-    remote_source.write_text("echo tampered")  # noqa: ASYNC240
-    # Legacy worker body; retire in the h commit deleting the remote_worker.py
-    # legacy body (inventory §14.1).
-    with pytest.raises(RuntimeError, match="remote source hash mismatch"):
-        await command("/bin/bash", str(Path(scheduler.layout["remote_run"]) / script.name))
-    assert not machines.jobs
 
 
 async def test_remote_manifest_identity_guard_refuses_tampered_attempt_manifest(
