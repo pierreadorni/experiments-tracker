@@ -187,12 +187,12 @@ subcards remain individually within their size bands; no live activation follows
 - **Completed investigation:** pinned `34f29ec` baseline: 564 passing, 156 probe nodeids (132 entrypoint / 24 non-gate); no-downgrade dry run: 76 failed / 488 passed in 1797.49 s. Opus `94dbc071`/`d5467d95` approved corrected §9 with coordinator amendments. Before retirement, map every baseline nodeid and rerun the widened probe on current main. Gate zero applies to §8 execution entrypoints, with explicit static-origin reporting for retained reader/observation/reconciliation and cleanup tests. Keep live legacy recovery guards/rollback until their branch is deleted; M8d adds separate contract-3 counterparts. Keep cleanup tests until h.5. Keep sealed restart `[True]` through the gate for T1.1b-1's explicit late-settlement disposition. Do not retire the ten schema-1/2 model-validation tests.
 - Status: [x] M0 · [x] M0b · [x] M0c · [x] M1 · [x] P1 · [x] M2 · [x] M3 · [x] M4 · [x] M5 · [x] M4b · [x] M11 · [x] P-a · [x] M6 · [x] M7a · [x] M7b · [x] M8a/b · [x] M8c · [x] P-budget · [x] M8d · [x] M8e · [x] static legacy fixture rewrites · [x] M9-r1/r2/r3a/r3b/r4/r5 · [x] M10 · [x] gate · [x] P-b (three bounded producer cards)
 
-### [~] T1.1b Archive legacy contracts at runtime (C10) · F · S/M per bounded subcard
+### [x] T1.1b Archive legacy contracts at runtime (C10) · F · S/M per bounded subcard
 - **Implementation plan:** [archive boundary and bounded prerequisites](notes/t1.1b-archive-design.md).
   Stage inert Store/job/action helpers, then activate all execution guards together.
   The reviewed settlement/activation cards use M budgets; no partial activation.
 - Status: [x] P1 Store primitive · [x] P2 exact job settlement · [x] P3 raw turn
-  settlement/check drainage · [x] P4 coherent activation · [ ] final acceptance.
+  settlement/check drainage · [x] P4 coherent activation · [x] final acceptance.
 - Depends on T1.1c and T1.1m. At startup (after migrations) and in `tick`, a
   non-terminal non-contract-3 experiment gets hold `legacy_contract_archived` and
   an existing-kind inbox notice. `advance` returns early; cancel still works.
@@ -502,3 +502,5 @@ Record completed tasks here: `date · task · commit · notes`.
 2026-11-13 · T1.1m plan + M0 · cbb7c16, f716898, 9426245 · Flash disposition investigation of the 122 legacy-driving tests (56 CONVERT / 23 READER / 35 ANALOGUE / 7 RETIRE-ONLY / 1 ambiguous). Opus 5.5 decisions on sequencing (retire at the gate), 31 sampled rows, the §6 flags and the card order (REVISE; amendments recorded in §8). M0 moved `until`, `approve_plan` and `IterationAgent`/`PLAN`/`SOURCE`/`prepared` into `tests/helpers.py` with re-exports: tests +168/−156, production 0; Ruff clean, 564 tests collected and passing before and after. M0b was started but stopped for a handoff; its partial probe is saved in `notes/t1.1m-m0b-partial-probe.patch`. No live activation.
 
 2026-11-15 · T1.1b-P4 · Luna implementation, coordinator review. Startup/tick archival, execution/continuation guards and raw exact job/turn settlement activated together; terminal legacy automatic job observation also avoids scientific output validation. Preserved manual terminal recovery, cancellation and readers. Replaced obsolete sealed restart check with damaged-output settlement for training/failed/complete records. Source +164/−19; tests +264/−30; 477 changed lines. Isolated Node 24 Ruff, 98 targeted tests and all 590 Python tests pass. No live activation. Queued report acceptance is separate b-A.
+
+2026-11-15 · T1.1b-A · Luna tests, coordinator review and outside-NSS validation. Queued reports on a nonterminal archived static legacy record render from saved evidence; an actual missing metric fails only the report. Both preserve archived phase/hold and exact job/action rows with zero submissions/inference. Source 0; tests +62/−0. Ruff and 59 targeted reporting/cancellation/watchdog/synthetic-demo tests pass; P4 full suite passed 590 immediately before adding these two focused cases. T1.1b complete; ordered d–h deletion next. No live activation.
