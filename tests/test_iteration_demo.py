@@ -12,7 +12,6 @@ from uuid import NAMESPACE_URL, uuid5
 from experimenttracker import artifacts, cli
 from experimenttracker.codex_client import DEMO_AGENT_SOURCE
 from experimenttracker.store import Store
-from experimenttracker.workflow import Workflow
 
 SUPPORTED_BRIEF = "Compare linear and quadratic regression on the fixed shared synthetic dataset."
 UNSUPPORTED_BRIEF = "Train a neural classifier and draw its decision frontier."
@@ -24,7 +23,6 @@ def forbid_scientific_traversal(monkeypatch):
 
     monkeypatch.setattr(artifacts, "local_output_identity", forbidden)
     monkeypatch.setattr(artifacts, "local_output_manifest", forbidden)
-    monkeypatch.setattr(Workflow, "dependencies", staticmethod(forbidden))
 
 
 def run_demo(config, brief):

@@ -29,7 +29,7 @@ def test_compact_reference_retains_protocol_and_full_pointers(runtime):
     workspace = workflow.working_directory(store.experiment(parent_id))
     workspace.mkdir(parents=True)
     (workspace / "recipe.py").write_text("print('synthetic')\n")
-    manifest = artifacts.freeze_implementation(workflow.root(parent_id), plan, "", workspace=workspace)
+    manifest = artifacts.freeze_implementation(workflow.root(parent_id), plan, workspace=workspace)
     store.resolve_implementation(parent_id, manifest)
     contract = store.experiment(parent_id)["contract"]
     contract["repair_history"] = [{"old_snapshot": "historical bookkeeping " * 10000}]

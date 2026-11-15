@@ -15,6 +15,7 @@ from test_dag import PLAN as DAG_PLAN
 from test_generic import PLAN
 
 from experimenttracker.models import Implementation, ResearchPlan
+from experimenttracker.store import encode
 from experimenttracker.workflow import Workflow
 
 
@@ -131,6 +132,22 @@ async def test_output_recovery_refuses_unestablished_outcomes(runtime, block):
     assert store.experiment(eid)["phase"] == "failed"
     assert not store.rows("SELECT * FROM events WHERE kind='agent_output_reconciled'")
     assert agent.calls == calls and scheduler.submissions == 0
+    await workflow.close()
+
+
+async def test_archived_agent_output_reconciliation_refuses_adoption(runtime):
+    store, _, agent, workflow, eid, action = await saved_plan_failure(runtime)
+    contract = store.experiment(eid)["contract"]
+    contract.pop("execution_contract")
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(contract), eid))
+    calls = agent.calls
+    before = store.one("SELECT state,error,result FROM agent_actions WHERE id=?", (action["id"],))
+    with pytest.raises(ValueError, match="archived legacy"):
+        await workflow.reconcile_agent_output(eid)
+    assert store.one("SELECT state,error,result FROM agent_actions WHERE id=?", (action["id"],)) == before
+    assert not store.rows("SELECT * FROM events WHERE kind='agent_output_reconciled'")
+    assert agent.calls == calls
     await workflow.close()
 
 

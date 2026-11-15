@@ -517,7 +517,7 @@ async def test_common_gate_one_240_hour_experiment_no_inference_on_reset(runtime
     root = wf.root(eid)
     root.mkdir(parents=True, exist_ok=True)
     manifest = artifacts.freeze_implementation(
-        root, plan, "", python=sys.executable, project=None, workspace=work
+        root, plan, python=sys.executable, project=None, workspace=work
     )
     store.resolve_implementation(eid, manifest)
     store.update(eid, plan_review={"state": "approved", "revision": 1, "schema_version": 3, "stages": []})

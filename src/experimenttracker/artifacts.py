@@ -4,7 +4,6 @@ import html
 import json
 import math
 import mimetypes
-import shutil
 import stat
 from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
@@ -72,7 +71,6 @@ def ensure_finite_json(value):
 def freeze_implementation(
     root: Path,
     plan: Implementation,
-    requirements: str,
     *,
     python=None,
     project=None,
@@ -92,74 +90,7 @@ def freeze_implementation(
             reused=reused,
             remote_execution=remote_execution,
         )
-    parameters = json.loads(plan.parameters_json)
-    ensure_finite_json(parameters)
-    snapshot = root / "snapshot"
-    if snapshot.exists():
-        manifest = read_json(snapshot / "manifest.json", root)
-        if Implementation.model_validate(manifest.get("plan")) != plan:
-            raise ValueError("prepared plan differs from saved immutable implementation")
-        verify_snapshot(root, manifest)
-        if (snapshot / "requirements.txt").read_text() != requirements:
-            raise ValueError("prepared dependencies differ from the saved immutable implementation")
-        return manifest
-    pending = root / "snapshot.pending"
-    if pending.exists():
-        if pending.is_symlink():
-            raise ValueError("snapshot staging directory is a symlink")
-        shutil.rmtree(pending)
-    pending.mkdir()
-    files = {}
-    for name in plan.files:
-        work = workspace or root / "work"
-        source = allowed_path(work / name, work)
-        # The workflow checks syntax with a selected interpreter before passing python.
-        if name.endswith(".py") and python is None:
-            try:
-                compile(source.read_text(), name, "exec")
-            except SyntaxError as exc:
-                raise ValueError(f"prepared source does not compile: {name}: {exc.msg}") from exc
-        target = pending / name
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(source.read_bytes())
-        target.chmod(0o444)
-        files[name] = sha256(target)
-    project_sources = {}
-    if plan.project_files and not project:
-        raise ValueError("project source files require a selected project checkout")
-    for index, name in enumerate(plan.project_files):
-        source = allowed_path(Path(project) / name, Path(project))
-        frozen = f"project-source-{index:04d}{source.suffix}"
-        target = pending / frozen
-        shutil.copyfile(source, target)
-        target.chmod(0o444)
-        files[frozen] = sha256(target)
-        project_sources[name] = frozen
-    lock = pending / "requirements.txt"
-    lock.write_text(requirements)
-    lock.chmod(0o444)
-    files["requirements.txt"] = sha256(lock)
-    manifest = {
-        "schema_version": 1,
-        "recipe_id": "agent_experiment_v1",
-        "files": files,
-        "plan": plan.model_dump(),
-        "parameters": parameters,
-        "parameters_hash": hashlib.sha256(encode(parameters).encode()).hexdigest(),
-        "expected_outputs": {stage.id: stage.outputs for stage in plan.stages},
-        "python_relative_path": "work/.venv/bin/python",
-        "python_executable": str(python) if plan.python_executable or workspace else None,
-        "project_sources": project_sources,
-        "reused_stages": reused or {},
-    }
-    if remote_execution:
-        manifest["remote_execution"] = True
-    manifest["snapshot_hash"] = hashlib.sha256(encode(manifest).encode()).hexdigest()
-    (pending / "manifest.json").write_text(json.dumps(manifest, indent=2))
-    (pending / "manifest.json").chmod(0o444)
-    pending.chmod(0o555)
-    pending.rename(snapshot)
-    return manifest
+    raise ValueError("only schema-3 implementations can be frozen")
 
 
 def verify_snapshot(root: Path, manifest):

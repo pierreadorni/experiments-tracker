@@ -1,10 +1,12 @@
 """Directory provenance and recovery of an exact successful validation-failed job."""
 
 import asyncio
+import json
 import time
 from uuid import uuid4
 
 import pytest
+from test_dag import PLAN as DAG_PLAN
 from test_generic import PLAN, SOURCE
 
 from experimenttracker import artifacts
@@ -22,6 +24,42 @@ SEALED_RECORD = (
 
 def manifest_for(*names):
     return {"plan": {"stages": [{"id": "features", "local_outputs": list(names)}]}}
+
+
+def historical_manifest(root, plan):
+    snapshot = root / "snapshot"
+    snapshot.mkdir()
+    (snapshot / "recipe.py").write_text(SOURCE)
+    (snapshot / "requirements.txt").write_text("")
+    manifest = {
+        "schema_version": 1,
+        "recipe_id": "agent_experiment_v1",
+        "files": {
+            "recipe.py": "be92c5592e6316ee7e033535b2d027b390acb191feef309345c316b8618edd20",
+            "requirements.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        },
+        "plan": plan.model_dump(),
+        "parameters": json.loads(plan.parameters_json),
+        "parameters_hash": "a" * 64,
+        "expected_outputs": {stage.id: stage.outputs for stage in plan.stages},
+        "python_relative_path": "work/.venv/bin/python",
+        "python_executable": None,
+        "project_sources": {},
+        "reused_stages": {},
+        "snapshot_hash": "b" * 64,
+    }
+    (snapshot / "manifest.json").write_text(json.dumps(manifest))
+    return manifest
+
+
+@pytest.mark.parametrize("schema_version", [1, 2])
+def test_legacy_implementation_cannot_be_frozen(tmp_path, schema_version):
+    root = tmp_path / "untouched"
+    payload = {**(DAG_PLAN if schema_version == 2 else PLAN), "schema_version": schema_version}
+    plan = Implementation.model_validate(payload)
+    with pytest.raises(ValueError, match="only schema-3"):
+        artifacts.freeze_implementation(root, plan)
+    assert not root.exists()
 
 
 @pytest.mark.parametrize("change", ["modify", "add", "delete", "rename", "empty_directory"])
@@ -64,7 +102,7 @@ def failed_directory_run(runtime):
     (root / "work/recipe.py").write_text(SOURCE)
     plan = Implementation.model_validate(PLAN)
     plan.stages[0].local_outputs = ["cache"]
-    manifest = artifacts.freeze_implementation(root, plan, "")
+    manifest = historical_manifest(root, plan)
     store.resolve_implementation(eid, manifest)
     store.stage(eid, "prepare", "complete")
     (root / "raw.json").write_text('{"value":42}')

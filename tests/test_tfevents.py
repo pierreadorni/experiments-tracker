@@ -69,7 +69,7 @@ def tensorboard_experiment(store, workflow):
         }
     )
     manifest = artifacts.freeze_implementation(
-        root, plan, "", python=sys.executable, project=None, workspace=work
+        root, plan, python=sys.executable, project=None, workspace=work
     )
     store.resolve_implementation(eid, manifest)
     return eid

@@ -106,7 +106,7 @@ def prepared(runtime, tmp_path):
         figures=[],
     )
     manifest = artifacts.freeze_implementation(
-        root, plan, "", python=Path(sys.executable), workspace=work, remote_execution=True
+        root, plan, python=Path(sys.executable), workspace=work, remote_execution=True
     )
     assert manifest["plan"]["schema_version"] == 3 and manifest["remote_execution"] is True
     store.resolve_implementation(eid, manifest)

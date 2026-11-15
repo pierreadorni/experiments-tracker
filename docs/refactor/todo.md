@@ -201,14 +201,14 @@ subcards remain individually within their size bands; no live activation follows
 - **Tests:** explicit archived fixture, idempotent startup/ticks, no new dispatch,
   late outcome settlement and cancellation. Split before exceeding the S budget.
 
-### [ ] T1.1d–h Delete legacy execution code (C10) · F+R · M each
+### [~] T1.1d–h Delete legacy execution code (C10) · F+R · M each
 One commit per area, removing only branches that T1.1a marked not needed for reading:
 - [x] d: `advance()`;
 - [x] e: `agent_stage` legacy `prepare` / `Preparation`;
 - [x] f: the validate stage and `strict_reproducibility`;
 - [x] g: contract ≤2 repair (`repair_failed_experiments` legacy parts, `repairs/` roots);
 - [~] h: `artifacts.py` execution writers and shipped recipe; archived readers stay.
-  Status: [x] h.1ab · [x] h.4 · [x] h.5 · [~] h.1c · [ ] h.2 · [ ] h.3 · [ ] h.6.
+  Status: [x] h.1ab · [x] h.4 · [x] h.5 · [x] h.1c · [~] h.2 · [ ] h.3 · [ ] h.6.
 
 Delete or replace the matching tests. Acceptance for each: the remaining suite passes,
 and archived fixtures still render their report via the API.
@@ -523,3 +523,5 @@ Record completed tasks here: `date · task · commit · notes`.
 2026-11-15 · T1.1h.4 · Luna implementation and coordinator review. Removed legacy remote transfers, recursive scientific identity/receipt worker and isolated tampering fixture/test; unsupported old worker manifests refuse execution. Preserved current3 declared recipe.py scripts, exact routing/polling/receipts/direct output references and cleanup until h5. Source +8/−155 (net −147); tests +1/−102; 266 changed lines after formatting. Isolated Node 24 Ruff, 55 focused remote/output/archive/recovery tests and all 596 Python tests pass. No live activation.
 
 2026-11-15 · T1.1h.5 · Luna implementation plus coordinator review. Removed automatic completion cleanup and obsolete task registry together with maintenance/scenario consumers; retained temporary declarations and historical sealed-checkpoint verification. Retired matching cleanup/helper tests. Coordinator added explicit verify/seal operation allowlist so retired cleanup cannot fall through to receipt generation, with two refusal cases. Source +5/−136; tests +9/−107; 257 changed lines. Isolated Node24 Ruff, 79 targets and all592 Python tests pass in365.37s. No live activation.
+
+2026-11-15 · T1.1h.1c · Luna implementation and coordinator review narrowed scope to preserve original validated-plan/dependency submission gate. Removed schema1/2 implementation/dependency freeze writer and empty current marker; old schemas refuse before filesystem effects, reader fixtures use static legacy records, current3 manual recovery stays and legacy adoption refuses after completed replay. Source +3/−101; tests +89/−10; 203 changed lines. Initial full run found one obsolete dependencies monkeypatch; removed it with method, keeping reader guards, then all14 iteration cases pass. Ruff,127 targets plus30 controller/resource checks and combined full618 tests with inert b2a pass. No live activation.

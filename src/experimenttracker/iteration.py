@@ -504,7 +504,6 @@ def prepare_manifest(root, plan, *, python, project, workspace, reused, remote_e
             raise ValueError("source staging directory cannot be a symlink")
         shutil.rmtree(snapshot)
     files, project_sources, _ = capture_sources(root, plan, workspace, project)
-    (root / "snapshot/requirements.txt").write_text("")
     manifest = {
         "schema_version": 1,
         "recipe_id": "agent_experiment_v1",

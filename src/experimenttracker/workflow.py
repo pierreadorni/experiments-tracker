@@ -1436,20 +1436,6 @@ class Workflow:
             if held:
                 return held
         plan_stage = next(s for s in exp["snapshot"]["plan"]["stages"] if s["id"] == stage) if generic else {}
-        if generic and not self.is_remote(exp) and not iteration.enabled(exp):
-            try:
-                installed = await self.dependencies(root, python)
-            except TimeoutError:
-                self.store.update(
-                    eid,
-                    hold_reason="runtime_check_pending",
-                    error="The environment dependency check timed out before submission; saved compute is retained",
-                )
-                return {"state": "held", "reason": "runtime_check_pending"}
-            if installed != (root / "snapshot/requirements.txt").read_text():
-                raise ExperimentFailure(
-                    "validation_failed", "prepared environment dependencies changed after freezing"
-                )
         submission_manifest = exp["snapshot"]
         refs = []
         scheduler = self.scheduler_for(exp)
@@ -2224,9 +2210,6 @@ class Workflow:
                                     )
                             except RuntimeError as exc:
                                 raise ValueError(f"prepared source does not compile: {name}: {exc}") from exc
-                    requirements = (
-                        "" if iteration.enabled(exp) else await self.dependencies(self.root(eid), python)
-                    )
                     fresh = self.store.experiment(eid)
                     if legacy_archive.execution_frozen(fresh) or fresh["phase"] == "cancelled":
                         return
@@ -2271,7 +2254,6 @@ class Workflow:
                     manifest = artifacts.freeze_implementation(
                         self.root(eid),
                         plan,
-                        requirements,
                         python=python,
                         project=self.project_context(exp)["checkout"],
                         workspace=self.working_directory(exp),
@@ -2582,18 +2564,6 @@ class Workflow:
         if exp["recipe_id"] == "agent_experiment_v1":
             return [stage["id"] for stage in exp["snapshot"]["plan"]["stages"]]
         return COMPUTE_STAGES
-
-    @staticmethod
-    async def dependencies(root, python=None):
-        # Query the experiment's environment; do not export direct URLs or installation credentials.
-        return (
-            await command(
-                str(python or root / "work/.venv/bin/python"),
-                "-c",
-                "import importlib.metadata as m; print('\\n'.join(sorted(d.metadata['Name']+'=='+d.version for d in m.distributions())))",
-            )
-            + "\n"
-        )
 
     def prepared_python(self, exp, plan):
         if self.is_remote(exp):
@@ -3397,6 +3367,8 @@ class Workflow:
             raise ValueError("a saved completed planning or preparation result is required")
         if action["state"] == "completed" and exp["phase"] != "failed":
             return {"experiment_id": eid, "action_id": action["id"], "state": "completed"}
+        if legacy_archive.execution_frozen(exp):
+            raise ValueError("archived legacy agent output reconciliation is unavailable")
         if (
             exp["phase"] != "failed"
             or exp["hold_reason"] != "agent_recovery_exhausted"

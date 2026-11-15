@@ -25,7 +25,6 @@ async def test_metrics_survive_plot_failure_repair_restart_and_direct_bindings(r
 
     monkeypatch.setattr(artifacts, "local_output_identity", forbidden)
     monkeypatch.setattr(artifacts, "local_output_manifest", forbidden)
-    monkeypatch.setattr(wf, "dependencies", forbidden)
     await until(wf, store, eid, lambda e: bool(e.get("partial_results")))
     document = {
         "title": "Working synthetic report",

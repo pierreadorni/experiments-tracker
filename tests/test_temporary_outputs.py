@@ -1,6 +1,7 @@
 """Disposable intermediates stay available through repair, without evidence hashing."""
 
 import copy
+import json
 import time
 from uuid import uuid4
 
@@ -16,6 +17,32 @@ SEALED_CHECKPOINT = (
     '"bd83c6d7b441cafb97f02552040257fbbff7aa7b95b680d88cf47ee4ad2b1425","size":14}],'
     '"schema_version":1,"stage":"z_measure","storage":"executor-only"}'
 )
+
+
+def historical_manifest(root, plan):
+    snapshot = root / "snapshot"
+    snapshot.mkdir()
+    (snapshot / "recipe.py").write_text(SOURCE)
+    (snapshot / "requirements.txt").write_text("")
+    manifest = {
+        "schema_version": 1,
+        "recipe_id": "agent_experiment_v1",
+        "files": {
+            "recipe.py": "be92c5592e6316ee7e033535b2d027b390acb191feef309345c316b8618edd20",
+            "requirements.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        },
+        "plan": plan.model_dump(),
+        "parameters": json.loads(plan.parameters_json),
+        "parameters_hash": "a" * 64,
+        "expected_outputs": {stage.id: stage.outputs for stage in plan.stages},
+        "python_relative_path": "work/.venv/bin/python",
+        "python_executable": None,
+        "project_sources": {},
+        "reused_stages": {},
+        "snapshot_hash": "b" * 64,
+    }
+    (snapshot / "manifest.json").write_text(json.dumps(manifest))
+    return manifest
 
 
 @pytest.fixture
@@ -36,7 +63,7 @@ def temporary_run(runtime):
     plan = Implementation.model_validate(PLAN)
     plan.stages[0].temporary_outputs = ["temporary/features"]
     plan.stages[0].local_outputs = ["checkpoint"]
-    manifest = artifacts.freeze_implementation(root, plan, "")
+    manifest = historical_manifest(root, plan)
     store.resolve_implementation(eid, manifest)
     (root / "temporary/features").mkdir(parents=True)
     (root / "temporary/features/data.pt").write_bytes(b"regenerable features")

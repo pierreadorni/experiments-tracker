@@ -37,7 +37,7 @@ def progress_experiment(store, workflow):
     ]
     plan = Implementation.model_validate(payload)
     manifest = artifacts.freeze_implementation(
-        root, plan, "", python=sys.executable, project=None, workspace=work
+        root, plan, python=sys.executable, project=None, workspace=work
     )
     store.resolve_implementation(eid, manifest)
     return eid
