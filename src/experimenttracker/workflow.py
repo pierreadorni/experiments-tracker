@@ -1100,8 +1100,6 @@ class Workflow:
         if early_repair.preparing(exp) and reason in ("compute_failed", "validation_failed"):
             self.store.update(eid, phase="preparing", hold_reason="automatic_repair", error=error)
             return
-        if reason == "validation_failed" and exp["phase"] == "validating":
-            self.store.stage(eid, "validate", "failed", error=error)
         if reason in ("agent_correction_stalled", "agent_recovery_exhausted", "agent_budget_exhausted"):
             action = self.store.one(
                 "SELECT phase FROM agent_actions WHERE experiment_id=? ORDER BY rowid DESC LIMIT 1", (eid,)
@@ -1266,10 +1264,6 @@ class Workflow:
                 continue
             if job:
                 if job["state"] == "complete":
-                    if not iteration.enabled(exp) and exp["contract"].get("strict_reproducibility"):
-                        artifacts.verify_project_sources(
-                            root, exp["snapshot"], self.project_context(exp)["checkout"]
-                        )
                     names = await asyncio.to_thread(artifacts.validate_stage, root, stage, exp["snapshot"])
                     if legacy_archive.execution_frozen(self.store.experiment(eid)):
                         return
@@ -1320,45 +1314,6 @@ class Workflow:
             return
         if iteration.enabled(exp):
             self.prepare_iteration_results(exp)
-        if not iteration.enabled(exp) and stages["validate"] != "complete":
-            self.store.start_validation(eid)
-            if self.has_local_checkpoints(exp["snapshot"]):
-                key = (eid, exp["evidence_revision"])
-                task = self.evidence_checks.get(key)
-                if task is None:
-
-                    def check_evidence():
-                        for stage in compute_stages:
-                            artifacts.validate_stage(
-                                root,
-                                stage,
-                                exp["snapshot"],
-                                verify_local_outputs=bool(exp["contract"].get("strict_reproducibility")),
-                            )
-
-                    self.evidence_checks[key] = asyncio.create_task(self.check_files(check_evidence))
-                    return
-                if not task.done():
-                    return
-                try:
-                    task.result()
-                finally:
-                    del self.evidence_checks[key]
-            else:
-                for stage in compute_stages:
-                    await asyncio.to_thread(
-                        artifacts.validate_stage,
-                        root,
-                        stage,
-                        exp["snapshot"],
-                        verify_local_outputs=bool(exp["contract"].get("strict_reproducibility")),
-                    )
-                    if legacy_archive.execution_frozen(self.store.experiment(eid)):
-                        return
-            if legacy_archive.execution_frozen(self.store.experiment(eid)):
-                return
-            self.store.stage(eid, "validate", "complete")
-            return
         if stages["interpret"] != "complete":
             await self.agent_stage(exp, "interpret")
             return
@@ -1492,8 +1447,6 @@ class Workflow:
             if held:
                 return held
         plan_stage = next(s for s in exp["snapshot"]["plan"]["stages"] if s["id"] == stage) if generic else {}
-        if generic and not iteration.enabled(exp) and exp["contract"].get("strict_reproducibility"):
-            artifacts.verify_project_sources(root, exp["snapshot"], project)
         if generic and not self.is_remote(exp) and not iteration.enabled(exp):
             try:
                 installed = await self.dependencies(root, python)

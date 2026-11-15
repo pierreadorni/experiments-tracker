@@ -205,8 +205,8 @@ subcards remain individually within their size bands; no live activation follows
 One commit per area, removing only branches that T1.1a marked not needed for reading:
 - [x] d: `advance()`;
 - [x] e: `agent_stage` legacy `prepare` / `Preparation`;
-- [~] f: the validate stage and `strict_reproducibility`;
-- g: contract ≤2 repair (`repair_failed_experiments` legacy parts, `repairs/` roots);
+- [x] f: the validate stage and `strict_reproducibility`;
+- [~] g: contract ≤2 repair (`repair_failed_experiments` legacy parts, `repairs/` roots);
 - h: `artifacts.py` freeze and verify helpers, `recipes/toy_compare`.
 
 Delete or replace the matching tests. Acceptance for each: the remaining suite passes,
@@ -508,3 +508,5 @@ Record completed tasks here: `date · task · commit · notes`.
 2026-11-15 · T1.1d · Luna inherited deletion, coordinator review and scope correction. Removed automatic legacy freeze/reference comparison and serial-chain/schema branches; retained current requested/dependency and uncertain-submission guards, positional pause phases and manual legacy compute lookup. Source +5/−36 (net −31), tests 0; 41 changed lines. Isolated Node 24 Ruff, 78 focused current/recovery/archive/API/report tests and all 592 Python tests pass. Reader/writer deletion boundaries recorded in the split note. No live activation.
 
 2026-11-15 · T1.1e · Luna implementation and coordinator review. Removed unreachable Preparation execution/revalidation, toy retry and DemoAgent toy preparation response. Preserved saved models/schema readers, current Implementation and explicit terminal operator recovery. Source +1/−60 (net −59), tests 0; 61 changed lines. Isolated Node 24 Ruff and 54 focused tests pass; full tree with the independent inert b1 helper passes 599 Python tests. No live activation.
+
+2026-11-15 · T1.1f · Luna implementation, coordinator review corrected removal of the still-consumed evidence_checks registry. Deleted automatic final-validation control, stage writes/seeding and strict execution checks; preserved saved-record readers, manual recovery and archive/cancel drainage. Source +0/−68 (workflow −47, Store −21), tests 0. Isolated Node 24 Ruff, 91 focused tests with independent inert b1 helpers and complete 602-test Python suite pass. No live activation.

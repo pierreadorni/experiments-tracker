@@ -847,7 +847,6 @@ class Store:
                 *(["plan"] if contract.get("planning_version") else []),
                 "prepare",
                 *[stage["id"] for stage in manifest["plan"]["stages"]],
-                *(["validate"] if contract.get("execution_contract") != 3 else []),
                 "interpret",
                 "publish",
             ]
@@ -862,26 +861,6 @@ class Store:
                 (encode(contract), encode(manifest), eid),
             )
             self.emit(db, eid, "implementation_frozen", {"snapshot_hash": manifest["snapshot_hash"]})
-
-    def start_validation(self, eid):
-        """Publish the active phase and its stage in one idempotent transition."""
-        if self.experiment(eid)["phase"] == "cancelled":
-            return
-        with self.tx() as db:
-            stage = db.execute(
-                "SELECT state FROM stages WHERE experiment_id=? AND id='validate'", (eid,)
-            ).fetchone()
-            if not stage or stage["state"] == "complete":
-                return
-            exp = db.execute("SELECT phase,hold_reason FROM experiments WHERE id=?", (eid,)).fetchone()
-            if stage["state"] == "running" and exp["phase"] == "validating" and exp["hold_reason"] is None:
-                return
-            db.execute(
-                "UPDATE stages SET state='running',updated_at=? WHERE experiment_id=? AND id='validate'",
-                (clock.now(), eid),
-            )
-            db.execute("UPDATE experiments SET phase='validating',hold_reason=NULL WHERE id=?", (eid,))
-            self.emit(db, eid, "validation_started")
 
     def stage(self, eid, stage_id, state, *, error=None, outputs=None):
         if self.experiment(eid)["phase"] == "cancelled":
