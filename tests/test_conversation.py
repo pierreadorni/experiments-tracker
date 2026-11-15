@@ -450,9 +450,11 @@ async def test_missing_output_manifest_continues_saved_turn_with_feedback(runtim
         if workflow.agent_task:
             await workflow.agent_task
 
+    # Each of up to three correction turns runs a real Matplotlib plotting subprocess.
     row = await wait_until(
         lambda: discussion(store, identity, target),
         ticks=tick,
+        timeout=60.0,
         describe=lambda: store.one("SELECT * FROM discussions WHERE id=?", (identity,)),
     )
     actions = store.rows(
