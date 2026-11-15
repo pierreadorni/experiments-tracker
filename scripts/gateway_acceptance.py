@@ -41,7 +41,6 @@ async def main():
         state_dir=directory / "state",
         job_output_root=directory / "outputs",
         backup_dir=directory / "backups",
-        recipe_dir=root / "recipes/toy_compare",
         web_dir=root / "web/dist",
         api_token_file=root / ".local/api-token",
         scheduler_seconds=0.1,

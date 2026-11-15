@@ -4,7 +4,7 @@ ExperimentTracker has one execution authority: a Python process with a local SQL
 
 A user brief becomes a persisted experiment contract. Planning/review precedes implementation. For execution contract 3, the backend copies bounded declared sources into each attempt, records the selected producer/output bindings and dispatch intent transactionally, validates resource requests and submits through Slurm. Metrics can publish before independent figures. Working reports have versions; plotting failure need not invalidate already available metrics. Reuse names successful stages with a rationale and retains original output identity. Targeted repairs create new attempts instead of replaying successful compute.
 
-There is no scientific data/checkpoint hashing, recursive inventory, dependency freeze, universal final validation barrier or automatic completion cleanup on contract 3. Small published objects still have transport integrity checks. Historical/demo contracts keep their saved semantics. Convenience exports are not reproducibility bundles for new work.
+There is no scientific data/checkpoint hashing, recursive inventory, dependency freeze, universal final validation barrier or automatic completion cleanup on contract 3. Small published objects still have transport integrity checks. Archived historical evidence keeps its saved format; legacy execution is read-only. New synthetic demos use contract 3. Convenience exports are not reproducibility bundles for new work.
 
 Submission and agent dispatch can fail after the external system accepted work but before the response was saved. The backend records intent first and reconciles exact job/action/thread/turn identities. Uncertainty causes a hold; automatic duplicate dispatch is not a recovery strategy. User commands, events, outbox writes and publication readiness are transactional and idempotent.
 
@@ -20,10 +20,11 @@ Browser identity and executor credentials are separate. An executor token cannot
 | --- | --- |
 | `src/experimenttracker` | CLI, API, workflow/controller, SQLite store, scheduler, runtime, reporting |
 | `src/experimenttracker/machine_contexts` | Agent guidance for local and site-specific remote execution |
-| `recipes/toy_compare` | Synthetic deterministic legacy demo |
 | `web` | Shared responsive interface, frontend/export checks, synthetic browser smoke scripts |
 | `gateway` | Worker API, build pipeline, append-only D1 migrations and local D1/R2 tests |
 | `tools/codex` | Locked project-local managed runtime |
 | `tests` | Workflow, recovery, resources, publication and API tests |
+
+The deterministic synthetic demo scripts planning and implementation through `DemoAgent` and runs tiny regression through `DemoScheduler`. It requires no installed fixed recipe directory and provides no live Slurm or scientific-research acceptance.
 
 The app retains historical local/remote identifiers `acacia` and `jean-zay`. The latter implements site-specific scheduler policy. See [agent installation](agent-install.md) for the adaptation map. Runtime compatibility is pinned; other clusters and accounts need fresh acceptance, not just a configuration copied from the original host.

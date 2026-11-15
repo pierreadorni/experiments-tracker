@@ -7,7 +7,6 @@ mode: demo
 state_dir: /YOUR/LOCAL/DISK/experimenttracker
 job_output_root: /YOUR/CHECKOUT/.local/demo-outputs
 backup_dir: /YOUR/CHECKOUT/.local/demo-backups
-recipe_dir: /YOUR/CHECKOUT/recipes/toy_compare
 web_dir: /YOUR/CHECKOUT/web/dist
 api_token_file: /YOUR/CHECKOUT/.local/api-token
 host: 127.0.0.1

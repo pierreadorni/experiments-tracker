@@ -76,7 +76,7 @@ Edit the generated file privately before starting it:
 | `job_output_root` | Absolute path visible on the compute nodes. |
 | `backup_dir` | Retained storage independent of the state disk. |
 | `projects_root`, `projects` | Authorized research directories; selected folders may be edited. Keep `test-project` for legacy/demo records. |
-| `recipe_dir`, `web_dir` | Existing recipe directory and built frontend in this checkout. |
+| `web_dir` | Built frontend in this checkout. |
 | `api_token_file` | Generated protected token, absolute path, mode 600. |
 | `codex.executable` | Absolute path to this checkout's `tools/codex/node_modules/.bin/codex`. |
 | `codex.expected_version` | `0.160.1` for the pinned runtime. Generated legacy defaults otherwise expect `0.156.1`; explicitly override both fields. |
@@ -84,6 +84,8 @@ Edit the generated file privately before starting it:
 | `slurm.limits` | Optional owner ceilings/allowlists; omitted fields defer to Slurm authorization. |
 | `slurm.max_concurrent_jobs` | Defaults to 1; explicit `null` removes this executor-wide cap. |
 | `port` | An unused loopback port, especially when retaining the demo owner. |
+
+The retired `recipe_dir` key in older generated YAML is ignored; other unknown keys remain errors. No fixed recipe directory is required.
 
 All paths must be absolute. See [config.example.yaml](../config.example.yaml) and the validated fields in [config.py](../src/experimenttracker/config.py). Example live overrides, with placeholders you must replace:
 
@@ -99,7 +101,7 @@ slurm:
   limits: {}  # add owner limits after discussing the desired budget
 ```
 
-The small CPU defaults are fallbacks, not ceilings for live runs. The agent selects resources from fresh capabilities; the backend validates each request with `sbatch --test-only`. The three short CPU jobs/no-GPU envelope belongs to the synthetic legacy recipe.
+The small CPU defaults are fallbacks, not ceilings for live runs. The agent selects resources from fresh capabilities; the backend validates each request with `sbatch --test-only`. Synthetic demo mode retains its short CPU/no-GPU envelope. Legacy execution is archived: saved evidence remains readable and exact in-flight identities can settle, but old stages do not advance.
 
 ## 6. Preflight, then accept live execution
 

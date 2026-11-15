@@ -2611,7 +2611,7 @@ class Workflow:
             saved = next(s for s in exp["snapshot"]["plan"]["stages"] if s["id"] == stage)
             if saved.get("resources"):
                 resources = JobResources.model_validate(saved["resources"])
-        if exp["contract"].get("resource_policy_version") != 2 or self.config.mode == "demo":
+        if self.config.mode == "demo":
             if (
                 resources.gpus_per_job
                 or resources.nodes != 1
@@ -2621,7 +2621,7 @@ class Workflow:
             ):
                 raise ExperimentFailure(
                     "validation_failed",
-                    "legacy/demo experiments retain their short single-CPU resource contract",
+                    "synthetic demonstrations retain their short single-CPU resource contract",
                 )
         self.config.slurm.limits.validate_request(resources)
         cap = self.config.slurm.limits.gpu_hours_per_experiment

@@ -34,7 +34,6 @@ def main():
         backup_dir=folder / "backups",
         api_token_file=token,
         web_dir=web,
-        recipe_dir=Path(__file__).resolve().parents[1] / "recipes/toy_compare",
         scheduler_seconds=0.1,
         port=8879,
     )

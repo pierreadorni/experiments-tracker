@@ -29,7 +29,7 @@ The `acacia` context means the owner's local Slurm route in saved records. It do
 
 The `jean-zay` context is a specific remote Slurm adapter with SSH/rsync, minimum 600-second polling and memory-flag translation for Jean Zay. Setting a different SSH alias does not make that policy generic. For another remote cluster, compare required Slurm flags, memory semantics, paths, modules, authorization and accounting. Implement and test a suitable adapter/schema change or stay on the local route. Do not rename a saved context or silently reuse incompatible policy. The machine guide contains historical account/hardware observations; discover current facts instead of using them as authorization.
 
-A pure Python wheel is not the supported install path: frontend assets, recipe scripts and machine guides are loaded from the source layout. Containers, alternate schedulers, multi-user hosting and native Windows/macOS require additional work. Document them as adaptations, not existing support.
+A pure Python wheel is not the supported install path: frontend assets and machine guides are loaded from the source layout. Containers, alternate schedulers, multi-user hosting and native Windows/macOS require additional work. Document them as adaptations, not existing support.
 
 ## Preserve execution semantics during adaptation
 

@@ -178,7 +178,6 @@ class Config(StrictModel):
     state_dir: Path
     job_output_root: Path
     backup_dir: Path
-    recipe_dir: Path
     web_dir: Path
     host: Literal["127.0.0.1"] = "127.0.0.1"
     port: int = Field(default=8765, ge=1024, le=65535)
@@ -199,7 +198,7 @@ class Config(StrictModel):
 
     @model_validator(mode="after")
     def absolute_paths(self):
-        for key in ("state_dir", "job_output_root", "backup_dir", "recipe_dir", "web_dir", "api_token_file"):
+        for key in ("state_dir", "job_output_root", "backup_dir", "web_dir", "api_token_file"):
             if not getattr(self, key).is_absolute():
                 raise ValueError(f"{key} must be absolute")
         if self.projects_root and not self.projects_root.is_absolute():
@@ -211,4 +210,7 @@ class Config(StrictModel):
 
 
 def load_config(path: Path) -> Config:
-    return Config.model_validate(yaml.safe_load(path.read_text()))
+    value = yaml.safe_load(path.read_text())
+    if isinstance(value, dict):
+        value.pop("recipe_dir", None)
+    return Config.model_validate(value)

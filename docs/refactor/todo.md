@@ -208,7 +208,7 @@ One commit per area, removing only branches that T1.1a marked not needed for rea
 - [x] f: the validate stage and `strict_reproducibility`;
 - [x] g: contract ≤2 repair (`repair_failed_experiments` legacy parts, `repairs/` roots);
 - [~] h: `artifacts.py` execution writers and shipped recipe; archived readers stay.
-  Status: [x] h.1ab · [x] h.4 · [x] h.5 · [x] h.1c · [~] h.2 · [ ] h.3 · [ ] h.6.
+  Status: [x] h.1ab · [x] h.4 · [x] h.5 · [x] h.1c · [x] h.2 · [ ] h.3 · [ ] h.6.
 
 Delete or replace the matching tests. Acceptance for each: the remaining suite passes,
 and archived fixtures still render their report via the API.
@@ -527,3 +527,5 @@ Record completed tasks here: `date · task · commit · notes`.
 2026-11-15 · T1.1h.1c · Luna implementation and coordinator review narrowed scope to preserve original validated-plan/dependency submission gate. Removed schema1/2 implementation/dependency freeze writer and empty current marker; old schemas refuse before filesystem effects, reader fixtures use static legacy records, current3 manual recovery stays and legacy adoption refuses after completed replay. Source +3/−101; tests +89/−10; 203 changed lines. Initial full run found one obsolete dependencies monkeypatch; removed it with method, keeping reader guards, then all14 iteration cases pass. Ruff,127 targets plus30 controller/resource checks and combined full618 tests with inert b2a pass. No live activation.
 
 2026-11-15 · T1.3b-b2a · Luna implementation/review correction and coordinator acceptance. Added inert SQLite-only action responsibility mapping with before/current source proof, exact running identity, backend reconciliation, immutable source scope/phase/evidence and allowed owner/kind pairs. Terminal missing history stays missing, unproven active/terminal conflicts diagnose, frozen/deleted/cancelled pending work abandons stale obligations. No source mutation, dispatch, runtime hooks or projection changes. Source +122/−0; tests +290/−0; 412 changed lines. Ruff,23 new/41 core-helper cases and full618 combined with independent h1c pass. Source writer audit is read-only; wiring awaits final T1.1 tree.
+
+2026-11-15 · T1.1h.2 · Luna implementation and coordinator review. Removed shipped toy recipe and recipe_dir configuration/doctor/init wiring; old YAML ignores only the retired key. Synthetic CPU bound and current fresh resource authorization remain. Source/scripts/recipe +13/−180; tests +35/−7 (235 changed lines); example −1. Ruff,47 focused cases and all620 Python tests pass (400.31s; durable XML retained in validation checkout). Updated installation and architecture guidance. No live activation.

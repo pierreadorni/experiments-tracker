@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import pytest
 
 from experimenttracker.codex_client import DemoAgent
@@ -7,8 +5,6 @@ from experimenttracker.config import Config
 from experimenttracker.slurm import DemoScheduler
 from experimenttracker.store import Store
 from experimenttracker.workflow import Workflow
-
-ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture
@@ -19,7 +15,6 @@ def config(tmp_path):
         state_dir=tmp_path / "state",
         job_output_root=tmp_path / "outputs",
         backup_dir=tmp_path / "backups",
-        recipe_dir=ROOT / "recipes/toy_compare",
         web_dir=tmp_path / "web",
         api_token_file=token,
         scheduler_seconds=0.1,

@@ -65,7 +65,6 @@ def initialize(path: Path, mode: str, state_dir: str | None):
         "job_output_root": str(local / f"{mode}-outputs"),
         "projects_root": str(local / "projects"),
         "backup_dir": str(local / f"{mode}-backups"),
-        "recipe_dir": str(root / "recipes/toy_compare"),
         "web_dir": str(root / "web/dist"),
         "api_token_file": str(token_path),
         "scheduler_seconds": 0.2 if mode == "demo" else 10,
@@ -265,7 +264,6 @@ def main():
             if Path(__file__).resolve().parents[2] != root.resolve():
                 raise ValueError("start a tested release with its own Python and source directory")
             config.web_dir = root / "web/dist"
-            config.recipe_dir = root / "recipes/toy_compare"
         app = create_app(config, config_path=args.config.resolve(), current_release=args.release)
         asyncio.run(serve_http(config, app, args.max_seconds))
     elif args.command == "reconcile":

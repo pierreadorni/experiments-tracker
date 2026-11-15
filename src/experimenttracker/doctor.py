@@ -12,11 +12,12 @@ def diagnose(config):
     def record(name, ok, detail):
         checks.append({"name": name, "ok": bool(ok), "detail": detail})
 
-    for name, path in (
-        ("recipe", config.recipe_dir / "recipe.py"),
-        ("built_frontend", config.web_dir / "index.html"),
-    ):
-        record(name, path.is_file(), "present" if path.is_file() else "missing; follow setup in the runbook")
+    frontend = config.web_dir / "index.html"
+    record(
+        "built_frontend",
+        frontend.is_file(),
+        "present" if frontend.is_file() else "missing; follow setup in the runbook",
+    )
     files = [("api_credential", config.api_token_file)]
     if config.gateway.url:
         files.append(("executor_credential", config.gateway.credential_file))
