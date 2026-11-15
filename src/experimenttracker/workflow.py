@@ -1218,25 +1218,6 @@ class Workflow:
         if generic and stages["prepare"] != "complete":
             await self.agent_stage(exp, "prepare")
             return
-        if not exp["snapshot"]:
-            manifest = artifacts.freeze_recipe(self.config.recipe_dir, root, exp["contract"])
-            self.store.update(eid, snapshot=manifest)
-            exp = self.store.experiment(eid)
-        reference = exp["contract"].get("reference")
-        if (
-            reference
-            and not generic
-            and any(
-                reference[field] != exp["snapshot"][field]
-                for field in ("snapshot_hash", "parameters_hash", "data_hash", "test_hash")
-            )
-        ):
-            self.fail(
-                eid,
-                "reference_protocol_mismatch",
-                "The reference uses a different frozen protocol; no model turn or job was launched",
-            )
-            return
         await asyncio.to_thread(artifacts.verify_snapshot, root, exp["snapshot"])
         if legacy_archive.execution_frozen(self.store.experiment(eid)):
             return
@@ -1248,13 +1229,10 @@ class Workflow:
             await self.agent_stage(exp, "prepare")
             return
         compute_stages = self.compute_stages(exp)
-        dag = generic and exp["snapshot"]["plan"].get("schema_version", 1) >= 2
-        dependencies = (
-            {stage["id"]: stage["needs"] for stage in exp["snapshot"]["plan"]["stages"]} if dag else {}
-        )
+        dependencies = {stage["id"]: stage["needs"] for stage in exp["snapshot"]["plan"]["stages"]}
         # An unknown submission may already exist in Slurm. Reconcile its exact
         # identity before crossing another dispatch boundary for this experiment.
-        if dag and self.store.one(
+        if self.store.one(
             "SELECT 1 FROM jobs WHERE experiment_id=? AND state='submitting' AND job_id IS NULL",
             (eid,),
         ):
@@ -1309,10 +1287,8 @@ class Workflow:
                         continue
                     self.fail(eid, "compute_failed", job["error"] or "scheduler job failed")
                     return
-                if dag:
-                    continue
-                return
-            if dag and any(stages[need] != "complete" for need in dependencies[stage]):
+                continue
+            if any(stages[need] != "complete" for need in dependencies[stage]):
                 continue
             if exp["pause_compute"]:
                 self.store.update(
@@ -1341,14 +1317,7 @@ class Workflow:
                 return
             if outcome and outcome.get("state") == "uncertain":
                 return
-            if dag:
-                continue
-            return
-        if dag and any(
-            stages[stage] != "complete"
-            for stage in compute_stages
-            if not iteration.enabled(exp) or stage in requested
-        ):
+        if any(stages[stage] != "complete" for stage in compute_stages if stage in requested):
             return
         if iteration.enabled(exp):
             self.prepare_iteration_results(exp)

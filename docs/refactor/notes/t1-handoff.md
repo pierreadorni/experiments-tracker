@@ -15,7 +15,7 @@ synthetic demo, reporting, cancellation and watchdog. No live state accessed.
 Luna d candidate is `.worktrees/t1-delete-advance`, workflow-only +5/-36 after Ruff formatting against
 P4, preserving positional pause phases and historical compute lookup. Luna e
 is preparing in `.worktrees/t1-delete-prepare`, based on d, with exact baseline
-`/tmp/t1-delete-prepare-baseline.py`. Archival is complete; d focused/full checks precede its landing.
+`/tmp/t1-delete-prepare-baseline.py`. Archival is complete; d passed 78 targets and all 592 Python tests, ready to land.
 Old `/tmp` baselines disappeared across interruption; root P4 source was used to
 remeasure d. Do not count copied prerequisites or discard worktree edits.
 

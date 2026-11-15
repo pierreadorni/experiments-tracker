@@ -203,8 +203,8 @@ subcards remain individually within their size bands; no live activation follows
 
 ### [ ] T1.1d–h Delete legacy execution code (C10) · F+R · M each
 One commit per area, removing only branches that T1.1a marked not needed for reading:
-- d: `advance()`;
-- e: `agent_stage` legacy `prepare` / `Preparation`;
+- [x] d: `advance()`;
+- [~] e: `agent_stage` legacy `prepare` / `Preparation`;
 - f: the validate stage and `strict_reproducibility`;
 - g: contract ≤2 repair (`repair_failed_experiments` legacy parts, `repairs/` roots);
 - h: `artifacts.py` freeze and verify helpers, `recipes/toy_compare`.
@@ -504,3 +504,5 @@ Record completed tasks here: `date · task · commit · notes`.
 2026-11-15 · T1.1b-P4 · Luna implementation, coordinator review. Startup/tick archival, execution/continuation guards and raw exact job/turn settlement activated together; terminal legacy automatic job observation also avoids scientific output validation. Preserved manual terminal recovery, cancellation and readers. Replaced obsolete sealed restart check with damaged-output settlement for training/failed/complete records. Source +164/−19; tests +264/−30; 477 changed lines. Isolated Node 24 Ruff, 98 targeted tests and all 590 Python tests pass. No live activation. Queued report acceptance is separate b-A.
 
 2026-11-15 · T1.1b-A · Luna tests, coordinator review and outside-NSS validation. Queued reports on a nonterminal archived static legacy record render from saved evidence; an actual missing metric fails only the report. Both preserve archived phase/hold and exact job/action rows with zero submissions/inference. Source 0; tests +58/−0. Ruff and 59 targeted reporting/cancellation/watchdog/synthetic-demo tests pass; P4 full suite passed 590 immediately before adding these two focused cases. T1.1b complete; ordered d–h deletion next. No live activation.
+
+2026-11-15 · T1.1d · Luna inherited deletion, coordinator review and scope correction. Removed automatic legacy freeze/reference comparison and serial-chain/schema branches; retained current requested/dependency and uncertain-submission guards, positional pause phases and manual legacy compute lookup. Source +5/−36 (net −31), tests 0; 41 changed lines. Isolated Node 24 Ruff, 78 focused current/recovery/archive/API/report tests and all 592 Python tests pass. Reader/writer deletion boundaries recorded in the split note. No live activation.
