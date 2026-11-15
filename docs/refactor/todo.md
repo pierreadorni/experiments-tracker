@@ -248,6 +248,7 @@ and archived fixtures still render their report via the API.
   episode/lookup helpers; [x] b2a inert action mapping; [x] b5a inert job mapping; [ ] b2b–b14 runtime source integration and bounded backfill.
 
 ### [ ] T1.3c Derived holds (C2) · F+R · M per call-site group
+- [x] c1a inert source-less admission decisions; source-backed/terminal/cancellation families and activation remain pending.
 - Compute `hold_reason` from obligations in `Store.projection`; remove direct
   writes one call-site group per commit, retaining compatibility readers.
 
@@ -537,3 +538,5 @@ Record completed tasks here: `date · task · commit · notes`.
 2026-11-15 · T1.1h.7a · Luna implementation rebased from current root, coordinator scoped method application/review. Removed dead legacy budget/submit/checkpoint observer arms and unused check_files/semaphore, retaining validated dependency/review/resource/intent gates, script-less current3 recipe.py and all check registries/drainage. Source +22/−107 (net−85), tests+42;171 changed lines. Ruff,70 focused checks with inert job/admission helpers and full645 Python tests pass (417.90s). No live activation.
 
 2026-11-15 · T1.3b-b5a · Luna implementation and coordinator historical-ID correction/review. Inert SQLite-only job responsibility mapper: unknown ID backend reconciliation, exact saved ID external job, known scheduler terminal settlement closes only existing episodes; failed rows alone remain unresolved and agent pseudo-jobs never become external work. All historical episodes preserve exact scope/stage/attempt/scheduler identity. Source+154/tests+271 (425 changed lines); Ruff,12 focused cases and combined full645 Python pass. No runtime hooks/projection/backfill or live activation.
+
+2026-11-15 · T1.3c-c1a · Luna implementation and coordinator narrowing/review. Inert validated source-less admission decisions on backend advancement episode0; no source-reference parameter until typed source families land. Exact generation/scope/ownership, closed reason/wait pairs, payload types and caller transaction validated; deleted/terminal/later-lifetime use rejected pending c1b. Source+193/tests+147 (340 changed lines); Ruff,8 focused cases and combined full645 Python pass. No runtime callers, hold projection, backfill, source mutation or live activation.
