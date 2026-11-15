@@ -1,43 +1,48 @@
 # T1 handoff
 
-## Latest working state (2026-11-15, after h.5)
+## Latest working state (2026-11-15, after h3)
 
-Main `07b0e8d` includes h.5, not yet pushed; last pushed `e664f6a`. Preserved h5
-files matched isolated validation across resume; full592 passed in365.37s before
-interruption, then committed. Root/validation now have **h1c** and independent
-inert C2b2a only (plus documentation WIP for later h2/wholeT1.1):
-- h1c narrowed by coordinator to preserve ORIGINAL validated-plan/graph submission
-  gate unchanged. Source +3/-101, tests +89/-9 =202 changed lines (not original223).
-  127 focused tests passed before scope narrowing, then30 controller/resources
-  passed again with original gate. Removes old freezer/dependency snapshot writer;
-  archived reader fixtures still static and checked; no source/checkpoint hash
-  writer for future experiments. Current3 source copies/readers remain.
-- C2b2a source122/tests290 =412 lines. Reviewed helper fixes owner/kind pair,
-  terminal-history conflict and stale frozen-pending closure. 41 pure new/core
-  obligation tests passed. No runtime integration/imports except new test.
-Combined full Python suite starting now (new tool session; expect618).
-Do not change validation until it finishes; commit h1c and b2a separately.
+Main `a93c600` includes h2 `ba018d7` and h3; last pushed `3cc9fcc`.
+h2 Ruff/47 targets/full620 pass; h3 Ruff/45 targets/full621 pass (418.68s,
+XML `.worktrees/t1-validation/check-results/t1-h3-full.xml`). Current execution
+guide bytes unchanged; archived metadata readable with a read-only guide.
 
-Remaining frozen candidates (copied prerequisite edits on old HEAD; apply scoped
-changes only, never full old-HEAD diffs):
-- h2 `.worktrees/t1-delete-recipe`: ~232 source/test +example -1, narrow old
-  recipe_dir YAML adapter. ONLY workflow -1 stage_resources line vs
-  /tmp/t1-delete-recipe-workflow.py belongs to h2; do not overwrite h1c/h3.
-  Main AGENTS/install/architecture/agent-install docs WIP belongs to this and
-  final T1.1 acceptance, intentionally not staged with h5/h1c.
-- h3 `.worktrees/t1-delete-legacy-prompts`: workflow +26/-385 +newtest32,
-  guide deletions28 =>471 inclguides. Use scoped patch
-  /tmp/t1-delete-legacy-prompts-workflow-delta.diff after h1c. Keeps current
-  iteration guide bytes/site policy, archived read-only Conversation context.
-- h6 `.worktrees/t1-retire-toy-create`: 144 scoped lines inclnew48
-  test_store_creation.py; models/store/gatewaycreate +gateway createfixtures.
-  Preserves legacy projection/model/migration/replay; new stages include plan
-  and omitvalidate. Contains h2cfg prereqs, don't count/apply them again.
+Root and frozen validation now hold **h6 only** plus notes. New test assertions
+corrected to Store.projection (Store.experiment intentionally has no stages).
+11 create/API/demo targets pass. Full Node24 `make check` session61212 running;
+durable log `check-results/t1-h6-make-check.log`. Wait for outcome before replacing
+validation source. Scoped h6 files are models.py/store.py/gateway index/test
+(gateway.mjs,push.mjs) and new test_store_creation.py. 144 source/tests lines.
 
-Luna action_mapping_review now performs READ-ONLY audit of all action source
-writers for future wiring b2b/b3/b4; no code edits. Re-audit final post-h source
-and measure cards with tests before integration. C2b1/b2a remain inert; b2b–b14
-and later T1 are incomplete. No live resources/owner configuration accessed.
+Next h7a prepared script `/tmp/t1-apply-h7a.py` uses scoped methods from
+`.worktrees/t1-job-obligation-audit`, preserving required output/evidence check
+registries and shutdown/archive/cancel/maintenance consumers. Remove obsolete
+check_files+semaphore only. Candidate methods _submit_prepared_stage, observe_jobs,
+agent_stage; remove has_local_checkpoints. Add new dispatch boundary tests.
+Do not copy init/close wholesale. Review actual current diff before tests.
+
+h7b `.worktrees/t1-final-legacy-audit` fixes frozen commands and owned completed-
+reader replies. Conservative297 changed lines; 19 Python targets originallypass,
+Node checks pending. Its workflow ALSO contains other composed retirement changes:
+extract ONLY _request and tick methods for h7b, never copy full file. Store and
+gateway are h6 prerequisites plus h7b guards; web main/types and archived activation
+tests scoped. Gateway now rejects frozen steer and parses answer projection once.
+
+Active Luna work:
+- action_mapping_review owns `.worktrees/t1-action-source-wiring`, ba018d7,
+  b2b Workflow-only source hooks <500, plan approved; no commits.
+- job_obligation_audit owns new inert job mapping checkout (ask report for path),
+  plan approved, backend unknown-ID/external exact-ID; pseudo jobs excluded,
+  failed row alone not terminal. Preserve original h7a checkout/baseline.
+- advancement_decisions owns `.worktrees/t1-advancement-decisions`, a93c600,
+  c1a inert decision helper <450, API plan awaited.
+One focused Astra derived-holds review complete; coordinator-approved design is
+`t1.3c-derived-design.md`. It specifies completion of direct-write retirement;
+no runtime changes yet. All T1.3b runtime wiring and later T1 remain incomplete.
+
+Unknown untracked `.impeccable/` appeared this turn; preserve and never stage
+incidentally. Preserve `.worktrees/` and preexisting notes. No live resources,
+owner config, deployment or managed research calls accessed.
 
 ## Resume on 2026-11-15
 
