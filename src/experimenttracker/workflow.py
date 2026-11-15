@@ -937,14 +937,14 @@ class Workflow:
                 await early_repair.queue(self, exp)
                 continue
             resource_revision = exp["hold_reason"] == "resources_unavailable"
-            if resource_revision and clock.now() - max(
+            if not resource_revision:
+                continue
+            if clock.now() - max(
                 (stamp for (saved_eid, _, _), stamp in self.last_preflight.items() if saved_eid == eid),
                 default=0,
             ) < (
                 exp["contract"].get("execution", {}).get("poll_seconds", 600) if self.is_remote(exp) else 60
             ):
-                continue
-            if not resource_revision and not self.repair_available(exp):
                 continue
             if (
                 exp["pending_request"]
@@ -1028,10 +1028,10 @@ class Workflow:
             contract = exp["contract"]
             revision = exp["evidence_revision"] + 1
             contract.setdefault("working_directory", str(self.working_directory(exp)))
-            contract["repair_count"] = contract.get(
+            contract.setdefault(
                 "repair_count",
                 len(contract.get("repair_history", [])) + bool(contract.get("auto_repair")),
-            ) + (0 if resource_revision else 1)
+            )
             if contract.get("auto_repair"):
                 contract.setdefault("repair_history", []).append(contract["auto_repair"])
             current_jobs = [
@@ -2285,7 +2285,11 @@ class Workflow:
                         return
                     if early_repair.preparing(exp):
                         early_repair.validate(self, exp, plan)
-                    reused = self.reusable_stages(exp, plan)
+                    reused = {}
+                    if iteration.enabled(exp) and exp["contract"].get("auto_repair"):
+                        reused = iteration.reuse(self, exp, plan)
+                    elif plan.reuse_stages:
+                        raise ValueError("stage reuse requires saved successful work in this experiment")
                     budget = exp["contract"].get("max_jobs", self.config.slurm.max_jobs_per_experiment)
                     # Contract-3 preparation counts scheduled work; an interactive agent stage is not a job.
                     current = iteration.enabled(exp) or early_repair.preparing(exp)
@@ -2606,113 +2610,6 @@ class Workflow:
             "SELECT id,name,sha256,size FROM artifacts WHERE experiment_id=? AND name=? AND evidence_revision=?",
             (exp["id"], "analysis-" + name, exp["evidence_revision"]),
         )
-
-    def reusable_stages(self, exp, plan):
-        if iteration.enabled(exp) and exp["contract"].get("auto_repair"):
-            return iteration.reuse(self, exp, plan)
-        repair = exp["contract"].get("auto_repair")
-        if not repair:
-            if plan.reuse_stages:
-                raise ValueError("stage reuse requires saved successful work in this experiment")
-            return {}
-        old = repair["snapshot"]
-        prior_root = Path(
-            repair.get("previous_root")
-            or (
-                self.projects.base_root(exp["id"])
-                if repair.get("previous_revision", 1) == 1
-                else self.projects.base_root(exp["id"]) / "repairs" / str(repair["previous_revision"])
-            )
-        )
-        old_plan = Implementation.model_validate(old["plan"])
-        old_graph = stage_dependencies(old_plan.stages, old_plan.schema_version)
-        completed = set(repair.get("completed_stages", []))
-        invalid = set(old_graph) - completed
-        changed = True
-        while changed:
-            expanded = invalid | {stage for stage, needs in old_graph.items() if set(needs) & invalid}
-            changed, invalid = expanded != invalid, expanded
-        eligible = completed - invalid
-        same_protocol = (
-            plan.protocol == old_plan.protocol
-            and json.loads(plan.parameters_json) == json.loads(old_plan.parameters_json)
-            and plan.synthetic_demo == old_plan.synthetic_demo
-        )
-        same_sources = all(
-            name in plan.files
-            and artifacts.sha256(
-                artifacts.allowed_path(self.working_directory(exp) / name, self.working_directory(exp))
-            )
-            == old["files"][name]
-            for name in old_plan.files
-        ) and set(plan.files) == set(old_plan.files)
-        selected = (
-            set(plan.reuse_stages)
-            if plan.reuse_stages is not None
-            else eligible
-            if same_sources and same_protocol
-            else set()
-        )
-        if selected - eligible or selected and not same_protocol:
-            raise ValueError(
-                "reuse requires successful stages outside the failed dependency branch and the same measured protocol/parameters"
-            )
-        reused = {}
-        for stage in plan.stages:
-            if stage.id not in selected:
-                continue
-            prior = next(s for s in old_plan.stages if s.id == stage.id)
-            if (stage.outputs, stage.local_outputs, stage.temporary_outputs, stage.needs) != (
-                prior.outputs,
-                prior.local_outputs,
-                prior.temporary_outputs,
-                prior.needs,
-            ):
-                raise ValueError(f"reused stage outputs/dependencies changed: {stage.id}")
-            if set(old_graph[stage.id]) - selected:
-                raise ValueError(f"reused stage needs an invalidated predecessor: {stage.id}")
-            job = next(
-                (j for j in repair["jobs"] if j["stage_id"] == stage.id and j["state"] == "complete"), None
-            )
-            if not job:
-                raise ValueError(f"reused stage has no successful exact job: {stage.id}")
-            artifacts.validate_stage(prior_root, stage.id, old)
-            names = stage.outputs + artifacts.seal_local_outputs(prior_root, stage.id, old)
-            for name in names:
-                record = self.store.one(
-                    "SELECT * FROM artifacts WHERE experiment_id=? AND name=? AND evidence_revision=?",
-                    (exp["id"], name, repair["previous_revision"]),
-                )
-                source = artifacts.allowed_path(prior_root / name, prior_root)
-                if not record or artifacts.sha256(source) != record["sha256"]:
-                    raise ValueError(f"reused output lacks unchanged registered evidence: {name}")
-                target = self.root(exp["id"]) / name
-                target.parent.mkdir(parents=True, exist_ok=True)
-                if target.exists():
-                    if (
-                        artifacts.sha256(artifacts.allowed_path(target, self.root(exp["id"])))
-                        != record["sha256"]
-                    ):
-                        raise ValueError(f"reused output copy changed: {name}")
-                else:
-                    shutil.copyfile(source, target)
-                    target.chmod(0o444)
-            reused[stage.id] = {
-                **(
-                    {
-                        "remote_root": json.loads(job["execution_manifest"])["execution"]["layout"][
-                            "remote_run"
-                        ]
-                    }
-                    if old.get("remote_execution")
-                    else {}
-                ),
-                "root": str(prior_root),
-                "snapshot_hash": old["snapshot_hash"],
-                "intent_id": job["intent_id"],
-                "outputs": names,
-            }
-        return reused
 
     def adopt_reused_stages(self, eid, reused):
         exp = self.store.experiment(eid)
@@ -3163,14 +3060,7 @@ class Workflow:
             if phase == "prepare":
                 repair = exp["contract"].get("auto_repair")
                 if repair:
-                    previous_root = (
-                        Path(repair["previous_root"])
-                        if repair.get("previous_root")
-                        else self.projects.base_root(exp["id"])
-                    )
-                    previous_revision = repair.get("previous_revision", 1)
-                    if previous_revision != 1 and not repair.get("previous_root"):
-                        previous_root = previous_root / "repairs" / str(previous_revision)
+                    previous_root = Path(repair["previous_root"]) if repair.get("previous_root") else None
                     payload["repair_context"] = {
                         **repair,
                         "researcher_notes": self.store.rows(
@@ -3178,9 +3068,8 @@ class Workflow:
                             (exp["id"],),
                         ),
                         "previous_workspace": str(self.working_directory(exp)),
-                        "reusable_stages": repair.get("completed_stages", []),
-                        "previous_snapshot": str(previous_root / "snapshot"),
-                        "previous_outputs": str(previous_root),
+                        "previous_snapshot": str(previous_root / "snapshot") if previous_root else None,
+                        "previous_outputs": str(previous_root) if previous_root else None,
                     }
                     payload["repair_instructions"] = (
                         "Diagnose the saved failed job using its logs and previous sources. Repair the "
@@ -3192,7 +3081,7 @@ class Workflow:
                         "For TIMEOUT, compare measured progress with the saved walltime and inspect "
                         "checkpoint/resume support. Fix code or runtime parameters without reducing "
                         "the approved scientific scope. You may propose a longer walltime or different "
-                        "authorized allocation in the manifest. Reuse checked completed stages through reuse_stages; failed stages and descendants must rerun. Read prior checkpoint paths from repair_context for resume; do not copy or retrain successful models unnecessarily. "
+                        "authorized allocation in the manifest. Read prior checkpoint paths from repair_context for resume; do not copy or retrain successful models unnecessarily. "
                         "Partial outputs are diagnostic context, never validated final evidence."
                     )
                 payload["approved_plan"] = self.compact_plan(exp, "approved-plan", review)

@@ -206,7 +206,7 @@ One commit per area, removing only branches that T1.1a marked not needed for rea
 - [x] d: `advance()`;
 - [x] e: `agent_stage` legacy `prepare` / `Preparation`;
 - [x] f: the validate stage and `strict_reproducibility`;
-- [~] g: contract ≤2 repair (`repair_failed_experiments` legacy parts, `repairs/` roots);
+- [x] g: contract ≤2 repair (`repair_failed_experiments` legacy parts, `repairs/` roots);
 - h: `artifacts.py` freeze and verify helpers, `recipes/toy_compare`.
 
 Delete or replace the matching tests. Acceptance for each: the remaining suite passes,
@@ -514,3 +514,5 @@ Record completed tasks here: `date · task · commit · notes`.
 2026-11-15 · T1.1f · Luna implementation, coordinator review corrected removal of the still-consumed evidence_checks registry. Deleted automatic final-validation control, stage writes/seeding and strict execution checks; preserved saved-record readers, manual recovery and archive/cancel drainage. Source +0/−68 (workflow −47, Store −21), tests 0. Isolated Node 24 Ruff, 91 focused tests with independent inert b1 helpers and complete 602-test Python suite pass. No live activation.
 
 2026-11-15 · T1.3b-b1 · Luna implementation and coordinator review with immutable scope/target, colon-ID isolation, caught-error savepoint rollback and bounded gap diagnostics corrections. Added inert stable responsibility episodes plus read-only latest lookup; explicit source-transition proof is a caller obligation, and terminal IDs never reopen. Existing core API/schema unchanged, zero runtime callers/backfill/projection changes. Source +171/−0; tests +276/−0; 447 changed lines (M). Ruff and 18 focused new/core obligation cases pass in aggregate (10 new, 8 existing); full tree with independent f deletion passes 602 Python tests. No live activation.
+
+2026-11-15 · T1.1g · Luna implementation and coordinator review. Removed legacy reusable-stage hashing/copying and repairs-path guesses; preserved current explicit iteration reuse, early repair/resource revisions and saved journal/runtime fields. Source +14/−125 (net −111), tests 0; 139 changed lines. Isolated Node 24 Ruff, 103 targeted reuse/resource/remote/recovery/report tests and all 602 Python tests pass. h.1a/b remeasured at 230 total changed lines and combined into one M card by the same child; h.1c follows retirement of remote/cleanup fixture callers. No live activation.
