@@ -245,7 +245,7 @@ and archived fixtures still render their report via the API.
 - Open/close obligations transactionally for actions, jobs, transfers, pending
   requests, plan review and publication; split by source before delegation.
 - [Rollout decisions and bounded cards](notes/t1.3b-rollout-design.md): [x] b1 inert
-  episode/lookup helpers; [x] b2a inert action mapping; [ ] b2b–b14 source integration and bounded backfill.
+  episode/lookup helpers; [x] b2a inert action mapping; [x] b5a inert job mapping; [ ] b2b–b14 runtime source integration and bounded backfill.
 
 ### [ ] T1.3c Derived holds (C2) · F+R · M per call-site group
 - Compute `hold_reason` from obligations in `Store.projection`; remove direct
@@ -535,3 +535,5 @@ Record completed tasks here: `date · task · commit · notes`.
 2026-11-15 · T1.1h.6 · Luna implementation, coordinator review and scoped historical fixture correction. New local/gateway creates accept agent_experiment_v1 only and seed plan/prepare/interpret/publish; saved command receipt replay remains first and old recipe projection enum/models stay readable. Source +21/−42; tests +82/−4 (149 changed lines). Ruff,11 targets,623 Python,29 web,gateway build/types pass. Initial gateway run found two old publication fixtures inheriting contract3 plus one cascading reference failure; marked their saved contract2/toy identity explicitly, preserving every assertion, then all42 gateway tests and final format pass. No live activation.
 
 2026-11-15 · T1.1h.7a · Luna implementation rebased from current root, coordinator scoped method application/review. Removed dead legacy budget/submit/checkpoint observer arms and unused check_files/semaphore, retaining validated dependency/review/resource/intent gates, script-less current3 recipe.py and all check registries/drainage. Source +22/−107 (net−85), tests+42;171 changed lines. Ruff,70 focused checks with inert job/admission helpers and full645 Python tests pass (417.90s). No live activation.
+
+2026-11-15 · T1.3b-b5a · Luna implementation and coordinator historical-ID correction/review. Inert SQLite-only job responsibility mapper: unknown ID backend reconciliation, exact saved ID external job, known scheduler terminal settlement closes only existing episodes; failed rows alone remain unresolved and agent pseudo-jobs never become external work. All historical episodes preserve exact scope/stage/attempt/scheduler identity. Source+154/tests+271 (425 changed lines); Ruff,12 focused cases and combined full645 Python pass. No runtime hooks/projection/backfill or live activation.
