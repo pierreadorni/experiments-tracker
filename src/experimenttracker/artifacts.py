@@ -4,7 +4,6 @@ import html
 import json
 import math
 import mimetypes
-import runpy
 import shutil
 import stat
 from pathlib import Path
@@ -163,57 +162,12 @@ def freeze_implementation(
     return manifest
 
 
-def freeze_recipe(source: Path, root: Path, contract: dict):
-    snapshot = root / "snapshot"
-    snapshot.mkdir(parents=True, exist_ok=True)
-    target = snapshot / "recipe.py"
-    if not target.exists():
-        shutil.copyfile(source / "recipe.py", target)
-        target.chmod(0o444)
-    module = runpy.run_path(str(target))
-    if module["PARAMETERS"] != contract["parameters"]:
-        raise ValueError("recipe parameters do not match contract")
-    dataset = module["data"]()
-    manifest = {
-        "schema_version": 1,
-        "recipe_id": contract["recipe_id"],
-        "files": {"recipe.py": sha256(target)},
-        "parameters": contract["parameters"],
-        "parameters_hash": module["digest"](contract["parameters"]),
-        "data_hash": module["digest"](dataset),
-        "test_hash": module["digest"](dataset["test"]),
-        "expected_outputs": {
-            "train_linear": ["linear.json"],
-            "train_quadratic": ["quadratic.json"],
-            "evaluate_and_plot": ["results.json", "predictions.json", "predictions.svg"],
-        },
-    }
-    manifest["snapshot_hash"] = hashlib.sha256(encode(manifest).encode()).hexdigest()
-    manifest_path = snapshot / "manifest.json"
-    if manifest_path.exists() and json.loads(manifest_path.read_text()) != manifest:
-        raise ValueError("snapshot manifest changed")
-    if not manifest_path.exists():
-        manifest_path.write_text(json.dumps(manifest, indent=2))
-        manifest_path.chmod(0o444)
-    snapshot.chmod(0o555)
-    return manifest
-
-
 def verify_snapshot(root: Path, manifest):
     if manifest.get("plan", {}).get("schema_version") == 3:
         return
     for filename, expected in manifest["files"].items():
         if sha256(allowed_path(root / "snapshot" / filename, root)) != expected:
             raise ValueError("immutable snapshot hash mismatch")
-
-
-def verify_project_sources(root: Path, manifest, project):
-    for name, frozen in manifest.get("project_sources", {}).items():
-        if (
-            not project
-            or sha256(allowed_path(Path(project) / name, Path(project))) != manifest["files"][frozen]
-        ):
-            raise ValueError(f"project source changed after preparation: {name}")
 
 
 def local_output_identity(root: Path, name: str):
@@ -306,56 +260,11 @@ def local_output_manifest(root: Path, stage: str, manifest):
     return value
 
 
-def seal_local_outputs(root: Path, stage: str, manifest):
-    if manifest.get("plan", {}).get("schema_version") == 3:
-        return []
-    value = local_output_manifest(root, stage, manifest)
-    if value is None:
-        return []
-    name = f"local-output-{stage}.json"
-    path = root / name
-    if not path.exists():
-        pending = root / f".{name}.pending"
-        if pending.is_symlink():
-            raise ValueError("local-output staging path is a symlink")
-        pending.write_text(encode(value))
-        pending.chmod(0o444)
-        pending.replace(path)
-    return [name]
-
-
-def register_snapshot(store, eid, root: Path):
-    """Publish legacy source evidence; v3 records bounded context per attempt."""
-    if read_json(root / "snapshot/manifest.json", root).get("plan", {}).get("schema_version") == 3:
-        return
-    missing = []
-    for name in (*read_json(root / "snapshot/manifest.json", root)["files"], "manifest.json"):
-        if store.one(
-            "SELECT id FROM artifacts WHERE experiment_id=? AND name=? AND evidence_revision=?",
-            (eid, name, store.experiment(eid)["evidence_revision"]),
-        ):
-            continue
-        source = allowed_path(root / "snapshot" / name, root)
-        target = root / name
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if target.is_symlink():
-            raise ValueError("frozen source copies must not be symlinks")
-        if target.exists():
-            if sha256(allowed_path(target, root)) != sha256(source):
-                raise ValueError("frozen source copy changed")
-        else:
-            target.write_bytes(source.read_bytes())
-            target.chmod(0o444)
-        missing.append(name)
-    if missing:
-        register(store, eid, "prepare", root, missing)
-
-
 def finite_number(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
-def validate_stage(root: Path, stage: str, manifest: dict, *, seal_outputs=False, verify_local_outputs=True):
+def validate_stage(root: Path, stage: str, manifest: dict, *, verify_local_outputs=True):
     if manifest.get("plan", {}).get("schema_version") == 3:
         from .iteration import check_stage
 
@@ -376,10 +285,7 @@ def validate_stage(root: Path, stage: str, manifest: dict, *, seal_outputs=False
     for name in outputs:
         allowed_path(root / name, root)
     if manifest["recipe_id"] == "agent_experiment_v1":
-        sealed = []
-        if seal_outputs:
-            sealed = seal_local_outputs(root, stage, manifest)
-        elif verify_local_outputs:
+        if verify_local_outputs:
             local_output_manifest(root, stage, manifest)
         for name in outputs:
             if name.endswith(".json"):
@@ -391,7 +297,7 @@ def validate_stage(root: Path, stage: str, manifest: dict, *, seal_outputs=False
             validation = ExperimentValidation.model_validate(read_json(root / "validation.json", root))
             if not validation.passed or not all(check.passed for check in validation.checks):
                 raise ValueError("experiment's scientific validation checks failed")
-        return outputs + sealed
+        return outputs
     if stage.startswith("train_"):
         variant = stage.removeprefix("train_")
         model = read_json(root / f"{variant}.json", root)

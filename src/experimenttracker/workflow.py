@@ -1218,7 +1218,6 @@ class Workflow:
         await asyncio.to_thread(artifacts.verify_snapshot, root, exp["snapshot"])
         if legacy_archive.execution_frozen(self.store.experiment(eid)):
             return
-        await asyncio.to_thread(artifacts.register_snapshot, self.store, eid, root)
         exp = self.store.experiment(eid)
         if legacy_archive.execution_frozen(exp) or exp["phase"] == "cancelled":
             return
@@ -1267,12 +1266,6 @@ class Workflow:
                     names = await asyncio.to_thread(artifacts.validate_stage, root, stage, exp["snapshot"])
                     if legacy_archive.execution_frozen(self.store.experiment(eid)):
                         return
-                    if generic:
-                        names += await asyncio.to_thread(
-                            artifacts.seal_local_outputs, root, stage, exp["snapshot"]
-                        )
-                        if legacy_archive.execution_frozen(self.store.experiment(eid)):
-                            return
                     artifacts.register(self.store, eid, stage, root, names)
                     self.store.stage(eid, stage, "complete", outputs=names)
                 elif job["state"] == "failed":
@@ -1609,6 +1602,8 @@ class Workflow:
                 "stage": saved["stage"],
                 "pause_compute": True,
             }
+        if legacy_archive.execution_frozen(exp):
+            raise ValueError("archived legacy output reconciliation is unavailable")
         if exp["phase"] != "failed" or exp["hold_reason"] != "validation_failed" or exp.get("deleted_at"):
             raise ValueError("output reconciliation requires a retained experiment failed on validation")
         jobs = self.store.rows("SELECT * FROM jobs WHERE experiment_id=? AND state='failed'", (eid,))
@@ -1683,9 +1678,7 @@ class Workflow:
                 else self.store.experiment(eid)["snapshot"]
             )
             names = list(
-                await asyncio.to_thread(
-                    artifacts.validate_stage, job_root, job["stage_id"], job_manifest, seal_outputs=True
-                )
+                await asyncio.to_thread(artifacts.validate_stage, job_root, job["stage_id"], job_manifest)
             )
             now = clock.now()
             with self.store.tx() as db:
@@ -1718,47 +1711,7 @@ class Workflow:
                 "stage": job["stage_id"],
                 "pause_compute": True,
             }
-        root = self.root(eid)
-        artifacts.verify_project_sources(root, exp["snapshot"], self.project_context(exp)["checkout"])
-        for stage in preceding:
-            await asyncio.to_thread(artifacts.validate_stage, root, stage, exp["snapshot"])
-        names = list(
-            await asyncio.to_thread(artifacts.validate_stage, root, job["stage_id"], exp["snapshot"])
-        )
-        if exp["recipe_id"] == "agent_experiment_v1":
-            names += await asyncio.to_thread(
-                artifacts.seal_local_outputs, root, job["stage_id"], exp["snapshot"]
-            )
-        now = clock.now()
-        with self.store.tx() as db:
-            artifacts.register(self.store, eid, job["stage_id"], root, names, _db=db)
-            db.execute(
-                "UPDATE jobs SET state='complete',scheduler_state='COMPLETED',exit_code='0:0',error=NULL,"
-                "observed_at=?,started_at=COALESCE(?,started_at),ended_at=COALESCE(?,ended_at),"
-                "estimated_start_at=NULL,pending_reason=NULL WHERE intent_id=?",
-                (now, observed.started_at, observed.ended_at, job["intent_id"]),
-            )
-            db.execute(
-                "UPDATE stages SET state='complete',error=NULL,output_manifest=?,updated_at=? WHERE experiment_id=? AND id=?",
-                (encode(names), now, eid, job["stage_id"]),
-            )
-            db.execute(
-                "UPDATE experiments SET phase='training',hold_reason='new_compute_paused',error=NULL,"
-                "pause_compute=1,observed_at=?,updated_at=? WHERE id=?",
-                (now, now, eid),
-            )
-            self.store.emit(
-                db,
-                eid,
-                "output_validation_reconciled",
-                {"intent_id": job["intent_id"], "job_id": job["job_id"], "stage": job["stage_id"]},
-            )
-        return {
-            "experiment_id": eid,
-            "job_id": job["job_id"],
-            "stage": job["stage_id"],
-            "pause_compute": True,
-        }
+        raise ValueError("legacy output reconciliation is unavailable")
 
     @staticmethod
     def has_local_checkpoints(manifest, stage=None):
@@ -1907,7 +1860,7 @@ class Workflow:
                     if observed.exit_code == "0:0":
                         # Scheduler success is necessary, not sufficient: validate before recording success.
                         exp = self.store.experiment(eid)
-                        seal_outputs = exp["recipe_id"] == "agent_experiment_v1"
+                        register_outputs = iteration.enabled(exp)
                         if self.has_local_checkpoints(job_manifest, job["stage_id"]):
                             if check is None:
                                 # Publish exact terminal accounting before slow filesystem checks.
@@ -1941,7 +1894,6 @@ class Workflow:
                                         job_root,
                                         job["stage_id"],
                                         job_manifest,
-                                        seal_outputs=seal_outputs,
                                     )
                                 )
                                 self.output_checks[job["intent_id"]] = (task, observed)
@@ -1953,9 +1905,8 @@ class Workflow:
                                 job_root,
                                 job["stage_id"],
                                 job_manifest,
-                                seal_outputs=seal_outputs,
                             )
-                        if seal_outputs:
+                        if register_outputs:
                             completed_names = names
                         state = "complete"
                     else:
@@ -2357,7 +2308,6 @@ class Workflow:
                         f"{len(sources)} source files prepared · +{lines} lines",
                         "complete",
                     )
-                    artifacts.register_snapshot(self.store, eid, self.root(eid))
                     (self.root(eid) / "preparation.json").write_text(encode(value))
                     artifacts.register(self.store, eid, phase, self.root(eid), ["preparation.json"])
                 else:

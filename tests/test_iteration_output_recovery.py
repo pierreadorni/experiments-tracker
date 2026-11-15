@@ -21,9 +21,7 @@ from experimenttracker.workflow import Workflow
 
 CORRUPT_METRICS = b'{"schema_version":1,"protocol":"truncated'
 LEGACY_HOOKS = (
-    "verify_project_sources",
     "verify_snapshot",
-    "seal_local_outputs",
     "local_output_identity",
     "local_output_manifest",
 )

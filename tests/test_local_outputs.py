@@ -144,48 +144,31 @@ async def test_archived_saved_job_settles_without_reading_checkpoint_bytes(
     outstanding.cancel()
 
 
-@pytest.mark.parametrize("failure", ["identity", "running", "exit", "invalid_output", "symlink"])
-async def test_recovery_refuses_unconfirmed_or_invalid_saved_work(failed_directory_run, failure):
-    store, agent, workflow, eid, root = failed_directory_run
-    if failure == "identity":
-        workflow.scheduler.identity = "different"
-    elif failure == "running":
-        workflow.scheduler.outcome = Observation("RUNNING")
-    elif failure == "exit":
-        workflow.scheduler.outcome = Observation("COMPLETED", "1:0")
-    elif failure == "invalid_output":
-        (root / "raw.json").write_text("invalid JSON")
-    else:
-        (root / "cache/link").symlink_to(root / "raw.json")
-    with pytest.raises(ValueError):
+async def test_archived_legacy_output_reconciliation_refuses_without_state_change(failed_directory_run):
+    store, agent, workflow, eid, _ = failed_directory_run
+    store.archive_legacy_experiments()
+
+    async def forbidden(*args, **kwargs):
+        pytest.fail("archived recovery must not query the scheduler")
+
+    workflow.scheduler.reconcile = forbidden
+    workflow.scheduler.observe = forbidden
+    before = (
+        store.experiment(eid),
+        store.rows("SELECT * FROM jobs WHERE experiment_id=?", (eid,)),
+        store.rows("SELECT * FROM stages WHERE experiment_id=?", (eid,)),
+        store.rows("SELECT * FROM artifacts WHERE experiment_id=?", (eid,)),
+        store.rows("SELECT kind,payload FROM events WHERE experiment_id=? ORDER BY seq", (eid,)),
+    )
+    with pytest.raises(ValueError, match="archived legacy"):
         await workflow.reconcile_outputs(eid)
-    assert store.experiment(eid)["phase"] == "failed"
-    assert store.one("SELECT state FROM jobs WHERE experiment_id=?", (eid,))["state"] == "failed"
-    assert not store.rows("SELECT * FROM artifacts")
-    assert agent.calls == 0
-    await workflow.close()
-
-
-async def test_recovery_rolls_back_registration_and_states_on_transaction_failure(
-    failed_directory_run, monkeypatch
-):
-    store, agent, workflow, eid, root = failed_directory_run
-    emit = store.emit
-
-    def fail_commit(db, eid, kind, payload=None):
-        if kind == "output_validation_reconciled":
-            raise RuntimeError("simulated transaction failure")
-        return emit(db, eid, kind, payload)
-
-    monkeypatch.setattr(store, "emit", fail_commit)
-    with pytest.raises(RuntimeError, match="transaction failure"):
-        await workflow.reconcile_outputs(eid)
-    assert store.experiment(eid)["phase"] == "failed"
-    assert store.one("SELECT state FROM jobs WHERE experiment_id=?", (eid,))["state"] == "failed"
-    assert not store.rows("SELECT * FROM artifacts")
-    assert (root / "local-output-z_measure.json").exists()
-    monkeypatch.setattr(store, "emit", emit)
-    await workflow.reconcile_outputs(eid)
-    assert store.experiment(eid)["pause_compute"]
+    after = (
+        store.experiment(eid),
+        store.rows("SELECT * FROM jobs WHERE experiment_id=?", (eid,)),
+        store.rows("SELECT * FROM stages WHERE experiment_id=?", (eid,)),
+        store.rows("SELECT * FROM artifacts WHERE experiment_id=?", (eid,)),
+        store.rows("SELECT kind,payload FROM events WHERE experiment_id=? ORDER BY seq", (eid,)),
+    )
+    assert after == before
     assert agent.calls == 0
     await workflow.close()

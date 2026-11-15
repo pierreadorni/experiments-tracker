@@ -207,7 +207,8 @@ One commit per area, removing only branches that T1.1a marked not needed for rea
 - [x] e: `agent_stage` legacy `prepare` / `Preparation`;
 - [x] f: the validate stage and `strict_reproducibility`;
 - [x] g: contract ≤2 repair (`repair_failed_experiments` legacy parts, `repairs/` roots);
-- h: `artifacts.py` freeze and verify helpers, `recipes/toy_compare`.
+- [~] h: `artifacts.py` execution writers and shipped recipe; archived readers stay.
+  Status: [x] h.1ab · [ ] h.4 · [ ] h.5 · [ ] h.1c · [ ] h.2 · [ ] h.3 · [ ] h.6.
 
 Delete or replace the matching tests. Acceptance for each: the remaining suite passes,
 and archived fixtures still render their report via the API.
@@ -516,3 +517,5 @@ Record completed tasks here: `date · task · commit · notes`.
 2026-11-15 · T1.3b-b1 · Luna implementation and coordinator review with immutable scope/target, colon-ID isolation, caught-error savepoint rollback and bounded gap diagnostics corrections. Added inert stable responsibility episodes plus read-only latest lookup; explicit source-transition proof is a caller obligation, and terminal IDs never reopen. Existing core API/schema unchanged, zero runtime callers/backfill/projection changes. Source +171/−0; tests +276/−0; 447 changed lines (M). Ruff and 18 focused new/core obligation cases pass in aggregate (10 new, 8 existing); full tree with independent f deletion passes 602 Python tests. No live activation.
 
 2026-11-15 · T1.1g · Luna implementation and coordinator review. Removed legacy reusable-stage hashing/copying and repairs-path guesses; preserved current explicit iteration reuse, early repair/resource revisions and saved journal/runtime fields. Source +14/−125 (net −111), tests 0; 139 changed lines. Isolated Node 24 Ruff, 103 targeted reuse/resource/remote/recovery/report tests and all 602 Python tests pass. h.1a/b remeasured at 230 total changed lines and combined into one M card by the same child; h.1c follows retirement of remote/cleanup fixture callers. No live activation.
+
+2026-11-15 · T1.1h.1ab · Same Luna child implemented remeasured combined M card, coordinator review. Removed toy/source registration and sealing writers, their no-op current callers and exact legacy manual output-recovery body; legacy adoption now refuses before scheduler reads with no state change. Retired its five legacy refusal params and rollback test with body, preserving current3 rollback/identity recovery and archived local-manifest/audit/report/conversation readers. Source +9/−153 (net −144); tests +24/−44; 230 changed lines. Isolated Node 24 Ruff, 69 targets and complete 597 Python tests pass. No live activation.

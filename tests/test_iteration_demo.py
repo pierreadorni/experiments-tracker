@@ -22,7 +22,6 @@ def forbid_scientific_traversal(monkeypatch):
     def forbidden(*args, **kwargs):
         raise AssertionError("scientific provenance traversal")
 
-    monkeypatch.setattr(artifacts, "freeze_recipe", forbidden)
     monkeypatch.setattr(artifacts, "local_output_identity", forbidden)
     monkeypatch.setattr(artifacts, "local_output_manifest", forbidden)
     monkeypatch.setattr(Workflow, "dependencies", staticmethod(forbidden))

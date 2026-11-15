@@ -1,39 +1,45 @@
 # T1 handoff
 
-## Latest working state (2026-11-15, after f/b1)
+## Latest working state (2026-11-15, after g)
 
-Main/pushed `e664f6a` includes d/e/f, inert C2 b1 and decision notes. f source -68 and b1
-source171/test276 (447 total, includes latest lookup) passed Ruff, 91 focused
-and all 602 Python tests in isolated validation (429.14 s). b1 has no runtime
-callers/schema/projection/backfill changes. Existing-state source wiring b2–b14
-remains undone.
+Main `a56f6cd` (g committed, not pushed); last pushed `e664f6a` includes d/e/f
+and inert C2 b1. g +14/-125 passed Ruff, 103 targets and all602 tests in398.17s.
+Root now has reviewed **h.1ab** only: artifacts +3/-97, workflow +6/-56,
+tests +24/-44 =230 changed lines; same Luna child implemented both measured
+subcards so they combine into one M commit. 69 focused demo/archive/audit/
+conversation/report/recovery tests passed. Full isolated suite passed597 in384.14s after retiring6 legacy manual-recovery
+cases and adding1 explicit archived refusal; ready to commit. Do not overwrite validation until that finishes.
 
-Root now holds reviewed g (workflow +14/-125), also copied to validation;
-103 focused and all 602 Python tests passed (398.17 s); ready to commit. g preserves current3 reuse/resource/early repair
-and saved journal/runtime, removes legacy reuse/repairs path guesses.
+Prepared candidates contain copied prerequisites on old HEAD; apply only scoped
+changes/current appropriate source, never their whole old-HEAD gitdiff:
+- h.4 `.worktrees/t1-delete-remote-legacy` ref2b3c932: remote.py/worker/tests
+  +9/-258 total267. Reviewed; retains current script-less recipe.py invocation,
+  routing/receipt/output refs. Coordinator targets/full still required.
+- h.5 `.worktrees/t1-delete-cleanup` inherits h1ab/g/f/e/h4. Corrected final
+  delta +4/-243=247 inclmaintenance and scenario registry removal. Baselines
+  `/tmp/t1-delete-cleanup-{workflow,remote_worker}.py`, remote test baseline.
+  Temporary model validation and historical sealed reader fixture remain.
+- h.2a/r `.worktrees/t1-delete-recipe`: frozen shipped recipe/config/doctor/CLI
+  deletion + old recipe_dir YAML adapter, source/test ~232, example -1. Workflow
+  has copied prerequisites; **only -1 stage_resources line belongs to h2**,
+  compare `/tmp/t1-delete-recipe-workflow.py`. Do not copy fullworkflow later.
+  Config worker targets16 passed. Shared per-experiment recipe runner stays.
 
-Prepared candidates, each has copied prerequisite edits on old HEAD:
-- h.1a `.worktrees/t1-delete-freezer`: workflow -2, artifacts -64, demo test -1.
-  Combined with h.1b into one M230 card after measurement; both same child.
-- h.1b frozen in `.worktrees/t1-delete-sealing`, based
-  on h1a/g/f/e, baselines `/tmp/t1-delete-sealing-{workflow,artifacts}.py`.
-  Coordinated manual legacy output recovery/sealing writer removal reviewed;
-  +33/-130 incltests. Apply h1ab combined only after g lands.
-- h.2a `.worktrees/t1-delete-recipe`: source +11/-178, tests +35/-7, example -1;
-  frozen/Ruff and16 worker targets pass. Removes shipped recipe/config field,
-  narrow old YAML adapter; script-less declared per-experiment runner stays.
-- h.4 frozen in `.worktrees/t1-delete-remote-legacy`
-  ref2b3c932: remote.py/remote_worker.py/remote tests only. Reviewed remote patch +9/-258 incltest retirement; preserve current3
-  recipe runner, receipt/routing/outputrefs/cleanup until h5.
+Active Luna preparations:
+- delete_advance: h.1c in `.worktrees/t1-delete-dependency-freeze` inheriting
+  h5/h4/h1ab/g/f/e; baselines /tmp/t1-delete-dependency-freeze-*. Remove old
+  freeze_implementation/dependencies writer, adapt current caller signatures,
+  preserve static legacy reader fixtures; freeze legacy agent-output adoption
+  after completed replay while preserving current manual recovery.
+- reports_acceptance: h.3 in `.worktrees/t1-delete-legacy-prompts`, same parent
+  candidates; baseline `/tmp/t1-delete-legacy-prompts-workflow.py`. Deletes
+  legacy generic/toy prompt and guides but keeps Conversation archived context
+  via read-only guide text. Current iteration guides/site IDs/policy unchanged.
+  h1c/h3 affect disjoint methods; later apply h3 SCOPED PATCH after h1c, not a
+  full workflow copy. Both must stay below500 source/test lines.
 
-Luna delete_advance now prepares h.5 in `.worktrees/t1-delete-cleanup` on copied
-h1ab/g/f/e/h4; /tmp baselines for workflow/remote_worker/remote tests. Keep model
-declaration tests and sealed-reader fixture; retire actual completion cleanup
-with matching tests. h.1c follows h.4/h.5 because old fixtures still call the
-legacy freezer. h2r is frozen -1 line against /tmp/t1-delete-recipe-workflow.py;
-combine with h2a (actual ~232 lines, not copied-prerequisite gitdiff482). Apply
-only its scoped stage_resources delta after other workflow cards, not fullfile.
-Boundaries/decisions in deletion-splits.md. No live state accessed.
+No live state accessed. C2 b1 module source171/tests276 is inert/no runtime callers;
+source integration b2–b14 and all later T1 work remain incomplete.
 
 ## Resume on 2026-11-15
 
