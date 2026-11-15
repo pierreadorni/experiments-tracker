@@ -118,12 +118,6 @@ class Workflow:
         self.output_checks = {}
         self.evidence_checks = {}
         self.error_backoff = {}
-        self.check_slot = asyncio.Semaphore(1)
-
-    async def check_files(self, function, *args, **kwargs):
-        # Keep large sequential reads bounded without exhausting the shared I/O pool.
-        async with self.check_slot:
-            return await asyncio.to_thread(function, *args, **kwargs)
 
     @staticmethod
     def is_remote(exp):
@@ -1347,7 +1341,6 @@ class Workflow:
             held = early_repair.submission_hold(self, exp, stage)
             if held:
                 return held
-        generic = exp["recipe_id"] == "agent_experiment_v1"
         compute_stages = self.compute_stages(exp)
         if stage not in compute_stages:
             raise ValueError("stage is not in the saved implementation")
@@ -1375,19 +1368,16 @@ class Workflow:
             }
         if self.store.one("SELECT 1 FROM jobs WHERE experiment_id=? AND state='submitting'", (eid,)):
             return {"state": "uncertain", "reason": "submission_uncertain"}
-        if generic:
-            plan = Implementation.model_validate(exp["snapshot"]["plan"])
-            graph = stage_dependencies(plan.stages, plan.schema_version)
-            if any(
-                self.store.one("SELECT state FROM stages WHERE experiment_id=? AND id=?", (eid, need))[
-                    "state"
-                ]
-                != "complete"
-                for need in graph[stage]
-            ):
-                return {"state": "held", "reason": "dependencies_pending"}
-            if exp["plan_review"] and exp["plan_review"]["state"] != "approved":
-                return {"state": "held", "reason": "plan_review"}
+        plan = Implementation.model_validate(exp["snapshot"]["plan"])
+        graph = stage_dependencies(plan.stages, plan.schema_version)
+        if any(
+            self.store.one("SELECT state FROM stages WHERE experiment_id=? AND id=?", (eid, need))["state"]
+            != "complete"
+            for need in graph[stage]
+        ):
+            return {"state": "held", "reason": "dependencies_pending"}
+        if exp["plan_review"] and exp["plan_review"]["state"] != "approved":
+            return {"state": "held", "reason": "plan_review"}
         if blocked(self.store):
             return {"state": "held", "reason": "executor_maintenance"}
         if exp["pause_compute"]:
@@ -1416,14 +1406,14 @@ class Workflow:
         ) < (exp["contract"].get("execution", {}).get("poll_seconds", 600) if self.is_remote(exp) else 60):
             return {"state": "held", "reason": exp["hold_reason"] or "resources_unavailable"}
         intent_id = request_id or str(uuid4())
-        python = self.experiment_python(exp) if generic else "/usr/bin/python3"
-        project = self.project_context(exp)["checkout"] if generic else None
+        python = self.experiment_python(exp)
+        project = self.project_context(exp)["checkout"]
         resources = self.stage_resources(exp, stage)
         with self.store.tx() as db:
             held = self.research.service.admission(db, exp, stage, resources)
             if held:
                 return held
-        plan_stage = next(s for s in exp["snapshot"]["plan"]["stages"] if s["id"] == stage) if generic else {}
+        plan_stage = next(s for s in exp["snapshot"]["plan"]["stages"] if s["id"] == stage)
         submission_manifest = exp["snapshot"]
         refs = []
         scheduler = self.scheduler_for(exp)
@@ -1477,13 +1467,6 @@ class Workflow:
             execution_manifest["parameters"] = submission_manifest["parameters"]
         if self.is_remote(exp):
             execution_manifest["execution"] = scheduler.metadata()
-        if generic and project and not iteration.enabled(exp):
-            execution_manifest["project_sources_at_submission"] = {
-                name: exp["snapshot"]["files"][frozen]
-                if self.is_remote(exp)
-                else artifacts.sha256(artifacts.allowed_path(Path(project) / name, Path(project)))
-                for name, frozen in exp["snapshot"]["project_sources"].items()
-            }
         record_name = f"job-source-{intent_id}.json"
         record_path = root / record_name
         record = {
@@ -1533,8 +1516,6 @@ class Workflow:
                     "INSERT INTO output_bindings VALUES(?,?,?)",
                     (intent_id, ref["id"], "selected dependency producer"),
                 )
-            if not iteration.enabled(exp):
-                artifacts.register(self.store, eid, stage, root, [record_name], _db=db)
             db.execute(
                 "UPDATE stages SET state='running',updated_at=? WHERE experiment_id=? AND id=?",
                 (clock.now(), eid, stage),
@@ -1545,10 +1526,7 @@ class Workflow:
             )
             self.store.emit(db, eid, "submission_intent", {"intent_id": intent_id, "stage": stage})
         try:
-            if generic:
-                job_id = await scheduler.submit(intent_id, script, root, resources=resources)
-            else:
-                job_id = await self.scheduler.submit(intent_id, script, root)
+            job_id = await scheduler.submit(intent_id, script, root, resources=resources)
         except SubmissionUncertain as exc:
             self.store.update(eid, hold_reason="submission_uncertain", error=str(exc))
             return {"state": "uncertain", "reason": "submission_uncertain"}
@@ -1682,17 +1660,6 @@ class Workflow:
                 "pause_compute": True,
             }
         raise ValueError("legacy output reconciliation is unavailable")
-
-    @staticmethod
-    def has_local_checkpoints(manifest, stage=None):
-        return (
-            not iteration.manifest_mode(manifest)
-            and not manifest.get("remote_execution")
-            and any(
-                item.get("local_outputs") and (stage is None or item["id"] == stage)
-                for item in manifest.get("plan", {}).get("stages", [])
-            )
-        )
 
     async def observe_jobs(self):
         for job in self.store.rows(
@@ -1831,51 +1798,12 @@ class Workflow:
                         # Scheduler success is necessary, not sufficient: validate before recording success.
                         exp = self.store.experiment(eid)
                         register_outputs = iteration.enabled(exp)
-                        if self.has_local_checkpoints(job_manifest, job["stage_id"]):
-                            if check is None:
-                                # Publish exact terminal accounting before slow filesystem checks.
-                                # Keep the job submitted and its dependencies unready until validation commits.
-                                with self.store.tx() as db:
-                                    db.execute(
-                                        "UPDATE jobs SET scheduler_state=?,exit_code=?,observed_at=?,error=NULL,"
-                                        "started_at=COALESCE(?,started_at),ended_at=COALESCE(?,ended_at) "
-                                        "WHERE intent_id=?",
-                                        (
-                                            observed.state,
-                                            observed.exit_code,
-                                            now,
-                                            observed.started_at,
-                                            observed.ended_at,
-                                            job["intent_id"],
-                                        ),
-                                    )
-                                    db.execute(
-                                        "UPDATE experiments SET observed_at=?,hold_reason=NULL,error=NULL "
-                                        "WHERE id=? AND (hold_reason IS NULL OR hold_reason IN "
-                                        "('accounting_pending','executor_unavailable','submission_uncertain'))",
-                                        (now, eid),
-                                    )
-                                    self.store.emit(
-                                        db, eid, "job_outputs_checking", {"job_id": job["job_id"]}
-                                    )
-                                task = asyncio.create_task(
-                                    self.check_files(
-                                        artifacts.validate_stage,
-                                        job_root,
-                                        job["stage_id"],
-                                        job_manifest,
-                                    )
-                                )
-                                self.output_checks[job["intent_id"]] = (task, observed)
-                                continue
-                            names = check[0].result()
-                        else:
-                            names = await asyncio.to_thread(
-                                artifacts.validate_stage,
-                                job_root,
-                                job["stage_id"],
-                                job_manifest,
-                            )
+                        names = await asyncio.to_thread(
+                            artifacts.validate_stage,
+                            job_root,
+                            job["stage_id"],
+                            job_manifest,
+                        )
                         if register_outputs:
                             completed_names = names
                         state = "complete"
@@ -1908,10 +1836,6 @@ class Workflow:
                         completed_names = None
                     if completed_names is not None and iteration.enabled(exp):
                         iteration.complete(self, exp, job, job_manifest, job_root, db)
-                    if completed_names is not None and not iteration.enabled(exp):
-                        artifacts.register(
-                            self.store, eid, job["stage_id"], job_root, completed_names, _db=db
-                        )
                     db.execute(
                         "UPDATE jobs SET state=?,scheduler_state=?,exit_code=?,observed_at=?,error=?,"
                         "started_at=COALESCE(?,started_at),ended_at=COALESCE(?,ended_at),estimated_start_at=?,pending_reason=?,progress=?,tensorboard=? WHERE intent_id=?",
@@ -2210,21 +2134,12 @@ class Workflow:
                         raise ValueError("stage reuse requires saved successful work in this experiment")
                     budget = exp["contract"].get("max_jobs", self.config.slurm.max_jobs_per_experiment)
                     # Contract-3 preparation counts scheduled work; an interactive agent stage is not a job.
-                    current = iteration.enabled(exp) or early_repair.preparing(exp)
                     submitted = self.store.one(
                         "SELECT COUNT(*) AS n FROM jobs WHERE experiment_id=?"
-                        + (
-                            " AND json_extract(execution_manifest, '$.executor') IS NOT 'agent'"
-                            if current
-                            else ""
-                        ),
+                        " AND json_extract(execution_manifest, '$.executor') IS NOT 'agent'",
                         (eid,),
                     )["n"]
-                    remaining = (
-                        sum(s.executor == "slurm" and s.id not in reused for s in plan.stages)
-                        if current
-                        else len(plan.stages) - len(reused)
-                    )
+                    remaining = sum(s.executor == "slurm" and s.id not in reused for s in plan.stages)
                     if early_repair.preparing(exp):
                         kept = {d.stage_id for d in plan.repair_decisions if d.decision == "keep"}
                         retained = {
