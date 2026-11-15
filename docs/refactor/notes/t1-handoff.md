@@ -1,5 +1,37 @@
 # T1 handoff
 
+## Latest working state (2026-11-15, after f/b1)
+
+Main `3a2dbd4` includes d/e/f and inert C2 b1. Last pushed `73c74d8`;
+d/e/f/b1 await push alongside the next notes commit. f source -68 and b1
+source171/test276 (447 total, includes latest lookup) passed Ruff, 91 focused
+and all 602 Python tests in isolated validation (429.14 s). b1 has no runtime
+callers/schema/projection/backfill changes. Existing-state source wiring b2–b14
+remains undone.
+
+Root now holds reviewed g (workflow +14/-125), also copied to validation;
+focused checks running session9367, then
+full required before commit. g preserves current3 reuse/resource/early repair
+and saved journal/runtime, removes legacy reuse/repairs path guesses.
+
+Prepared candidates, each has copied prerequisite edits on old HEAD:
+- h.1a `.worktrees/t1-delete-freezer`: workflow -2, artifacts -64, demo test -1.
+  Frozen/Ruff pass; coordinator targeted/full acceptance still required.
+- h.1b Luna delete_advance implements in `.worktrees/t1-delete-sealing`, based
+  on h1a/g/f/e, baselines `/tmp/t1-delete-sealing-{workflow,artifacts}.py`.
+  Coordinated manual legacy output recovery/sealing writer removal; preserve
+  current3 and saved readers. Never apply its full old-HEAD diff.
+- h.2a `.worktrees/t1-delete-recipe`: source +11/-178, tests +35/-7, example -1;
+  frozen/Ruff and16 worker targets pass. Removes shipped recipe/config field,
+  narrow old YAML adapter; script-less declared per-experiment runner stays.
+- h.4 Luna reports_acceptance implements in `.worktrees/t1-delete-remote-legacy`
+  ref2b3c932: remote.py/remote_worker.py/remote tests only. Preserve current3
+  recipe runner, receipt/routing/outputrefs/cleanup until h5.
+
+h.1c (legacy freeze_implementation/dependencies) follows remaining old fixture
+and remote writer callers; h2r resource envelope is a separate small card.
+Boundaries/decisions in deletion-splits.md. No live state accessed.
+
 ## Resume on 2026-11-15
 
 Reoriented with status/diff/log and newest notes; preserved all pending files.
