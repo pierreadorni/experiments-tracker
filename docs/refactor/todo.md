@@ -240,9 +240,11 @@ and archived fixtures still render their report via the API.
 - [Approved design](notes/t1.3a-obligations-design.md); no source integration,
   backfill, derived holds or watchdog behavior yet.
 
-### [ ] T1.3b Obligations at their sources (C2) · F+R · M per source group
+### [~] T1.3b Obligations at their sources (C2) · F+R · M per source group
 - Open/close obligations transactionally for actions, jobs, transfers, pending
   requests, plan review and publication; split by source before delegation.
+- [Rollout decisions and bounded cards](notes/t1.3b-rollout-design.md): [x] b1 inert
+  episode/lookup helpers; [ ] b2–b14 source integration and bounded backfill.
 
 ### [ ] T1.3c Derived holds (C2) · F+R · M per call-site group
 - Compute `hold_reason` from obligations in `Store.projection`; remove direct
@@ -510,3 +512,5 @@ Record completed tasks here: `date · task · commit · notes`.
 2026-11-15 · T1.1e · Luna implementation and coordinator review. Removed unreachable Preparation execution/revalidation, toy retry and DemoAgent toy preparation response. Preserved saved models/schema readers, current Implementation and explicit terminal operator recovery. Source +1/−60 (net −59), tests 0; 61 changed lines. Isolated Node 24 Ruff and 54 focused tests pass; full tree with the independent inert b1 helper passes 599 Python tests. No live activation.
 
 2026-11-15 · T1.1f · Luna implementation, coordinator review corrected removal of the still-consumed evidence_checks registry. Deleted automatic final-validation control, stage writes/seeding and strict execution checks; preserved saved-record readers, manual recovery and archive/cancel drainage. Source +0/−68 (workflow −47, Store −21), tests 0. Isolated Node 24 Ruff, 91 focused tests with independent inert b1 helpers and complete 602-test Python suite pass. No live activation.
+
+2026-11-15 · T1.3b-b1 · Luna implementation and coordinator review with immutable scope/target, colon-ID isolation, caught-error savepoint rollback and bounded gap diagnostics corrections. Added inert stable responsibility episodes plus read-only latest lookup; explicit source-transition proof is a caller obligation, and terminal IDs never reopen. Existing core API/schema unchanged, zero runtime callers/backfill/projection changes. Source +171/−0; tests +276/−0; 447 changed lines (M). Ruff and 18 focused new/core obligation cases pass in aggregate (10 new, 8 existing); full tree with independent f deletion passes 602 Python tests. No live activation.
