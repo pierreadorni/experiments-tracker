@@ -24,7 +24,6 @@ from .models import (
     AgentStageResult,
     Analysis,
     ExperimentResult,
-    ExperimentValidation,
     Implementation,
     ResearchPlan,
     stage_dependencies,
@@ -43,7 +42,6 @@ from .watchdog import engine_watchdog
 from .workspaces import Workspaces, WorkspaceUnavailable
 
 log = logging.getLogger(__name__)
-COMPUTE_STAGES = ("train_linear", "train_quadratic", "evaluate_and_plot")
 TERMINAL_BAD = {
     "FAILED",
     "CANCELLED",
@@ -177,48 +175,38 @@ class Workflow:
         ).get("snapshot")
 
     def execution_instruction(self, exp, phase):
-        if iteration.enabled(exp):
-            return (
-                "Execution machine: "
-                + ("Jean Zay via acacia owner" if self.is_remote(exp) else "acacia")
-                + ". Each attempt has its own declared source copy and output directory. Never import editable "
-                "working code, synchronize a whole project or seal scientific outputs. EXPERIMENT_INPUTS "
-                "contains direct producer paths with host context. On Jean Zay use scripts initializing modules, "
-                "omit --mem directives (cluster-assigned memory), and set the remote base using set_project_execution "
-                "if needed. Transfers retrieve only bounded declared outputs/logs and selected previews. "
-                "No scientific hash/membership checks or automatic cleanup. Never submit nested scheduler jobs."
-            )
-        if not self.is_remote(exp):
-            return "Execution machine: acacia. Agents and scheduled jobs use acacia."
+        if not iteration.enabled(exp):
+            raise ValueError("archived legacy execution instructions are read-only")
         return (
-            "Execution machine: Jean Zay; you are running on acacia. Read execution_context.guide and saved transfer commands. "
-            "Use set_project_execution to configure the remote folder and BOTH rsync commands if empty; this tool never submits a job. "
-            "Templates are expanded without a shell, one argument at a time: {local_project}, {remote_project}, {local_run}, {remote_run}, {host}. "
-            "The remote project template is an isolated checkout per experiment/revision, under the configured remote folder. "
-            "Code and reports remain on acacia. Tiny authorized local GPU tests and plots may use acacia; scheduled compute uses Jean Zay. "
-            "Write .sbatch stage scripts (or .sh), declare them in files and each stage.script, and declare matching structured resources. "
-            "The executor injects exact tracking name/comment/log paths, working directory, and structured resource arguments overriding directives. "
-            "Only literal resource, name, log and working-directory SBATCH directives are supported. Arrays/dependencies/nested sbatch are prohibited. "
-            "Jean Zay forbids --mem, --mem-per-cpu and --mem-per-gpu: memory follows cluster allocation policy. memory_mb_per_job is a planning estimate; choose CPU/GPU resources accordingly and omit memory directives. "
-            "The .sbatch body runs from EXPERIMENT_PROJECT; source scripts are in EXPERIMENT_SOURCE. Write declared small results to EXPERIMENT_ROOT. "
-            "Set up the remote runtime in the script, e.g. module load; acacia venvs are never portable. EXPERIMENT_PYTHON is only system Python; choose modules explicitly. "
-            "Keep valuable large checkpoints in local_outputs relative to EXPERIMENT_ROOT on Jean Zay. The allocation seals their identities; only metadata returns. "
-            "Declare regenerable feature caches in temporary_outputs under EXPERIMENT_ROOT/temporary/; they are not hashed and are deleted after the report is ready. "
-            "The backend always retrieves required small declared outputs and owned logs. Configure rsync_down for additional TensorBoard events and plots. "
-            "Polling and download freshness is ten minutes by default. Do not run polling loops or scheduler mutations yourself. "
+            "Execution machine: "
+            + ("Jean Zay via acacia owner" if self.is_remote(exp) else "acacia")
+            + ". Each attempt has its own declared source copy and output directory. Never import editable "
+            "working code, synchronize a whole project or seal scientific outputs. EXPERIMENT_INPUTS "
+            "contains direct producer paths with host context. On Jean Zay use scripts initializing modules, "
+            "omit --mem directives (cluster-assigned memory), and set the remote base using set_project_execution "
+            "if needed. Transfers retrieve only bounded declared outputs/logs and selected previews. "
+            "No scientific hash/membership checks or automatic cleanup. Never submit nested scheduler jobs."
         )
 
     def execution_context(self, exp):
         from .execution_settings import ExecutionSettings
 
         settings = ExecutionSettings.model_validate(exp["contract"].get("execution", {})).model_dump()
-        guide = Path(__file__).with_name("machine_contexts") / (
-            ("iteration-" if iteration.enabled(exp) else "") + settings["context"] + ".md"
-        )
+        if legacy_archive.execution_frozen(exp):
+            guide_text = (
+                "Archived execution context for a historical record. Read this only to understand saved "
+                "conversation context. Do not prepare, submit, retry, or mutate execution from these settings. "
+                "Saved context, host and transfer templates below are historical metadata."
+            )
+        else:
+            guide = Path(__file__).with_name("machine_contexts") / (
+                "iteration-" + settings["context"] + ".md"
+            )
+            guide_text = guide.read_text()
         return {
             **settings,
             "agent_host": "acacia",
-            "guide": guide.read_text(),
+            "guide": guide_text,
             "templates": {
                 "local_project": str(self.project_context(exp)["checkout"] or self.working_directory(exp)),
                 "local_run": str(self.root(exp["id"])),
@@ -2561,9 +2549,7 @@ class Workflow:
 
     @staticmethod
     def compute_stages(exp):
-        if exp["recipe_id"] == "agent_experiment_v1":
-            return [stage["id"] for stage in exp["snapshot"]["plan"]["stages"]]
-        return COMPUTE_STAGES
+        return [stage["id"] for stage in exp["snapshot"]["plan"]["stages"]]
 
     def prepared_python(self, exp, plan):
         if self.is_remote(exp):
@@ -2937,308 +2923,6 @@ class Workflow:
             )
         return instruction + "\n" + self.execution_instruction(exp, phase) + "\nPAYLOAD:\n" + encode(payload)
 
-    def generic_prompt(self, exp, phase, payload):
-        if iteration.enabled(exp):
-            return self.iteration_prompt(exp, phase, payload)
-        root = self.root(exp["id"])
-        payload["execution_context"] = self.execution_context(exp)
-        payload["project_knowledge"] = self.supervisor.context(
-            exp["contract"].get("project", {}).get("id", "test-project")
-        )
-        payload["contract"] = self.compact_contract(exp, exp["contract"])
-        payload["context_instructions"] = (
-            "Context summaries preserve the scientific brief and protocol. details.path points to full "
-            "saved JSON with sha256 identity. Read only the fields or source files needed for this task; "
-            "do not dump whole reference records or repair histories into the conversation. Reuse existing "
-            "project/reference training and evaluation code where suitable; implement the requested delta."
-        )
-        payload["tracker_tools"] = (
-            "Use the experimenttracker MCP tools: check_manifest before finishing; job_status for exact owned logs; schedule_wakeup for continuation; submit_stage for tracked prepared work; register_analysis_file for figure evidence IDs. Never submit scheduler work outside the tracker."
-        )
-        if phase in ("plan", "prepare"):
-            payload["project_context"] = self.project_context(exp)
-            if payload["project_context"]["isolation"] == "worktree":
-                payload["isolation_instructions"] = (
-                    "Implement only in project_context.checkout and workspace. The original source_checkout "
-                    "belongs to other experiments and is read-only context. Do not change shared Git metadata, "
-                    "switch HEAD, merge, reset or remove this worktree. Use an isolated environment; never modify "
-                    "the original project's environment. Reference external datasets/checkpoints read-only and "
-                    "record their identities. Ignored runtime files and environments are not copied. "
-                    "Embedded repositories listed in read_only_repositories remain in source_checkout as "
-                    "read-only inputs. If their code needs changes, first copy the needed source into checkout, "
-                    "excluding Git metadata/environments, and freeze those copies in declared project_files."
-                )
-            payload["project_instructions"] = self.projects.instructions(payload["project_context"]["id"])
-            review = exp.get("plan_review") or {}
-            if phase == "plan" and review.get("state") == "drafting" and review.get("feedback"):
-                payload["plan_revision_feedback"] = review["feedback"]
-                payload["previous_plan"] = self.compact_plan(exp, "previous-plan", review)
-            if phase == "prepare":
-                repair = exp["contract"].get("auto_repair")
-                if repair:
-                    previous_root = Path(repair["previous_root"]) if repair.get("previous_root") else None
-                    payload["repair_context"] = {
-                        **repair,
-                        "researcher_notes": self.store.rows(
-                            "SELECT author,text FROM notes WHERE experiment_id=? ORDER BY created_at DESC LIMIT 20",
-                            (exp["id"],),
-                        ),
-                        "previous_workspace": str(self.working_directory(exp)),
-                        "previous_snapshot": str(previous_root / "snapshot") if previous_root else None,
-                        "previous_outputs": str(previous_root) if previous_root else None,
-                    }
-                    payload["repair_instructions"] = (
-                        "Diagnose the saved failed job using its logs and previous sources. Repair the "
-                        "implementation in the stable workspace; previous snapshots and registered evidence "
-                        "are immutable. Preserve the brief and scientific objective. "
-                        "Do not weaken validation to make a run pass. Explain the cause and fix in summary. "
-                        "Do not submit untracked jobs. Routine code/resource/dependency corrections are autonomous within authorization. "
-                        "Completed manifest errors receive continuing validation feedback separately from compute attempts. "
-                        "For TIMEOUT, compare measured progress with the saved walltime and inspect "
-                        "checkpoint/resume support. Fix code or runtime parameters without reducing "
-                        "the approved scientific scope. You may propose a longer walltime or different "
-                        "authorized allocation in the manifest. Read prior checkpoint paths from repair_context for resume; do not copy or retrain successful models unnecessarily. "
-                        "Partial outputs are diagnostic context, never validated final evidence."
-                    )
-                payload["approved_plan"] = self.compact_plan(exp, "approved-plan", review)
-                payload["manifest_constraints"] = {
-                    "reserved_stage_ids": ["plan", "prepare", "validate", "interpret", "publish"],
-                    "reserved_filenames": [
-                        "manifest.json",
-                        "preparation.json",
-                        "analysis.json",
-                        "report.html",
-                        "requirements.txt",
-                    ],
-                    "reserved_prefixes": ["local-output-", "project-source-", "report-v<integer>"],
-                    "source_paths": "Safe relative package paths; no traversal or symlinks; __init__.py supported",
-                    "output_paths": "Unique safe flat filenames, separate from sources, at most 10 MiB each",
-                    "dependencies": "Version 2 declares needs for every stage; final stage transitively depends on all others",
-                    "runtime": "A runnable interpreter in this experiment, its selected project, or an exact previously saved runtime",
-                }
-                payload["output_schemas"] = {
-                    "results.json": ExperimentResult.model_json_schema(),
-                    "validation.json": ExperimentValidation.model_json_schema(),
-                }
-            payload["workspace"] = str(self.working_directory(exp))
-            payload["python"] = str(self.working_directory(exp) / ".venv/bin/python")
-            payload["resources"] = self.config.slurm.model_dump()
-            payload["cluster"] = self.cluster_for(exp)
-            payload["execution_mode"] = self.config.mode
-            payload["resource_policy_version"] = exp["contract"].get("resource_policy_version", 1)
-            checkout = (
-                payload["project_context"].get("source_checkout") or payload["project_context"]["checkout"]
-            )
-            payload["project_python"] = (
-                str(Path(checkout) / ".venv/bin/python")
-                if checkout and (Path(checkout) / ".venv/bin/python").is_file()
-                else None
-            )
-            if exp["reference_experiment_id"]:
-                parent = self.store.experiment(exp["reference_experiment_id"])
-                records = self.store.rows(
-                    "SELECT * FROM artifacts WHERE experiment_id=? AND evidence_revision=?",
-                    (parent["id"], parent["evidence_revision"]),
-                )
-                for record in records:
-                    path = artifacts.allowed_path(Path(record["path"]), self.root(parent["id"]))
-                    if artifacts.sha256(path) != record["sha256"]:
-                        raise ValueError("reference evidence has changed")
-                artifacts.verify_snapshot(self.root(parent["id"]), parent["snapshot"])
-                reference = {
-                    "brief": parent["brief"],
-                    "contract": parent["contract"],
-                    "manifest": parent["snapshot"],
-                    "analysis": parent["analysis"],
-                    "artifacts": [
-                        {key: record[key] for key in ("name", "path", "sha256")} for record in records
-                    ],
-                    "source_directory": str(self.root(parent["id"]) / "snapshot"),
-                }
-                analysis = parent["analysis"] or {}
-                payload["reference_context"] = {
-                    "experiment_id": parent["id"],
-                    "title": parent.get("title"),
-                    "brief": parent["brief"],
-                    "scientific_outcome": parent.get("scientific_outcome"),
-                    "contract": self.compact_contract(exp, parent["contract"]),
-                    "plan": self.compact_plan(exp, "reference-plan", parent["snapshot"].get("plan", {})),
-                    "analysis": {
-                        key: analysis[key]
-                        for key in ("summary", "observations", "limitations", "scientific_outcome")
-                        if key in analysis
-                    },
-                    "source_directory": reference["source_directory"],
-                    "details": self.context_pointer(exp, "reference", reference),
-                }
-            if phase == "plan":
-                instruction = (
-                    "Produce a concise research plan for the researcher's brief before implementing any code. "
-                    "Read the selected project and its AGENTS.md as needed, but do not edit files, install packages, "
-                    "run training, or submit jobs in this turn. Follow project_instructions as researcher guidance. "
-                    "If plan_revision_feedback is present, revise the previous plan to address it. "
-                    "For a corrected replacement, preserve prior requests in contract.restart_context while applying the latest correction. "
-                    "State the intended scientific protocol and its key assumptions explicitly, including input scale, "
-                    "baselines, validation metrics, comparisons, and figures where relevant. Return schema_version 2 "
-                    "with explicit needs for every compute stage: [] for a root, otherwise stage IDs whose validated "
-                    "outputs it requires. Independent stages may run concurrently. The final listed stage must produce "
-                    "results and validation and depend transitively on every other stage. "
-                    "Use descriptive compute IDs; plan, prepare, validate, interpret and publish are executor names "
-                    "and will be namespaced before review. "
-                    "Give each stage a structured Slurm resource request from the fresh cluster snapshot and policy. "
-                    "Prefer all currently viable GPU types when exact hardware is unnecessary so queue wait is reduced. "
-                    "Do not pin prior hardware solely for comparability. If a critical input is missing, finish this turn "
-                    "with questions (a list of concise question strings) and stages: []. Include title, summary and "
-                    "protocol explaining what is missing. Do not use request_user_input or wait for an answer in this turn. "
-                    "The tracker saves the questions and resumes planning from the researcher answer. "
-                    "For a complete plan, omit questions or return questions: [] and include compute stages. "
-                    "Keep discovery focused on essential inputs so the first review arrives quickly. Return a short title, "
-                    "a summary of at most three short sentences (600 characters), protocol, and one-sentence stage summaries."
-                )
-                return (
-                    instruction
-                    + "\n"
-                    + self.execution_instruction(exp, phase)
-                    + "\nPAYLOAD:\n"
-                    + encode(payload)
-                )
-            instruction = (
-                "Implement the researcher's requested experiment in the workspace. The brief is your instruction; "
-                "there is no whitelist of models, datasets, or visualizations. Read the selected project checkout and its "
-                "AGENTS.md when supplied. If project_context.access is read-write, the researcher authorizes you to "
-                "edit the selected project and run its tools there to implement the brief. Work from that folder, "
-                "preserve unrelated changes, and keep tracking outputs in the supplied experiment workspace. "
-                "If access is read-only, use the checkout only as context. Implement the actual requested project "
-                "task rather than substituting a synthetic fixture. "
-                "Follow project_instructions as researcher guidance for this selected project. "
-                "Implement the approved scientific objective. Routine implementation, graph and authorized resource corrections are autonomous. A material objective change must be explained in objective_change for user review. "
-                "If required project inputs or resources are unavailable, ask the researcher rather than inventing data. "
-                "Use the reference's actual code/data/evidence "
-                "as context, preserving comparability where appropriate, and perform the requested change. Do not repeat "
-                "the reference experiment or move the requested work into future ideas. Explain assumptions in protocol. "
-                "Write source files and a compute stage graph implementing the requested work. Use the approved "
-                "schema_version and explicit dependency graph. Independent stages may run concurrently, so each "
-                "stage must write only its own declared unique outputs and local checkpoint paths. Read dependencies "
-                "only after their outputs are validated; never mutate a sibling's or predecessor's outputs. "
-                "A stage can run recipe.py with STAGE --output ROOT, or declare script as a prepared .sh filename. "
-                "Scripts run with Bash and EXPERIMENT_ROOT, EXPERIMENT_PROJECT, EXPERIMENT_PYTHON and EXPERIMENT_STAGE. "
-                "For stages where learning curves or qualitative examples are useful (training, head fitting, etc.), "
-                "set up normal TensorBoard logging using the project's writer (install tensorboard in the stage runtime if needed). "
-                "Declare stage tensorboard: {log_dir: 'tensorboard/STAGE', scalar_tag: 'loss/train', image_tag: 'prediction'} "
-                "with the exact tags you actually emit; either tag may be null. Write event files directly to "
-                "EXPERIMENT_ROOT/log_dir, use a unique directory per stage, flush periodically and close the writer. "
-                "Select ONE useful time series and ONE useful image; for add_images prefer a single representative example "
-                "or a legible small grid. Inspect emitted tags and declare any suffix used by your writer. "
-                "These are sampled progress previews, not validated scientific evidence. Keep final results/figures separately. "
-                "Instrument long-running stages with measurable whole-stage progress (epochs/steps/files across ALL "
-                "loops, seeds and variants, including setup/finalization where practical). Every 15-30 seconds, "
-                "print a flushed standalone stdout line starting ET_PROGRESS followed by JSON: "
-                '{"stage": os.environ["EXPERIMENT_STAGE"], "completed": done, "total": total, '
-                '"timestamp": time.time(), "eta_seconds": remaining_seconds_or_null}. '
-                "Use monotonically increasing completed work against a stable whole-stage total; do not reset "
-                "at each epoch or variant. Estimate remaining seconds from measured throughput, accounting for "
-                "remaining phases; use null during warmup or when ETA is unreliable. Emit the initial zero and "
-                "final total as well. Only rank zero emits for distributed stages. Keep tqdm if useful, but also "
-                "emit these structured lines; no custom regex is needed. Never invent progress for unmeasurable work. "
-                "Use srun/torchrun inside a managed allocation for distributed tasks; never submit nested jobs. "
-                "You may reuse project_python by setting python_executable, or install into the isolated workspace environment. "
-                "Never change an existing shared project environment. Declare project_files for all existing project source/config "
-                "files executed/imported by your stages; the backend records their bytes for each submitted revision. "
-                "You may use tools to read context, write source, install ordinary dependencies in that environment, and "
-                "run tiny local checks. Keep packages/caches/temporary files inside workspace; never modify other "
-                "experiments, unrelated research checkouts, credentials, global environments, or services. The selected "
-                "writable project is authorized. No API-billed services. "
-                "Do not submit scheduler jobs: the executor runs your declared stages. For live resource_policy_version 2, "
-                "inspect the supplied fresh cluster snapshot (nodes, GPU types, node states, partition limits and associations). "
-                "You may run read-only scheduler queries for more context. Select resources independently for every stage: "
-                "partition, account/QOS, CPUs per task (cpus_per_job), memory MiB per node, walltime minutes, total GPUs, "
-                "gpu_type, nodes, tasks_per_node and optional constraint/exclusive. Choose resources based on the brief. "
-                "12-hour GPU training is supported when permitted by Slurm and the optional resources.limits policy. "
-                "Null limits delegate to cluster authorization; defaults are fallbacks, not maxima. There is no three-job "
-                "limit for new live plans unless max_jobs_per_experiment is configured. Version 2 stages execute "
-                "when all declared dependencies have validated; version 1 plans remain sequential. "
-                "A busy node may queue; do not claim drained/down nodes are usable or silently substitute hardware when "
-                "the requested scientific protocol needs a specific GPU. For demo or legacy contracts retain three short CPU jobs/no GPU. "
-                "When several GPU types meet the stage's actual compute and memory needs, prefer a request that can use "
-                "the available capable types and reduce queue time. Record any hardware-specific reproducibility tradeoff "
-                "in the protocol. Do not pin a previous GPU solely for comparability when the brief does not require it. "
-                "Sources may use normal nested Python package layouts, including __init__.py. Submitted revisions keep their own recorded source identity while future implementations remain editable. "
-                "Declare published evidence outputs with unique flat filenames, at most 10 MiB each. Large checkpoints or "
-                "retained outputs belong in local_outputs, with safe paths relative to EXPERIMENT_ROOT. Each may be a "
-                "regular file or a directory: directories are recursively sealed with all file hashes, sizes and membership. "
-                "Symlinks and special files are forbidden. These stay on the cluster; only their provenance is published. "
-                "Never modify, add or remove anything in a previous stage's sealed output directory, including Python "
-                "bytecode/cache files. Keep mutable caches in separate undeclared directories. "
-                "Declare regenerable feature caches and other disposable intermediates in temporary_outputs, using paths "
-                "under EXPERIMENT_ROOT/temporary/ (e.g. temporary/features). Do not put them in local_outputs. "
-                "They are not hashed or published; keep them available to downstream stages and repairs. The backend "
-                "deletes them only after successful interpretation and report publication. Preserve small audit measurements, "
-                "predictions needed to check metrics and selected valuable checkpoints as evidence instead. "
-                "Save resolved parameters and reproducible seeds; preserve raw measurements/predictions needed to audit metrics. "
-                "The final stage MUST write results.json exactly with schema_version:1, protocol (exactly your returned protocol), "
-                "and metrics:[{name,variant,value (finite number),unit}]. Follow output_schemas, including list and string "
-                "bounds; keep exhaustive data exceeding these bounds in separately declared evidence outputs. "
-                "Also write validation.json with schema_version:1, "
-                "passed:boolean, checks:[{name,passed:boolean,detail}]. Implement meaningful scientific checks (e.g. held-out "
-                "separation, independent metric recomputation, finite predictions) and raise on failure. A zero job exit alone "
-                "does not establish validity. Declare requested plots in figures, using SVG or PNG. Label synthetic data honestly. "
-                "Return the implementation JSON only after writing and checking the source. Copy approved_plan.protocol "
-                "when the scientific protocol is unchanged. parameters_json encodes an object. "
-                "Use your judgment for optional choices; ask only if a missing essential input makes the experiment impossible."
-            )
-        else:
-            for stage in self.compute_stages(exp):
-                artifacts.validate_stage(
-                    root,
-                    stage,
-                    exp["snapshot"],
-                    verify_local_outputs=bool(exp["contract"].get("strict_reproducibility")),
-                )
-            payload["project_instructions"] = self.projects.instructions(
-                exp["contract"].get("project", {}).get("id", "test-project")
-            )
-            payload["results"] = artifacts.read_json(root / "results.json", root)
-            validation = artifacts.read_json(root / "validation.json", root)
-            payload["validation"] = {
-                "passed": validation["passed"],
-                "check_count": len(validation["checks"]),
-                "failed_checks": [check["name"] for check in validation["checks"] if not check["passed"]][
-                    :20
-                ],
-                "details": {
-                    "path": str(root / "validation.json"),
-                    "sha256": artifacts.sha256(root / "validation.json"),
-                },
-            }
-            payload["evidence_ids"] = [
-                row["id"]
-                for row in self.store.rows(
-                    "SELECT id FROM artifacts WHERE experiment_id=? AND evidence_revision=?",
-                    (exp["id"], exp["evidence_revision"]),
-                )
-            ]
-            payload["analysis_directory"] = str(root / "analysis")
-            payload["evidence_revision"] = exp["evidence_revision"]
-            payload["artifacts"] = self.store.rows(
-                "SELECT id,name,path,sha256,size FROM artifacts WHERE experiment_id=? AND evidence_revision=?",
-                (exp["id"], exp["evidence_revision"]),
-            )
-            instruction = (
-                "Interpret the completed requested experiment from its validated evidence and frozen source. "
-                "Use normal Python/scripting tools in analysis_directory to finish figures and the report. Raw results and registered evidence remain read-only. Do not submit untracked jobs or launch new experiments. Return new safe flat filenames in analysis_files. Their evidence IDs are UUID5(NAMESPACE_URL, f'{experiment_id}:{evidence_revision}:analysis-{filename}'). "
-                "Cite evidence_ids for every observation. Distinguish measured outcomes, assumptions, and limitations. "
-                "Follow project_instructions as researcher guidance when interpreting and presenting the evidence. "
-                "Validation is summarized in the prompt; inspect validation.details.path selectively for the "
-                "scientific checks relevant to a claim. Verify its sha256 before use and do not dump all checks "
-                "into the conversation. "
-                "Do not label synthetic results as real scientific findings. Saved next ideas are suggestions, not the original request. "
-                "Address steering_guidance in the report when the saved evidence supports it; create requested figures from "
-                "available evidence when possible. Explain when a request needs different training or missing data. "
-                "Use the presenter skill below and return the analysis JSON including presentation.\n"
-                + reporting.skill_text()
-            )
-        return instruction + "\n" + self.execution_instruction(exp, phase) + "\nPAYLOAD:\n" + encode(payload)
-
     def prompt(self, exp, phase):
         prompt = self._prompt(exp, phase)
         member = self.research.service.member(exp["id"])
@@ -3265,6 +2949,8 @@ class Workflow:
         return prompt
 
     def _prompt(self, exp, phase):
+        if legacy_archive.execution_frozen(exp):
+            raise ValueError("archived legacy execution prompts are read-only")
         if phase.startswith("agent:"):
             return iteration.agent_prompt(self, exp, phase)
         payload = {
@@ -3281,52 +2967,7 @@ class Workflow:
             )
             payload["steering_guidance"] = [row["text"] for row in guidance]
             payload["steering_request_ids"] = [row["request_id"] for row in guidance]
-        if exp["recipe_id"] == "agent_experiment_v1":
-            return self.generic_prompt(exp, phase, payload)
-        if phase == "interpret":
-            # Revalidate the evidence immediately before giving it to the model.
-            artifacts.validate_stage(self.root(exp["id"]), "evaluate_and_plot", exp["snapshot"])
-            payload["results"] = artifacts.read_json(
-                self.root(exp["id"]) / "results.json", self.root(exp["id"])
-            )
-            payload["evidence_ids"] = [
-                a["id"]
-                for a in self.store.rows(
-                    "SELECT id FROM artifacts WHERE experiment_id=? AND evidence_revision=?",
-                    (exp["id"], exp["evidence_revision"]),
-                )
-            ]
-            payload["artifacts"] = self.store.rows(
-                "SELECT id,name,stage_id,sha256,size FROM artifacts WHERE experiment_id=? AND evidence_revision=?",
-                (exp["id"], exp["evidence_revision"]),
-            )
-        instruction = (
-            (
-                "First determine whether this runnable recipe satisfies the researcher's brief. The only "
-                "available recipe fits linear and quadratic regression to the fixed one-dimensional synthetic "
-                "quadratic dataset and plots their predictions. It cannot train decision trees, other model "
-                "families, change data/parameters, or produce a classification decision frontier. The brief is "
-                "the requested experiment, not merely context. A reference is context and provenance, not "
-                "an instruction to repeat it. If the brief requests unsupported work, return scope_status "
-                "'unsupported' with scope_reason explaining the mismatch; the backend will stop before compute. "
-                "Do not substitute the fixed comparison, defer an explicit request into next ideas, or claim "
-                "that the researcher did not authorize what they asked for. For a compatible request return "
-                "scope_status 'supported' with a concrete scope_reason. In both cases return the exact "
-                "snapshot_hash, parameters_hash and recipe_id from the manifest, plus a short summary."
-            )
-            if phase == "prepare"
-            else (
-                "Interpret ONLY the validated synthetic results below. Identify measured facts, limitations, "
-                "and saved next ideas. Every observation must cite IDs from evidence_ids. The target function "
-                "is quadratic by construction; one seed says nothing about real data. Never launch new research."
-            )
-        )
-        return (
-            instruction
-            + " Return only the requested JSON schema. Do not modify files, run tools, submit jobs, "
-            "use external services, or ask optional questions. The backend owns all execution.\nPAYLOAD:\n"
-            + encode(payload)
-        )
+        return self.iteration_prompt(exp, phase, payload)
 
     def _action_state(self, action_id, state, *, error=None, result=None):
         action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (action_id,))
