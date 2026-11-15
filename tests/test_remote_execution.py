@@ -518,3 +518,11 @@ async def test_tensorboard_events_return_without_custom_download_template(runtim
     calls = [args for args in machines.calls if "--max-size=512m" in args]
     assert calls and "--safe-links" in calls[0]
     assert len(machines.jobs) == 1
+
+
+@pytest.mark.parametrize("operation", ["cleanup", "unknown"])
+def test_remote_worker_rejects_retired_or_unknown_operations(operation):
+    from experimenttracker.remote_worker import iteration_operation
+
+    with pytest.raises(ValueError, match="unsupported remote worker operation"):
+        iteration_operation(operation, None, "stage", "intent", {"intent_id": "intent"})

@@ -208,7 +208,7 @@ One commit per area, removing only branches that T1.1a marked not needed for rea
 - [x] f: the validate stage and `strict_reproducibility`;
 - [x] g: contract ≤2 repair (`repair_failed_experiments` legacy parts, `repairs/` roots);
 - [~] h: `artifacts.py` execution writers and shipped recipe; archived readers stay.
-  Status: [x] h.1ab · [x] h.4 · [~] h.5 · [ ] h.1c · [ ] h.2 · [ ] h.3 · [ ] h.6.
+  Status: [x] h.1ab · [x] h.4 · [x] h.5 · [~] h.1c · [ ] h.2 · [ ] h.3 · [ ] h.6.
 
 Delete or replace the matching tests. Acceptance for each: the remaining suite passes,
 and archived fixtures still render their report via the API.
@@ -521,3 +521,5 @@ Record completed tasks here: `date · task · commit · notes`.
 2026-11-15 · T1.1h.1ab · Same Luna child implemented remeasured combined M card, coordinator review. Removed toy/source registration and sealing writers, their no-op current callers and exact legacy manual output-recovery body; legacy adoption now refuses before scheduler reads with no state change. Retired its five legacy refusal params and rollback test with body, preserving current3 rollback/identity recovery and archived local-manifest/audit/report/conversation readers. Source +9/−153 (net −144); tests +24/−44; 230 changed lines. Isolated Node 24 Ruff, 69 targets and complete 597 Python tests pass. No live activation.
 
 2026-11-15 · T1.1h.4 · Luna implementation and coordinator review. Removed legacy remote transfers, recursive scientific identity/receipt worker and isolated tampering fixture/test; unsupported old worker manifests refuse execution. Preserved current3 declared recipe.py scripts, exact routing/polling/receipts/direct output references and cleanup until h5. Source +8/−155 (net −147); tests +1/−102; 266 changed lines after formatting. Isolated Node 24 Ruff, 55 focused remote/output/archive/recovery tests and all 596 Python tests pass. No live activation.
+
+2026-11-15 · T1.1h.5 · Luna implementation plus coordinator review. Removed automatic completion cleanup and obsolete task registry together with maintenance/scenario consumers; retained temporary declarations and historical sealed-checkpoint verification. Retired matching cleanup/helper tests. Coordinator added explicit verify/seal operation allowlist so retired cleanup cannot fall through to receipt generation, with two refusal cases. Source +5/−136; tests +9/−107; 257 changed lines. Isolated Node24 Ruff, 79 targets and all592 Python tests pass in365.37s. No live activation.

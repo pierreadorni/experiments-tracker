@@ -18,7 +18,7 @@ class StubTick:
         self.agent = workflow.agent
         self.lanes = [self]
         self.agent_task = self.quota_task = self.backup_task = None
-        self.output_checks, self.evidence_checks, self.cleanup_tasks = {}, {}, {}
+        self.output_checks, self.evidence_checks = {}, {}
         self.ticks = 0
 
     async def tick(self, *, force_observe=False):

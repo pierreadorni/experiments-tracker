@@ -305,7 +305,6 @@ def engine_tasks(workflow):
     handles.append(workflow.backup_task)
     handles.extend(task for task, _ in workflow.output_checks.values())
     handles.extend(workflow.evidence_checks.values())
-    handles.extend(workflow.cleanup_tasks.values())
     return [task for task in handles if task is not None and not task.done()]
 
 

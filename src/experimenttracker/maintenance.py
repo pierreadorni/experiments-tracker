@@ -139,10 +139,8 @@ def blockers(workflow):
     supervisor = workflow.pool_owner.supervisor
     if workflow.submission_lock.locked():
         reasons.append("a scheduler admission is settling")
-    if (
-        any(not task.done() for task, _ in workflow.output_checks.values())
-        or any(not task.done() for task in workflow.evidence_checks.values())
-        or any(not task.done() for task in workflow.cleanup_tasks.values())
+    if any(not task.done() for task, _ in workflow.output_checks.values()) or any(
+        not task.done() for task in workflow.evidence_checks.values()
     ):
         reasons.append("filesystem work is settling")
     if workflow.pool_owner.research.busy:

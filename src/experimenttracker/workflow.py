@@ -33,7 +33,6 @@ from .progress import DiscussionActivity, describe_item, read_job_progress
 from .projects import Projects, ProjectUnavailable
 from .quota import QuotaGate
 from .remote import AdmissionPending, RemoteSlurmScheduler, TransferPending
-from .remote_worker import cleanup_temporary
 from .slurm import ResourceUnavailable, SubmissionUncertain, command, wrapper
 from .steering import process_restarts, queue_late_reports
 from .store import encode
@@ -121,8 +120,6 @@ class Workflow:
         self.output_checks = {}
         self.evidence_checks = {}
         self.error_backoff = {}
-        self.cleanup_tasks = {}
-        self.last_cleanup_attempt = {}
         self.check_slot = asyncio.Semaphore(1)
 
     async def check_files(self, function, *args, **kwargs):
@@ -591,7 +588,6 @@ class Workflow:
                 self.error_backoff.pop(eid, None)
         engine_watchdog(self.store, now, self.config.watchdog_minutes)
         self.discard_failed_implementation()
-        await self.advance_cleanup()
         queue_late_reports(self)
         if not self.supervisor.blocks_dispatch:
             await self.conversation.advance()
@@ -4016,95 +4012,6 @@ class Workflow:
             )
             self.store.emit(db, eid, "result_ready")
 
-    async def cleanup_outputs(self, exp):
-        """Completion authorizes only declared temporary paths in saved job roots.
-
-        A crash may repeat deletion, never broaden it. Failed runs retain caches
-        for repair; cleanup failures cannot revoke an already published result.
-        """
-        eid = exp["id"]
-        roots = {}
-        for job in self.store.rows(
-            "SELECT * FROM jobs WHERE experiment_id=? AND execution_manifest IS NOT NULL", (eid,)
-        ):
-            manifest = json.loads(job["execution_manifest"])
-            if not any(s.get("temporary_outputs") for s in manifest["plan"]["stages"]):
-                continue
-            roots.setdefault((job["execution_root"], manifest["snapshot_hash"]), (job, manifest))
-        cleaned = []
-        for (directory, snapshot_hash), (job, manifest) in roots.items():
-            # Revalidate the saved declaration before crossing a deletion boundary.
-            root = Path(directory)
-
-            def check_declaration(root, manifest, snapshot_hash, base):
-                Implementation.model_validate(manifest["plan"])
-                if root.is_symlink() or not root.resolve().is_relative_to(base.resolve()):
-                    raise ValueError("temporary cleanup root does not belong to the experiment")
-                saved = artifacts.read_json(root / "snapshot/manifest.json", root)
-                if saved["snapshot_hash"] != snapshot_hash or saved["plan"] != manifest["plan"]:
-                    raise ValueError("temporary cleanup manifest identity changed")
-
-            await self.check_files(
-                check_declaration, root, manifest, snapshot_hash, self.projects.base_root(eid)
-            )
-            if manifest.get("remote_execution"):
-                scheduler = self.scheduler_for(exp, job)
-                layout = manifest["execution"]["layout"]
-                await scheduler.remote_command(
-                    "/usr/bin/python3",
-                    layout["remote_run"] + "/remote-worker.py",
-                    "cleanup",
-                    layout["remote_run"],
-                    job["stage_id"],
-                    snapshot_hash,
-                    timeout=120,
-                )
-            # Remote transfer settings may also have downloaded scratch locally.
-            await self.check_files(cleanup_temporary, root, manifest)
-            cleaned.append({"snapshot_hash": snapshot_hash})
-        with self.store.tx() as db:
-            self.store.emit(db, eid, "temporary_outputs_cleaned", {"revisions": cleaned})
-
-    async def advance_cleanup(self):
-        for eid, task in list(self.cleanup_tasks.items()):
-            if task.done():
-                try:
-                    task.result()
-                except Exception:
-                    log.exception("temporary output cleanup failed for %s; retained for retry", eid)
-                del self.cleanup_tasks[eid]
-        for row in self.store.rows(
-            "SELECT id FROM experiments e WHERE phase='complete' "
-            "AND NOT EXISTS (SELECT 1 FROM events WHERE experiment_id=e.id AND kind='temporary_outputs_cleaned')"
-        ):
-            eid = row["id"]
-            exp = self.store.experiment(eid)
-            if (
-                iteration.enabled(exp)
-                or eid in self.cleanup_tasks
-                or clock.now() - self.last_cleanup_attempt.get(eid, 0) < 60
-                or not exp["snapshot"]
-                or not any(
-                    s.get("temporary_outputs")
-                    for job in self.store.rows(
-                        "SELECT execution_manifest FROM jobs WHERE experiment_id=? "
-                        "AND execution_manifest LIKE '%temporary_outputs%'",
-                        (eid,),
-                    )
-                    for s in json.loads(job["execution_manifest"])["plan"]["stages"]
-                )
-                or self.store.one(
-                    "SELECT 1 FROM jobs WHERE experiment_id=? AND state IN ('submitting','submitted')", (eid,)
-                )
-                or self.store.one(
-                    "SELECT 1 FROM agent_actions WHERE experiment_id=? AND state IN ('dispatching','running','uncertain')",
-                    (eid,),
-                )
-            ):
-                continue
-            self.last_cleanup_attempt[eid] = clock.now()
-            self.cleanup_tasks[eid] = asyncio.create_task(self.cleanup_outputs(exp))
-
     async def advance_reports(self):
         rows = self.store.rows(
             "SELECT r.* FROM report_versions r JOIN experiments e ON e.id=r.experiment_id "
@@ -4182,11 +4089,7 @@ class Workflow:
         self.closing = True
         # Threads only read/seal filesystem evidence; drain them before releasing ownership.
         # A restart re-observes the exact saved job and validates again without resubmission.
-        checks = (
-            [task for task, _ in self.output_checks.values()]
-            + list(self.evidence_checks.values())
-            + list(self.cleanup_tasks.values())
-        )
+        checks = [task for task, _ in self.output_checks.values()] + list(self.evidence_checks.values())
         if checks:
             await asyncio.gather(*checks, return_exceptions=True)
         self.output_checks.clear()
