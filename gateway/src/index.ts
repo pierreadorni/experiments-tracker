@@ -92,7 +92,7 @@ const createSchema = z
     execution: executionSettingsSchema.optional(),
     workspace_mode: z.enum(['auto', 'shared', 'worktree']).optional(),
     brief: z.string().min(10).max(4000),
-    recipe_id: z.enum(['toy_compare_v1', 'agent_experiment_v1']),
+    recipe_id: z.literal('agent_experiment_v1'),
     model: z
       .string()
       .regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$/)
@@ -517,7 +517,6 @@ function waiting(
   id: string,
   brief: string,
   referenceId?: string,
-  recipeId = 'agent_experiment_v1',
   agent?: { model?: string; reasoning_effort?: string },
   project = { id: 'test-project', name: 'Test project' },
 ) {
@@ -527,7 +526,7 @@ function waiting(
     id,
     brief,
     project_id: project.id,
-    recipe_id: recipeId,
+    recipe_id: 'agent_experiment_v1',
     reference_experiment_id: referenceId || null,
     phase: 'waiting_for_executor',
     hold_reason: 'waiting_for_executor',
@@ -546,22 +545,17 @@ function waiting(
     contract: {
       schema_version: 1,
       project: { id: project.id, name: project.name },
-      brief_driven: recipeId === 'agent_experiment_v1',
+      brief_driven: true,
+      execution_contract: 3,
       ...(agent ? { agent } : {}),
     },
     snapshot: null,
-    stages: (recipeId === 'agent_experiment_v1'
-      ? ['prepare', 'validate', 'interpret', 'publish']
-      : [
-          'prepare',
-          'train_linear',
-          'train_quadratic',
-          'evaluate_and_plot',
-          'validate',
-          'interpret',
-          'publish',
-        ]
-    ).map((id) => ({ id, state: 'pending', error: null, updated_at: now })),
+    stages: ['plan', 'prepare', 'interpret', 'publish'].map((id) => ({
+      id,
+      state: 'pending',
+      error: null,
+      updated_at: now,
+    })),
     jobs: [],
     artifacts: [],
     notes: [],
@@ -720,7 +714,6 @@ async function enqueue(env: Env, kind: string, payload: Record<string, unknown>,
             id,
             String(payload.brief),
             payload.reference_experiment_id as string | undefined,
-            String(payload.recipe_id),
             {
               model: payload.model as string | undefined,
               reasoning_effort: payload.reasoning_effort as string | undefined,

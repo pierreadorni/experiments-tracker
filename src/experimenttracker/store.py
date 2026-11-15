@@ -934,6 +934,8 @@ class Store:
                 ):
                     raise Conflict("request_id was already used for a different command")
                 return json.loads(prior["result"])
+            if kind == "create" and payload.get("recipe_id") != "agent_experiment_v1":
+                raise Conflict("recipe is retired; create a brief-driven experiment")
             if db.execute("SELECT 1 FROM autopilot_requests WHERE request_id=?", (request_id,)).fetchone():
                 raise Conflict("request_id was already used for an Autopilot command")
             if (
@@ -990,27 +992,15 @@ class Store:
                     raise Conflict("reference must belong to the selected project")
                 contract = {
                     "schema_version": 1,
-                    "recipe_id": payload["recipe_id"],
-                    "synthetic_demo": True,
-                    "parameters": {"seed": 1729, "n_train": 64, "n_test": 128, "noise_sd": 0.2},
-                    "max_jobs": 3,
-                    "gpus": 0,
+                    "recipe_id": "agent_experiment_v1",
+                    "resource_policy_version": 2,
                     "recovery_turns": 1,
-                    "controls": "shared data and test split",
-                    "brief_must_match_recipe": True,
+                    "brief_driven": True,
+                    "reporting_version": 1,
+                    "planning_version": 1,
+                    "execution_contract": 3,
+                    "workspace_mode": payload.get("workspace_mode", "auto"),
                 }
-                if payload["recipe_id"] == "agent_experiment_v1":
-                    contract = {
-                        "schema_version": 1,
-                        "recipe_id": "agent_experiment_v1",
-                        "resource_policy_version": 2,
-                        "recovery_turns": 1,
-                        "brief_driven": True,
-                        "reporting_version": 1,
-                        "planning_version": 1,
-                        "execution_contract": 3,
-                        "workspace_mode": payload.get("workspace_mode", "auto"),
-                    }
                 from .execution_settings import ExecutionSettings
 
                 preferences = db.execute(
@@ -1061,11 +1051,7 @@ class Store:
                     "INSERT INTO stages(experiment_id,id,updated_at,ordinal) VALUES(?,?,?,?)",
                     [
                         (eid, stage, now, i)
-                        for i, stage in enumerate(
-                            STAGES
-                            if payload["recipe_id"] == "toy_compare_v1"
-                            else ("plan", "prepare", "validate", "interpret", "publish")
-                        )
+                        for i, stage in enumerate(("plan", "prepare", "interpret", "publish"))
                     ],
                 )
             else:

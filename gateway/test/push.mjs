@@ -85,7 +85,7 @@ async function create() {
     schema_version: 1,
     request_id: randomUUID(),
     brief: 'Synthetic notification acceptance experiment.',
-    recipe_id: 'toy_compare_v1',
+    recipe_id: 'agent_experiment_v1',
   });
   assert.equal(r.status, 202);
   const { experiment_id } = await r.json();

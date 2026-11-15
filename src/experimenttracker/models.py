@@ -27,7 +27,7 @@ class CreateExperiment(StrictModel):
     schema_version: Literal[1] = 1
     request_id: UUID
     brief: str = Field(min_length=10, max_length=4000)
-    recipe_id: Literal["toy_compare_v1", "agent_experiment_v1"] = "agent_experiment_v1"
+    recipe_id: Literal["agent_experiment_v1"] = "agent_experiment_v1"
     project_id: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_-]{0,63}$")
     workspace_mode: Literal["auto", "shared", "worktree"] = "auto"
     execution: ExecutionSettings | None = None

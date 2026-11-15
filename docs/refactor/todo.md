@@ -208,7 +208,7 @@ One commit per area, removing only branches that T1.1a marked not needed for rea
 - [x] f: the validate stage and `strict_reproducibility`;
 - [x] g: contract ≤2 repair (`repair_failed_experiments` legacy parts, `repairs/` roots);
 - [~] h: `artifacts.py` execution writers and shipped recipe; archived readers stay.
-  Status: [x] h.1ab · [x] h.4 · [x] h.5 · [x] h.1c · [x] h.2 · [x] h.3 · [ ] h.6.
+  Status: [x] h.1ab · [x] h.4 · [x] h.5 · [x] h.1c · [x] h.2 · [x] h.3 · [x] h.6 · [ ] h.7a execution tail · [ ] h.7b command/reply tail.
 
 Delete or replace the matching tests. Acceptance for each: the remaining suite passes,
 and archived fixtures still render their report via the API.
@@ -531,3 +531,5 @@ Record completed tasks here: `date · task · commit · notes`.
 2026-11-15 · T1.1h.2 · Luna implementation and coordinator review. Removed shipped toy recipe and recipe_dir configuration/doctor/init wiring; old YAML ignores only the retired key. Synthetic CPU bound and current fresh resource authorization remain. Source/scripts/recipe +13/−180; tests +35/−7 (235 changed lines); example −1. Ruff,47 focused cases and all620 Python tests pass (400.31s; durable XML retained in validation checkout). Updated installation and architecture guidance. No live activation.
 
 2026-11-15 · T1.1h.3 · Luna prompt retirement, coordinator scoped application preserving adjacent submission/dependency changes. Removed generic/toy prompts and old execution guides; current iteration guides unchanged. Historical execution metadata remains readable with an explicit archival guide and frozen scientific prompts refuse. Source +26/−385; old runtime guides −28; tests +32 (471 changed lines). Ruff,45 focused checks and all621 Python tests pass in418.68s. No live activation.
+
+2026-11-15 · T1.1h.6 · Luna implementation, coordinator review and scoped historical fixture correction. New local/gateway creates accept agent_experiment_v1 only and seed plan/prepare/interpret/publish; saved command receipt replay remains first and old recipe projection enum/models stay readable. Source +21/−42; tests +82/−4 (149 changed lines). Ruff,11 targets,623 Python,29 web,gateway build/types pass. Initial gateway run found two old publication fixtures inheriting contract3 plus one cascading reference failure; marked their saved contract2/toy identity explicitly, preserving every assertion, then all42 gateway tests and final format pass. No live activation.

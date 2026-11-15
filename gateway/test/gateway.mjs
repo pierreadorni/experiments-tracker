@@ -25,7 +25,7 @@ async function create(extra = {}) {
     schema_version: 1,
     request_id: randomUUID(),
     brief: 'Compare fixed synthetic linear and quadratic regression.',
-    recipe_id: 'toy_compare_v1',
+    recipe_id: 'agent_experiment_v1',
     ...extra,
   };
   const response = await req('/api/experiments', { method: 'POST', body: JSON.stringify(payload) });
@@ -539,6 +539,9 @@ test('monotonic projections, upload verification, and result readiness', async (
     });
   const exp = {
     ...initial,
+    // Saved legacy publication fixture; this does not execute the retired recipe.
+    recipe_id: 'toy_compare_v1',
+    contract: { ...initial.contract, execution_contract: 2 },
     phase: 'publishing',
     hold_reason: 'publication_pending',
     revision: 5,
@@ -612,6 +615,31 @@ test('monotonic projections, upload verification, and result readiness', async (
     1,
   );
 });
+test('retired toy recipes cannot create projections or commands', async () => {
+  const db = await mf.getD1Database('DB');
+  const before = {
+    commands: (await db.prepare('SELECT COUNT(*) AS n FROM commands').first()).n,
+    projections: (await db.prepare('SELECT COUNT(*) AS n FROM projections').first()).n,
+  };
+  const response = await req('/api/experiments', {
+    method: 'POST',
+    body: JSON.stringify({
+      schema_version: 1,
+      request_id: randomUUID(),
+      brief: 'Try the retired fixed synthetic comparison.',
+      recipe_id: 'toy_compare_v1',
+    }),
+  });
+  assert.equal(response.status, 422);
+  assert.deepEqual(
+    {
+      commands: (await db.prepare('SELECT COUNT(*) AS n FROM commands').first()).n,
+      projections: (await db.prepare('SELECT COUNT(*) AS n FROM projections').first()).n,
+    },
+    before,
+  );
+});
+
 test('new experiments may reference only completed frozen results', async () => {
   const list = (await (await req('/api/experiments')).json()).experiments;
   const reference = list.find((e) => e.phase === 'complete');
@@ -623,7 +651,7 @@ test('new experiments may reference only completed frozen results', async () => 
   const invalid = {
     schema_version: 1,
     request_id: randomUUID(),
-    recipe_id: 'toy_compare_v1',
+    recipe_id: 'agent_experiment_v1',
     brief: 'Compare against an unfinished reference.',
     reference_experiment_id: child.id,
   };
@@ -643,7 +671,7 @@ test('arbitrary-method briefs persist their generic recipe identity', async () =
   assert.equal(view.brief, payload.brief);
   assert.deepEqual(
     view.stages.map((s) => s.id),
-    ['prepare', 'validate', 'interpret', 'publish'],
+    ['plan', 'prepare', 'interpret', 'publish'],
   );
   const duplicate = await req('/api/experiments', {
     method: 'POST',
@@ -679,6 +707,8 @@ test('generic shell/GPU plans exceed three stages and require published local ch
   }));
   const exp = {
     ...view,
+    // Historical schema-2 checkpoint publication policy.
+    contract: { ...view.contract, execution_contract: 2 },
     revision: 1,
     phase: 'publishing',
     artifacts,
