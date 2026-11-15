@@ -1,5 +1,30 @@
 # T1 handoff
 
+## Resume on 2026-11-15
+
+Reoriented with status/diff/log and newest notes; preserved all pending files.
+Reorientation found `de938d7` equal to GitHub main. P4 is now `f8a2d4b` and
+report acceptance `8d37630` (awaiting push):
+source +164/-19, tests +264/-30, **477 changed lines**. Coordinator reviewed guards,
+raw exact settlement and terminal observation boundaries. The interrupted full
+suite outcome was lost; rerun passed all **590 Python tests** in 413.77 s. Initial P4 targets
+passed 98 tests. The separate b-A file adds 58 test lines; coordinator outside-NSS
+acceptance passed 59 tests including both active-archive queued report outcomes,
+synthetic demo, reporting, cancellation and watchdog. No live state accessed.
+
+Luna d candidate is `.worktrees/t1-delete-advance`, workflow-only +5/-36 after Ruff formatting against
+P4, preserving positional pause phases and historical compute lookup. Luna e
+is preparing in `.worktrees/t1-delete-prepare`, based on d, with exact baseline
+`/tmp/t1-delete-prepare-baseline.py`. Archival is complete; d focused/full checks precede its landing.
+Old `/tmp` baselines disappeared across interruption; root P4 source was used to
+remeasure d. Do not count copied prerequisites or discard worktree edits.
+
+One focused Astra review decided C2 episode identities, bounded backfill and
+projection boundaries. Recorded in [rollout design](t1.3b-rollout-design.md), with
+coordinator amendment that retaining operational writes is intermediate and does
+not complete the direct-write-removal requirement of T1.3c. Source implementation
+has not begun. Luna also investigates remaining artifact/remote deletion callers.
+
 ## Current continuation (2026-11-14)
 
 Main `8899608` includes M8d/e, static fixtures, M9 retirements, M10 downgrade
