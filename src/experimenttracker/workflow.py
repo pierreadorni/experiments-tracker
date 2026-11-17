@@ -30,6 +30,7 @@ from .core import (
     action_obligations,
     advancement_decisions,
     job_obligations,
+    obligation_backfill,
     request_obligations,
     review_obligations,
 )
@@ -388,6 +389,9 @@ class Workflow:
 
     async def start(self):
         self.store.archive_legacy_experiments()
+        # A database saved before the obligation source hooks keeps the same open
+        # responsibilities once ticking starts; a second start re-saves nothing.
+        obligation_backfill.backfill(self.store)
         self.config.job_output_root.mkdir(parents=True, exist_ok=True)
         await self.refresh_cluster()
         await self.connect_agent()

@@ -13,8 +13,8 @@ import json
 
 from . import obligation_sources
 
-_SOURCE_TYPE = "advancement"
-_CANCELLATION = "cancellation"
+SOURCE_TYPE = "advancement"
+CANCELLATION = "cancellation"
 _VERSION = 1
 _TERMINAL = frozenset({"complete", "failed", "cancelled"})
 _WAIT_BY_REASON = {
@@ -43,7 +43,7 @@ def open_lifetime(db, experiment_id):
     _require_saved(exp)
     if not _contract3(exp):
         return None
-    return _open(db, _SOURCE_TYPE, exp, wait="none")
+    return _open(db, SOURCE_TYPE, exp, wait="none")
 
 
 def close_lifetime(db, experiment_id, outcome):
@@ -55,9 +55,9 @@ def close_lifetime(db, experiment_id, outcome):
     obligation_sources.require_transaction(db)
     if outcome not in _TERMINAL:
         raise ValueError(f"unknown advancement lifetime outcome: {outcome}")
-    latest = obligation_sources.latest_episode(db, _SOURCE_TYPE, experiment_id)
+    latest = obligation_sources.latest_episode(db, SOURCE_TYPE, experiment_id)
     operation = "satisfy" if outcome == "complete" else "abandon"
-    return obligation_sources.terminalize(db, _SOURCE_TYPE, experiment_id, latest, operation)
+    return obligation_sources.terminalize(db, SOURCE_TYPE, experiment_id, latest, operation)
 
 
 def sync_lifetime(db, experiment_id, previous_phase, phase):
@@ -77,9 +77,9 @@ def sync_lifetime(db, experiment_id, previous_phase, phase):
     exp = _experiment(db, experiment_id)
     if not _contract3(exp):
         return None
-    if obligation_sources.latest_episode(db, _SOURCE_TYPE, experiment_id) is None:
+    if obligation_sources.latest_episode(db, SOURCE_TYPE, experiment_id) is None:
         return None
-    return _open(db, _SOURCE_TYPE, exp, wait="none", source_transition=True)
+    return _open(db, SOURCE_TYPE, exp, wait="none", source_transition=True)
 
 
 def open_cancellation(db, experiment_id, *, unconfirmed=False):
@@ -87,15 +87,15 @@ def open_cancellation(db, experiment_id, *, unconfirmed=False):
     obligation_sources.require_transaction(db)
     exp = _experiment(db, experiment_id)
     return _open(
-        db, _CANCELLATION, exp, wait="cancellation_unconfirmed" if unconfirmed else "cancellation_pending"
+        db, CANCELLATION, exp, wait="cancellation_unconfirmed" if unconfirmed else "cancellation_pending"
     )
 
 
 def settle_cancellation(db, experiment_id):
     """Satisfy the open cancellation responsibility once that procedure completes."""
     obligation_sources.require_transaction(db)
-    latest = obligation_sources.latest_episode(db, _CANCELLATION, experiment_id)
-    return obligation_sources.terminalize(db, _CANCELLATION, experiment_id, latest, "satisfy")
+    latest = obligation_sources.latest_episode(db, CANCELLATION, experiment_id)
+    return obligation_sources.terminalize(db, CANCELLATION, experiment_id, latest, "satisfy")
 
 
 def read(db, experiment_id):
@@ -105,7 +105,7 @@ def read(db, experiment_id):
     _require_saved(exp)
     if not _contract3(exp):
         return None
-    row = obligation_sources.latest_episode(db, _SOURCE_TYPE, experiment_id)
+    row = obligation_sources.latest_episode(db, SOURCE_TYPE, experiment_id)
     if row is None:
         return None
     _check_binding(row, exp)
@@ -136,7 +136,7 @@ def set_decision(db, experiment_id, *, phase, evidence_revision, reason, wait):
     _check_generation(exp, phase, evidence_revision)
     _validate_pair(reason, wait)
 
-    latest = obligation_sources.latest_episode(db, _SOURCE_TYPE, experiment_id)
+    latest = obligation_sources.latest_episode(db, SOURCE_TYPE, experiment_id)
     if latest is None:
         raise ValueError("advancement decisions require an opened lifetime episode")
     _check_binding(latest, exp)
@@ -150,7 +150,7 @@ def set_decision(db, experiment_id, *, phase, evidence_revision, reason, wait):
         "wait": wait,
     }
     detail = json.dumps(record, sort_keys=True, separators=(",", ":"))
-    return _open(db, _SOURCE_TYPE, exp, wait=wait, detail=detail)
+    return _open(db, SOURCE_TYPE, exp, wait=wait, detail=detail)
 
 
 def _validate_pair(reason, wait):
