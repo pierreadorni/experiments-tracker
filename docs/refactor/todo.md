@@ -475,6 +475,8 @@ role busy flags it still writes. All retire with the contract-3 engine in T4.8.
 - Per-attempt source copies stay, because they are contract 3 semantics.
 - Use the shared env (T3.2) instead of a per-experiment `work/.venv` when the project
   has a lock.
+- **T3.3a landed:** new eligible runs save their named-worktree mode and reconcile exact
+  checkout creation. **T3.3b remains:** commit provenance, job pins and runtime wiring.
 
 ### [ ] T3.4 Integration queue (backend) · S · M
 - `engine/integration.py` implementing design.md C6 steps 1–7. Merging is automatic:
@@ -488,6 +490,8 @@ role busy flags it still writes. All retire with the contract-3 engine in T4.8.
 - Add a `project.check_command` setting.
 - **Tests:** clean merge; conflict; dirty main checkout refusing the fast-forward;
   base branch moved meanwhile.
+- **T3.4a and b-1 landed:** Git transactions and saved queue state only. Runner, checks,
+  owner controls and command surfaces remain; there is no merge dispatch yet.
 
 ### [ ] T3.5 Agent conflict resolution · F+R · M
 - Add an integrator agent turn in `_integration` with the conflicted files and both
@@ -553,7 +557,9 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 
 Record completed tasks here: `date · task · commit · notes`.
 
-- **T3.8, 2026-11-17:** Tracker-created folders get a committed starter `AGENTS.md`; imported folders are never written and can preview the template in the local new-project dialog. Real temporary Git coverage verifies prompts use the saved named workspace mode. The wheel contains the template; isolated loopback browser smoke rendered it at 1420 px and 390 px. Combined with T3.3a and T3.4a/b-1: locked Node 24 `make check` passed (914 Python, 29 web, 45 gateway tests; one Python dependency warning). No live activation.
+- **T3.3a, 2026-11-17:** Production +212/−37, tests +284/−1. Named worktrees for new eligible runs leave historical shared and detached workspaces untouched. A once-ready worktree is never recreated on a missing ref or path.
+- **T3.4a/b-1, 2026-11-17:** Candidate merge/revert/ref lifecycle (+266 production; +230 tests) and durable per-repo queue (+337 production; +157 tests). These are not wired to execution. Both intentionally add required capability rather than replace existing paths.
+- **T3.8, 2026-11-17:** Production +91/−7, tests +51/−5. Tracker-created folders get a committed starter `AGENTS.md`; imported folders are never written and can preview the template in the local new-project dialog. Real temporary Git coverage verifies prompts use the saved named workspace mode. The wheel contains the template; isolated loopback browser smoke rendered it at 1420 px and 390 px. Combined with T3.3a and T3.4a/b-1: locked Node 24 `make check` passed (914 Python, 29 web, 45 gateway tests; one Python dependency warning). No live activation.
 
 2026-11-17 · T1.8a–d · 7ff0a11, e02aa91, a57ab65, this close-out commit · Flash workers, coordinator source/identity review and isolated combined acceptance. Corrected the initial inventory's invalid inference from today's create path to saved historical row shapes. Preserved terminal archived title settlement, archived recovery/repair entry guards, all six historical observation readers and four queued-report SQL variants. Deleted 21 dominated iteration predicates, 24 frozen rechecks and the now-orphaned `Store.initial_report` writer; no archive reader, exact settlement, mutable-state recheck or hold authority removed. Final predicate counts 17 / 28 (including the frozen definition), matching the [site table](notes/t1.8-site-inventory.md#10-final-tree-site-table-and-acceptance). Per-commit `git show --numstat`: a source 0, tests +85/−0, docs +533/−0 before final site-table additions; b source +78/−114, tests +7/−5; c source +0/−27, tests +65/−57; d source +5/−18, tests 0, close-out docs separately. Net production −76; phase delta +5,203/−2,596 = +2,607, still over the previously reported +2,500 threshold. a's one new Store regression test and b–d individually fit S/M budgets. Removed only the unreachable `test_dispatch_archived_during_turn_preserves_returned_identity_and_raw_result[begin/finish]` cross-await contract-flip cases: `test_saved_archived_turn_settles_identity_and_raw_result_without_advancing` retains exact thread/turn/result, stage/job/hold invariance, zero dispatch and replay assertions; unchanged `test_settles_exact_raw_legacy_turn_outcomes_and_replays`, `test_readback_uses_a_configured_connection_without_starting_a_turn` and `test_archived_operator_reconcile_saves_exact_raw_result` retain saved-fixture safety coverage. The initial-report obligation test now uses `working_report` with an explicit stable identity; no safety property deleted. Per-card archive/fixture/conversation/audit/scenario targets pass (a 115, b widened 183, c widened 120, d 115 plus 112 workflow/iteration and 5 publication tests). Combined Node 24.18.0 Ruff check/format and all 866 Python tests pass (453.80 s), byte-identical source/tests/scripts in the isolated validation checkout with the retained untracked `recipes/` fixture; fresh lanes' known maintenance copy failure was not counted as a pass. Locked `make setup` and a separate contract-3 synthetic demo passed; report and prediction figure produced. Web/gateway unchanged, so no `make check` required for this card. No live activation.
 
