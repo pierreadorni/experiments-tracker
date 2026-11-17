@@ -2,7 +2,8 @@
 
 The shared multi-slot fixture keeps one explicit fake backend, so these cases are
 decided by the production selector, dispatch paths, quota gate and shutdown sequence:
-a cached selection admits and then a fresh denial refuses the saved turn, denied quota
+a cached selection admits and then a fresh denial refuses the saved turn, a denied
+research decision keeps its pending action and the run's existing hold, denied quota
 evidence interrupts every occupied role through the process that holds it, and closing
 with every configured slot occupied stops admissions, keeps the exact saved identities
 and never declares a remote turn stopped. Synthetic mechanism acceptance only: no live
@@ -11,6 +12,7 @@ scheduler, managed account, socket runtime or research.
 
 import asyncio
 import contextlib
+import json
 import sqlite3
 from dataclasses import dataclass
 from uuid import uuid4
@@ -22,7 +24,9 @@ from experimenttracker.codex_client import TransportError
 from scenario import FakeGate
 from scenario.test_iteration_scenario_healthy_job import plan_turn
 from scenario.test_mixed_role_overlap import (
+    DECISION,
     activated,
+    begin_turns,
     create,
     live_both,
     research_turn,
@@ -171,6 +175,81 @@ async def test_a_fresh_denial_after_the_cached_admit_never_reaches_begin(multi_s
     # The never-sent claim and the configured turn it held are both released.
     assert wf.agent_pool.lookup(source, final["id"]) is None
     assert wf.agent_pool.turn_capacity() == 2
+    await wf.close()
+
+
+async def test_a_denied_research_turn_keeps_its_pending_decision_and_hold(multi_scenario, monkeypatch):
+    scenario = multi_scenario
+    wf = await scenario.started()
+    store, backend, slots = scenario.store, scenario.agent_backend, scenario.slots
+    service, run = activated(scenario)
+    with store.tx() as db:
+        service.wake(db, run["id"], "synthetic-input", "experiment_change", {"synthetic": True})
+    session_gate = FakeGate()
+    hold_session(monkeypatch, scenario, session_gate)
+    scenario.agent.script("research", turn=research_turn, turns=1)
+
+    # The cached selection filter admits and the pool claims a connection before the
+    # dispatch waits inside its session setup.
+    await scenario.run(session_gate.entered.is_set, gates=[session_gate])
+    claimed = saved(store, "autopilot_actions", run_id=run["id"])
+    reservation = wf.agent_pool.lookup("autopilot_actions", claimed["id"])
+    assert (claimed["state"], claimed["turn_id"], reservation.connection is not None) == (
+        "pending",
+        None,
+        True,
+    )
+    assert (backend.turns_started, slots.named("begin")) == (0, [])
+
+    # Fresh denied evidence arrives while the session setup waits: the binding admission
+    # refuses, records the run hold it already used and leaves this decision pending.
+    denied(scenario)
+    wf.gate.update(quota_payload(DENIED))
+    session_gate.release.set()
+    await wf.research.task
+    await asyncio.sleep(0)  # drain the done callback that releases the never-sent claim
+
+    pending = saved(store, "autopilot_actions", run_id=run["id"])
+    assert pending["id"] == claimed["id"]
+    assert (pending["state"], pending["thread_id"], pending["turn_id"]) == ("pending", None, None)
+    held = saved(store, "autopilot_runs", id=run["id"])
+    quota = wf.agent_pool.quota(run=held)
+    assert not quota.admitted and held["hold_reason"] == quota.reason
+    assert [
+        json.loads(event["payload"])["reason"]
+        for event in store.rows(
+            "SELECT payload FROM autopilot_events WHERE run_id=? AND kind='inference_hold'", (run["id"],)
+        )
+    ] == [quota.reason]
+    assert (backend.turns_started, slots.named("begin")) == (0, [])
+    assert not store.rows(
+        "SELECT seq FROM events WHERE kind IN ('agent_dispatch_intent','agent_turn_started')"
+    )
+    # The never-sent claim, the busy flag it published and its configured turn are released.
+    assert wf.agent_pool.lookup("autopilot_actions", pending["id"]) is None
+    assert (wf.research.task, wf.research.active_id) == (None, None)
+    assert wf.agent_pool.turn_capacity() == 2
+
+    # A denial neither retries nor replaces the decision: fresh admitted quota sends that
+    # exact saved action once, and the hold clears with the ordinary admission.
+    backend.used_percent = backend.weekly_used_percent = 0
+    research_gate = scenario.gate("research")
+    running = await scenario.run(
+        lambda: saved(store, "autopilot_actions", run_id=run["id"], state="running"),
+        gates=[research_gate],
+    )
+    assert running["id"] == claimed["id"]
+    assert begin_turns(scenario, "research") == [running["turn_id"]]
+    assert (backend.turns_started, len(slots.named("begin"))) == (1, 1)
+    assert saved(store, "autopilot_runs", id=run["id"])["hold_reason"] is None
+
+    research_gate.release.set()
+    await turn_task(wf, "autopilot_actions", running)
+    applied = await scenario.run(
+        lambda: saved(store, "autopilot_actions", run_id=run["id"], state="completed")
+    )
+    assert applied["id"] == claimed["id"]
+    assert saved(store, "autopilot_runs", id=run["id"])["central_argument"] == DECISION["central_argument"]
     await wf.close()
 
 

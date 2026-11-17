@@ -244,11 +244,7 @@ class ResearchController:
             if clock.now() < policy.start_at or run["project_id"] not in wf.store.projects:
                 continue
             quota = wf.agent_pool.quota(run=run)
-            reason = None if quota.admitted else quota.reason
-            if run["hold_reason"] != reason:
-                with wf.store.tx() as db:
-                    db.execute("UPDATE autopilot_runs SET hold_reason=? WHERE id=?", (reason, run["id"]))
-                    self.service.emit(db, run["id"], "inference_hold", {"reason": reason})
+            self.hold(run, None if quota.admitted else quota.reason)
             if not quota.admitted:
                 continue
             failures = wf.store.rows(
@@ -299,6 +295,14 @@ class ResearchController:
                 any_lane=True,
             )
             return
+
+    def hold(self, run, reason):
+        """Save a run's inference hold with its event, once per change of reason."""
+        if run["hold_reason"] == reason:
+            return
+        with self.workflow.store.tx() as db:
+            db.execute("UPDATE autopilot_runs SET hold_reason=? WHERE id=?", (reason, run["id"]))
+            self.service.emit(db, run["id"], "inference_hold", {"reason": reason})
 
     def guidance_wait(self, db, row, decision):
         """Retain a question even when the model could not call its input tool."""
@@ -425,15 +429,19 @@ class ResearchController:
                 approval_policy="never",
                 runtime_config=self.config(row["id"]),
             )
-            # Session setup may await. Current authority is checked again before intent commit.
+            # Session setup may await. Current authority is checked again before intent commit;
+            # a quota denial is not authority, so it keeps this never-sent row pending.
             current = self.service.run(run_id=run["id"])
             if (
                 current["control_revision"] != row["control_revision"]
                 or current["status"] in ("paused", "stopped", "completed")
                 or blocked(wf.store)
-                or not wf.agent_pool.quota(run=current).admitted
             ):
                 self.state(row["id"], "superseded")
+                return
+            quota = wf.agent_pool.quota(run=current)
+            if not quota.admitted:
+                self.hold(current, quota.reason)
                 return
             self.state(row["id"], "dispatching", thread_id=thread)
             turn = await agent.begin(
