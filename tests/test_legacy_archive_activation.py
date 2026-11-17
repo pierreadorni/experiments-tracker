@@ -7,6 +7,7 @@ import pytest
 from experimenttracker import legacy_archive
 from experimenttracker.agent_pool import experiment_owner
 from experimenttracker.core import liveness
+from experimenttracker.legacy_archive_actions import settle_actions
 from experimenttracker.store import Conflict, encode
 from experimenttracker.watchdog import engine_watchdog
 
@@ -177,72 +178,79 @@ async def test_archived_operator_reconcile_saves_exact_raw_result(runtime, monke
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("boundary", ["begin", "finish"])
-async def test_dispatch_archived_during_turn_preserves_returned_identity_and_raw_result(
-    runtime, monkeypatch, boundary
-):
-    store, _, agent, workflow = runtime
-    eid = store.command(
-        uuid4(), "create", {"brief": "synthetic begin race", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+async def test_saved_archived_turn_settles_identity_and_raw_result_without_advancing(runtime, monkeypatch):
+    """Replaces the removed ``begin``/``finish`` cross-await flip parametrizations.
+
+    No production path rewrites ``execution_contract``, so the same safety properties
+    are proved from a saved legacy row: dispatch never finishes the saved turn,
+    settlement stores its raw result verbatim, and neither pass advances a stage,
+    dispatches a turn or reads the turn twice.
+    """
+    store, scheduler, agent, workflow = runtime
+    eid = legacy_experiment(store)
+    store.archive_legacy_experiments()
     action_id = str(uuid4())
     with store.tx() as db:
         db.execute(
-            "INSERT INTO agent_actions(id,experiment_id,phase,evidence_revision,state,input,created_at,updated_at) "
-            "VALUES(?,?,'monitor',1,'pending','saved prompt',1,1)",
+            "INSERT INTO agent_actions(id,experiment_id,phase,evidence_revision,state,thread_id,turn_id,"
+            "input,created_at,updated_at) "
+            "VALUES(?,?,'prepare',1,'running','thread-exact','turn-exact','saved prompt',1,1)",
             (action_id, eid),
         )
-    action = store.one("SELECT * FROM agent_actions WHERE id=?", (action_id,))
-    phase = store.experiment(eid)["phase"]
-    entered, release = asyncio.Event(), asyncio.Event()
 
-    async def session(*args, **kwargs):
-        return "thread-exact", "demo-model"
+    def saved_action():
+        return store.one("SELECT state,thread_id,turn_id,result FROM agent_actions WHERE id=?", (action_id,))
 
-    async def begin(*args, **kwargs):
-        if boundary == "begin":
-            entered.set()
-            await release.wait()
-        return "turn-exact"
+    def execution_state():
+        exp = store.experiment(eid)
+        return {
+            "experiment": (exp["phase"], exp["hold_reason"], exp["evidence_revision"]),
+            "stages": store.rows("SELECT id,state FROM stages WHERE experiment_id=? ORDER BY id", (eid,)),
+            "jobs": store.rows(
+                "SELECT intent_id,state FROM jobs WHERE experiment_id=? ORDER BY intent_id", (eid,)
+            ),
+        }
 
-    async def finish(*args, **kwargs):
-        if boundary == "begin":
-            pytest.fail("frozen dispatch must not finish the returned turn")
-        entered.set()
-        await release.wait()
+    before = execution_state()
+    calls, dispatched = [], []
+
+    async def read(thread, turn):
+        assert (thread, turn) == ("thread-exact", "turn-exact")
+        calls.append((thread, turn))
         return {"unvalidated": ["raw", 7]}
 
-    monkeypatch.setattr(agent, "session", session)
-    monkeypatch.setattr(agent, "begin", begin)
-    monkeypatch.setattr(agent, "finish", finish)
-    # The dispatch asks the shared quota policy after refreshing, so it needs a
-    # real fresh snapshot instead of a stubbed decision.
-    workflow.gate.update(await agent.quota())
-    task = asyncio.create_task(workflow.dispatch(action, workflow.agent_pool.primary))
-    await asyncio.wait_for(entered.wait(), 2)
-    contract = {**store.experiment(eid)["contract"], "execution_contract": 2}
-    with store.tx() as db:
-        db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(contract), eid))
-    store.archive_legacy_experiments()
-    release.set()
-    await asyncio.wait_for(task, 2)
-    saved = store.one("SELECT state,thread_id,turn_id,result FROM agent_actions WHERE id=?", (action_id,))
-    if boundary == "begin":
-        assert saved == {
-            "state": "running",
-            "thread_id": "thread-exact",
-            "turn_id": "turn-exact",
-            "result": None,
-        }
-    else:
-        assert saved == {
-            "state": "completed",
-            "thread_id": "thread-exact",
-            "turn_id": "turn-exact",
-            "result": '{"unvalidated":["raw",7]}',
-        }
-    assert store.experiment(eid)["phase"] == phase
-    assert store.experiment(eid)["hold_reason"] == "legacy_contract_archived"
+    async def refused(*args, **kwargs):
+        dispatched.append(args)
+        raise AssertionError("an archived record must not start or finish a turn")
+
+    monkeypatch.setattr(agent, "read_turn", read)
+    monkeypatch.setattr(agent, "begin", refused)
+    monkeypatch.setattr(agent, "finish", refused)
+    workflow.agent_ready = True
+    action = store.one("SELECT * FROM agent_actions WHERE id=?", (action_id,))
+    assert await workflow.dispatch(action, workflow.agent_pool.primary) is None
+    assert calls == [] and dispatched == [] and scheduler.submissions == 0
+    # The saved identity stays exactly as returned and is never finished by dispatch.
+    assert saved_action() == {
+        "state": "running",
+        "thread_id": "thread-exact",
+        "turn_id": "turn-exact",
+        "result": None,
+    }
+    await settle_actions(workflow)
+    assert saved_action() == {
+        "state": "completed",
+        "thread_id": "thread-exact",
+        "turn_id": "turn-exact",
+        "result": '{"unvalidated":["raw",7]}',
+    }
+    assert calls == [("thread-exact", "turn-exact")]
+    assert dispatched == [] and scheduler.submissions == 0
+    assert execution_state() == before
+    # A second settlement pass reads nothing again: no duplicate dispatch or readback.
+    await settle_actions(workflow)
+    assert calls == [("thread-exact", "turn-exact")]
+    assert dispatched == [] and scheduler.submissions == 0
 
 
 @pytest.mark.asyncio

@@ -973,8 +973,6 @@ class Workflow:
             if legacy_archive.execution_frozen(self.store.experiment(eid)):
                 return
             await self.refresh_quota(slot)
-            if legacy_archive.execution_frozen(self.store.experiment(eid)):
-                return
             if blocked(self.store):
                 return
             if not self.agent_pool.quota(eid=eid).admitted:
@@ -998,8 +996,6 @@ class Workflow:
             thread_id, _ = await slot.agent.session(None, self.root(eid), model=saved["model"])
             if blocked(self.store) or self.store.experiment(eid)["phase"] == "cancelled":
                 return
-            if legacy_archive.execution_frozen(self.store.experiment(eid)):
-                return
             if not self.agent_pool.quota(eid=eid).admitted:
                 return
             with self.store.tx() as db:
@@ -1019,12 +1015,7 @@ class Workflow:
                 self.store.emit(
                     db, eid, "agent_turn_started", {"action_id": action["id"], "turn_id": turn_id}
                 )
-            if legacy_archive.execution_frozen(self.store.experiment(eid)):
-                return
             result = await slot.agent.finish(thread_id, turn_id)
-            if legacy_archive.execution_frozen(self.store.experiment(eid)):
-                self._action_state(action["id"], "completed", result=result, expected=expected)
-                return
             try:
                 TitleSummary.model_validate(result)
             except ValueError as exc:
@@ -3399,8 +3390,6 @@ class Workflow:
             if legacy_archive.execution_frozen(self.store.experiment(eid)):
                 return
             await self.refresh_quota(slot)
-            if legacy_archive.execution_frozen(self.store.experiment(eid)):
-                return
             decision = self.agent_pool.quota(eid=eid)
             if blocked(self.store):
                 return
@@ -3417,11 +3406,7 @@ class Workflow:
             if action["phase"] in ("plan", "prepare") and self.config.mode == "live":
                 if clock.now() - self.last_cluster_refresh >= 60:
                     await self.refresh_cluster()
-                if legacy_archive.execution_frozen(self.store.experiment(eid)):
-                    return
                 if not await self.ensure_cluster(exp):
-                    if legacy_archive.execution_frozen(self.store.experiment(eid)):
-                        return
                     self.store.update(
                         eid,
                         hold_reason="cluster_unavailable",
@@ -3429,16 +3414,12 @@ class Workflow:
                     )
                     return
                 prompt = await asyncio.to_thread(self.prompt, exp, action["phase"])
-                if legacy_archive.execution_frozen(self.store.experiment(eid)):
-                    return
                 with self.store.tx() as db:
                     db.execute("UPDATE agent_actions SET input=? WHERE id=?", (prompt, action["id"]))
                     self.store.emit(db, eid, "agent_input_refreshed", {"action_id": action["id"]})
                 action = {**action, "input": prompt}
             if action["phase"] == "interpret" and exp["recipe_id"] == "agent_experiment_v1":
                 prompt = await asyncio.to_thread(self.prompt, exp, "interpret")
-                if legacy_archive.execution_frozen(self.store.experiment(eid)):
-                    return
                 with self.store.tx() as db:
                     db.execute("UPDATE agent_actions SET input=? WHERE id=?", (prompt, action["id"]))
                     self.store.emit(db, eid, "agent_input_refreshed", {"action_id": action["id"]})
@@ -3494,8 +3475,6 @@ class Workflow:
             isolated = self.workspaces.row(eid)
             if isolated and action["phase"] == "prepare":
                 prompt = await asyncio.to_thread(self.prompt, exp, "prepare")
-                if legacy_archive.execution_frozen(self.store.experiment(eid)):
-                    return
                 with self.store.tx() as db:
                     db.execute("UPDATE agent_actions SET input=? WHERE id=?", (prompt, action["id"]))
                     self.store.emit(db, eid, "agent_input_refreshed", {"action_id": action["id"]})
@@ -3525,8 +3504,6 @@ class Workflow:
                 workspace.mkdir(parents=True, exist_ok=True)
                 if not (workspace / ".venv/bin/python").exists():
                     await command("uv", "venv", "--python", "/usr/bin/python3", str(workspace / ".venv"))
-                if legacy_archive.execution_frozen(self.store.experiment(eid)):
-                    return
                 thread_id, model = await slot.agent.session(
                     action["thread_id"]
                     or (
@@ -3560,8 +3537,6 @@ class Workflow:
                     **session_options,
                 )
             if blocked(self.store) or self.store.experiment(eid)["phase"] == "cancelled":
-                return
-            if legacy_archive.execution_frozen(self.store.experiment(eid)):
                 return
             prompt = action["input"]
             if action["error"] and not self.input_rejected(action):
@@ -3649,8 +3624,6 @@ class Workflow:
                 self.store.emit(
                     db, eid, "agent_turn_started", {"action_id": action["id"], "turn_id": turn_id}
                 )
-            if legacy_archive.execution_frozen(self.store.experiment(eid)):
-                return
             result = await slot.agent.finish(thread_id, turn_id)
             self._action_state(action["id"], "completed", result=result, expected=expected)
         except SessionUnavailable as exc:
