@@ -7,7 +7,7 @@ import stat
 import subprocess
 from pathlib import Path
 
-from . import clock
+from . import agent_conventions, clock
 from .projects import ProjectUnavailable
 from .store import encode
 
@@ -369,8 +369,16 @@ def initialize_project(folder):
     ignore.write_text(content)
     if git_available(folder):
         return
+    agents = folder / "AGENTS.md"
+    template = agent_conventions.project_agents_template()
+    try:
+        with agents.open("x") as stream:
+            stream.write(template)
+    except FileExistsError:
+        pass
+    starter = not agents.is_symlink() and agents.is_file() and agents.read_bytes() == template.encode()
     git(folder, "init", "--initial-branch=main")
-    git(folder, "add", "--", ".gitignore")
+    git(folder, "add", "--", ".gitignore", *(("AGENTS.md",) if starter else ()))
     git(
         folder,
         "-c",

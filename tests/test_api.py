@@ -116,6 +116,10 @@ def test_project_settings_api_has_durable_receipt(config, runtime):
             "execution": ExecutionSettings().model_dump(),
         }
         assert client.patch(url, json=payload, headers=headers).json() == receipt.json()
+        template = client.get("/api/projects/agents-template", headers=headers)
+        assert template.status_code == 200 and template.json()["filename"] == "AGENTS.md"
+        assert "named branch" in template.json()["content"]
+        assert client.get("/api/projects/agents-template").status_code == 401
         assert (
             client.patch(url, json={**payload, "instructions": "changed"}, headers=headers).status_code == 409
         )

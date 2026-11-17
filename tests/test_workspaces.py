@@ -200,7 +200,9 @@ def test_new_tracker_project_has_git_and_initial_commit(runtime):
     folder = Path(receipt["project"]["folder"])
     head = git(folder, "rev-parse", "HEAD")
     assert head.strip()
-    assert git(folder, "ls-tree", "--name-only", "HEAD").decode().strip() == ".gitignore"
+    assert git(folder, "ls-tree", "--name-only", "HEAD").decode().split() == [".gitignore", "AGENTS.md"]
+    assert "experiments/<slug>/" in (folder / "AGENTS.md").read_text()
+    assert not receipt["project"]["non_empty"]
     workflow.projects.tick()
     assert git(folder, "rev-parse", "HEAD") == head
     assert next(p for p in workflow.projects.catalog() if p["id"] == receipt["project_id"])[

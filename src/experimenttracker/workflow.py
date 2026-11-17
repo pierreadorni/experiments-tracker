@@ -12,6 +12,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from . import (
+    agent_conventions,
     artifacts,
     clock,
     early_repair,
@@ -2908,6 +2909,10 @@ class Workflow:
         summary["details"] = self.context_pointer(exp, "contract", contract)
         return summary
 
+    def worktree_conventions(self, exp):
+        """The saved mode is available even before the prepare worktree exists."""
+        return agent_conventions.worktree_conventions(bool(exp["contract"].get("branch_workspace")))
+
     def iteration_prompt(self, exp, phase, payload):
         root = self.root(exp["id"])
         payload.update(
@@ -3067,6 +3072,8 @@ class Workflow:
                 "deliverables remain visible. Report changes create versions; published bytes stay stable.\n"
                 + reporting.skill_text()
             )
+        conventions = self.worktree_conventions(exp)
+        instruction += (conventions + " ") if conventions else ""
         return instruction + "\n" + self.execution_instruction(exp, phase) + "\nPAYLOAD:\n" + encode(payload)
 
     def prompt(self, exp, phase):

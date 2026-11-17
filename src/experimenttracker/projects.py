@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from uuid import UUID
 
-from . import clock
+from . import agent_conventions, clock
 from .config import EnvironmentConfig, ProjectConfig
 from .execution_settings import ExecutionSettings
 from .models import CreateProject, UpdateProjectSettings
@@ -74,6 +74,14 @@ class Projects:
 
     def instructions(self, project_id):
         return self.settings(project_id)["instructions"]
+
+    def agents_template(self):
+        """Read-only offer for imported folders, whose AGENTS.md is never written."""
+        return {
+            "schema_version": 1,
+            "filename": "AGENTS.md",
+            "content": agent_conventions.project_agents_template(),
+        }
 
     def settings_receipt(self, request_id):
         row = self.store.one("SELECT * FROM project_settings_requests WHERE request_id=?", (str(request_id),))
@@ -319,9 +327,10 @@ class Projects:
             from .workspaces import initialize_project
 
             initialize_project(folder)
-        non_empty = any(
-            p.name not in (".experimenttracker-project.json", ".git", ".gitignore") for p in folder.iterdir()
-        )
+        starter_files = {".experimenttracker-project.json", ".git", ".gitignore"}
+        if payload["mode"] == "new":
+            starter_files.add("AGENTS.md")
+        non_empty = any(p.name not in starter_files for p in folder.iterdir())
         info = folder.stat()
         project = {
             "id": row["project_id"],

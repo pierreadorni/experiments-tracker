@@ -16,6 +16,7 @@ export function NewProject({
   const [mode, setMode] = useState('new');
   const [folder, setFolder] = useState('');
   const [instructions, setInstructions] = useState('');
+  const [agentsTemplate, setAgentsTemplate] = useState('');
   const [requestId, setRequestId] = useState<string | null>(() =>
     new URLSearchParams(location.search).get('projectRequest'),
   );
@@ -26,6 +27,11 @@ export function NewProject({
   const ready = useRef(onReady);
   ready.current = onReady;
   useDialog(dialog, true, onClose);
+  useEffect(() => {
+    void api<{ content: string }>('/api/projects/agents-template')
+      .then((template) => setAgentsTemplate(template.content))
+      .catch(() => undefined);
+  }, []);
   const clearRequest = () => {
     const url = new URL(location.href);
     url.searchParams.delete('projectRequest');
@@ -170,6 +176,16 @@ export function NewProject({
                 directory, with Git and an initial commit ready for separate worktrees. Agents can
                 edit files there.
               </p>
+            )}
+            {agentsTemplate && (
+              <details>
+                <summary>AGENTS.md conventions for agents</summary>
+                <p className="muted">
+                  A new folder starts with this file; imported folders are never written, so add it
+                  yourself if you want these conventions.
+                </p>
+                <pre>{agentsTemplate}</pre>
+              </details>
             )}
             <label htmlFor="project-instructions">Project instructions (optional)</label>
             <textarea

@@ -473,3 +473,18 @@ def test_a_registered_project_keeps_its_declared_fixed_interpreter(config):
     assert saved.environment.python == interpreter
     assert saved.checkout == config.job_output_root
     assert saved.name == "Renamed by the owner"
+
+
+def test_import_preserves_owner_agents_file_and_offers_template(config, runtime, tmp_path):
+    store, _, _, workflow = runtime
+    folder = tmp_path / "owner"
+    folder.mkdir()
+    (folder / "AGENTS.md").write_text("# Owner conventions\n")
+    receipt, payload = project_request(workflow, name="Owner", mode="existing", folder=folder)
+    workflow.projects.tick()
+    assert workflow.projects.receipt(payload["request_id"])["state"] == "applied"
+    assert (folder / "AGENTS.md").read_text() == "# Owner conventions\n"
+    assert [p.name for p in folder.iterdir()] == ["AGENTS.md"]
+    offered = workflow.projects.agents_template()
+    assert offered["filename"] == "AGENTS.md"
+    assert "experiments/<slug>/" in offered["content"]

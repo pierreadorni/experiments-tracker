@@ -266,6 +266,7 @@ def agent_prompt(wf, exp, phase):
             exp["contract"].get("project", {}).get("id", "test-project")
         ),
     }
+    conventions = wf.worktree_conventions(exp)
     return (
         "Execute this small agent stage with shell/tool calls in the local attempt_directory. "
         "Diagnose failures and correct/retest within this same turn; do not turn a failed small check into a Slurm job. "
@@ -281,7 +282,9 @@ def agent_prompt(wf, exp, phase):
         "are unavailable; return outcome='failed' if the work cannot be completed for another reason. "
         "Return outcome='completed' only after successful work and all declared outputs exist. "
         "For evaluation, result_file follows the supplied "
-        "ExperimentResult schema and exact protocol. Use check_agent_stage to check outputs and fix errors before finishing.\nPAYLOAD:\n"
+        "ExperimentResult schema and exact protocol. Use check_agent_stage to check outputs and fix errors before finishing."
+        + (f" {conventions}" if conventions else "")
+        + "\nPAYLOAD:\n"
         + encode({**payload, "result_schema": ExperimentResult.model_json_schema()})
     )
 

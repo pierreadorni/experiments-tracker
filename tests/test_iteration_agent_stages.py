@@ -102,13 +102,17 @@ class MixedAgent(IterationAgent):
         return turn
 
 
-async def setup_mixed(runtime, agent=None):
+async def setup_mixed(runtime, agent=None, *, repo_path=None):
     store, scheduler, _, old = runtime
     agent = agent or MixedAgent()
     wf = Workflow(old.config, store, scheduler, agent)
-    eid = store.command(
-        uuid4(), "create", {"brief": "Synthetic mixed graph", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    payload = {"brief": "Synthetic mixed graph", "recipe_id": "agent_experiment_v1"}
+    if repo_path is not None:
+        from test_branch_workspaces import git_project
+
+        git_project(wf, store, repo_path)
+        payload["project_id"] = "anyup-rs"
+    eid = store.command(uuid4(), "create", payload)["experiment_id"]
     agent.wf, agent.store, agent.eid, agent.scheduler = wf, store, eid, scheduler
     await approve_plan(wf, store, eid)
     return store, scheduler, agent, wf, eid
@@ -140,6 +144,27 @@ async def test_agent_check_fixes_in_turn_and_gates_slurm_with_original_outputs(r
     plan.reuse_stages = ["model_check"]
     plan.reuse_rationale = "The synthetic check already passed."
     assert iteration.reuse(wf, store.experiment(eid), plan)["model_check"]["intent_id"] == job["intent_id"]
+    await wf.close()
+
+
+async def test_named_branch_worktree_conventions_reach_both_prompts(runtime, tmp_path):
+    prompts = []
+
+    class RecordingAgent(MixedAgent):
+        async def begin(self, thread_id, prompt, schema, **kwargs):
+            prompts.append(prompt)
+            return await super().begin(thread_id, prompt, schema, **kwargs)
+
+    store, scheduler, agent, wf, eid = await setup_mixed(runtime, RecordingAgent(), repo_path=tmp_path)
+    await until(wf, store, eid, lambda e: e["phase"] == "complete")
+    plan, stage = (
+        next(p for p in prompts if f'"phase":"{phase}"' in p) for phase in ("plan", "agent:model_check")
+    )
+    assert "Edit files only in this experiment's named branch worktree" in plan
+    assert "Add or adjust tests when shared code changes." in stage
+    exp = store.experiment(eid)
+    exp["contract"].pop("branch_workspace")
+    assert "named branch worktree" not in wf.prompt(exp, "plan")
     await wf.close()
 
 
