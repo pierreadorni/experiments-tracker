@@ -1,17 +1,19 @@
 """New Git-backed contract-3 experiments edit their own named branch worktree (T3.3)."""
 
 import asyncio
+import hashlib
 import json
 import shutil
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from helpers import IterationAgent, approve_plan, until
+from helpers import PLAN, IterationAgent, approve_plan, until
 from test_projects import register
 
-from experimenttracker import clock, early_repair
+from experimenttracker import clock, early_repair, iteration
 from experimenttracker.engine import gitworkspace
+from experimenttracker.models import Implementation
 from experimenttracker.store import encode
 from experimenttracker.workflow import Workflow
 from experimenttracker.workspaces import WorkspaceUnavailable, git, initialize_project
@@ -47,6 +49,16 @@ async def branch_experiment(runtime, tmp_path, monkeypatch):
     eid = create(store)
     assert await workflow.prepare_workspace(store.experiment(eid))
     return source, workflow.workspaces.branch(eid)
+
+
+def save_plan_snapshot(store, eid):
+    """Give a prepared branch experiment the plan a job attempt is staged from."""
+    plan = Implementation.model_validate(PLAN)
+    with store.tx() as db:
+        db.execute(
+            "UPDATE experiments SET snapshot=? WHERE id=?",
+            (encode({"plan": plan.model_dump(), "parameters": {}}), eid),
+        )
 
 
 async def test_new_git_experiment_creates_its_named_branch_before_dispatch(runtime, tmp_path, monkeypatch):
@@ -419,6 +431,35 @@ async def test_lost_response_adoption_requires_the_backend_author(runtime, tmp_p
     }
 
 
+def test_attempt_project_sources_must_match_the_job_commit_blobs(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "--initial-branch=main")
+    git(repo, "config", "user.name", "Test")
+    git(repo, "config", "user.email", "test@localhost")
+    (repo / "shared.py").write_text("value = 1\n")
+    git(repo, "add", "--", "shared.py")
+    git(repo, "commit", "-m", "Source")
+    commit = git(repo, "rev-parse", "HEAD").decode().strip()
+    sources = {"shared.py": "project/shared.py"}
+
+    iteration.committed_project_sources(
+        repo, commit, sources, {"project/shared.py": hashlib.sha256(b"value = 1\n").hexdigest()}
+    )
+    # A dirty worktree's newer bytes never stand in for the job commit's blobs.
+    (repo / "shared.py").write_text("value = 2\n")
+    with pytest.raises(WorkspaceUnavailable, match="differs from the job commit"):
+        iteration.committed_project_sources(
+            repo, commit, sources, {"project/shared.py": hashlib.sha256(b"value = 2\n").hexdigest()}
+        )
+    with pytest.raises(WorkspaceUnavailable, match="does not contain project source"):
+        iteration.committed_project_sources(
+            repo, commit, {"missing.py": "project/missing.py"}, {"project/missing.py": "0" * 64}
+        )
+    with pytest.raises(WorkspaceUnavailable, match="need a project checkout"):
+        iteration.committed_project_sources(None, commit, sources, {})
+
+
 async def test_agent_and_scheduler_jobs_record_the_exact_committed_sources(runtime, tmp_path, monkeypatch):
     from test_iteration_agent_stages import MixedAgent
 
@@ -474,3 +515,56 @@ async def test_agent_and_scheduler_jobs_record_the_exact_committed_sources(runti
         assert git(row["worktree"], "show", f"{head}:shared.py").decode() == "value = 5\n"
     finally:
         await workflow.close()
+
+
+async def test_agent_job_is_pinned_before_its_saved_intent(runtime, tmp_path, monkeypatch):
+    store, _, _, workflow = runtime
+    _, row = await branch_experiment(runtime, tmp_path, monkeypatch)
+    eid, worktree = row["experiment_id"], Path(row["worktree"])
+    (worktree / "job.py").write_text("value = 1\n")
+    work = workflow.working_directory(store.experiment(eid))
+    work.mkdir(parents=True, exist_ok=True)
+    (work / "recipe.py").write_text("value = 1\n")
+    save_plan_snapshot(store, eid)
+    committed = workflow.workspaces.commit_branch(eid, "Job sources train revision 1")
+
+    attempted = []
+
+    def refuse(eid_, intent, commit):
+        attempted.append((intent, commit))
+        raise WorkspaceUnavailable("pin refused")
+
+    monkeypatch.setattr(workflow.workspaces, "pin_job_commit", refuse)
+    with pytest.raises(WorkspaceUnavailable, match="pin refused"):
+        iteration.queue_agent(workflow, store.experiment(eid), "train", commit=committed["commit"])
+    assert attempted[0][1] == committed["commit"]
+    # The pin gates the saved intent: its attempt identity exists, the job row does not.
+    attempt = workflow.projects.base_root(eid) / "attempts" / attempted[0][0]
+    assert json.loads((attempt / "snapshot/manifest.json").read_text())["commit"] == committed["commit"]
+    assert store.one("SELECT COUNT(*) n FROM jobs WHERE experiment_id=?", (eid,))["n"] == 0
+    assert not store.rows("SELECT 1 FROM events WHERE experiment_id=? AND kind='agent_stage_intent'", (eid,))
+
+
+async def test_saved_attempt_intent_is_not_reused_for_another_commit(runtime, tmp_path, monkeypatch):
+    store, _, _, workflow = runtime
+    _, row = await branch_experiment(runtime, tmp_path, monkeypatch)
+    eid, worktree = row["experiment_id"], Path(row["worktree"])
+    (worktree / "job.py").write_text("value = 1\n")
+    work = workflow.working_directory(store.experiment(eid))
+    work.mkdir(parents=True, exist_ok=True)
+    (work / "recipe.py").write_text("value = 1\n")
+    save_plan_snapshot(store, eid)
+    first = workflow.workspaces.commit_branch(eid, "Job sources train revision 1")
+    intent = str(uuid4())
+    root, manifest, _ = iteration.stage_attempt(
+        workflow, store.experiment(eid), "train", intent, commit=first["commit"]
+    )
+    assert manifest["commit"] == first["commit"]
+
+    (worktree / "unrelated.txt").write_text("unrelated\n")
+    second = workflow.workspaces.commit_branch(eid, "Job sources train revision 1")
+    assert second["commit"] != first["commit"]
+    # The saved pre-dispatch identity names its exact commit; a later commit never adopts it.
+    with pytest.raises(WorkspaceUnavailable, match="different commit"):
+        iteration.stage_attempt(workflow, store.experiment(eid), "train", intent, commit=second["commit"])
+    assert json.loads((root / "snapshot/manifest.json").read_text())["commit"] == first["commit"]
