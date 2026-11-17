@@ -108,6 +108,34 @@ def saved(db, request_id):
     return None if row is None else _view(row)
 
 
+def public_record(row):
+    """Return the bounded projection identity of one saved integration row.
+
+    Raw ``detail`` carries repository and worktree paths, status diagnostics and
+    caller command text, so published projections must never copy it. This
+    read-only helper returns only the saved stage, caller request ID and an exact
+    candidate commit; it needs no transaction and raises ``ValueError`` for a row
+    that is not a well-formed integration episode.
+    """
+    row = dict(row)
+    if not row["id"].startswith(SOURCE + ":") or not row["id"].rsplit(":", 1)[1].isdigit():
+        raise ValueError("not an integration queue episode")
+    record = _decode(row["detail"])
+    candidate = record["candidate"]
+    commit = candidate.get("candidate_commit") if isinstance(candidate, dict) else None
+    if not (
+        isinstance(commit, str)
+        and len(commit) in (40, 64)
+        and all(char in "0123456789abcdef" for char in commit)
+    ):
+        commit = None
+    return {
+        "stage": record["stage"],
+        "request_id": row["id"][len(SOURCE) + 1 :].rsplit(":", 1)[0],
+        "candidate_commit": commit,
+    }
+
+
 def claim(db, repo):
     """Claim this repository's oldest queued request, or return ``None``.
 

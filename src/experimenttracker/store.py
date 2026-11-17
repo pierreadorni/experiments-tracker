@@ -49,6 +49,14 @@ def _integration_request(exp, branch, kind, *, merge_commit=None, reason=None):
     return request
 
 
+def _exact_commit(value):
+    return (
+        isinstance(value, str)
+        and len(value) in (40, 64)
+        and all(char in "0123456789abcdef" for char in value)
+    )
+
+
 def public_projection(value):
     """Omit executor repair evidence from views, including already queued views."""
     result = dict(value)
@@ -637,6 +645,7 @@ class Store:
     def projection(self, eid):
         result = self.experiment(eid)
         result["project_id"] = result["contract"].get("project", {}).get("id", "test-project")
+        live = not execution_frozen(result)
         if self.one("SELECT 1 FROM sqlite_master WHERE name='autopilot_runs'"):
             result["autopilot_stage_holds"] = self.rows(
                 "SELECT stage_id,attempt,reason,detail FROM autopilot_stage_holds WHERE experiment_id=?",
@@ -728,7 +737,11 @@ class Store:
             action.pop("result")
         for job in result["jobs"]:
             job.pop("execution_root", None)
-            job.pop("execution_manifest", None)
+            manifest = job.pop("execution_manifest", None)
+            if live:
+                commit = (json.loads(manifest) if manifest else {}).get("commit")
+                if _exact_commit(commit):
+                    job["commit"] = commit
             job["resources"] = json.loads(job["resources"])
             job["progress"] = json.loads(job["progress"]) if job.get("progress") else None
             job["tensorboard"] = json.loads(job["tensorboard"]) if job.get("tensorboard") else None
@@ -757,7 +770,40 @@ class Store:
             else []
         )
         result["schema_version"] = 1
+        if live:
+            branch = self._projected_branch(eid)
+            if branch:
+                result["branch"] = branch["branch"]
+                result["head_commit"] = branch["head_commit"]
+                integration = self._projected_integration(eid)
+                if integration:
+                    result["integration"] = integration
         return public_projection(result)
+
+    def _projected_branch(self, eid):
+        """Return only the branch identity safe to publish; never its checkout paths."""
+        if not self.one("SELECT 1 FROM sqlite_master WHERE name='experiment_branches'"):
+            return None
+        return self.one(
+            "SELECT branch,head_commit FROM experiment_branches WHERE experiment_id=?",
+            (eid,),
+        )
+
+    def _projected_integration(self, eid):
+        """Return the saved integration stage and exact approval identity, not its detail."""
+        if not self.one("SELECT 1 FROM sqlite_master WHERE name='obligations'"):
+            return None
+        row = self.one(
+            "SELECT * FROM obligations WHERE kind='integration' AND experiment_id=? "
+            "ORDER BY created_at DESC,id DESC LIMIT 1",
+            (eid,),
+        )
+        if row is None:
+            return None
+        try:
+            return integration_queue.public_record(row)
+        except ValueError:
+            return None
 
     def conversation(self, eid, before=None):
         rows = self.rows(

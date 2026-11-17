@@ -854,3 +854,42 @@ def test_reference_outbox_migration_preserves_saved_history(runtime):
             reader.close()
     finally:
         migrated.close()
+
+
+async def test_publication_keeps_only_safe_branch_and_integration_identity(config, runtime, tmp_path):
+    from test_integration_commands import awaiting, make_experiment
+
+    store, _, _, _ = runtime
+    eid = make_experiment(store)
+    repo = tmp_path / "repo"
+    seed_branch(store, eid, repo)
+    request_id, candidate = awaiting(store, eid, repo)
+    store.update(eid, kind="job_progress", error="saved progress")
+    messages = []
+
+    async def handler(request):
+        body = json.loads(request.content)
+        if request.url.path.endswith("/events"):
+            return httpx.Response(
+                200, json={"schema_version": 1, "accepted": [e["event_id"] for e in body["events"]]}
+            )
+        assert request.url.path.endswith("/publish")
+        messages.extend(body["messages"])
+        return httpx.Response(
+            200, json={"schema_version": 1, "accepted": [m["event_id"] for m in body["messages"]]}
+        )
+
+    client = publication_client(config, store, tmp_path, handler)
+    try:
+        await client.publish_outbox()
+    finally:
+        await client.close()
+
+    experiment = messages[-1]["experiment"]
+    assert (experiment["branch"], experiment["head_commit"]) == (f"exp/20260101-{eid}", "b" * 40)
+    assert experiment["integration"] == {
+        "stage": "awaiting_approval",
+        "request_id": request_id,
+        "candidate_commit": candidate["candidate_commit"],
+    }
+    assert str(repo.resolve()) not in json.dumps(experiment)

@@ -66,10 +66,11 @@ def make_experiment(store):
     )["experiment_id"]
 
 
-def awaiting(store, eid, repo, candidate_commit="c" * 40):
+def awaiting(store, eid, repo, candidate_commit="c" * 40, reason=None):
     """Seed this experiment's saved merge request at the owner approval wait."""
     request_id = uuid4()
-    store.command(request_id, "integrate", {}, eid=eid)
+    payload = {"reason": reason} if reason else {}
+    store.command(request_id, "integrate", payload, eid=eid)
     candidate = {
         "repo": str(repo.resolve()),
         "key": f"req-{request_id.hex}",

@@ -499,6 +499,57 @@ test('job telemetry survives D1 publication and cannot advance readiness or over
   assert.equal(saved.stages[0].state, 'running');
   assert.equal(saved.artifacts.length, 0);
 });
+test('branch, job commit and exact integration candidate survive publication', async () => {
+  const { payload: created, result } = await create();
+  await req('/api/executor/ack', {
+    token: executor,
+    method: 'POST',
+    body: JSON.stringify({ schema_version: 1, request_ids: [created.request_id] }),
+  });
+  const eid = result.experiment_id;
+  const initial = await (await req(`/api/experiments/${eid}`)).json();
+  const branch = `exp/20260101-${eid}`;
+  const integration = {
+    stage: 'awaiting_approval',
+    request_id: 'integration-request',
+    candidate_commit: 'c'.repeat(40),
+  };
+  const view = {
+    ...initial,
+    revision: 2,
+    phase: 'training',
+    hold_reason: null,
+    branch,
+    head_commit: 'b'.repeat(40),
+    jobs: [
+      {
+        intent_id: randomUUID(),
+        stage_id: 'train',
+        job_id: '123',
+        state: 'submitted',
+        scheduler_state: 'RUNNING',
+        commit: 'd'.repeat(40),
+      },
+    ],
+    integration,
+  };
+  const send = (experiment, event_id = randomUUID()) =>
+    req('/api/executor/publish', {
+      token: executor,
+      method: 'POST',
+      body: JSON.stringify({
+        schema_version: 1,
+        executor_id: 'acacia',
+        messages: [{ schema_version: 1, event_id, experiment, inbox: [] }],
+      }),
+    });
+  assert.equal((await send(view)).status, 200);
+  const saved = await (await req(`/api/experiments/${eid}`)).json();
+  assert.equal(saved.branch, branch);
+  assert.equal(saved.head_commit, 'b'.repeat(40));
+  assert.equal(saved.jobs[0].commit, 'd'.repeat(40));
+  assert.deepEqual(saved.integration, integration);
+});
 test('monotonic projections, upload verification, and result readiness', async () => {
   const { result } = await create(),
     eid = result.experiment_id;
