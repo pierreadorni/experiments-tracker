@@ -245,7 +245,7 @@ and archived fixtures still render their report via the API.
 - Open/close obligations transactionally for actions, jobs, transfers, pending
   requests, plan review and publication; split by source before delegation.
 - [Rollout decisions and bounded cards](notes/t1.3b-rollout-design.md): [x] b1 inert
-  episode/lookup helpers; [x] b2a inert action mapping; [x] b5a inert job mapping; [ ] b2b–b14 runtime source integration and bounded backfill.
+  episode/lookup helpers; [x] b2a inert action mapping; [x] b5a inert job mapping; [x] b2b Workflow actions; [ ] b3–b14 remaining runtime source integration and bounded backfill.
 
 ### [ ] T1.3c Derived holds (C2) · F+R · M per call-site group
 - [x] c1a inert source-less admission decisions; source-backed/terminal/cancellation families and activation remain pending.
@@ -546,3 +546,5 @@ Record completed tasks here: `date · task · commit · notes`.
 2026-11-17 · T1.1h.7b · Luna implementation and coordinator policy, identity and size review. Frozen retry/title/steering/review mutations reject consistently; active archives stay cancel-only across gateway/UI. Completed legacy replies require their saved live discussion action and owning ready task. UI uses minimal disabled props to preserve markup and stay within budget. Source+101/−8; tests+296/−1 (406 changed lines). Ruff,63 focused shared checks and full658 Python pass; final Node24 format/build/types,29 web and45 gateway tests pass. No live activation.
 
 2026-11-17 · T1.1h.7c · Luna call-graph audit and implementation, coordinator review. Removed the dead Controller legacy registration arm, schema1 sequential recovery fallback and toy publication/renderer paths. Current graph validation, metrics/figure escaping and archived audit/conversation/queued-report readers remain. Source+62/−92 (net−30); renderer test+40;194 changed lines. Ruff,63 shared focused cases,658 full Python,29 web and45 gateway tests with Node24 build/types/format pass. T1.1 d–h complete; runtime obligation source integration follows. No live activation.
+
+2026-11-17 · T1.3b-b2b · Luna implementation and coordinator scoped integration/review. Workflow action creation, thread/turn saves, state changes, reconciliation and report correction sync obligations in their source/event transaction. Post-await callbacks verify exact action/phase/evidence/thread/turn; identical terminal callback replay is a no-op and changed identity refuses mutation. Source+139/−41; tests+259 (439 changed lines). Ruff,94 targeted checks and full665 Python tests pass (488.63s). Store/conversation/controller and other source groups remain pending; projection/backfill unchanged. No live activation.

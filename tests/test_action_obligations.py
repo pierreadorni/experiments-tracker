@@ -86,6 +86,20 @@ def test_pending_admission_metadata_replay_preserves_episode_and_timestamps(runt
     assert obligation_rows(store, action_id) == [first]
 
 
+def test_workflow_action_state_closes_obligation_with_existing_event(runtime):
+    store, _, _, workflow = runtime[:4]
+    eid, action_id = seed_action(store)
+    with store.tx() as db:
+        action_obligations.sync_action(db, action_id)
+
+    workflow._action_state(action_id, "completed", result={"ok": True})
+
+    obligation = obligation_rows(store, action_id)[0]
+    event = store.one("SELECT kind FROM events WHERE experiment_id=? ORDER BY seq DESC LIMIT 1", (eid,))
+    assert obligation["state"] == "satisfied"
+    assert event["kind"] == "agent_action_changed"
+
+
 def test_running_uncertain_running_changes_responsibility_without_reopening_ids(runtime):
     store = runtime[0]
     eid, action_id = seed_action(store, state="running", thread_id="thread-1", turn_id="turn-1")

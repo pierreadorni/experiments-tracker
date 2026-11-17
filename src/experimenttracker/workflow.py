@@ -17,6 +17,7 @@ from .codex_client import CodexAgent, NeedsAttention, RpcRejected, SessionUnavai
 from .config import JobResources
 from .controller import Controller, ControllerDecision
 from .conversation import Conversation
+from .core import action_obligations
 from .errors import ExperimentFailure
 from .knowledge import ProjectSupervisor
 from .maintenance import Maintenance, blocked
@@ -655,15 +656,17 @@ class Workflow:
                     try:
                         result = await self.agent.read_turn(action["thread_id"], action["turn_id"])
                         if legacy_archive.execution_frozen(self.store.experiment(exp["id"])):
-                            self._action_state(action["id"], "completed", result=result)
+                            self._action_state(action["id"], "completed", result=result, expected=action)
                             return
                         TitleSummary.model_validate(result)
-                        self._action_state(action["id"], "completed", result=result)
+                        self._action_state(action["id"], "completed", result=result, expected=action)
                     except Exception as exc:
-                        self._action_state(action["id"], "uncertain", error=str(exc))
+                        self._action_state(action["id"], "uncertain", error=str(exc), expected=action)
                         self.store.update(exp["id"], hold_reason="agent_dispatch_uncertain", error=str(exc))
                 else:
-                    self._action_state(action["id"], "uncertain", error="title dispatch outcome is unknown")
+                    self._action_state(
+                        action["id"], "uncertain", error="title dispatch outcome is unknown", expected=action
+                    )
                     self.store.update(exp["id"], hold_reason="agent_dispatch_uncertain")
                 return
             if action["state"] == "completed":
@@ -677,9 +680,11 @@ class Workflow:
                         if exp["title"] != summary.title:
                             self.store.update(exp["id"], title=summary.title)
                     except (ValueError, TypeError) as exc:
-                        self._action_state(action["id"], "failed", error=f"title validation: {exc}")
+                        self._action_state(
+                            action["id"], "failed", error=f"title validation: {exc}", expected=action
+                        )
             elif action["state"] == "pending" and not self.title_applicable(exp, action, dispatch=True):
-                self._action_state(action["id"], "superseded")
+                self._action_state(action["id"], "superseded", expected=action)
         choice = luna_title_model(getattr(self.agent, "models", []))
         if not choice:
             return
@@ -754,6 +759,7 @@ class Workflow:
                         "VALUES(?,?, 'title',?,'pending',?,?,?)",
                         (action_id, exp["id"], revision, prompt, clock.now(), clock.now()),
                     )
+                    action_obligations.sync_action(db, action_id)
                     self.store.emit(
                         db, exp["id"], "agent_action_queued", {"phase": "title", "action_id": action_id}
                     )
@@ -782,6 +788,7 @@ class Workflow:
             return
         """Persist exact title turn identities; a lost outcome is never retried."""
         eid = action["experiment_id"]
+        expected = action
         try:
             if legacy_archive.execution_frozen(self.store.experiment(eid)):
                 return
@@ -796,14 +803,16 @@ class Workflow:
             if exp["pause_agent"]:
                 return
             if not self.title_applicable(exp, action, dispatch=True):
-                self._action_state(action["id"], "superseded")
+                self._action_state(action["id"], "superseded", expected=expected)
                 return
             saved = json.loads(action["input"])
             if not any(
                 model["id"] == saved["model"] and saved["effort"] in model["reasoning_efforts"]
                 for model in getattr(self.agent, "models", [])
             ):
-                self._action_state(action["id"], "failed", error="Saved summary model is unavailable")
+                self._action_state(
+                    action["id"], "failed", error="Saved summary model is unavailable", expected=expected
+                )
                 return
             self.root(eid).mkdir(parents=True, exist_ok=True)
             thread_id, _ = await self.agent.session(None, self.root(eid), model=saved["model"])
@@ -812,9 +821,17 @@ class Workflow:
             if legacy_archive.execution_frozen(self.store.experiment(eid)):
                 return
             with self.store.tx() as db:
+                before = dict(
+                    db.execute("SELECT * FROM agent_actions WHERE id=?", (action["id"],)).fetchone()
+                )
+                self._check_reconciled_action(before, expected)
                 db.execute(
                     "UPDATE agent_actions SET thread_id=?,state='dispatching',attempts=attempts+1,updated_at=? WHERE id=?",
                     (thread_id, clock.now(), action["id"]),
+                )
+                action_obligations.sync_action(db, action["id"], before=before)
+                expected = dict(
+                    db.execute("SELECT * FROM agent_actions WHERE id=?", (action["id"],)).fetchone()
                 )
                 self.store.emit(
                     db, eid, "agent_dispatch_intent", {"action_id": action["id"], "thread_id": thread_id}
@@ -823,9 +840,17 @@ class Workflow:
                 thread_id, saved["prompt"], TitleSummary.model_json_schema(), effort=saved["effort"]
             )
             with self.store.tx() as db:
+                before = dict(
+                    db.execute("SELECT * FROM agent_actions WHERE id=?", (action["id"],)).fetchone()
+                )
+                self._check_reconciled_action(before, expected)
                 db.execute(
                     "UPDATE agent_actions SET turn_id=?,state='running',updated_at=? WHERE id=?",
                     (turn_id, clock.now(), action["id"]),
+                )
+                action_obligations.sync_action(db, action["id"], before=before)
+                expected = dict(
+                    db.execute("SELECT * FROM agent_actions WHERE id=?", (action["id"],)).fetchone()
                 )
                 self.store.emit(
                     db, eid, "agent_turn_started", {"action_id": action["id"], "turn_id": turn_id}
@@ -834,14 +859,16 @@ class Workflow:
                 return
             result = await self.agent.finish(thread_id, turn_id)
             if legacy_archive.execution_frozen(self.store.experiment(eid)):
-                self._action_state(action["id"], "completed", result=result)
+                self._action_state(action["id"], "completed", result=result, expected=expected)
                 return
             try:
                 TitleSummary.model_validate(result)
             except ValueError as exc:
-                self._action_state(action["id"], "failed", error=f"title validation: {exc}")
+                self._action_state(
+                    action["id"], "failed", error=f"title validation: {exc}", expected=expected
+                )
                 return
-            self._action_state(action["id"], "completed", result=result)
+            self._action_state(action["id"], "completed", result=result, expected=expected)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -851,7 +878,7 @@ class Workflow:
                 if current["state"] in ("dispatching", "running") or isinstance(exc, NeedsAttention)
                 else "failed"
             )
-            self._action_state(action["id"], state, error=str(exc))
+            self._action_state(action["id"], state, error=str(exc), expected=expected)
             if state == "uncertain":
                 self.store.update(eid, hold_reason="agent_dispatch_uncertain", error=str(exc))
         finally:
@@ -2004,6 +2031,7 @@ class Workflow:
                     VALUES(?,?,?,?,'pending',?,?,?)""",
                     (action_id, eid, phase, action_revision, prompt, clock.now(), clock.now()),
                 )
+                action_obligations.sync_action(db, action_id)
                 self.store.emit(db, eid, "agent_action_queued", {"phase": phase, "action_id": action_id})
             action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (action_id,))
         reason = self.research.service.authority(
@@ -2019,7 +2047,10 @@ class Workflow:
             and action["autopilot_control_revision"] != self.research.service.control_revision(eid)
         ):
             self._action_state(
-                action["id"], "failed", error="Known terminal result predates current project authority"
+                action["id"],
+                "failed",
+                error="Known terminal result predates current project authority",
+                expected=action,
             )
             action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (action["id"],))
             self.store.continue_action(
@@ -2266,7 +2297,10 @@ class Workflow:
                 if legacy_archive.execution_frozen(self.store.experiment(eid)):
                     return
                 self._action_state(
-                    action["id"], "failed", error=f"agent output validation: {self.validation_feedback(exc)}"
+                    action["id"],
+                    "failed",
+                    error=f"agent output validation: {self.validation_feedback(exc)}",
+                    expected=action,
                 )
                 action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (action["id"],))
         if action["state"] in ("running", "dispatching"):
@@ -2278,19 +2312,19 @@ class Workflow:
             if action["thread_id"] and action["turn_id"] and self.agent_ready:
                 try:
                     result = await self.agent.read_turn(action["thread_id"], action["turn_id"])
-                    self._action_state(action["id"], "completed", result=result)
+                    self._action_state(action["id"], "completed", result=result, expected=action)
                     return
                 except TerminalTurnError as exc:
-                    self._action_state(action["id"], "failed", error=str(exc))
+                    self._action_state(action["id"], "failed", error=str(exc), expected=action)
                     return
                 except Exception as exc:
-                    self._action_state(action["id"], "uncertain", error=str(exc))
+                    self._action_state(action["id"], "uncertain", error=str(exc), expected=action)
             else:
-                self._action_state(action["id"], "uncertain", error="dispatch response lost")
+                self._action_state(action["id"], "uncertain", error="dispatch response lost", expected=action)
             self.store.update(eid, hold_reason="agent_dispatch_uncertain")
             return
         if action["state"] == "uncertain" and self.input_rejected(action):
-            self._action_state(action["id"], "failed", error=action["error"])
+            self._action_state(action["id"], "failed", error=action["error"], expected=action)
             action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (action["id"],))
         if action["state"] == "uncertain":
             self.store.update(eid, hold_reason="agent_dispatch_uncertain", error=action["error"])
@@ -2308,7 +2342,7 @@ class Workflow:
                     if clock.now() - action["updated_at"] < 60:
                         self.store.update(eid, hold_reason="agent_prerequisite", error=action["error"])
                         return
-                    self._action_state(action["id"], "pending", error=action["error"])
+                    self._action_state(action["id"], "pending", error=action["error"], expected=action)
                     action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (action["id"],))
                 else:
                     error = action["error"] or "Known terminal agent failure"
@@ -2895,12 +2929,16 @@ class Workflow:
             payload["steering_request_ids"] = [row["request_id"] for row in guidance]
         return self.iteration_prompt(exp, phase, payload)
 
-    def _action_state(self, action_id, state, *, error=None, result=None):
-        action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (action_id,))
-        saved_result = encode(result) if result is not None else action["result"]
-        if (action["state"], action["error"], action["result"]) == (state, error, saved_result):
-            return
+    def _action_state(self, action_id, state, *, error=None, result=None, expected=None):
         with self.store.tx() as db:
+            before = dict(db.execute("SELECT * FROM agent_actions WHERE id=?", (action_id,)).fetchone())
+            if expected is not None:
+                self._check_reconciled_action(before, expected, compare_state=False)
+            saved_result = encode(result) if result is not None else before["result"]
+            if (before["state"], before["error"], before["result"]) == (state, error, saved_result):
+                return
+            if expected is not None:
+                self._check_reconciled_action(before, expected)
             db.execute(
                 "UPDATE agent_actions SET state=?,error=?,result=?,updated_at=? WHERE id=?",
                 (
@@ -2911,9 +2949,29 @@ class Workflow:
                     action_id,
                 ),
             )
+            action_obligations.sync_action(db, action_id, before=before)
             self.store.emit(
-                db, action["experiment_id"], "agent_action_changed", {"action_id": action_id, "state": state}
+                db, before["experiment_id"], "agent_action_changed", {"action_id": action_id, "state": state}
             )
+
+    @staticmethod
+    def _check_reconciled_action(current, expected, *, compare_result=False, compare_state=True):
+        fields = ["id", "experiment_id", "phase", "evidence_revision", "thread_id", "turn_id"]
+        if compare_state:
+            fields.append("state")
+        if compare_result:
+            fields.extend(("result", "error"))
+        if any(current[field] != expected[field] for field in fields):
+            raise NeedsAttention("saved action changed during reconciliation; no adoption was made")
+
+    @classmethod
+    def _reconciled_action_before(cls, db, expected, *, compare_result=False):
+        row = db.execute("SELECT * FROM agent_actions WHERE id=?", (expected["id"],)).fetchone()
+        if row is None:
+            raise NeedsAttention("saved action disappeared during reconciliation")
+        current = dict(row)
+        cls._check_reconciled_action(current, expected, compare_result=compare_result)
+        return current
 
     async def reconcile_agent_output(self, eid):
         """Revalidate an exact completed result after correcting an output validator."""
@@ -2959,10 +3017,15 @@ class Workflow:
         # Adoption, phase and outbox are one transaction. Attempts and identities
         # remain untouched; the normal owner performs full freezing/validation.
         with self.store.tx() as db:
-            db.execute(
-                "UPDATE agent_actions SET state='completed',error=NULL,updated_at=? WHERE id=?",
-                (clock.now(), action["id"]),
+            before = self._reconciled_action_before(db, action, compare_result=True)
+            cursor = db.execute(
+                "UPDATE agent_actions SET state='completed',error=NULL,updated_at=? "
+                "WHERE id=? AND state='failed' AND thread_id=? AND turn_id=?",
+                (clock.now(), action["id"], action["thread_id"], action["turn_id"]),
             )
+            if not cursor.rowcount:
+                raise ValueError("saved action changed during output reconciliation")
+            action_obligations.sync_action(db, action["id"], before=before)
             db.execute(
                 "UPDATE experiments SET phase='preparing',hold_reason=NULL,error=NULL WHERE id=?", (eid,)
             )
@@ -3053,7 +3116,7 @@ class Workflow:
         if action["phase"].startswith("discuss:"):
             # The exact terminal result must be durable before reply validation can
             # queue a correction; a malformed reply is no longer an uncertain turn.
-            self._action_state(action_id, "completed", result=result)
+            self._action_state(action_id, "completed", result=result, expected=action)
             return {
                 "action_id": action_id,
                 "thread_id": action["thread_id"],
@@ -3063,10 +3126,16 @@ class Workflow:
         elif legacy_archive.execution_frozen(exp):
             if recovering_identity:
                 with self.store.tx() as db:
-                    db.execute(
+                    before = self._reconciled_action_before(db, action)
+                    cursor = db.execute(
                         "UPDATE agent_actions SET turn_id=?,state='completed',result=?,error=NULL,updated_at=? WHERE id=? AND turn_id IS NULL",
                         (turn_id, encode(result), clock.now(), action_id),
                     )
+                    if not cursor.rowcount:
+                        raise NeedsAttention(
+                            "saved action changed during reconciliation; no adoption was made"
+                        )
+                    action_obligations.sync_action(db, action_id, before=before)
                     self.store.emit(
                         db,
                         exp["id"],
@@ -3074,7 +3143,7 @@ class Workflow:
                         {"action_id": action_id, "thread_id": action["thread_id"], "turn_id": turn_id},
                     )
             else:
-                self._action_state(action_id, "completed", result=result)
+                self._action_state(action_id, "completed", result=result, expected=action)
             return {
                 "action_id": action_id,
                 "thread_id": action["thread_id"],
@@ -3107,10 +3176,14 @@ class Workflow:
             artifacts.validate_analysis(result, [record["id"] for record in records])
         if recovering_identity:
             with self.store.tx() as db:
-                db.execute(
+                before = self._reconciled_action_before(db, action)
+                cursor = db.execute(
                     "UPDATE agent_actions SET turn_id=?,state='completed',result=?,error=NULL,updated_at=? WHERE id=? AND turn_id IS NULL",
                     (turn_id, encode(result), clock.now(), action_id),
                 )
+                if not cursor.rowcount:
+                    raise NeedsAttention("saved action changed during reconciliation; no adoption was made")
+                action_obligations.sync_action(db, action_id, before=before)
                 db.execute(
                     "UPDATE experiments SET hold_reason=NULL,error=NULL,pending_request=NULL WHERE id=?",
                     (exp["id"],),
@@ -3123,7 +3196,7 @@ class Workflow:
                 )
             action = {**action, "turn_id": turn_id}
         else:
-            self._action_state(action_id, "completed", result=result)
+            self._action_state(action_id, "completed", result=result, expected=action)
         if not recovering_identity and (not action["phase"].startswith("discuss:") or exp["pending_request"]):
             self.store.update(
                 exp["id"], kind="agent_turn_reconciled", hold_reason=None, error=None, pending_request=None
@@ -3137,6 +3210,7 @@ class Workflow:
 
     async def dispatch(self, action):
         eid = action["experiment_id"]
+        expected = action
         try:
             if legacy_archive.execution_frozen(self.store.experiment(eid)):
                 return
@@ -3152,7 +3226,7 @@ class Workflow:
                 return
             exp = self.store.experiment(eid)
             if exp["phase"] in ("complete", "failed", "cancelled"):
-                self._action_state(action["id"], "superseded")
+                self._action_state(action["id"], "superseded", expected=expected)
                 return
             if exp["pause_agent"]:
                 self.store.update(eid, hold_reason="agent_paused")
@@ -3195,7 +3269,10 @@ class Workflow:
                 >= cap
             ):
                 self._action_state(
-                    action["id"], "failed", error="The configured agent turn budget is exhausted"
+                    action["id"],
+                    "failed",
+                    error="The configured agent turn budget is exhausted",
+                    expected=expected,
                 )
                 if action["phase"] != "monitor":
                     self.fail(eid, "agent_budget_exhausted", "The configured agent turn budget is exhausted")
@@ -3214,6 +3291,7 @@ class Workflow:
                         action["id"],
                         "failed",
                         error="Selected model or reasoning effort is not advertised by the managed runtime",
+                        expected=expected,
                     )
                     self.fail(
                         eid,
@@ -3327,6 +3405,10 @@ class Workflow:
                 ):
                     db.execute("UPDATE experiments SET hold_reason='quota_hold' WHERE id=?", (eid,))
                     return
+                before = dict(
+                    db.execute("SELECT * FROM agent_actions WHERE id=?", (action["id"],)).fetchone()
+                )
+                self._check_reconciled_action(before, expected)
                 db.execute(
                     "UPDATE agent_actions SET autopilot_control_revision=? WHERE id=?",
                     (self.research.service.control_revision(eid), action["id"]),
@@ -3339,6 +3421,10 @@ class Workflow:
                 db.execute(
                     "UPDATE agent_actions SET thread_id=?,state='dispatching',attempts=attempts+1,updated_at=? WHERE id=?",
                     (thread_id, clock.now(), action["id"]),
+                )
+                action_obligations.sync_action(db, action["id"], before=before)
+                expected = dict(
+                    db.execute("SELECT * FROM agent_actions WHERE id=?", (action["id"],)).fetchone()
                 )
                 self.store.emit(
                     db,
@@ -3386,9 +3472,17 @@ class Workflow:
                 turn_options.pop("project_workspace", None)
                 turn_id = await self.agent.begin(thread_id, prompt, schema, **turn_options)
             with self.store.tx() as db:
+                before = dict(
+                    db.execute("SELECT * FROM agent_actions WHERE id=?", (action["id"],)).fetchone()
+                )
+                self._check_reconciled_action(before, expected)
                 db.execute(
                     "UPDATE agent_actions SET turn_id=?,state='running',updated_at=? WHERE id=?",
                     (turn_id, clock.now(), action["id"]),
+                )
+                action_obligations.sync_action(db, action["id"], before=before)
+                expected = dict(
+                    db.execute("SELECT * FROM agent_actions WHERE id=?", (action["id"],)).fetchone()
                 )
                 self.store.emit(
                     db, eid, "agent_turn_started", {"action_id": action["id"], "turn_id": turn_id}
@@ -3396,9 +3490,9 @@ class Workflow:
             if legacy_archive.execution_frozen(self.store.experiment(eid)):
                 return
             result = await self.agent.finish(thread_id, turn_id)
-            self._action_state(action["id"], "completed", result=result)
+            self._action_state(action["id"], "completed", result=result, expected=expected)
         except SessionUnavailable as exc:
-            self._action_state(action["id"], "failed", error=str(exc))
+            self._action_state(action["id"], "failed", error=str(exc), expected=expected)
             self.store.update(eid, hold_reason="agent_session_unavailable", error=str(exc))
         except asyncio.CancelledError:
             # Shutdown preserves the last durable status; next start reconciles, never blindly redispatches.
@@ -3430,7 +3524,7 @@ class Workflow:
                     )
             if current["state"] == "running" and not isinstance(exc, TerminalTurnError):
                 state = "uncertain"
-            self._action_state(action["id"], state, error=error)
+            self._action_state(action["id"], state, error=error, expected=expected)
             self.store.update(eid, error=error)
         finally:
             pending = self.store.experiment(eid)["pending_request"]
@@ -3481,11 +3575,15 @@ class Workflow:
                     )
                     if action and action["state"] == "completed" and action["turn_id"]:
                         with self.store.tx() as db:
+                            before = self._reconciled_action_before(db, action)
                             feedback = "agent output validation: report rendering: " + report_version["error"]
-                            db.execute(
+                            cursor = db.execute(
                                 "UPDATE agent_actions SET state='failed',error=?,updated_at=? WHERE id=? AND state='completed'",
                                 (feedback, clock.now(), action["id"]),
                             )
+                            if not cursor.rowcount:
+                                raise NeedsAttention("saved report action changed during correction")
+                            action_obligations.sync_action(db, action["id"], before=before)
                             db.execute(
                                 "UPDATE stages SET state='pending',error=?,updated_at=? WHERE experiment_id=? AND id='interpret'",
                                 (report_version["error"], clock.now(), eid),
