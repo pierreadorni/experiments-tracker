@@ -1440,6 +1440,12 @@ class Workflow:
                 if exp["pause_compute"] and not job:
                     self.store.update(eid, hold_reason="new_compute_paused")
                     continue
+                if iteration.agent_job(self, exp, "agent:" + stage):
+                    # An existing job already owns its exact intent and commit; never
+                    # commit later worktree edits just to replay it.
+                    await self.agent_stage(exp, "agent:" + stage)
+                    continue
+                intent = str(uuid4())
                 try:
                     commit = await self.commit_branch(
                         exp, f"Job sources {stage} revision {exp['evidence_revision']}"
@@ -1448,7 +1454,17 @@ class Workflow:
                     self.store.update(eid, hold_reason="workspace_unavailable", error=str(exc))
                     return
                 self.report_skipped_commit(eid, commit, kind="job", stage=stage)
-                iteration.queue_agent(self, exp, stage, commit=commit["commit"] if commit else None)
+                try:
+                    iteration.queue_agent(
+                        self,
+                        exp,
+                        stage,
+                        commit=commit["commit"] if commit else None,
+                        intent=intent,
+                    )
+                except WorkspaceUnavailable as exc:
+                    self.store.update(eid, hold_reason="workspace_unavailable", error=str(exc))
+                    return
                 await self.agent_stage(exp, "agent:" + stage)
                 continue
             if job:
@@ -1634,9 +1650,13 @@ class Workflow:
         submission_manifest = exp["snapshot"]
         refs = []
         scheduler = self.scheduler_for(exp)
-        root, submission_manifest, refs = iteration.stage_attempt(
-            self, exp, stage, intent_id, commit=job_commit
-        )
+        try:
+            root, submission_manifest, refs = iteration.stage_attempt(
+                self, exp, stage, intent_id, commit=job_commit
+            )
+        except WorkspaceUnavailable as exc:
+            self.store.update(eid, hold_reason="workspace_unavailable", error=str(exc))
+            return {"state": "held", "reason": "workspace_unavailable"}
         scheduler = self.scheduler_for(
             {**exp, "snapshot": submission_manifest, "_attempt_id": intent_id, "_attempt_root": str(root)}
         )

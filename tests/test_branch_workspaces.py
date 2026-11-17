@@ -365,9 +365,15 @@ async def test_branch_commit_uses_the_saved_tree_and_reconciles_a_lost_response(
     # Simulate a lost backend commit response: Git changed state, the saved head did not.
     lost, _ = gitworkspace.commit(worktree, message)
     assert lost != row["head_commit"]
+    # Later uncommitted work must survive adoption instead of being swept into a commit.
+    (worktree / "later.py").write_text("later work\n")
     outcome = workflow.workspaces.commit_branch(eid, message)
     assert outcome["commit"] == lost
     assert outcome["skipped"] == []
+    assert (worktree / "later.py").read_text() == "later work\n"
+    assert git(worktree, "status", "--porcelain", "-z") == b"?? later.py\0"
+    with pytest.raises(WorkspaceUnavailable):
+        git(worktree, "cat-file", "-e", f"{lost}:later.py")
     assert store.one("SELECT head_commit FROM experiment_branches WHERE experiment_id=?", (eid,)) == {
         "head_commit": lost
     }
@@ -383,6 +389,33 @@ async def test_branch_commit_uses_the_saved_tree_and_reconciles_a_lost_response(
         workflow.workspaces.commit_branch(eid, message)
     assert store.one("SELECT head_commit FROM experiment_branches WHERE experiment_id=?", (eid,)) == {
         "head_commit": lost
+    }
+
+
+async def test_lost_response_adoption_requires_the_backend_author(runtime, tmp_path, monkeypatch):
+    store, _, _, workflow = runtime
+    _, row = await branch_experiment(runtime, tmp_path, monkeypatch)
+    eid, worktree = row["experiment_id"], Path(row["worktree"])
+    message = "Job sources train revision 1"
+    (worktree / "shared.py").write_text("human work\n")
+    git(worktree, "add", "--", "shared.py")
+    git(
+        worktree,
+        "-c",
+        "user.name=Human",
+        "-c",
+        "user.email=human@example.com",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "--no-verify",
+        "-m",
+        message,
+    )
+    with pytest.raises(WorkspaceUnavailable, match="saved commit"):
+        workflow.workspaces.commit_branch(eid, message)
+    assert store.one("SELECT head_commit FROM experiment_branches WHERE experiment_id=?", (eid,)) == {
+        "head_commit": row["head_commit"]
     }
 
 
@@ -420,6 +453,9 @@ async def test_agent_and_scheduler_jobs_record_the_exact_committed_sources(runti
         agent_manifest = json.loads(agent_row["execution_manifest"])
         assert agent_manifest["commit"] == head
         assert agent_manifest["source_context"]["git_commit"] == head
+        assert (
+            git(row["repo"], "rev-parse", f"refs/et/jobs/{agent_row['intent_id']}").decode().strip() == head
+        )
         jobs = store.rows(
             "SELECT * FROM jobs WHERE experiment_id=? AND json_extract(execution_manifest, '$.executor') IS NOT 'agent'",
             (eid,),

@@ -183,9 +183,13 @@ def verify_commit(repo, identity, message, lock=None):
     """Confirm the exact saved worktree before committing its next head.
 
     A backend commit can change Git state and then lose its reply. Repeating the
-    same request adopts exactly one child commit whose parent is the saved head and
-    whose subject is this request's message; any other difference is refused.
+    exact request adopts one child commit whose parent is the saved head, whose
+    subject is exactly this request's message and whose author is this backend;
+    any other difference is refused. The caller must not commit further edits after
+    an adoption.
     """
+    if not isinstance(message, str) or not message or message != message.strip() or "\n" in message:
+        raise WorkspaceUnavailable("A single-line commit intent is required")
     root = _main_checkout(repo)
     branch, worktree, base_commit = _identity(root, identity)
     if _branch_at(root, worktree) != f"refs/heads/{branch}":
@@ -203,7 +207,8 @@ def verify_commit(repo, identity, message, lock=None):
         except WorkspaceUnavailable:
             parent = None
         subject = git(worktree, "log", "-1", "--format=%s", head).decode().strip()
-        if parent != saved or subject != message:
+        author = git(worktree, "log", "-1", "--format=%an <%ae>", head).decode().strip()
+        if parent != saved or subject != message or author != f"{AUTHOR} <{EMAIL}>":
             raise WorkspaceUnavailable("The experiment worktree HEAD is not its saved commit")
     return {**identity, "head_commit": head}
 

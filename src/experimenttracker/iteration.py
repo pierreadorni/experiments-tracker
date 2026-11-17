@@ -133,25 +133,18 @@ def committed_project_sources(project, commit, project_sources, files):
     A repair candidate or a dirty worktree is never allowed to stand in for another
     tree: the attempt's file SHA and the commit's blob SHA must name the same bytes.
     """
-    import subprocess
+    import hashlib
 
-    from .workspaces import WorkspaceUnavailable
+    from .workspaces import WorkspaceUnavailable, git
 
     if not project:
         raise WorkspaceUnavailable("declared executable project sources need a project checkout")
     for name, target_name in project_sources.items():
         try:
-            result = subprocess.run(
-                ["git", "-C", str(project), "cat-file", "blob", f"{commit}:{name}"],
-                capture_output=True,
-                timeout=2,
-                check=True,
-            )
-        except (OSError, subprocess.SubprocessError):
+            blob = git(project, "cat-file", "blob", f"{commit}:{name}")
+        except WorkspaceUnavailable:
             raise WorkspaceUnavailable(f"the job commit does not contain project source {name}") from None
-        import hashlib
-
-        if hashlib.sha256(result.stdout).hexdigest() != files[target_name]:
+        if hashlib.sha256(blob).hexdigest() != files[target_name]:
             raise WorkspaceUnavailable(f"the copied project source {name} differs from the job commit")
 
 
@@ -187,15 +180,14 @@ def stage_attempt(wf, exp, stage, intent, commit=None):
     saved_path = root / "snapshot/manifest.json"
     if saved_path.exists():
         saved = artifacts.read_json(saved_path, root)
-        if (
-            saved["files"] != files
-            or saved["inputs"] != refs
-            or saved["plan"] != exp["snapshot"]["plan"]
-            or saved.get("commit") != commit
-        ):
+        if saved["files"] != files or saved["inputs"] != refs or saved["plan"] != exp["snapshot"]["plan"]:
             raise ValueError(
                 "pre-dispatch attempt identity already has different sources/inputs; use a new request ID"
             )
+        if saved.get("commit") != commit:
+            from .workspaces import WorkspaceUnavailable
+
+            raise WorkspaceUnavailable("the saved pre-dispatch attempt belongs to a different commit")
         return root, saved, refs
     source_context = {}
     if commit is not None:
@@ -250,15 +242,18 @@ def agent_job(wf, exp, phase):
     )
 
 
-def queue_agent(wf, exp, stage, commit=None):
+def queue_agent(wf, exp, stage, commit=None, intent=None):
     """Record the local attempt and input bindings before any managed turn."""
     from uuid import uuid4
 
     existing = agent_job(wf, exp, "agent:" + stage)
     if existing:
         return existing
-    intent = str(uuid4())
+    intent = intent or str(uuid4())
     root, manifest, refs = stage_attempt(wf, exp, stage, intent, commit=commit)
+    if commit is not None:
+        # Pin exactly this job's commit under the intent saved immediately below.
+        wf.workspaces.pin_job_commit(exp["id"], intent, commit)
     with wf.store.tx() as db:
         db.execute(
             "INSERT INTO jobs(intent_id,experiment_id,stage_id,attempt,state,script_hash,resources,snapshot_hash,created_at,execution_root,execution_manifest) VALUES(?,?,?,?,'agent',?,'{}',?,?,?,?)",

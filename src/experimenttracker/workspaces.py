@@ -276,7 +276,12 @@ class Workspaces:
         confirmed = gitworkspace.verify_commit(
             row["repo"], branch_identity(row), message, lock=branch_lock(eid)
         )
-        head, skipped = gitworkspace.commit(confirmed["worktree"], message)
+        if confirmed["head_commit"] != row["head_commit"]:
+            # The exact request already committed and only its reply was lost. Adopt
+            # that commit; never sweep later worktree edits into a second commit.
+            head, skipped = confirmed["head_commit"], []
+        else:
+            head, skipped = gitworkspace.commit(confirmed["worktree"], message)
         if head != row["head_commit"]:
             with self.store.tx() as db:
                 db.execute(
