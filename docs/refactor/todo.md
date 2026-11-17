@@ -491,10 +491,12 @@ role busy flags it still writes. All retire with the contract-3 engine in T4.8.
 - Add a `project.check_command` setting.
 - **Tests:** clean merge; conflict; dirty main checkout refusing the fast-forward;
   base branch moved meanwhile.
-- **T3.4a and b-1 landed:** Git transactions and saved queue state only. Runner, checks,
-  owner controls and command surfaces remain; there is no merge dispatch yet.
+- **T3.4a–c landed:** exact Git transactions, durable runner, project checks, local owner
+  approval, and Store/API/CLI commands. T3.4d completion opt-in is under validation.
+  A failed check or uncertain Git outcome holds the candidate for inspection.
 
 ### [ ] T3.5 Agent conflict resolution · F+R · M
+- **T3.5a landed:** verify and pin the resolved candidate; the agent dispatch is not wired yet.
 - Add an integrator agent turn in `_integration` with the conflicted files and both
   logs; the backend checks markers and the diff before continuing.
 
@@ -563,6 +565,7 @@ Record completed tasks here: `date · task · commit · notes`.
 - **T3.3a, 2026-11-17:** Production +212/−37, tests +284/−1. Named worktrees for new eligible runs leave historical shared and detached workspaces untouched. A once-ready worktree is never recreated on a missing ref or path.
 - **T3.3b, 2026-11-17:** Named-branch implementation and job commits preserve bounded attempt copies, verify project source bytes against the exact commit, and pin new job identities before dispatch. A lost backend commit is adopted only against the saved intent; later edits are not swept into it. Eligible local runs replace per-experiment venv creation with the shared runtime; remote and historical runtimes are unchanged. Ruff and 21 coordinator targeted tests pass; combined `make check` passed **972 Python, 29 web, 45 gateway tests** (one Python dependency warning). No live activation.
 - **T3.4a/b-1, 2026-11-17:** Candidate merge/revert/ref lifecycle (+266 production; +230 tests) and durable per-repo queue (+337 production; +157 tests). These are not wired to execution. Both intentionally add required capability rather than replace existing paths.
+- **T3.4b-2/c-2/c-3/c-4, T3.5a, and T3.6a/b:** Reviewed runner, exact owner approval, local and gateway command paths, branch/commit projections, and conflict finalization. Isolated Node 24 `make check`: **1000 Python, 29 web, 47 gateway tests passed** (one Python dependency warning). Runner uses T3.3's saved commit intent and refuses stale checkouts. Agent dispatch and browser controls are separate pending cards. No installation activation.
 - **T3.4c-1 and T3.7a, 2026-11-17:** Owner configuration supplies fixed check argv and an opt-in approval flag without dispatching integration. The legacy dry run verifies saved worktree identities and reports blocked checkouts without writing. Production +99/−3, tests +99/−2, example config +4/−0 across both. Combined locked Ruff and **917 Python tests passed** (one dependency warning). No live activation.
 - **T3.7b, 2026-11-17:** Offline adoption commits only exact settled tracker-locked detached worktrees, preserving their existing paths and not editing main. Production +119/−23; tests +84/−1. Combined isolated suite: **944 Python tests passed**. An interrupted adoption requires inspection; no automatic replay. No live adoption performed.
 - **T3.8, 2026-11-17:** Production +91/−7, tests +51/−5. Tracker-created folders get a committed starter `AGENTS.md`; imported folders are never written and can preview the template in the local new-project dialog. Real temporary Git coverage verifies prompts use the saved named workspace mode. The wheel contains the template; isolated loopback browser smoke rendered it at 1420 px and 390 px. Combined with T3.3a and T3.4a/b-1: locked Node 24 `make check` passed (914 Python, 29 web, 45 gateway tests; one Python dependency warning). No live activation.
