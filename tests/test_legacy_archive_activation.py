@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 
 from experimenttracker import legacy_archive
+from experimenttracker.agent_pool import experiment_owner
 from experimenttracker.store import Conflict, encode
 from experimenttracker.watchdog import stuck_experiments
 
@@ -313,6 +314,17 @@ async def test_frozen_reader_reply_requires_live_owned_discussion(runtime, monke
     workflow.agent_ready = binding != "not_ready"
     workflow.active_action = action_id
     workflow.agent_task = asyncio.create_task(asyncio.Event().wait())
+    reservation = workflow.agent_pool.claim(
+        role="conversation",
+        source_table="agent_actions",
+        row=store.one("SELECT * FROM agent_actions WHERE id=?", (action_id,)),
+        owner=experiment_owner(eid),
+        workflow=workflow,
+    )
+    # A live answer is bound to the process whose request asked for it.
+    workflow.agent_pool.remember_answer(
+        pending["id"], workflow.agent_pool.connection(workflow, workflow.agent.start_count), reservation
+    )
     calls = []
     turns = []
     jobs_before = store.rows("SELECT intent_id FROM jobs WHERE experiment_id=?", (eid,))

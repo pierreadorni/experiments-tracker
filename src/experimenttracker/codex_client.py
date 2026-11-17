@@ -220,10 +220,14 @@ class CodexAgent:
         self.notification_tasks = set()
         self.models = []
         self.models_observed_at = None
+        # Callbacks keep the count they arrived with, so a restart cannot credit them
+        # to the process that replaced the one that asked.
+        self.start_count = 0
 
         self.resolved_model = config.model
 
     async def start(self):
+        self.start_count += 1
         await self.server.start()
         account = await self.server.rpc("account/read", {"refreshToken": False})
         if (account.get("account") or {}).get("type") != "chatgpt":
@@ -282,7 +286,7 @@ class CodexAgent:
             )
             and self.activity_handler
         ):
-            await self.activity_handler(message)
+            await self.activity_handler(message, self.start_count)
         if message["method"] == "account/rateLimits/updated" and self.quota_handler:
             # Never wait for an interrupt RPC from the protocol reader itself.
             task = asyncio.create_task(self.quota_handler(message["params"]))
@@ -296,7 +300,7 @@ class CodexAgent:
             "item/tool/requestUserInput",
         }
         if self.active and message["method"] in supported and self.request_handler:
-            await self.request_handler(message)
+            await self.request_handler(message, self.start_count)
         else:
             await self.server.send(
                 {
@@ -644,6 +648,7 @@ class DemoAgent:
     is_demo = True
     available = True
     resolved_model = "deterministic-demo"
+    start_count = 0
     models = [
         {
             "id": "deterministic-demo",
@@ -661,7 +666,7 @@ class DemoAgent:
         self.results = {}
 
     async def start(self):
-        pass
+        self.start_count += 1
 
     async def quota(self):
         return {

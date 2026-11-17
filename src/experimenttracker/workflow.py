@@ -352,18 +352,14 @@ class Workflow:
             },
         }
 
-    async def _activity(self, message):
-        if not self.active_action:
-            return
-        action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (self.active_action,))
+    async def _activity(self, message, start_count):
         params = message.get("params", {})
-        if not action or action["state"] not in ("dispatching", "running"):
+        connection = self.agent_pool.connection(self, start_count)
+        reservation = self.agent_pool.live_owner(connection, params.get("threadId"), params.get("turnId"))
+        if not reservation or reservation.source_table != "agent_actions":
             return
-        if (
-            not action["turn_id"]
-            or params.get("threadId") != action["thread_id"]
-            or params.get("turnId") != action["turn_id"]
-        ):
+        action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (reservation.action_id,))
+        if not action or action["state"] not in ("dispatching", "running"):
             return
         if message["method"] == "thread/tokenUsage/updated":
             usage = params.get("tokenUsage", {})
@@ -501,25 +497,34 @@ class Workflow:
             if not self.quota_task or self.quota_task.done():
                 self.quota_task = asyncio.create_task(self.refresh_quota())
 
-    async def _request(self, message):
-        action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (self.active_action,))
-        if not action and self.pool_owner.research.active_id:
-            await self.pool_owner.research.request(message)
-            return
-        if not action:
-            raise NeedsAttention("request has no active action")
-        pending = {
-            "id": str(uuid4()),
-            "action_id": action["id"],
-            "rpc_id": message["id"],
-            "method": message["method"],
-            "params": message.get("params", {}),
-            "expired": False,
-        }
-        self.store.update(action["experiment_id"], pending_request=pending, hold_reason="needs_attention")
-        self.store.notify(
-            action["experiment_id"], "required_decision", "Codex needs an answer or permission."
-        )
+    async def _request(self, message, start_count):
+        """Save the request of the one saved turn this process owns, or fail closed."""
+        params = message.get("params", {})
+        connection = self.agent_pool.connection(self, start_count)
+        owner = self.agent_pool.live_owner(connection, params.get("threadId"), params.get("turnId"))
+        if owner and owner.source_table == "autopilot_actions":
+            pending = await self.pool_owner.research.request(message, owner)
+        elif owner and owner.source_table == "agent_actions":
+            action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (owner.action_id,))
+            if not action:
+                raise NeedsAttention("request has no owned agent turn on this connection")
+            pending = {
+                "id": str(uuid4()),
+                "action_id": action["id"],
+                "rpc_id": message["id"],
+                "method": message["method"],
+                "params": params,
+                "expired": False,
+            }
+            self.store.update(action["experiment_id"], pending_request=pending, hold_reason="needs_attention")
+            self.store.notify(
+                action["experiment_id"], "required_decision", "Codex needs an answer or permission."
+            )
+        else:
+            # Unmatched or supervisor request: no owner is provable and the
+            # supervisor has no supported handler, so nothing is answered.
+            raise NeedsAttention("request has no owned agent turn on this connection")
+        self.agent_pool.remember_answer(pending["id"], connection, owner)
 
     async def tick(self, *, force_observe=False):
         """Run one manual pass over the shared steps in their original order.
@@ -648,8 +653,14 @@ class Workflow:
                 and (not legacy_archive.execution_frozen(exp) or frozen_reader_reply)
             ):
                 try:
-                    await self.agent.reply(pending)
-                    self.store.update(exp["id"], pending_request=None, hold_reason=None)
+                    if await self.agent_pool.reply(pending):
+                        self.store.update(exp["id"], pending_request=None, hold_reason=None)
+                    else:
+                        # The asking process is gone; never replay an obsolete RPC ID.
+                        pending["expired"] = True
+                        self.store.update(
+                            exp["id"], pending_request=pending, hold_reason="expired_agent_request"
+                        )
                 except Exception as exc:
                     self.store.update(exp["id"], error=str(exc), hold_reason="needs_attention")
         if self.agent_task and self.agent_task.done():

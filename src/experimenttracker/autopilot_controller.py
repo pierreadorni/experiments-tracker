@@ -108,13 +108,14 @@ class ResearchController:
             + encode(self.service.context(run))
         )
 
-    async def request(self, message):
-        row = self.workflow.store.one("SELECT * FROM autopilot_actions WHERE id=?", (self.active_id,))
+    async def request(self, message, reservation):
+        """Save the request of the exact saved project turn this process owns."""
+        row = self.workflow.store.one("SELECT * FROM autopilot_actions WHERE id=?", (reservation.action_id,))
         if not row or row["state"] not in ("running", "dispatching"):
             raise Conflict("no active owned project turn")
         params = message.get("params", {})
-        if params.get("threadId") not in (None, row["thread_id"]) or len(encode(params)) > 64000:
-            raise Conflict("project request identity or size is invalid")
+        if len(encode(params)) > 64000:
+            raise Conflict("project request size is invalid")
         pending = {
             "id": str(uuid4()),
             "rpc_id": message["id"],
@@ -139,6 +140,7 @@ class ResearchController:
                 (pending["id"], row["run_id"], text, clock.now()),
             )
             self.service.emit(db, row["run_id"], "managed_input_requested", {"input_id": pending["id"]})
+        return pending
 
     async def reply_inputs(self):
         for row in self.workflow.store.rows(
@@ -147,11 +149,9 @@ class ResearchController:
             pending = json.loads(row["pending_request"])
             if pending.get("expired") or not pending.get("answer"):
                 continue
-            if row["id"] != self.active_id or not self.task or self.task.done():
-                pending["expired"] = True
-            else:
-                await self.workflow.agent.reply(pending)
-                pending["expired"] = True
+            # A settled or restarted owner never sees its obsolete RPC ID replayed.
+            await self.workflow.agent_pool.reply(pending)
+            pending["expired"] = True
             with self.workflow.store.tx() as db:
                 db.execute(
                     "UPDATE autopilot_actions SET pending_request=? WHERE id=?", (encode(pending), row["id"])

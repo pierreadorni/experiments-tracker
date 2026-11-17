@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 from helpers import IterationAgent, approve_plan, wait_for_experiment
 
+from experimenttracker.agent_pool import experiment_owner
 from experimenttracker.api import create_app
 from experimenttracker.progress import describe_item
 from experimenttracker.slurm import SlurmScheduler, scheduler_time
@@ -128,7 +129,13 @@ async def test_activity_correlates_exact_turn_and_is_bounded_and_idempotent(runt
             "INSERT INTO agent_actions(id,experiment_id,phase,evidence_revision,state,thread_id,turn_id,input,created_at,updated_at) VALUES(?,?,?,1,'running','thread','turn','input',?,?)",
             (aid, eid, "prepare", now, now),
         )
-    workflow.active_action = aid
+    workflow.agent_pool.claim(
+        role="stage",
+        source_table="agent_actions",
+        row=store.one("SELECT * FROM agent_actions WHERE id=?", (aid,)),
+        owner=experiment_owner(eid),
+        workflow=workflow,
+    )
 
     def message(i, method="item/started", thread="thread"):
         return {
@@ -140,17 +147,18 @@ async def test_activity_correlates_exact_turn_and_is_bounded_and_idempotent(runt
             },
         }
 
-    await workflow._activity(message(0, thread="other"))
+    start_count = workflow.agent.start_count
+    await workflow._activity(message(0, thread="other"), start_count)
     assert not store.projection(eid)["stage_activity"]
-    await workflow._activity(message(0))
+    await workflow._activity(message(0), start_count)
     revision = store.experiment(eid)["revision"]
-    await workflow._activity(message(0))
+    await workflow._activity(message(0), start_count)
     assert store.experiment(eid)["revision"] == revision
-    await workflow._activity(message(0, "item/completed"))
-    await workflow._activity(message(0))
+    await workflow._activity(message(0, "item/completed"), start_count)
+    await workflow._activity(message(0), start_count)
     assert store.projection(eid)["stage_activity"][0]["state"] == "complete"
     for i in range(1, 75):
-        await workflow._activity(message(i))
+        await workflow._activity(message(i), start_count)
     rows = store.projection(eid)["stage_activity"]
     assert len(rows) == 60 and "private reasoning" not in json.dumps(rows)
 

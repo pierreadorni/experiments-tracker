@@ -143,6 +143,7 @@ class FakeCodex:
     is_demo = True
     available = True
     resolved_model = "scenario-fake"
+    start_count = 0
     models = [
         {
             "id": "scenario-fake",
@@ -186,6 +187,7 @@ class FakeCodex:
         self.backend.turns[(thread_id, turn_id)]["state"] = state
 
     async def start(self):
+        self.start_count += 1
         self.backend.models_observed_at = engine_clock.now()
 
     async def quota(self):

@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from helpers import wait_until
 from legacy_fixture import load_legacy_completed
 
+from experimenttracker.agent_pool import experiment_owner
 from experimenttracker.api import create_app
 from experimenttracker.codex_client import NeedsAttention, TransportError
 from experimenttracker.config import ProjectConfig
@@ -659,7 +660,13 @@ async def test_live_discussion_activity_projects_public_summaries_in_order(runti
             (aid, eid, "discuss:" + identity, time.time(), time.time()),
         )
         db.execute("UPDATE discussions SET action_id=?,state='running' WHERE id=?", (aid, identity))
-    workflow.active_action = aid
+    workflow.agent_pool.claim(
+        role="conversation",
+        source_table="agent_actions",
+        row=store.one("SELECT * FROM agent_actions WHERE id=?", (aid,)),
+        owner=experiment_owner(eid),
+        workflow=workflow,
+    )
     for i in range(25):
         await workflow._activity(
             {
@@ -674,7 +681,8 @@ async def test_live_discussion_activity_projects_public_summaries_in_order(runti
                         "content": ["Never publish raw reasoning"],
                     },
                 },
-            }
+            },
+            workflow.agent.start_count,
         )
     projected = store.conversation(eid)[0]["activity"]
     assert len(projected) == 20
@@ -691,7 +699,8 @@ async def test_live_discussion_activity_projects_public_summaries_in_order(runti
                 "summaryIndex": 0,
                 "delta": "wrong thread",
             },
-        }
+        },
+        workflow.agent.start_count,
     )
     assert store.conversation(eid)[0]["activity"] == projected
     await workflow.close()

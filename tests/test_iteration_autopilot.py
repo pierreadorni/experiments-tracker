@@ -3,6 +3,7 @@ from uuid import uuid4
 
 import pytest
 
+from experimenttracker.agent_pool import project_owner
 from experimenttracker.autopilot import Autopilot, calendar
 from experimenttracker.autopilot_budget import WEEK, window
 from experimenttracker.autopilot_models import AutopilotPolicy
@@ -769,13 +770,19 @@ async def test_managed_project_input_is_durable_and_scoped(runtime, monkeypatch)
     service, run = activated(runtime, monkeypatch)
     identity = action(service, run)
     wf = runtime[3]
-    wf.research.active_id = identity
     with service.store.tx() as db:
         db.execute(
             "UPDATE autopilot_actions SET thread_id='project-thread',turn_id='project-turn' WHERE id=?",
             (identity,),
         )
-    await wf.research.request(
+    wf.agent_pool.claim(
+        role="research",
+        source_table="autopilot_actions",
+        row=service.store.one("SELECT * FROM autopilot_actions WHERE id=?", (identity,)),
+        owner=project_owner("test-project"),
+        workflow=wf,
+    )
+    await wf._request(
         {
             "id": 123,
             "method": "item/tool/requestUserInput",
@@ -784,7 +791,8 @@ async def test_managed_project_input_is_durable_and_scoped(runtime, monkeypatch)
                 "turnId": "project-turn",
                 "questions": [{"id": "data", "question": "Synthetic fixture: which accessible data source?"}],
             },
-        }
+        },
+        wf.agent.start_count,
     )
     saved = service.store.one("SELECT pending_request FROM autopilot_actions WHERE id=?", (identity,))
     pending = json.loads(saved["pending_request"])

@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from test_controller import create
 
+from experimenttracker.agent_pool import experiment_owner
 from experimenttracker.store import encode
 
 
@@ -221,7 +222,13 @@ async def test_live_token_notifications_are_saved_only_for_exact_turn(runtime):
             "INSERT INTO agent_actions(id,experiment_id,phase,evidence_revision,state,thread_id,turn_id,input,created_at,updated_at) VALUES(?,?,'prepare',1,'running','thread','turn','prompt',0,0)",
             (identity, eid),
         )
-    wf.active_action = identity
+    wf.agent_pool.claim(
+        role="stage",
+        source_table="agent_actions",
+        row=store.one("SELECT * FROM agent_actions WHERE id=?", (identity,)),
+        owner=experiment_owner(eid),
+        workflow=wf,
+    )
     message = {
         "method": "thread/tokenUsage/updated",
         "params": {
@@ -233,12 +240,12 @@ async def test_live_token_notifications_are_saved_only_for_exact_turn(runtime):
             },
         },
     }
-    await wf._activity(message)
+    await wf._activity(message, wf.agent.start_count)
     assert not store.rows("SELECT * FROM agent_usage")
     message["params"]["turnId"] = "turn"
     revision = store.experiment(eid)["revision"]
     publications = store.one("SELECT COUNT(*) AS n FROM outbox")["n"]
-    await wf._activity(message)
+    await wf._activity(message, wf.agent.start_count)
     record = store.one("SELECT * FROM agent_usage")
     usage = json.loads(record["payload"])
     assert (record["action_id"], record["thread_id"], record["turn_id"]) == (identity, "thread", "turn")
@@ -247,11 +254,10 @@ async def test_live_token_notifications_are_saved_only_for_exact_turn(runtime):
     assert store.experiment(eid)["revision"] == revision
     assert store.one("SELECT COUNT(*) AS n FROM outbox")["n"] == publications
     message["params"]["tokenUsage"]["total"]["inputTokens"] = 200
-    await wf._activity(message)
+    await wf._activity(message, wf.agent.start_count)
     assert store.one("SELECT COUNT(*) AS n FROM agent_usage")["n"] == 1
     assert (
         json.loads(store.one("SELECT payload FROM agent_usage")["payload"])["thread_total"]["inputTokens"]
         == 200
     )
-    wf.active_action = None
     await wf.close()

@@ -1,9 +1,9 @@
-"""Derived agent reservations: which saved source row owns which agent slot.
+"""Derived agent reservations: which saved source row owns which agent process.
 
-The registry is shadow bookkeeping for T1.6a-1. Existing lane allocation, busy
-sets and global role guards keep deciding admission unchanged; nothing reads a
-reservation to route or schedule work yet. A reservation is reconstructed from
-the authoritative source row, so it never becomes a second execution database.
+Lane allocation, busy sets and global role guards keep deciding admission. A
+callback (request, activity, pending answer) is routed through a reservation, so
+it reaches only the owner its saved turn proves; a reservation is reconstructed
+from the authoritative source row and never becomes a second execution database.
 """
 
 from dataclasses import dataclass
@@ -16,6 +16,9 @@ UNSETTLED_STATES = frozenset({"dispatching", "running", "uncertain", "received"}
 SAVED_OWNED_STATES = "('dispatching','running','uncertain')"
 
 TITLED_PHASES = {"title": "title", "summarize_title": "title"}
+
+# Tables whose saved thread/turn identity can be matched to a callback.
+ROUTED_SOURCES = ("agent_actions", "autopilot_actions", "project_turns")
 
 
 def experiment_owner(eid):
@@ -32,6 +35,14 @@ def role_for_phase(phase):
     return TITLED_PHASES.get(phase, "stage")
 
 
+@dataclass(frozen=True)
+class Connection:
+    """One App Server process: the slot that runs it and that slot's start count."""
+
+    slot: int | None
+    start: int
+
+
 @dataclass
 class Reservation:
     source_table: str
@@ -41,6 +52,7 @@ class Reservation:
     slot: int | None = None
     thread_id: str | None = None
     turn_id: str | None = None
+    connection: Connection | None = None
 
     @property
     def key(self):
@@ -52,12 +64,44 @@ class AgentPool:
         self.workflow = workflow
         self.store = workflow.store
         self.reservations = {}
+        self.answers = {}
 
     def slot(self, workflow):
         """Physical lane index for a dispatch, or None for an unlisted workflow."""
         for index, lane in enumerate(self.workflow.lanes):
             if lane is workflow:
                 return index
+        return None
+
+    def lane(self, index):
+        """The workflow that owns a physical slot, or None outside the pool."""
+        if index is None or index >= len(self.workflow.lanes):
+            return None
+        return self.workflow.lanes[index]
+
+    def connection(self, workflow, start_count):
+        """The App Server process a callback arrived on, read at receipt."""
+        return Connection(slot=self.slot(workflow), start=start_count)
+
+    def live_owner(self, connection, thread_id, turn_id):
+        """The reservation whose saved turn matches a callback on this exact process.
+
+        The saved row carries the exact thread/turn; the reservation must still
+        hold that same process, so a settled or restarted owner is never credited.
+        """
+        if connection.slot is None or not thread_id or not turn_id:
+            return None
+        # Only the few reservations on this process are candidates; each is checked
+        # against its saved row by primary key, never by scanning a source table.
+        for reservation in list(self.reservations.values()):
+            if reservation.connection != connection or reservation.source_table not in ROUTED_SOURCES:
+                continue
+            row = self.store.one(
+                f"SELECT thread_id,turn_id FROM {reservation.source_table} WHERE id=?",
+                (reservation.action_id,),
+            )
+            if row and (row["thread_id"], row["turn_id"]) == (thread_id, turn_id):
+                return reservation
         return None
 
     def claim(self, *, role, source_table, row, owner, workflow):
@@ -70,6 +114,7 @@ class AgentPool:
             slot=self.slot(workflow),
             thread_id=row.get("thread_id"),
             turn_id=row.get("turn_id"),
+            connection=self.connection(workflow, workflow.agent.start_count),
         )
         self.reservations[reservation.key] = reservation
         return reservation
@@ -84,12 +129,43 @@ class AgentPool:
             f"SELECT state,thread_id,turn_id FROM {reservation.source_table} WHERE id=?",
             (reservation.action_id,),
         )
+        self.forget_answers(reservation)
         if saved and saved["state"] in UNSETTLED_STATES:
             reservation.slot = None
+            reservation.connection = None
             reservation.thread_id = saved["thread_id"]
             reservation.turn_id = saved["turn_id"]
             return
         self.reservations.pop(reservation.key, None)
+
+    def remember_answer(self, pending_id, connection, reservation):
+        """Bind a saved answer to the process and reservation that asked for it."""
+        self.answers[pending_id] = (connection, reservation)
+
+    def forget_answers(self, reservation):
+        for pending_id, (_, owner) in list(self.answers.items()):
+            if owner is reservation:
+                del self.answers[pending_id]
+
+    async def reply(self, pending):
+        """Send one recorded answer through its own process, at most once.
+
+        An expired, settled or restarted owner cannot be replayed: its answer is
+        dropped instead of answering a live successor's turn.
+        """
+        saved = self.answers.pop(pending["id"], None)
+        if saved is None:
+            return False
+        connection, reservation = saved
+        lane = self.lane(connection.slot)
+        if (
+            lane is None
+            or reservation.connection != connection
+            or self.connection(lane, lane.agent.start_count) != connection
+        ):
+            return False
+        await lane.agent.reply(pending)
+        return True
 
     def lookup(self, source_table, action_id):
         return self.reservations.get((source_table, action_id))
