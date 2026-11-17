@@ -58,7 +58,7 @@ def test_upgrade_preserves_saved_rows_and_backfills_no_obligations(runtime):
     eid = saved_fixture(store)
     view = store.projection(eid)
     hold = store.experiment(eid)["hold_reason"]
-    assert store.one("SELECT MAX(version) AS version FROM schema_version")["version"] == 24
+    assert store.one("SELECT MAX(version) AS version FROM schema_version")["version"] == 25
     assert store.rows("SELECT * FROM obligations WHERE id NOT LIKE 'advancement:%'") == []
     before = saved_rows(store)
     # The dropped table is a schema-23 store, so its saved rows cannot survive; the
@@ -68,11 +68,12 @@ def test_upgrade_preserves_saved_rows_and_backfills_no_obligations(runtime):
     # store downgraded in place by dropping the newest migration, not a real
     # schema-23 snapshot with legacy rows.
     with store.tx() as db:
+        db.execute("DROP TABLE experiment_branches")
         db.execute("DROP TABLE obligations")
         db.execute("DELETE FROM schema_version WHERE version>=24")
     migrated = Store(store.path)
     try:
-        assert migrated.one("SELECT MAX(version) AS version FROM schema_version")["version"] == 24
+        assert migrated.one("SELECT MAX(version) AS version FROM schema_version")["version"] == 25
         assert migrated.rows("SELECT * FROM obligations") == []
         assert saved_rows(migrated) == before
         assert migrated.rows("PRAGMA foreign_key_check") == []
@@ -96,6 +97,7 @@ def test_failed_upgrade_transaction_rolls_back_schema_and_version(runtime, monke
     # Schema 23 has no obligations table, so only the older saved tables can be compared.
     before = {name: store.rows(f"SELECT * FROM {name}") for name in SAVED_TABLES if name != "obligations"}
     with store.tx() as db:
+        db.execute("DROP TABLE experiment_branches")
         db.execute("DROP TABLE obligations")
         db.execute("DELETE FROM schema_version WHERE version>=24")
     original = Store.tx
@@ -119,7 +121,7 @@ def test_failed_upgrade_transaction_rolls_back_schema_and_version(runtime, monke
         reader.close()
     migrated = Store(store.path)
     try:
-        assert migrated.one("SELECT MAX(version) AS version FROM schema_version")["version"] == 24
+        assert migrated.one("SELECT MAX(version) AS version FROM schema_version")["version"] == 25
         assert migrated.rows("SELECT * FROM obligations") == []
         assert {name: migrated.rows(f"SELECT * FROM {name}") for name in before} == before
     finally:

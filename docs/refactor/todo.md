@@ -448,7 +448,7 @@ role busy flags it still writes. All retire with the contract-3 engine in T4.8.
 
 ## Phase 3 — Git-native workspaces (C6)
 
-### [ ] T3.1 Branch/worktree module · F · M
+### [x] T3.1 Branch/worktree module · F · M
 - New `engine/gitworkspace.py` (or extend `workspaces.py`): `create(repo, slug, base)`,
   `commit(worktree, message, max_untracked_mb=5)` returning `(sha, skipped)`,
   `export(repo, sha, target)` via `git archive`, and `pin(repo, sha, ref)`. Add the
@@ -543,6 +543,7 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 
 ## Log
 
+- **T3.1, 2026-11-17:** Named Git worktrees and exact exports/pins are available as primitives; T3.3a handles intent persistence and begins replacing existing checkout creation only for new eligible runs. Additive SQLite schema 25 preserves existing rows. Real Git tests cover bounded staging, exact archives and pins surviving pruning. Production +315/−2; tests +178/−4. Ruff check and format, 42 targeted tests, and **872 isolated Python tests passed** (one dependency warning). No live activation.
 - **T3.2, 2026-11-17:** Shared environments and the fixed-interpreter option landed without changing runtime selection yet. T3.3b replaces per-experiment venv creation for eligible named worktrees; old and uncovered cases retain their existing runtime. The builder excludes its cache from Git and publishes readiness only after the exact dependencies finish building. Production +231/−3; tests +252/−0; example config +6/−0. Isolated Node 24 locked setup, Ruff check and format, 39 targeted tests, **878 Python tests passed** (one dependency warning), and contract-3 synthetic demo completed. No live activation.
 
 Record completed tasks here: `date · task · commit · notes`.
