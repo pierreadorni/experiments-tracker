@@ -13,7 +13,7 @@ from pydantic import Field
 from . import artifacts, clock, early_repair, iteration, reporting
 from .codex_client import TerminalTurnError
 from .config import StrictModel
-from .core import action_obligations
+from .core import action_obligations, wakeup_obligations
 from .legacy_archive import archive_active, execution_frozen
 from .models import Analysis, Implementation, ReportDocument, ResearchPlan
 from .store import Conflict, encode
@@ -294,14 +294,23 @@ class Controller:
             now = clock.now()
             # A new request replaces pending checks, while queued turns retain
             # their exact outcome. Keep old receipts for idempotent replay.
+            replaced = [
+                row["id"]
+                for row in db.execute(
+                    "SELECT id FROM agent_wakeups WHERE experiment_id=? AND state='pending'", (eid,)
+                )
+            ]
             db.execute(
                 "UPDATE agent_wakeups SET state='superseded' WHERE experiment_id=? AND state='pending'",
                 (eid,),
             )
+            for replaced_id in replaced:
+                wakeup_obligations.sync_wakeup(db, replaced_id)
             db.execute(
                 "INSERT INTO agent_wakeups(id,experiment_id,reason,due_at,action_id,created_at) VALUES(?,?,?,?,?,?)",
                 (identity, eid, payload, now + delay, action_id, now),
             )
+            wakeup_obligations.sync_wakeup(db, identity)
             store.emit(
                 db,
                 eid,
@@ -530,6 +539,7 @@ class Controller:
             with wf.store.tx() as db:
                 for obsolete in pending[1:]:
                     db.execute("UPDATE agent_wakeups SET state='superseded' WHERE id=?", (obsolete["id"],))
+                    wakeup_obligations.sync_wakeup(db, obsolete["id"])
         for wake in wf.store.rows(
             "SELECT * FROM agent_wakeups WHERE state IN ('pending','queued') ORDER BY due_at LIMIT 50"
         ):
@@ -540,6 +550,7 @@ class Controller:
             if terminal and wake["state"] == "pending":
                 with wf.store.tx() as db:
                     db.execute("UPDATE agent_wakeups SET state='superseded' WHERE id=?", (wake["id"],))
+                    wakeup_obligations.sync_wakeup(db, wake["id"])
                 continue
             if wake["state"] == "queued":
                 action = wf.store.one("SELECT * FROM agent_actions WHERE id=?", (wake["action_id"],))
@@ -566,6 +577,7 @@ class Controller:
                                 {"action_id": action["id"], "state": "superseded"},
                             )
                         db.execute("UPDATE agent_wakeups SET state='superseded' WHERE id=?", (wake["id"],))
+                        wakeup_obligations.sync_wakeup(db, wake["id"])
                     continue
                 if action["state"] == "completed":
                     try:
@@ -582,6 +594,7 @@ class Controller:
                     )
                     with wf.store.tx() as db:
                         db.execute("UPDATE agent_wakeups SET state='complete' WHERE id=?", (wake["id"],))
+                        wakeup_obligations.sync_wakeup(db, wake["id"])
                         wf.store.emit(db, exp["id"], "agent_wakeup_completed", {"wakeup_id": wake["id"]})
                     self.follow_up(exp["id"], decision.next_check_seconds)
                     continue
@@ -589,6 +602,7 @@ class Controller:
                     # Monitor failures must not fail successful scientific compute.
                     with wf.store.tx() as db:
                         db.execute("UPDATE agent_wakeups SET state='failed' WHERE id=?", (wake["id"],))
+                        wakeup_obligations.sync_wakeup(db, wake["id"])
                         wf.store.emit(
                             db,
                             exp["id"],
@@ -625,6 +639,7 @@ class Controller:
                 if not jobs or exp["phase"] not in ("training", "evaluating"):
                     with wf.store.tx() as db:
                         db.execute("UPDATE agent_wakeups SET state='complete' WHERE id=?", (wake["id"],))
+                        wakeup_obligations.sync_wakeup(db, wake["id"])
                     self.follow_up(exp["id"], wf.config.codex.monitor_interval_seconds)
                     continue
             cap = wf.agent_turn_ceiling(exp)
@@ -672,6 +687,7 @@ class Controller:
                         "UPDATE agent_wakeups SET state='queued',action_id=? WHERE id=?",
                         (identity, wake["id"]),
                     )
+                    wakeup_obligations.sync_wakeup(db, wake["id"])
                     wf.store.emit(
                         db, exp["id"], "agent_wakeup_queued", {"action_id": identity, "wakeup_id": wake["id"]}
                     )

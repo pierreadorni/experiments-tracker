@@ -114,6 +114,7 @@ def sync_episode(
     owner,
     wait=None,
     detail=None,
+    due_at=None,
 ):
     """Synchronize a saved source's responsibility with its exact saved state.
 
@@ -136,6 +137,7 @@ def sync_episode(
             owner=owner,
             wait=wait,
             detail=detail,
+            due_at=due_at,
         )
         if row["state"] != "open":
             raise ValueError(f"live {source_type} state conflicts with terminal obligation history")
