@@ -3,7 +3,7 @@ import { Check, ChevronDown, ChevronRight, Circle, Clock3, LoaderCircle, X } fro
 import type { Experiment, Status } from './types';
 import { Description } from './Description';
 import { TensorBoard } from './TensorBoard';
-import { shortCommit } from './integration';
+import { shortCommit } from './integrationState';
 import {
   duration,
   jobTiming,

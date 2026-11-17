@@ -8,7 +8,7 @@ import {
   integrationHeadline,
   revertBlockedReason,
   shortCommit,
-} from './integration';
+} from './integrationState';
 import { useDialog } from './useDialog';
 
 type DialogMode = 'integrate' | 'revert';

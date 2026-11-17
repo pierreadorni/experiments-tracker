@@ -9,7 +9,7 @@ import {
   integrationStageLabel,
   revertBlockedReason,
   shortCommit,
-} from '../src/integration.ts';
+} from '../src/integrationState.ts';
 
 const head = 'b'.repeat(40);
 const event = (kind, seq) => ({ seq, kind, created_at: seq, payload: '{}' });
