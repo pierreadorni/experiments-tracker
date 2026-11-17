@@ -55,7 +55,8 @@ Code publication does not authorize live activation.
   New required capability may add production code, but every card names the
   old code it replaces and deletes it in the same card or in a named retirement
   card. A helper whose callers keep their old copies is not accepted. Temporary
-  dual paths have a named removal card, and T1 is not done while one is pending.
+  dual paths have a named removal card, and T1 is not done while one is pending
+  (or, for contract-3-only paths, the engine deletion T4.8).
   A card adding more than 150 net production lines records in the log why
   existing code could not be reused. Keep consolidation cards when found; never
   delete unrelated or shipped code, or tests, to move the numbers. Tell the owner
@@ -76,6 +77,38 @@ Code publication does not authorize live activation.
   - `uv run --locked ruff format --check src tests scripts`
   - the task's targeted tests, then `uv run --locked pytest -q`
   - `make check` whenever web or gateway code changed.
+
+## Working fast (owner decision 2026-11-17)
+
+Measured on 2026-11-17: twelve cards landed in one afternoon with DeepSeek Flash
+workers. The full Python suite takes about 7 minutes and spreads evenly over
+files; most cost was the coordinator, not the workers. Use these defaults:
+
+- **Approved designs are enough.** Do not commission extra design reviews or
+  separate reviewer agents for cards whose design note is already approved. The
+  coordinator reviews the diff, concentrating on identity, transaction and
+  rollback logic. Ask a stronger model only for a genuinely new design question.
+- **Workers commit on their own branch.** Create each lane with
+  `git worktree add -b t1/<card> .worktrees/<card> main`; the worker commits there
+  (one-line message). The coordinator rebases/merges and reviews with
+  `git show`, instead of copying patch files. Parallel lanes still avoid editing
+  the same functions; import-line conflicts are expected and trivial.
+- **Batch the full suite.** Run each card's targeted tests per card. Run the full
+  suite once per batch of 2–3 independent cards in `.worktrees/t1-validation`,
+  then commit the cards separately with the batch result in the log. If the batch
+  fails, bisect by card.
+- **Wiring cards may reach 800 changed lines.** Cards that repeat one reviewed
+  pattern across call sites (source wiring, backfill, mechanical moves) use an
+  800-line budget. New-behaviour cards (runner, pool, resolvers) keep 500.
+- **Short briefs, quiet coordination.** Briefs point to the card and design note
+  and state only the decisions they leave open (see the template). Let async
+  workers wake you; do not poll. Read diffs and reports, not whole files.
+- **Fresh worktrees** lack the untracked `recipes/` directory, so
+  `test_maintenance.py::test_real_demo_process_handover_without_model_or_scheduler`
+  fails there only; ignore it outside the validation checkout.
+- **Untried:** `pytest-xdist` could cut the suite to ~2 minutes, but the tests
+  share a fake clock, subprocesses and SQLite files. Worth one 30-minute trial
+  (needs a locked dev dependency); drop it at the first flaky failure.
 
 ## Brief template for a child
 

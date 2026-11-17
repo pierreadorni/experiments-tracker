@@ -247,13 +247,23 @@ and archived fixtures still render their report via the API.
 - [Rollout decisions and bounded cards](notes/t1.3b-rollout-design.md): [x] b1 inert
   episode/lookup helpers; [x] b2a inert action mapping; [x] b5a inert job mapping; [x] b2b Workflow actions; [x] b3 Store/Conversation actions; [x] b4 Controller/cancellation/archived actions; [x] b5b Workflow job intent/ID/adoption/recovery; [x] b6 job observation/cancellation/legacy/steering; [x] b7a transfer admission/outcomes; [x] b8+b9 report-version publication; [x] b7b/c preview identity and cancellation; [x] b12 wakeup timers; [x] b10 pending requests; [x] b11 plan reviews; [ ] b13, b14 remaining runtime source integration and bounded backfill.
 
-### [ ] T1.3c Derived holds (C2) · F+R · M per call-site group
-- [x] c1a inert source-less admission decisions; source-backed/terminal/cancellation families and activation remain pending.
+### [-] T1.3c Derived holds (C2) · DEFERRED by owner 2026-11-17
+- [x] c1a inert source-less admission decisions. c1b (lifetime/cancellation) is
+  done inside b13. **c1c, c2a/b, c3a–f, c4a/b are deferred**: they move the
+  contract-3 stage engine's `hold_reason` writers onto decision records, and that
+  engine is deleted by T4.8. Contract 4 derives holds natively from obligations.
+  Until then `hold_reason` stays the operational authority beside the obligations;
+  its writers retire with the old engine in T4.8. See
+  [t1-owner-decisions.md §8](notes/t1-owner-decisions.md#8-scope-cut-and-faster-working-method-2026-11-17).
 - Compute `hold_reason` from obligations in `Store.projection`; remove direct
   writes one call-site group per commit, retaining compatibility readers.
 
 ### [ ] T1.3d Obligation liveness watchdog (C2) · F+R · M
-- Replace the interim heuristic with the liveness invariant.
+- Replace the interim heuristic with the liveness invariant (d1a/d1b in
+  [t1.3c-derived-design.md](notes/t1.3c-derived-design.md)). With c deferred, it
+  checks exact source obligations, owner notices, timers and the advancement
+  lifetime's open dependency; it does not need derived holds. Still required:
+  contract 4 relies on the same invariant.
 
 ### [x] T1.4a Slurm submission resolver (C5) · F+R · M
 - New `resolver.py`. Apply the rules in design.md C5 (Slurm) to
@@ -311,7 +321,9 @@ and archived fixtures still render their report via the API.
 - **Acceptance:** exact saved identities survive restart and unknown outcomes never
   cause duplicate dispatch; all mixed-role scenarios and the full suite pass.
 
-### [ ] T1.7a–f Split `workflow.py` mechanically (C11) · F · M each
+### [-] T1.7a–f Split `workflow.py` mechanically (C11) · DEFERRED by owner 2026-11-17
+Skipped: it reorganises the contract-3 engine that T4.8 deletes. New contract-4
+code goes straight into its own modules (C11 layout) instead.
 Move code without changing behaviour; each commit keeps the tests green.
 - a: prompts → `research/prompt.py`;
 - b: `observe_jobs` and submission → `engine/jobs.py`;
@@ -566,3 +578,4 @@ Record completed tasks here: `date · task · commit · notes`.
 2026-11-17 · T1.4b · this commit · DeepSeek Flash implementation, coordinator merge into the shared `resolver.py`. `TurnResolver` runs in the tick after dispatch drainage and before advancement: it reads the saved thread through new `CodexAgent.read_thread`, adopts a completed matching turn through the operator readback (shared `adopt_turn`/`dispatch_prompt_hash`), proves absence after 5 minutes on a readable thread (failed `turn_not_started` plus exactly one continuation in the same transaction; monitor actions excepted), quarantines several matches, and after six unreadable reads holds only that experiment with the existing hold and one notice. Demo threads refuse readback, so absence is never inferred there. Source +218/−46; tests +229/−3. Ruff and all 749 Python tests pass (454.25s). Discussion absence and multi-match quarantine lack committed scenario tests. No live activation.
 2026-11-17 · T1 handoff · this commit · Coordinator stop at owner request. Uncommitted reviewed candidates R2 (core consolidation, src −68) and b13/c1b (advancement lifetime) and the T1.5a brief are described in notes/t1-handoff-2026-11-17b.md, with the read-only reduction audit. Phase production delta is +1282; net-negative needs an owner decision (see note). No live activation.
 2026-11-17 · T1 net-source rule · this commit · Owner delegated the decision; coordinator waived the Phase 2 net-negative target and replaced it with a per-card replacement rule plus named retirement cards (README; t1-owner-decisions.md §7). Phase delta +1282 recorded; owner is told above +2,500. Documentation only.
+2026-11-17 · T1 scope cut · this commit · Owner decision: defer T1.3c c1c–c4b and T1.7a–f (they only reshape the contract-3 engine deleted by T4.8). T1 remaining: b13, b14, d1a/b, T1.5a–c, T1.6a–c, plus R2 cleanup. Faster working method recorded in README and t1-owner-decisions.md §8. Documentation only.

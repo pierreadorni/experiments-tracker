@@ -80,9 +80,28 @@ satisfy the number without improving the code.
 
 The intent is kept as a replacement rule (README, "Replacement, not layering"):
 each card names and deletes what it replaces; dual paths have a named removal
-card that T1 must finish. The ones already known: c4b removes direct
-`hold_reason` writes and the `Store.update` setter; d1b replaces the interim
+card that T1 must finish. The ones already known: direct `hold_reason` writes
+retire with the contract-3 engine in T4.8 (c4b was deferred, §8); d1b replaces the interim
 watchdog heuristic; T1.5c deletes the outer production tick loop; T1.6 removes the
 cloned-`Workflow` lanes and the global research/supervisor/conversation guards.
 Per-commit numstat reporting and consolidation cards (such as R2) continue. The
 owner is told if the phase delta passes +2,500 production lines.
+
+## 8. Scope cut and faster working method (2026-11-17)
+
+The owner deferred the T1 work that only reshapes the contract-3 stage engine,
+which contract 4 replaces and T4.8 deletes:
+
+- **T1.3c c1c, c2a/b, c3a–f, c4a/b** (derived holds and moving every
+  `hold_reason` writer onto decision records). `hold_reason` stays the
+  operational authority for contract 3. Contract 4 derives holds from
+  obligations from the start.
+- **T1.7a–f** (mechanical split of `workflow.py`). Contract-4 code is written in
+  its own modules.
+
+Kept, because contract 4 reuses them: obligations at sources (b13 lifetime with
+c1b, b14 backfill), the liveness watchdog (d1a/b), the resolvers (done), the
+runner (T1.5a–c) and the agent pool (T1.6a–c), plus consolidation such as R2.
+
+The owner also adopted the coordinator's speed-ups, recorded in the README
+section "Working fast".
