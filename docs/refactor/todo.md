@@ -277,7 +277,7 @@ and archived fixtures still render their report via the API.
   read. **Tests:** lost turn start → adopt / absent → continuation / unreadable →
   owner obligation after 6 tries.
 
-### [ ] T1.5 Independent periodic tasks (C11 runner) · S · M
+### [x] T1.5 Independent periodic tasks (C11 runner) · S · M
 - [Approved design and subcards](notes/t1.5-runner-design.md): a mechanical
   extraction (F), b submission-race groundwork (S), c activation (S). Safety
   groundwork lands before parallel activation; each card stays below 500 lines.
