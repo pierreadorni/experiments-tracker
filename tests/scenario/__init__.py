@@ -338,9 +338,17 @@ class SyntheticSlots:
     agent: type
     calls: list
 
+    def named(self, name, **identity):
+        """Every transport call of one kind carrying exactly this logged identity."""
+        return [
+            call
+            for call in self.calls
+            if call["call"] == name and all(call[key] == value for key, value in identity.items())
+        ]
+
     def begin(self, turn_id):
         """The one external begin that sent this exact saved turn."""
-        found = [call for call in self.calls if call["call"] == "begin" and call["turn"] == turn_id]
+        found = self.named("begin", turn=turn_id)
         assert len(found) == 1, f"expected one begin for {turn_id}, found {len(found)}"
         return found[0]
 
@@ -385,10 +393,40 @@ def shared_fake_slots():
             calls.append(self.called("start"))
 
         async def begin(self, thread_id, prompt, schema, **kwargs):
-            turn = await super().begin(thread_id, prompt, schema, **kwargs)
+            before = len(backend.starts)
+            try:
+                turn = await super().begin(thread_id, prompt, schema, **kwargs)
+            except Exception:
+                # The runtime may create the exact turn before its response is lost.
+                if len(backend.starts) > before:
+                    record = backend.starts[-1]
+                    calls.append(
+                        self.called(
+                            "begin", thread=record["thread_id"], turn=record["turn_id"], phase=record["phase"]
+                        )
+                    )
+                raise
             record = backend.starts[-1]
             calls.append(self.called("begin", thread=thread_id, turn=turn, phase=record["phase"]))
             return turn
+
+        async def read_thread(self, thread_id):
+            turns = await super().read_thread(thread_id)
+            calls.append(self.called("read_thread", thread=thread_id))
+            return turns
+
+        async def read_turn(self, thread_id, turn_id, **kwargs):
+            result = await super().read_turn(thread_id, turn_id, **kwargs)
+            calls.append(self.called("read_turn", thread=thread_id, turn=turn_id))
+            return result
+
+        async def interrupt(self, thread_id, turn_id):
+            await super().interrupt(thread_id, turn_id)
+            calls.append(self.called("interrupt", thread=thread_id, turn=turn_id))
+
+        async def reply(self, pending):
+            await super().reply(pending)
+            calls.append(self.called("reply", pending=pending["id"], rpc=pending.get("rpc_id")))
 
     return SyntheticSlots(backend=backend, agent=SharedFakeCodex, calls=calls)
 

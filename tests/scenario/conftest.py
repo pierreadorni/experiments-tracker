@@ -151,6 +151,18 @@ class MultiScenario(Scenario):
             assert type(lane.agent) is self.slots.agent and not isinstance(lane.agent, CodexAgent)
         return self.workflow
 
+    async def restart(self, *, sessions=None):
+        """Stop the pool, then rebuild adapters on the saved state and same backend.
+
+        ``sessions`` shrinks or keeps the configured connection count: logical
+        reservations survive either way, because they come from the source rows.
+        """
+        if sessions is not None:
+            self.sessions = sessions
+            self.config.codex.max_sessions = sessions
+        await self.close()
+        return self.build()
+
 
 @pytest.fixture
 async def multi_scenario(config, monkeypatch):
