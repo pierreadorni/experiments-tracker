@@ -175,7 +175,7 @@ def _approved(view, candidate, approval):
         return False
 
 
-def _apply_ready(store, view, apply, discard):
+def _apply_ready(store, view, apply, discard, settle, guard):
     repo, candidate = view["repo"], view["candidate"]
     if (
         not isinstance(candidate, dict)
@@ -189,6 +189,12 @@ def _apply_ready(store, view, apply, discard):
         status = view["status"]
     if status.startswith(UNKNOWN_APPLY):
         return _result(view, "waiting", "the earlier apply outcome needs inspection")
+    if guard is not None:
+        blocked = guard(view)
+        if blocked:
+            # The fast-forward changed nothing yet; save why it waits and keep the candidate.
+            view = _save(store, view, "ready", status=_text(blocked))
+            return _result(view, "waiting", _text(blocked))
     view = _save(store, view, "ready", status=APPLYING)
     try:
         result = apply(repo, candidate)
@@ -201,9 +207,15 @@ def _apply_ready(store, view, apply, discard):
         return _result(view, "waiting", "the fast-forward did not apply the exact candidate")
     try:
         with store.tx() as db:
+            # The callback settles the saved branch row and its event in this same
+            # transaction, so an applied merge is never recorded without it.
+            if settle is not None:
+                settle(db, view, result)
             view = queue.finish(db, view["request_id"], "applied")
-    except ValueError as exc:
-        raise _Stop(view, "blocked", _text(exc)) from None
+    except (ValueError, WorkspaceUnavailable) as exc:
+        # The fast-forward happened but its record did not; wait for exact inspection.
+        view = _save(store, view, "ready", status=UNKNOWN_APPLY + ": " + _text(exc))
+        return _result(view, "waiting", "the applied request could not settle: " + _text(exc))
     try:
         discard(repo, candidate)
     except WorkspaceUnavailable as exc:
@@ -229,7 +241,9 @@ def _obtain(store, view, config, head, prepare, prepare_revert):
         raise _Stop(view, "waiting", view["status"]) from None
 
 
-def _claimed(store, view, config, head, prepare, prepare_revert, check, approval, apply, discard):
+def _claimed(
+    store, view, config, head, prepare, prepare_revert, check, approval, apply, discard, settle, guard
+):
     candidate = _obtain(store, view, config, head, prepare, prepare_revert)
     if candidate.get("state") == "conflict":
         files = ", ".join(candidate.get("conflicts") or []) or "unmerged files"
@@ -243,7 +257,7 @@ def _claimed(store, view, config, head, prepare, prepare_revert, check, approval
         view = _save(store, view, "awaiting_approval", candidate=candidate, status="awaiting owner approval")
         return _result(view, "awaiting_approval")
     view = _save(store, view, "ready", candidate=candidate, status="project check passed")
-    return _apply_ready(store, view, apply, discard)
+    return _apply_ready(store, view, apply, discard, settle, guard)
 
 
 def drive(
@@ -258,10 +272,14 @@ def drive(
     discard=integration.discard,
     check=None,
     approval=None,
+    settle=None,
+    guard=None,
 ):
     """Advance one saved request; ``head`` is the merge branch head and ``project``
     supplies ``base``, the ``check_command`` argv list, ``check_timeout`` and
-    ``require_approval``.
+    ``require_approval``. ``settle(db, view, result)`` runs inside the transaction that
+    finishes an applied request, so a saved branch row settles exactly with it.
+    ``guard(view)`` returns a status text to wait with, or ``None`` to apply.
     """
     with store.tx() as db:
         view = queue.saved(db, request_id)
@@ -278,9 +296,22 @@ def drive(
             if not _approved(view, view["candidate"], approval):
                 return _result(view, "awaiting_approval", "awaiting owner approval")
             view = _save(store, view, "ready", status="owner approved")
-            return _apply_ready(store, view, apply, discard)
+            return _apply_ready(store, view, apply, discard, settle, guard)
         if stage == "ready":
-            return _apply_ready(store, view, apply, discard)
-        return _claimed(store, view, config, head, prepare, prepare_revert, check, approval, apply, discard)
+            return _apply_ready(store, view, apply, discard, settle, guard)
+        return _claimed(
+            store,
+            view,
+            config,
+            head,
+            prepare,
+            prepare_revert,
+            check,
+            approval,
+            apply,
+            discard,
+            settle,
+            guard,
+        )
     except _Stop as stop:
         return _result(stop.view, stop.outcome, stop.reason)
