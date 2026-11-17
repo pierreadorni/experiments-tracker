@@ -164,6 +164,7 @@ export type Experiment = {
   reference_experiment_id?: string | null;
   branch?: string;
   head_commit?: string;
+  branch_state?: 'active' | 'integrating' | 'merged' | 'abandoned';
   integration?: {
     stage: string;
     request_id: string;

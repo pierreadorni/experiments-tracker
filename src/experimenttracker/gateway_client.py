@@ -13,6 +13,7 @@ from .knowledge import Knowledge
 from .models import (
     ActionCommand,
     AnswerCommand,
+    ApproveIntegrationCommand,
     CreateExperiment,
     DeleteCommand,
     DiscussCommand,
@@ -86,6 +87,7 @@ class GatewayClient:
             "steer": SteerCommand,
             "integrate": IntegrateCommand,
             "revert_integration": RevertIntegrationCommand,
+            "approve_integration": ApproveIntegrationCommand,
             "dont_merge": DontMergeCommand,
             "reserve": ReserveCommand,
         }

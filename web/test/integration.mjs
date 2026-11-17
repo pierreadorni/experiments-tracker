@@ -1,10 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  approvalBlockedReason,
+  approvalIdentity,
   dontMergeBlockedReason,
   exactCommit,
   integrateBlockedReason,
   integrationHeadline,
+  integrationMerged,
   integrationSettlement,
   integrationStageLabel,
   revertBlockedReason,
@@ -82,6 +85,83 @@ test('revert needs the applied merge event and no request in flight', () => {
     ),
     'merged',
   );
+});
+
+test('the projected branch state is the authoritative merge and revert availability', () => {
+  assert.equal(integrationMerged(experiment({ branch_state: 'merged' })), true);
+  assert.equal(integrationMerged(experiment({ branch_state: 'active' })), false);
+  assert.equal(integrationMerged(experiment(merged)), true);
+  assert.match(
+    integrateBlockedReason(experiment({ branch_state: 'merged' }), status),
+    /already integrated/,
+  );
+  assert.equal(revertBlockedReason(experiment({ branch_state: 'merged' }), status), null);
+  // A bounded event history cannot override the projected branch state.
+  assert.equal(
+    integrateBlockedReason(experiment({ ...merged, branch_state: 'active' }), status),
+    null,
+  );
+  assert.match(
+    revertBlockedReason(experiment({ ...merged, branch_state: 'active' }), status),
+    /No applied integration/,
+  );
+  assert.equal(integrationHeadline(experiment({ branch_state: 'merged' })), 'Integrated');
+  assert.equal(
+    integrationHeadline(experiment({ ...merged, branch_state: 'active' })),
+    'Branch active',
+  );
+  assert.equal(integrationHeadline(experiment(reverted)), 'Integration reverted');
+});
+
+test('approval binds the exact projected awaiting request and candidate commit', () => {
+  const awaiting = experiment({
+    integration: {
+      stage: 'awaiting_approval',
+      request_id: 'request-id',
+      candidate_commit: 'c'.repeat(40),
+    },
+  });
+  assert.deepEqual(approvalIdentity(awaiting), {
+    integration_request_id: 'request-id',
+    candidate_commit: 'c'.repeat(40),
+  });
+  assert.equal(
+    approvalIdentity(
+      experiment({
+        integration: {
+          stage: 'awaiting_approval',
+          request_id: 'request-id',
+          candidate_commit: 'abc',
+        },
+      }),
+    ),
+    null,
+  );
+  assert.equal(
+    approvalIdentity(
+      experiment({
+        integration: {
+          stage: 'claimed',
+          request_id: 'request-id',
+          candidate_commit: 'c'.repeat(40),
+        },
+      }),
+    ),
+    null,
+  );
+  assert.equal(approvalBlockedReason(experiment(), status), 'No integration is awaiting approval');
+  assert.equal(
+    approvalBlockedReason(awaiting, null),
+    'Install the executor update to enable branch integration',
+  );
+  assert.equal(
+    approvalBlockedReason(
+      experiment({ ...awaiting, pending_commands: pending('approve_integration') }),
+      status,
+    ),
+    'Approval is waiting for the executor',
+  );
+  assert.equal(approvalBlockedReason(awaiting, status), null);
 });
 
 test('the Don’t merge flag is a capability-gated toggle', () => {

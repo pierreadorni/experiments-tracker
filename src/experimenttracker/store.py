@@ -775,17 +775,18 @@ class Store:
             if branch:
                 result["branch"] = branch["branch"]
                 result["head_commit"] = branch["head_commit"]
+                result["branch_state"] = branch["state"]
                 integration = self._projected_integration(eid)
                 if integration:
                     result["integration"] = integration
         return public_projection(result)
 
     def _projected_branch(self, eid):
-        """Return only the branch identity safe to publish; never its checkout paths."""
+        """Return only the branch identity and state safe to publish, never checkout paths."""
         if not self.one("SELECT 1 FROM sqlite_master WHERE name='experiment_branches'"):
             return None
         return self.one(
-            "SELECT branch,head_commit FROM experiment_branches WHERE experiment_id=?",
+            "SELECT branch,head_commit,state FROM experiment_branches WHERE experiment_id=?",
             (eid,),
         )
 

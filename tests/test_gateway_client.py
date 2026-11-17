@@ -3,7 +3,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from test_integration_commands import seed_branch
+from test_integration_commands import awaiting, saved, seed_branch
 
 from experimenttracker.config import GatewayConfig
 from experimenttracker.gateway_client import GatewayClient
@@ -352,6 +352,54 @@ async def test_gateway_revert_without_an_applied_merge_stays_rejected(config, ru
     saved = store.one("SELECT kind,error FROM rejected_gateway_commands WHERE request_id=?", (request_id,))
     assert saved == {"kind": "revert_integration", "error": reason}
     assert not store.rows("SELECT * FROM obligations WHERE kind='integration'")
+
+
+async def test_gateway_approval_moves_only_the_exact_awaiting_candidate(config, runtime, tmp_path):
+    store, _, _, _ = runtime
+    token = tmp_path / "approval-token"
+    token.write_text("e" * 40)
+    config.gateway = GatewayConfig(url="https://gateway.example", credential_file=token)
+    eid = store.command(
+        uuid4(),
+        "create",
+        {"brief": "Approve the prepared candidate.", "recipe_id": "agent_experiment_v1"},
+    )["experiment_id"]
+    repo = tmp_path / "repo"
+    seed_branch(store, eid, repo)
+    request_id, candidate = awaiting(store, eid, repo)
+    command_id = str(uuid4())
+    queued = {
+        "request_id": command_id,
+        "experiment_id": eid,
+        "executor_id": "acacia",
+        "kind": "approve_integration",
+        "payload": {
+            "schema_version": 1,
+            "request_id": command_id,
+            "integration_request_id": request_id,
+            "candidate_commit": candidate["candidate_commit"],
+            "action": "approve",
+        },
+    }
+    acknowledgements = []
+
+    async def handler(request):
+        if request.url.path == "/api/executor/commands":
+            return httpx.Response(200, json={"schema_version": 1, "commands": [queued]})
+        if request.url.path == "/api/executor/ack":
+            acknowledgements.append(json.loads(request.content))
+            return httpx.Response(200, json={"schema_version": 1, "acknowledged": [command_id]})
+        raise AssertionError(request.url.path)
+
+    client = GatewayClient(config, store, transport=httpx.MockTransport(handler))
+    try:
+        await client.commands()
+    finally:
+        await client.close()
+    assert acknowledgements == [{"schema_version": 1, "request_ids": [command_id]}]
+    assert store.one("SELECT state FROM commands WHERE request_id=?", (command_id,))["state"] == "applied"
+    view = saved(store, request_id)
+    assert (view["stage"], view["status"]) == ("ready", "owner approved")
 
 
 def publication_client(config, store, tmp_path, handler):
@@ -887,6 +935,7 @@ async def test_publication_keeps_only_safe_branch_and_integration_identity(confi
 
     experiment = messages[-1]["experiment"]
     assert (experiment["branch"], experiment["head_commit"]) == (f"exp/20260101-{eid}", "b" * 40)
+    assert experiment["branch_state"] == "active"
     assert experiment["integration"] == {
         "stage": "awaiting_approval",
         "request_id": request_id,

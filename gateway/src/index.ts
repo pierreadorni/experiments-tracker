@@ -206,6 +206,18 @@ const integrateSchema = z
   })
   .strict();
 const revertIntegrationSchema = z.object(base).strict();
+const approveIntegrationSchema = z
+  .object({
+    ...base,
+    integration_request_id: z
+      .string()
+      .min(1)
+      .max(200)
+      .regex(/^[^:\s]+$/),
+    candidate_commit: z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/),
+    action: z.literal('approve'),
+  })
+  .strict();
 const dontMergeSchema = z.object({ ...base, value: z.boolean() }).strict();
 const experimentCommandRoutes: Record<
   string,
@@ -221,6 +233,7 @@ const experimentCommandRoutes: Record<
   integrate: { kind: 'integrate', schema: integrateSchema },
   'dont-merge': { kind: 'dont_merge', schema: dontMergeSchema },
   'integrations/revert': { kind: 'revert_integration', schema: revertIntegrationSchema },
+  'integrations/approve': { kind: 'approve_integration', schema: approveIntegrationSchema },
 };
 const artifactSchema = z
   .object({
@@ -311,6 +324,7 @@ const projectionSchema = z
       'waiting_for_executor',
     ]),
     hold_reason: z.string().nullable(),
+    branch_state: z.enum(['active', 'integrating', 'merged', 'abandoned']).optional(),
     artifacts: z.array(artifactSchema).max(1000),
     jobs: z
       .array(
@@ -814,10 +828,20 @@ async function enqueue(env: Env, kind: string, payload: Record<string, unknown>,
       if (!(await executorSupports(env, 'implementation_repair')))
         throw new HttpError(409, 'Install the executor update to enable implementation repair');
     }
-    if (['integrate', 'revert_integration', 'dont_merge'].includes(kind)) {
+    if (['integrate', 'revert_integration', 'dont_merge', 'approve_integration'].includes(kind)) {
       if (!(await executorSupports(env, 'branch_integration')))
         throw new HttpError(409, 'Install the executor update to enable branch integration');
     }
+    if (
+      kind === 'approve_integration' &&
+      (exp.integration?.stage !== 'awaiting_approval' ||
+        exp.integration?.request_id !== payload.integration_request_id ||
+        exp.integration?.candidate_commit !== payload.candidate_commit)
+    )
+      throw new HttpError(
+        409,
+        'Integration approval has changed or is no longer awaiting approval',
+      );
     if (kind === 'discuss' && exp.phase !== 'complete')
       throw new HttpError(409, 'Discussion is available when the experiment is complete');
     if (
@@ -2209,7 +2233,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     });
   }
   const experiment = p.match(
-    /^\/api\/experiments\/([^/]+)(?:\/(notes|actions|answers|delete|conversation|plan-review|steering|integrate|dont-merge|integrations\/revert))?$/,
+    /^\/api\/experiments\/([^/]+)(?:\/(notes|actions|answers|delete|conversation|plan-review|steering|integrate|dont-merge|integrations\/(?:revert|approve)))?$/,
   );
   if (experiment) {
     const id = uuid.parse(experiment[1]);

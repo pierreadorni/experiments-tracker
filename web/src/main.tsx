@@ -997,9 +997,11 @@ function App() {
                                         ? 'Integration request'
                                         : c.kind === 'revert_integration'
                                           ? 'Integration revert'
-                                          : c.kind === 'dont_merge'
-                                            ? 'Don’t merge update'
-                                            : 'Answer delivery',
+                                          : c.kind === 'approve_integration'
+                                            ? 'Integration approval'
+                                            : c.kind === 'dont_merge'
+                                              ? 'Don’t merge update'
+                                              : 'Answer delivery',
                       )
                       .join(' · ')}
                     . Saved on the gateway; acacia has not applied these commands yet.
@@ -1027,6 +1029,14 @@ function App() {
                 onRevert={() =>
                   act(async () => {
                     await command(`/api/experiments/${exp.id}/integrations/revert`, {});
+                  })
+                }
+                onApprove={(approval) =>
+                  act(async () => {
+                    await command(`/api/experiments/${exp.id}/integrations/approve`, {
+                      action: 'approve',
+                      ...approval,
+                    });
                   })
                 }
                 onDontMerge={(value) =>

@@ -37,6 +37,30 @@ export function integrationSettlement(exp: Experiment): 'merged' | 'reverted' | 
   return settled.kind === 'integration_applied' ? 'merged' : 'reverted';
 }
 
+export function integrationMerged(exp: Experiment) {
+  if (exp.branch_state) return exp.branch_state === 'merged';
+  return integrationSettlement(exp) === 'merged';
+}
+
+export type IntegrationApproval = {
+  integration_request_id: string;
+  candidate_commit: string;
+};
+
+export function approvalIdentity(exp: Experiment): IntegrationApproval | null {
+  const integration = exp.integration;
+  if (
+    integration?.stage !== 'awaiting_approval' ||
+    !integration.request_id ||
+    !exactCommit(integration.candidate_commit)
+  )
+    return null;
+  return {
+    integration_request_id: integration.request_id,
+    candidate_commit: integration.candidate_commit,
+  };
+}
+
 export function dontMerge(exp: Experiment) {
   return exp.contract.dont_merge === true;
 }
@@ -60,7 +84,7 @@ export function integrateBlockedReason(exp: Experiment, status: Status | null) {
   if (unavailable) return unavailable;
   if (pendingRequest(exp, 'integrate')) return 'Integration request is waiting for the executor';
   if (integrationInFlight(exp)) return integrationStageLabel(exp.integration!.stage);
-  if (integrationSettlement(exp) === 'merged') return 'This branch is already integrated';
+  if (integrationMerged(exp)) return 'This branch is already integrated';
   if (dontMerge(exp)) return 'This experiment is marked Don’t merge';
   return null;
 }
@@ -71,7 +95,15 @@ export function revertBlockedReason(exp: Experiment, status: Status | null) {
   if (pendingRequest(exp, 'revert_integration'))
     return 'Revert request is waiting for the executor';
   if (integrationInFlight(exp)) return integrationStageLabel(exp.integration!.stage);
-  if (integrationSettlement(exp) !== 'merged') return 'No applied integration to revert';
+  if (!integrationMerged(exp)) return 'No applied integration to revert';
+  return null;
+}
+
+export function approvalBlockedReason(exp: Experiment, status: Status | null) {
+  const unavailable = supported(exp, status);
+  if (unavailable) return unavailable;
+  if (pendingRequest(exp, 'approve_integration')) return 'Approval is waiting for the executor';
+  if (!approvalIdentity(exp)) return 'No integration is awaiting approval';
   return null;
 }
 
@@ -86,10 +118,12 @@ export function dontMergeBlockedReason(exp: Experiment, status: Status | null) {
 
 export function integrationHeadline(exp: Experiment) {
   if (pendingRequest(exp, 'revert_integration')) return 'Revert request queued';
+  if (pendingRequest(exp, 'approve_integration')) return 'Approval request queued';
   if (pendingRequest(exp, 'integrate')) return 'Integration request queued';
   if (integrationInFlight(exp)) return integrationStageLabel(exp.integration!.stage);
-  const settlement = integrationSettlement(exp);
-  if (settlement) return settlement === 'merged' ? 'Integrated' : 'Integration reverted';
+  const settled = integrationSettlement(exp);
+  if (integrationMerged(exp)) return 'Integrated';
+  if (settled === 'reverted') return 'Integration reverted';
   if (exp.integration) return integrationStageLabel(exp.integration.stage);
   if (dontMerge(exp)) return 'Branch active · Don’t merge';
   return 'Branch active';

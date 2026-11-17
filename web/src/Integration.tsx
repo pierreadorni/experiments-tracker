@@ -1,17 +1,20 @@
 import { useRef, useState } from 'react';
-import { ArrowRight, GitMerge, Undo2 } from 'lucide-react';
+import { ArrowRight, Check, GitMerge, Undo2 } from 'lucide-react';
 import type { Experiment, Status } from './types';
 import {
+  approvalBlockedReason,
+  approvalIdentity,
   dontMerge,
   dontMergeBlockedReason,
   integrateBlockedReason,
   integrationHeadline,
   revertBlockedReason,
   shortCommit,
+  type IntegrationApproval,
 } from './integrationState';
 import { useDialog } from './useDialog';
 
-type DialogMode = 'integrate' | 'revert';
+type DialogMode = 'integrate' | 'revert' | 'approve';
 const COPY = {
   integrate: {
     title: 'Integrate this branch?',
@@ -25,6 +28,12 @@ const COPY = {
       'The backend queues a revert of the exact applied integration merge commit, and the branch becomes available for a later integration again. The executor must apply it.',
     confirm: 'Queue revert',
   },
+  approve: {
+    title: 'Approve this integration?',
+    detail:
+      'The backend marks exactly this prepared candidate ready, and the executor applies it with the saved base. A changed request or commit cannot reuse this approval.',
+    confirm: 'Approve candidate',
+  },
 };
 
 export function BranchIntegration({
@@ -34,6 +43,7 @@ export function BranchIntegration({
   error,
   onIntegrate,
   onRevert,
+  onApprove,
   onDontMerge,
 }: {
   exp: Experiment;
@@ -42,13 +52,17 @@ export function BranchIntegration({
   error: string | null;
   onIntegrate: (reason?: string) => Promise<boolean>;
   onRevert: () => Promise<boolean>;
+  onApprove: (approval: IntegrationApproval) => Promise<boolean>;
   onDontMerge: (value: boolean) => Promise<boolean>;
 }) {
   const [dialog, setDialog] = useState<DialogMode | null>(null);
+  const [approval, setApproval] = useState<IntegrationApproval | null>(null);
   if (!exp.branch && !exp.integration) return null;
   const integrateReason = integrateBlockedReason(exp, status);
   const revertReason = revertBlockedReason(exp, status);
   const flagReason = dontMergeBlockedReason(exp, status);
+  const approvable = approvalIdentity(exp);
+  const approveReason = approvable ? approvalBlockedReason(exp, status) : null;
   const flagged = dontMerge(exp);
   return (
     <section className="integration-panel" aria-label="Branch and integration">
@@ -83,6 +97,20 @@ export function BranchIntegration({
           <Undo2 size={15} />
           Revert integration…
         </button>
+        {approvable && (
+          <button
+            className="text-button"
+            disabled={busy || Boolean(approveReason)}
+            title={approveReason || 'Approve exactly this prepared integration candidate'}
+            onClick={() => {
+              setApproval(approvable);
+              setDialog('approve');
+            }}
+          >
+            <Check size={15} />
+            Approve integration…
+          </button>
+        )}
         <button
           className="text-button"
           aria-pressed={flagged}
@@ -100,9 +128,19 @@ export function BranchIntegration({
         <IntegrationDialog
           mode={dialog}
           branch={exp.branch || ''}
+          approval={approval}
           error={error}
-          onClose={() => setDialog(null)}
-          onConfirm={dialog === 'integrate' ? onIntegrate : onRevert}
+          onClose={() => {
+            setDialog(null);
+            setApproval(null);
+          }}
+          onConfirm={
+            dialog === 'integrate'
+              ? onIntegrate
+              : dialog === 'revert'
+                ? onRevert
+                : () => (approval ? onApprove(approval) : Promise.resolve(false))
+          }
         />
       )}
     </section>
@@ -112,12 +150,14 @@ export function BranchIntegration({
 function IntegrationDialog({
   mode,
   branch,
+  approval,
   error,
   onClose,
   onConfirm,
 }: {
   mode: DialogMode;
   branch: string;
+  approval: IntegrationApproval | null;
   error: string | null;
   onClose: () => void;
   onConfirm: (reason?: string) => Promise<boolean>;
@@ -154,6 +194,12 @@ function IntegrationDialog({
           <code>{branch}</code>
         </p>
         <p id="integration-description">{copy.detail}</p>
+        {mode === 'approve' && approval && (
+          <p className="muted small">
+            Request <code>{approval.integration_request_id}</code> · candidate{' '}
+            <code title={approval.candidate_commit}>{shortCommit(approval.candidate_commit)}</code>
+          </p>
+        )}
         {mode === 'integrate' && (
           <>
             <label htmlFor="integration-reason">Reason for integrating (optional)</label>
@@ -176,7 +222,12 @@ function IntegrationDialog({
           <button type="button" disabled={saving} onClick={close}>
             Cancel
           </button>
-          <button type="button" className="primary" disabled={saving} onClick={submit}>
+          <button
+            type="button"
+            className="primary"
+            disabled={saving || (mode === 'approve' && !approval)}
+            onClick={submit}
+          >
             {saving ? 'Saving request…' : copy.confirm}
             <ArrowRight size={16} />
           </button>

@@ -45,6 +45,7 @@ def test_projection_exposes_exact_branch_head_job_commit_and_owner_candidate(run
     view = store.projection(eid)
 
     assert (view["branch"], view["head_commit"]) == (f"exp/20260101-{eid}", "b" * 40)
+    assert view["branch_state"] == "active"
     assert view["jobs"][0]["commit"] == "d" * 40
     assert view["integration"] == {
         "stage": "awaiting_approval",
@@ -77,7 +78,12 @@ def test_archived_projection_omits_branch_integration_and_job_commit(runtime, tm
 
     view = store.projection(eid)
 
-    assert "branch" not in view and "head_commit" not in view and "integration" not in view
+    assert (
+        "branch" not in view
+        and "head_commit" not in view
+        and "branch_state" not in view
+        and "integration" not in view
+    )
     assert "commit" not in view["jobs"][0]
 
 
@@ -90,4 +96,9 @@ def test_projection_stays_readable_without_workspace_tables(runtime):
 
     view = store.projection(eid)
 
-    assert "branch" not in view and "head_commit" not in view and "integration" not in view
+    assert (
+        "branch" not in view
+        and "head_commit" not in view
+        and "branch_state" not in view
+        and "integration" not in view
+    )

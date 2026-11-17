@@ -521,6 +521,7 @@ test('branch, job commit and exact integration candidate survive publication', a
     hold_reason: null,
     branch,
     head_commit: 'b'.repeat(40),
+    branch_state: 'active',
     jobs: [
       {
         intent_id: randomUUID(),
@@ -547,8 +548,110 @@ test('branch, job commit and exact integration candidate survive publication', a
   const saved = await (await req(`/api/experiments/${eid}`)).json();
   assert.equal(saved.branch, branch);
   assert.equal(saved.head_commit, 'b'.repeat(40));
+  assert.equal(saved.branch_state, 'active');
   assert.equal(saved.jobs[0].commit, 'd'.repeat(40));
   assert.deepEqual(saved.integration, integration);
+});
+test('owner approval posts only the exact projected awaiting candidate', async () => {
+  const { payload: created, result } = await create();
+  await req('/api/executor/ack', {
+    token: executor,
+    method: 'POST',
+    body: JSON.stringify({ schema_version: 1, request_ids: [created.request_id] }),
+  });
+  const eid = result.experiment_id;
+  const initial = await (await req(`/api/experiments/${eid}`)).json();
+  const integration = {
+    stage: 'awaiting_approval',
+    request_id: 'integration-request',
+    candidate_commit: 'c'.repeat(40),
+  };
+  const view = {
+    ...initial,
+    revision: 2,
+    phase: 'training',
+    hold_reason: null,
+    branch: `exp/20260101-${eid}`,
+    head_commit: 'b'.repeat(40),
+    branch_state: 'active',
+    integration,
+  };
+  assert.equal(
+    (
+      await req('/api/executor/publish', {
+        token: executor,
+        method: 'POST',
+        body: JSON.stringify({
+          schema_version: 1,
+          executor_id: 'acacia',
+          messages: [{ schema_version: 1, event_id: randomUUID(), experiment: view, inbox: [] }],
+        }),
+      })
+    ).status,
+    200,
+  );
+  const db = await mf.getD1Database('DB');
+  const post = (value) =>
+    req(`/api/experiments/${eid}/integrations/approve`, {
+      method: 'POST',
+      body: JSON.stringify(value),
+    });
+  const exact = {
+    schema_version: 1,
+    request_id: randomUUID(),
+    integration_request_id: integration.request_id,
+    candidate_commit: integration.candidate_commit,
+    action: 'approve',
+  };
+  const before = await db
+    .prepare('SELECT payload,received_at FROM executor_status WHERE id=?')
+    .bind('acacia')
+    .first();
+  await db.prepare('DELETE FROM executor_status WHERE id=?').bind('acacia').run();
+  try {
+    assert.equal((await post(exact)).status, 409);
+    await db
+      .prepare('INSERT INTO executor_status(id,payload,received_at) VALUES(?,?,?)')
+      .bind('acacia', JSON.stringify({ branch_integration: true }), Date.now() / 1000)
+      .run();
+    assert.equal((await post({ ...exact, action: 'reject' })).status, 422);
+    assert.equal(
+      (await post({ ...exact, request_id: randomUUID(), candidate_commit: 'not-a-sha' })).status,
+      422,
+    );
+    assert.equal((await post({ ...exact, candidate_commit: 'd'.repeat(40) })).status, 409);
+    assert.equal(
+      (await post({ ...exact, request_id: randomUUID(), integration_request_id: 'other' })).status,
+      409,
+    );
+    const accepted = await post(exact);
+    assert.equal(accepted.status, 202);
+    assert.equal((await accepted.json()).state, 'waiting_for_executor');
+    const saved = await db
+      .prepare(
+        "SELECT kind,payload FROM commands WHERE request_id=? AND kind='approve_integration'",
+      )
+      .bind(exact.request_id)
+      .first();
+    assert.deepEqual(saved, { kind: 'approve_integration', payload: JSON.stringify(exact) });
+    assert.equal(
+      (
+        await req('/api/executor/ack', {
+          token: executor,
+          method: 'POST',
+          body: JSON.stringify({ schema_version: 1, request_ids: [exact.request_id] }),
+        })
+      ).status,
+      200,
+    );
+  } finally {
+    await db.prepare('DELETE FROM executor_status WHERE id=?').bind('acacia').run();
+    if (before)
+      await db
+        .prepare('INSERT INTO executor_status(id,payload,received_at) VALUES(?,?,?)')
+        .bind('acacia', before.payload, before.received_at)
+        .run();
+  }
 });
 test('monotonic projections, upload verification, and result readiness', async () => {
   const { result } = await create(),
