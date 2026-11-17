@@ -6,6 +6,7 @@ import os
 import stat
 import subprocess
 from pathlib import Path
+from uuid import uuid4
 
 from . import agent_conventions, clock
 from .projects import ProjectUnavailable
@@ -235,7 +236,7 @@ class Workspaces:
         row = self.branch(eid)
         if not row:
             return None
-        return gitworkspace.verify(row["repo"], branch_identity(row), lock=branch_lock(eid))["head_commit"]
+        return gitworkspace.verify(row["repo"], _branch_identity(row), lock=_branch_lock(eid))["head_commit"]
 
     def shared_runtime(self, eid, *, build=True):
         """The shared environment of an eligible named branch worktree, or None.
@@ -273,21 +274,38 @@ class Workspaces:
         row = self.branch(eid)
         if not row:
             raise WorkspaceUnavailable("The saved experiment branch identity is missing")
-        confirmed = gitworkspace.verify_commit(
-            row["repo"], branch_identity(row), message, lock=branch_lock(eid)
-        )
-        if confirmed["head_commit"] != row["head_commit"]:
-            # The exact request already committed and only its reply was lost. Adopt
-            # that commit; never sweep later worktree edits into a second commit.
+        identity = _branch_identity(row)
+        with self.store.tx() as db:
+            last = db.execute(
+                "SELECT kind,payload FROM events WHERE experiment_id=? "
+                "AND kind IN ('workspace_commit_intent','workspace_commit_settled') ORDER BY seq DESC LIMIT 1",
+                (eid,),
+            ).fetchone()
+            pending = last is not None and last["kind"] == "workspace_commit_intent"
+            if pending:
+                intent = json.loads(last["payload"])
+                if (intent["parent"], intent["message"]) != (row["head_commit"], message):
+                    raise WorkspaceUnavailable("An earlier workspace commit needs reconciliation")
+            else:
+                intent = {"parent": row["head_commit"], "message": message, "id": str(uuid4())}
+                self.store.emit(db, eid, "workspace_commit_intent", intent)
+        subject = f"{message} [et:{intent['id']}]"
+        if pending:
+            confirmed = gitworkspace.verify_commit(row["repo"], identity, subject, lock=_branch_lock(eid))
             head, skipped = confirmed["head_commit"], []
+            if head == row["head_commit"]:
+                raise WorkspaceUnavailable("The earlier workspace commit outcome needs inspection")
         else:
-            head, skipped = gitworkspace.commit(confirmed["worktree"], message)
-        if head != row["head_commit"]:
-            with self.store.tx() as db:
-                db.execute(
-                    "UPDATE experiment_branches SET head_commit=?,updated_at=? WHERE experiment_id=?",
-                    (head, clock.now(), eid),
-                )
+            confirmed = gitworkspace.verify(row["repo"], identity, lock=_branch_lock(eid))
+            head, skipped = gitworkspace.commit(confirmed["worktree"], subject)
+        with self.store.tx() as db:
+            updated = db.execute(
+                "UPDATE experiment_branches SET head_commit=?,updated_at=? WHERE experiment_id=? AND head_commit=?",
+                (head, clock.now(), eid, row["head_commit"]),
+            ).rowcount
+            if updated != 1:
+                raise WorkspaceUnavailable("The saved workspace head changed during commit")
+            self.store.emit(db, eid, "workspace_commit_settled", {"id": intent["id"], "commit": head})
         return {
             "branch": row["branch"],
             "worktree": row["worktree"],
@@ -303,8 +321,8 @@ class Workspaces:
         row = self.branch(eid)
         if not row:
             raise WorkspaceUnavailable("The saved experiment branch identity is missing")
-        identity = {**branch_identity(row), "head_commit": commit}
-        gitworkspace.verify(row["repo"], identity, lock=branch_lock(eid))
+        identity = {**_branch_identity(row), "head_commit": commit}
+        gitworkspace.verify(row["repo"], identity, lock=_branch_lock(eid))
         return gitworkspace.pin(row["repo"], commit, f"refs/et/jobs/{intent_id}")
 
     def isolated(self, eid):

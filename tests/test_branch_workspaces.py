@@ -374,8 +374,18 @@ async def test_branch_commit_uses_the_saved_tree_and_reconciles_a_lost_response(
 
     (worktree / "shared.py").write_text("branch work\n")
     message = "Job sources train revision 1"
-    # Simulate a lost backend commit response: Git changed state, the saved head did not.
-    lost, _ = gitworkspace.commit(worktree, message)
+    # Simulate a lost reply after the backend persisted the exact intent and committed.
+    original = gitworkspace.commit
+
+    def lost_reply(*args):
+        original(*args)
+        raise WorkspaceUnavailable("commit reply lost")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(gitworkspace, "commit", lost_reply)
+        with pytest.raises(WorkspaceUnavailable, match="reply lost"):
+            workflow.workspaces.commit_branch(eid, message)
+    lost = git(worktree, "rev-parse", "HEAD").decode().strip()
     assert lost != row["head_commit"]
     # Later uncommitted work must survive adoption instead of being swept into a commit.
     (worktree / "later.py").write_text("later work\n")
@@ -410,6 +420,14 @@ async def test_lost_response_adoption_requires_the_backend_author(runtime, tmp_p
     eid, worktree = row["experiment_id"], Path(row["worktree"])
     message = "Job sources train revision 1"
     (worktree / "shared.py").write_text("human work\n")
+    token = "test-intent"
+    with store.tx() as db:
+        store.emit(
+            db,
+            eid,
+            "workspace_commit_intent",
+            {"parent": row["head_commit"], "message": message, "id": token},
+        )
     git(worktree, "add", "--", "shared.py")
     git(
         worktree,
@@ -422,7 +440,7 @@ async def test_lost_response_adoption_requires_the_backend_author(runtime, tmp_p
         "commit",
         "--no-verify",
         "-m",
-        message,
+        f"{message} [et:{token}]",
     )
     with pytest.raises(WorkspaceUnavailable, match="saved commit"):
         workflow.workspaces.commit_branch(eid, message)
