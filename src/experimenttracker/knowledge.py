@@ -590,9 +590,11 @@ class ProjectSupervisor:
         )
 
     async def interrupt(self):
-        row = self.memory.store.one("SELECT * FROM project_turns WHERE id=?", (self.active_id,))
-        if row and row["thread_id"] and row["turn_id"]:
-            await self.workflow.agent.interrupt(row["thread_id"], row["turn_id"])
+        """Interrupt every occupied project turn through its own live process."""
+        pool = self.workflow.agent_pool
+        for reservation in pool.occupied():
+            if reservation.source_table == "project_turns":
+                await pool.interrupt(reservation)
 
     def context(self, pid):
         wf, memory = self.workflow, self.memory
@@ -722,10 +724,14 @@ class ProjectSupervisor:
                 ):
                     return
                 self.last_reconcile[row["id"]] = clock.now()
+                reservation = wf.agent_pool.lookup("project_turns", row["id"])
+                lane = wf.agent_pool.read_lane(reservation)
+                if lane is None:
+                    return
                 try:
                     if not row["thread_id"] or not row["turn_id"]:
                         raise ValueError("dispatch response lost; exact turn identity is required")
-                    result = await wf.agent.read_turn(row["thread_id"], row["turn_id"])
+                    result = await lane.agent.read_turn(row["thread_id"], row["turn_id"])
                     memory.state(row["id"], "received", result=encode(result))
                 except TerminalTurnError as exc:
                     memory.state(row["id"], "failed", error=str(exc)[:2000], hold_reason=None)
@@ -733,6 +739,7 @@ class ProjectSupervisor:
                     memory.state(
                         row["id"], "uncertain", error=str(exc)[:2000], hold_reason="agent_dispatch_uncertain"
                     )
+                wf.agent_pool.settle_row("project_turns", row["id"])
                 return
             if row["origin"] == "weekly" and (
                 not memory.view(row["project_id"])["weekly"] or wf.research.service.enabled(row["project_id"])

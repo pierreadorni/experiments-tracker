@@ -473,39 +473,19 @@ class Workflow:
             await self.pool_owner.research.interrupt_holds()
             if not decision.admitted:
                 await self.pool_owner.supervisor.interrupt()
-                for lane in self.pool_owner.lanes:
-                    action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (lane.active_action,))
-                    if action and action["turn_id"]:
-                        lane.hold_active_action(action, "quota_hold")
-                        await lane.agent.interrupt(action["thread_id"], action["turn_id"])
+                await self.agent_pool.interrupt_occupied("quota_hold")
             return decision
         except Exception as exc:
             log.warning("quota refresh failed: %s", exc)
             decision = self.gate.decide()
             if not decision.admitted:
                 await self.pool_owner.supervisor.interrupt()
-                for lane in self.pool_owner.lanes:
-                    action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (lane.active_action,))
-                    if action and action["turn_id"]:
-                        lane.hold_active_action(action, "quota_hold")
-                        await lane.agent.interrupt(action["thread_id"], action["turn_id"])
+                await self.agent_pool.interrupt_occupied("quota_hold")
             return decision
-
-    def hold_active_action(self, action, reason):
-        with self.store.tx() as db:
-            db.execute("UPDATE agent_actions SET interrupt_reason=? WHERE id=?", (reason, action["id"]))
-        if action["phase"].startswith("discuss:"):
-            self.conversation.hold(action["phase"].removeprefix("discuss:"), reason)
-        else:
-            self.store.update(action["experiment_id"], hold_reason=reason)
 
     async def _quota_notification(self, payload):
         self.gate.update(payload)
-        if (
-            not self.closing
-            and not self.gate.decide().admitted
-            and (self.active_action or self.pool_owner.supervisor.active_id or self.pool_owner.research.busy)
-        ):
+        if not self.closing and not self.gate.decide().admitted and self.agent_pool.occupied():
             # Do not await a correlated RPC from inside the protocol reader.
             if not self.quota_task or self.quota_task.done():
                 self.quota_task = asyncio.create_task(self.refresh_quota())
@@ -828,11 +808,14 @@ class Workflow:
             if action["state"] in ("running", "dispatching"):
                 if self.agent_task or not self.agent_ready:
                     return
+                reservation = self.agent_pool.lookup("agent_actions", action["id"])
+                lane = self.agent_pool.read_lane(reservation)
                 if action["thread_id"] and action["turn_id"]:
                     try:
-                        result = await self.agent.read_turn(action["thread_id"], action["turn_id"])
+                        result = await lane.agent.read_turn(action["thread_id"], action["turn_id"])
                         if legacy_archive.execution_frozen(self.store.experiment(exp["id"])):
                             self._action_state(action["id"], "completed", result=result, expected=action)
+                            self.agent_pool.settle_row("agent_actions", action["id"])
                             return
                         TitleSummary.model_validate(result)
                         self._action_state(action["id"], "completed", result=result, expected=action)
@@ -844,6 +827,7 @@ class Workflow:
                         action["id"], "uncertain", error="title dispatch outcome is unknown", expected=action
                     )
                     self.store.update(exp["id"], hold_reason="agent_dispatch_uncertain")
+                self.agent_pool.settle_row("agent_actions", action["id"])
                 return
             if action["state"] == "completed":
                 if self.title_applicable(exp, action) and not self.store.one(
@@ -2513,23 +2497,31 @@ class Workflow:
                 )
                 action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (action["id"],))
         if action["state"] in ("running", "dispatching"):
-            if self.agent_task:
+            reservation = self.agent_pool.lookup("agent_actions", action["id"])
+            lane = self.agent_pool.live_lane(reservation)
+            if lane is not None:
                 if exp["pause_agent"] and action["turn_id"]:
-                    self.hold_active_action(action, "agent_paused")
-                    await self.agent.interrupt(action["thread_id"], action["turn_id"])
+                    self.agent_pool.hold(action, "agent_paused")
+                    await self.agent_pool.interrupt(reservation)
                 return
-            if action["thread_id"] and action["turn_id"] and self.agent_ready:
+            # No live task owns this saved turn: read it back on a configured
+            # connection without starting another one, and settle what it proves.
+            lane = self.agent_pool.read_lane(reservation)
+            if action["thread_id"] and action["turn_id"] and lane is not None:
                 try:
-                    result = await self.agent.read_turn(action["thread_id"], action["turn_id"])
+                    result = await lane.agent.read_turn(action["thread_id"], action["turn_id"])
                     self._action_state(action["id"], "completed", result=result, expected=action)
+                    self.agent_pool.settle_row("agent_actions", action["id"])
                     return
                 except TerminalTurnError as exc:
                     self._action_state(action["id"], "failed", error=str(exc), expected=action)
+                    self.agent_pool.settle_row("agent_actions", action["id"])
                     return
                 except Exception as exc:
                     self._action_state(action["id"], "uncertain", error=str(exc), expected=action)
             else:
                 self._action_state(action["id"], "uncertain", error="dispatch response lost", expected=action)
+            self.agent_pool.settle_row("agent_actions", action["id"])
             self.store.update(eid, hold_reason="agent_dispatch_uncertain")
             return
         if action["state"] == "uncertain" and self.input_rejected(action):
@@ -3231,7 +3223,12 @@ class Workflow:
         """Adopt only a completed, already recorded turn; never dispatch a replacement."""
         if self.agent_task:
             raise ValueError("stop the owning daemon before operator reconciliation")
-        return await self.adopt_turn(action_id, turn_id=turn_id)
+        try:
+            return await self.adopt_turn(action_id, turn_id=turn_id)
+        finally:
+            # Settled outside any dispatch task: re-read the row so the reservation
+            # releases, or keeps, exactly what the saved state proves.
+            self.agent_pool.settle_row("agent_actions", action_id)
 
     def dispatch_prompt_hash(self, action):
         """Return the exact prompt hash recorded for this action's saved dispatch intent.
@@ -3903,9 +3900,13 @@ class Workflow:
                 self.store.notify(eid, "report_failed", f"Report version {version} could not be built: {exc}")
 
     async def close(self):
+        # Stop admissions before any role stops: a tick that starts while shutdown runs
+        # must not claim a turn whose transport this call is about to close.
+        self.closing = True
+        self.agent_pool.closing = True
         await self.research.close()
         await self.supervisor.close()
-        self.closing = True
+        await self.controller.close()
         # Threads only read/seal filesystem evidence; drain them before releasing ownership.
         # A restart re-observes the exact saved job and validates again without resubmission.
         checks = [task for task, _ in self.output_checks.values()] + list(self.evidence_checks.values())
@@ -3913,7 +3914,9 @@ class Workflow:
             await asyncio.gather(*checks, return_exceptions=True)
         self.output_checks.clear()
         self.evidence_checks.clear()
-        for lane in self.lanes[1:]:
+        # Withdraw every lane task first, then close each transport exactly once. A cancelled
+        # turn keeps its saved uncertainty; nothing here declares a remote turn absent.
+        for lane in self.lanes:
             if lane.agent_task and not lane.agent_task.done():
                 lane.agent_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -3922,17 +3925,8 @@ class Workflow:
                 lane.quota_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await lane.quota_task
+        for lane in self.lanes:
             await lane.agent.close()
-        if self.agent_task and not self.agent_task.done():
-            self.agent_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self.agent_task
-        if self.quota_task and not self.quota_task.done():
-            self.quota_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self.quota_task
-        await self.controller.close()
-        await self.agent.close()
         if self.backup_task:
             await self.backup_task
         await self.backup_state()

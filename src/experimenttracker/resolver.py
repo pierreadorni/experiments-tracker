@@ -201,7 +201,12 @@ class TurnResolver:
         """Resolve every saved uncertain action; one experiment cannot stop another."""
         if not self.workflow.agent_ready:
             return
-        owned = {lane.active_action for lane in self.workflow.pool_owner.lanes}
+        # A saved row with a live process belongs to that task, not to the resolver.
+        owned = {
+            reservation.action_id
+            for reservation in self.workflow.agent_pool.live()
+            if reservation.source_table == "agent_actions"
+        }
         for action in self.workflow.store.rows(
             "SELECT * FROM agent_actions WHERE state='uncertain' ORDER BY created_at"
         ):
@@ -221,11 +226,16 @@ class TurnResolver:
         now = clock.now()
         if now < self.failures.get(action["id"], (0, 0))[1]:
             return
+        reservation = self.workflow.agent_pool.lookup("agent_actions", action["id"])
+        lane = self.workflow.agent_pool.read_lane(reservation)
+        if lane is None:
+            # No configured connection can read the saved thread: it stays uncertain.
+            return
         try:
             if not action["thread_id"]:
                 raise NeedsAttention("saved dispatch has no saved thread identity")
             prompt_hash = self.workflow.dispatch_prompt_hash(action)
-            turns = await self.workflow.agent.read_thread(action["thread_id"])
+            turns = await lane.agent.read_thread(action["thread_id"])
         except Exception as exc:
             self.retry_unreadable(action, exp, exc)
             return
@@ -246,6 +256,7 @@ class TurnResolver:
             if matches[0]["status"] == "completed":
                 self.failures.pop(action["id"], None)
                 await self.workflow.adopt_turn(action["id"], turn_id=matches[0]["id"])
+                self.workflow.agent_pool.settle_row("agent_actions", action["id"])
             return
         if now - self.dispatched_at(action) <= ABSENT_AFTER_SECONDS:
             return
@@ -295,6 +306,7 @@ class TurnResolver:
                 )
         if continuation and not action["phase"].startswith("discuss:"):
             store.update(exp["id"], hold_reason="agent_continuation", error=NOT_STARTED)
+        self.workflow.agent_pool.settle_row("agent_actions", action["id"])
 
     def ask_owner(self, exp, text):
         self.workflow.store.update(exp["id"], hold_reason="agent_dispatch_uncertain", error=text)

@@ -134,7 +134,7 @@ def blockers(workflow):
     ):
         if store.one(query):
             reasons.append(label)
-    if any(lane.agent_task and not lane.agent_task.done() for lane in workflow.pool_owner.lanes):
+    if workflow.pool_owner.agent_pool.live():
         reasons.append("an agent task is settling")
     supervisor = workflow.pool_owner.supervisor
     if workflow.submission_lock.locked():

@@ -158,35 +158,40 @@ class ResearchController:
                 )
 
     async def interrupt_holds(self):
-        wf = self.workflow
-        for action in wf.store.rows(
-            "SELECT * FROM autopilot_actions WHERE state IN ('dispatching','running','uncertain')"
-        ):
-            run = self.service.run(run_id=action["run_id"])
-            reason = None
-            if run["status"] in ("paused", "stopped", "completed"):
-                reason = "autopilot_" + run["status"]
-            elif action["control_revision"] != run["control_revision"]:
-                reason = "autopilot_authority_changed"
-            elif not self.service.quota(wf.gate, run=run).admitted:
-                reason = "quota_hold"
-            if reason and action["thread_id"] and action["turn_id"] and wf.agent_ready:
-                if action["interrupt_reason"] != reason:
+        wf, pool = self.workflow, self.workflow.agent_pool
+        for reservation in pool.live():
+            if reservation.source_table == "autopilot_actions":
+                action = wf.store.one("SELECT * FROM autopilot_actions WHERE id=?", (reservation.action_id,))
+                if not action:
+                    continue
+                run = self.service.run(run_id=action["run_id"])
+                reason = None
+                if run["status"] in ("paused", "stopped", "completed"):
+                    reason = "autopilot_" + run["status"]
+                elif action["control_revision"] != run["control_revision"]:
+                    reason = "autopilot_authority_changed"
+                elif not self.service.quota(wf.gate, run=run).admitted:
+                    reason = "quota_hold"
+                if (
+                    reason
+                    and action["thread_id"]
+                    and action["turn_id"]
+                    and action["interrupt_reason"] != reason
+                ):
                     self.state(action["id"], action["state"], interrupt_reason=reason)
-                    await wf.agent.interrupt(action["thread_id"], action["turn_id"])
-        for lane in wf.lanes:
-            action = wf.store.one("SELECT * FROM agent_actions WHERE id=?", (lane.active_action,))
-            if not action or not self.service.member(action["experiment_id"]) or not action["turn_id"]:
-                continue
-            phase = "interpret" if action["phase"] == "interpret" else action["phase"]
-            reason = self.service.authority(
-                action["experiment_id"], phase, action["phase"].removeprefix("agent:")
-            )
-            if not reason and not self.service.quota(lane.gate, eid=action["experiment_id"]).admitted:
-                reason = "quota_hold"
-            if reason and action["interrupt_reason"] != reason:
-                lane.hold_active_action(action, reason)
-                await lane.agent.interrupt(action["thread_id"], action["turn_id"])
+                    await pool.interrupt(reservation)
+            elif reservation.source_table == "agent_actions":
+                action = wf.store.one("SELECT * FROM agent_actions WHERE id=?", (reservation.action_id,))
+                if not action or not self.service.member(action["experiment_id"]) or not action["turn_id"]:
+                    continue
+                reason = self.service.authority(
+                    action["experiment_id"], action["phase"], action["phase"].removeprefix("agent:")
+                )
+                if not reason and not self.service.quota(wf.gate, eid=action["experiment_id"]).admitted:
+                    reason = "quota_hold"
+                if reason and action["interrupt_reason"] != reason:
+                    pool.hold(action, reason)
+                    await pool.interrupt(reservation)
 
     async def advance(self):
         wf = self.workflow
@@ -215,13 +220,18 @@ class ResearchController:
                     error="turn-start reply lost; exact identity reconciliation required",
                 )
                 return
+            reservation = wf.agent_pool.lookup("autopilot_actions", row["id"])
+            lane = wf.agent_pool.read_lane(reservation)
+            if lane is None:
+                return
             try:
-                result = await wf.agent.read_turn(row["thread_id"], row["turn_id"])
+                result = await lane.agent.read_turn(row["thread_id"], row["turn_id"])
                 self.state(row["id"], "received", result=encode(result))
             except TerminalTurnError as exc:
                 self.state(row["id"], "failed", error=str(exc)[:2000])
             except Exception as exc:
                 self.state(row["id"], "uncertain", error=str(exc)[:2000])
+            wf.agent_pool.settle_row("autopilot_actions", row["id"])
             return
         if self.busy or wf.supervisor.blocks_dispatch or any(lane.agent_task for lane in wf.lanes):
             return

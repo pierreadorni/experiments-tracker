@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import pytest
 
+from experimenttracker.agent_pool import experiment_owner
 from experimenttracker.cancellation import process_cancellations
 from experimenttracker.codex_client import NeedsAttention, TerminalTurnError
 from experimenttracker.core import action_obligations, job_obligations, transfer_obligations
@@ -338,6 +339,14 @@ async def test_cancel_interrupts_exact_agent_turn_and_retains_unknown_outcomes(r
             "INSERT INTO agent_actions(id,experiment_id,phase,evidence_revision,state,input,thread_id,turn_id,created_at,updated_at) VALUES('action',?,'prepare',1,'uncertain','prompt','thread','turn',0,0)",
             (eid,),
         )
+    # The dispatch task that saved this turn still owns its process.
+    wf.agent_pool.claim(
+        role="stage",
+        source_table="agent_actions",
+        row=store.one("SELECT * FROM agent_actions WHERE id='action'"),
+        owner=experiment_owner(eid),
+        workflow=wf,
+    )
     calls = []
 
     async def interrupt(thread, turn):

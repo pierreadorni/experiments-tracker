@@ -358,25 +358,30 @@ class Conversation:
                     self.store.discussion_state(message["id"], "failed", error=str(exc))
                 continue
             if action and action["state"] in ("dispatching", "running", "uncertain"):
-                if self.workflow.agent_task and self.workflow.active_action == action["id"]:
+                pool = self.workflow.agent_pool
+                reservation = pool.lookup("agent_actions", action["id"])
+                if pool.live_lane(reservation) is not None:
                     if self.store.experiment(eid)["pause_agent"] and action["turn_id"]:
-                        await self.workflow.agent.interrupt(action["thread_id"], action["turn_id"])
+                        await pool.interrupt(reservation)
                     continue
                 if action["state"] != "uncertain":
-                    if not self.workflow.agent_ready:
+                    lane = pool.read_lane(reservation)
+                    if lane is None:
                         self.hold(message["id"], "agent_unavailable", self.workflow.agent_error)
                         continue
                     try:
                         if not action["thread_id"] or not action["turn_id"]:
                             raise NeedsAttention("dispatch response lost; saved turn identity is required")
-                        result = await self.workflow.agent.read_turn(action["thread_id"], action["turn_id"])
+                        result = await lane.agent.read_turn(action["thread_id"], action["turn_id"])
                         self.workflow._action_state(action["id"], "completed", result=result, expected=action)
+                        pool.settle_row("agent_actions", action["id"])
                         continue
                     except Exception as exc:
                         self.workflow._action_state(
                             action["id"], "uncertain", error=str(exc), expected=action
                         )
                         action["error"] = str(exc)
+                        pool.settle_row("agent_actions", action["id"])
                 self.store.discussion_state(
                     message["id"], "uncertain", hold_reason="agent_dispatch_uncertain", error=action["error"]
                 )

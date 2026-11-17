@@ -616,21 +616,25 @@ class Controller:
                     # recorded monitor turn. Reconcile its exact identity before
                     # quota/new-dispatch admission; its own running row must not
                     # prevent this read or cause a replacement submission.
-                    if any(lane.active_action == action["id"] for lane in wf.pool_owner.lanes):
+                    pool = wf.agent_pool
+                    reservation = pool.lookup("agent_actions", action["id"])
+                    if reservation is not None and reservation.slot is not None:
                         continue
-                    if not wf.agent_ready or not action["thread_id"] or not action["turn_id"]:
+                    lane = pool.read_lane(reservation)
+                    if lane is None or not action["thread_id"] or not action["turn_id"]:
                         continue
                     try:
                         wf._action_state(
                             action["id"],
                             "completed",
-                            result=await wf.agent.read_turn(action["thread_id"], action["turn_id"]),
+                            result=await lane.agent.read_turn(action["thread_id"], action["turn_id"]),
                             expected=action,
                         )
                     except TerminalTurnError as exc:
                         wf._action_state(action["id"], "failed", error=str(exc), expected=action)
                     except Exception as exc:
                         wf._action_state(action["id"], "uncertain", error=str(exc), expected=action)
+                    pool.settle_row("agent_actions", action["id"])
                     continue
             else:
                 if wake["due_at"] > clock.now():

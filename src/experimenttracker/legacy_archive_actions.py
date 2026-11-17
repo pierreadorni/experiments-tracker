@@ -7,16 +7,15 @@ from .legacy_archive import execution_frozen
 
 
 def _live_action(workflow, action_id):
-    owner = workflow.pool_owner
-    return any(
-        lane.active_action == action_id and lane.agent_task and not lane.agent_task.done()
-        for lane in owner.lanes
-    )
+    """A saved action whose own dispatch task still holds a physical slot."""
+    reservation = workflow.pool_owner.agent_pool.lookup("agent_actions", action_id)
+    return reservation is not None and reservation.slot is not None
 
 
 async def settle_actions(workflow):
     """Settle only exact saved legacy turns and drain completed archived checks."""
     store = workflow.store
+    pool = workflow.pool_owner.agent_pool
     rows = store.rows(
         "SELECT a.* FROM agent_actions a JOIN experiments e ON e.id=a.experiment_id "
         "WHERE a.state IN ('dispatching','running','uncertain') AND a.phase NOT LIKE 'discuss:%' "
@@ -28,9 +27,9 @@ async def settle_actions(workflow):
             continue
         if not action["thread_id"] or not action["turn_id"]:
             continue
-        lane = workflow.pool_owner.agent_assignments.get(action["experiment_id"])
-        lane = lane or workflow
-        if not lane.agent_ready:
+        reservation = pool.lookup("agent_actions", action["id"])
+        lane = pool.read_lane(reservation)
+        if lane is None:
             continue
         try:
             result = await lane.agent.read_turn(action["thread_id"], action["turn_id"])
@@ -40,6 +39,8 @@ async def settle_actions(workflow):
             workflow._action_state(action["id"], "uncertain", error=str(exc), expected=action)
         else:
             workflow._action_state(action["id"], "completed", result=result, expected=action)
+        # Settled outside its dispatch task: release exactly what the saved row proves.
+        pool.settle_row("agent_actions", action["id"])
 
     for checks in (workflow.output_checks, workflow.evidence_checks):
         for identity, value in list(checks.items()):

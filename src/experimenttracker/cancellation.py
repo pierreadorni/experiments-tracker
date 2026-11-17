@@ -40,19 +40,19 @@ async def process_cancellations(workflow):
                     pass
                 checks.pop(identity)
 
+        pool = workflow.agent_pool
         for action in store.rows(
             "SELECT * FROM agent_actions WHERE experiment_id=? AND state IN ('dispatching','running','uncertain')",
             (eid,),
         ):
-            lane = next(
-                (lane for lane in workflow.pool_owner.lanes if lane.active_action == action["id"]), workflow
-            )
-            if not action["thread_id"] or not action["turn_id"] or not lane.agent_ready:
+            reservation = pool.lookup("agent_actions", action["id"])
+            lane = pool.live_lane(reservation)
+            if not action["thread_id"] or not action["turn_id"] or lane is None:
                 errors.append("An agent dispatch still needs its exact saved outcome reconciled.")
                 continue
             try:
-                lane.hold_active_action(action, "experiment_cancelled")
-                await lane.agent.interrupt(action["thread_id"], action["turn_id"])
+                pool.hold(action, "experiment_cancelled")
+                await pool.interrupt(reservation)
                 if lane.agent_task and not lane.agent_task.done():
                     errors.append("Waiting for the recorded agent turn to stop.")
                     continue
@@ -62,6 +62,7 @@ async def process_cancellations(workflow):
                     lane._action_state(action["id"], "failed", error=str(exc), expected=action)
                 else:
                     lane._action_state(action["id"], "completed", result=result, expected=action)
+                pool.settle_row("agent_actions", action["id"])
             except Exception as exc:
                 errors.append(str(exc))
         for job in store.rows(
