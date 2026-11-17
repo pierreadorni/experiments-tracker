@@ -16,7 +16,7 @@ const COPY = {
   integrate: {
     title: 'Integrate this branch?',
     detail:
-      'The backend saves a request for this exact branch. Once the experiment is complete and its last job and agent turn finish, it merges into the base branch, runs the project check and fast-forwards only if the check passes. Merging is queued, not immediate; a failed check reopens the work.',
+      'The executor queues this branch until the experiment is complete, then prepares a merge separately. It updates the base branch only after any configured check passes and any required approval is given.',
     confirm: 'Queue integration',
   },
   revert: {
