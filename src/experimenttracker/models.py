@@ -240,6 +240,23 @@ class Analysis(StrictModel):
         max_length=20,
         description="New figures/data written in the writable analysis directory; safe flat filenames.",
     )
+    integrate: bool = Field(
+        default=False,
+        description="Request integration of this run's named branch once the run completes; the queue's "
+        "checks and owner settings still decide whether it lands.",
+    )
+    integrate_reason: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=2000,
+        description="Why this branch's code belongs in the project; required with integrate true.",
+    )
+
+    @model_validator(mode="after")
+    def check_integration_request(self):
+        if self.integrate and (not self.integrate_reason or not self.integrate_reason.strip()):
+            raise ValueError("an integration request needs a reason")
+        return self
 
 
 class TensorBoardDisplay(StrictModel):

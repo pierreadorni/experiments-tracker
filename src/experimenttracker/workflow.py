@@ -3190,6 +3190,15 @@ class Workflow:
                 "Use the writable analysis_directory for small figures, register_analysis_file for their IDs, and "
                 "return analysis_files. Never repeat evaluation/training to repair a figure. Requested unfinished "
                 "deliverables remain visible. Report changes create versions; published bytes stay stable.\n"
+                + (
+                    "This run has a named branch. Set integrate:true with integrate_reason when its code "
+                    "belongs in the project's main branch; that only requests integration once this run "
+                    "completes. It is a request, not a merge: the project check, approval setting and the "
+                    "owner's Don't merge flag still settle whether it lands. The default integrate:false "
+                    "requests nothing.\n"
+                    if self.worktree_conventions(exp)
+                    else ""
+                )
                 + reporting.skill_text()
             )
         conventions = self.worktree_conventions(exp)
@@ -3898,6 +3907,9 @@ class Workflow:
                 "UPDATE experiments SET phase='complete',hold_reason=NULL,error=NULL WHERE id=?", (eid,)
             )
             advancement_decisions.sync_lifetime(db, eid, previous_phase, "complete")
+            # The saved final interpretation opts in once, at completion, and only for
+            # a named branch; the command queues it and never touches Git itself.
+            self.store.request_completion_integration(eid, _db=db)
             db.execute(
                 "INSERT OR IGNORE INTO inbox VALUES(?,?,?,?,?)",
                 (str(uuid4()), eid, "result_ready", "Interpreted experiment result is ready.", clock.now()),

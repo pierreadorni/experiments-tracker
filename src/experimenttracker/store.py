@@ -6,7 +6,7 @@ import sqlite3
 import tempfile
 import threading
 from pathlib import Path
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from . import clock
 from .config import ProjectConfig
@@ -1138,6 +1138,46 @@ class Store:
             return integration_queue.checkpoint(db, view["request_id"], "ready", status="owner approved")
         except ValueError as exc:
             raise Conflict(str(exc)) from None
+
+    def request_completion_integration(self, eid, *, _db=None):
+        """Queue the agent's opt-in integration for the interpretation that just completed.
+
+        The decision is the saved final interpretation (``Analysis.integrate`` and its
+        reason). Nothing is queued without it, for a Don't merge experiment, for a
+        branch that is no longer active, or while this experiment already has a saved
+        merge request. The request goes through ``command`` like an owner request, so
+        it only enqueues: the worker's project check, approval setting and exact saved
+        scope still decide whether it lands. The request ID derives from the completed
+        interpretation, so replaying the completion boundary reuses the same command.
+        """
+        with contextlib.nullcontext(_db) if _db is not None else self.tx() as db:
+            exp = self.experiment(eid)
+            analysis = exp["analysis"] or {}
+            reason = analysis.get("integrate_reason")
+            if not analysis.get("integrate") or exp["contract"].get("dont_merge"):
+                return None
+            branch = self.one("SELECT * FROM experiment_branches WHERE experiment_id=?", (eid,))
+            if branch is None or branch["state"] != "active":
+                return None
+            action = self.one(
+                "SELECT id FROM agent_actions WHERE experiment_id=? AND phase='interpret' "
+                "AND state='completed' ORDER BY rowid DESC LIMIT 1",
+                (eid,),
+            )
+            if action is None:
+                return None
+            views = integration_queue.pending(db, branch["repo"])
+            active = integration_queue.active(db, branch["repo"])
+            if any(
+                view["experiment_id"] == eid and view["request"].get("kind") == "merge"
+                for view in views + ([active] if active else [])
+            ):
+                return None
+            payload = {"reason": reason} if reason else {}
+            request_id = str(
+                uuid5(NAMESPACE_URL, f"experimenttracker:completion-integration:{eid}:{action['id']}")
+            )
+            return self.command(request_id, "integrate", payload, eid=eid, origin="agent", _db=db)
 
     def command(self, request_id, kind, payload, *, eid=None, origin="local", experiment_id=None, _db=None):
         """Apply a validated user command atomically. Stable request IDs include a payload conflict check."""
