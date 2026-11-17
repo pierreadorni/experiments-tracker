@@ -46,6 +46,7 @@ import { Protocol } from './Protocol';
 import { ExperimentActions } from './ExperimentActions';
 import { DeleteExperiment } from './DeleteExperiment';
 import { CancelExperiment } from './CancelExperiment';
+import { BranchIntegration } from './Integration';
 import { useDialog } from './useDialog';
 import { NewProject } from './NewProject';
 import { ProjectSettings } from './ProjectSettings';
@@ -992,7 +993,13 @@ function App() {
                                     ? 'Steering instruction'
                                     : c.kind === 'discuss'
                                       ? 'Conversation message'
-                                      : 'Answer delivery',
+                                      : c.kind === 'integrate'
+                                        ? 'Integration request'
+                                        : c.kind === 'revert_integration'
+                                          ? 'Integration revert'
+                                          : c.kind === 'dont_merge'
+                                            ? 'Don’t merge update'
+                                            : 'Answer delivery',
                       )
                       .join(' · ')}
                     . Saved on the gateway; acacia has not applied these commands yet.
@@ -1006,6 +1013,28 @@ function App() {
                   <span>{holdGuidance(exp.hold_reason)}</span>
                 </div>
               )}
+              <BranchIntegration
+                key={exp.id}
+                exp={exp}
+                status={status}
+                busy={busy}
+                error={error}
+                onIntegrate={(reason) =>
+                  act(async () => {
+                    await command(`/api/experiments/${exp.id}/integrate`, reason ? { reason } : {});
+                  })
+                }
+                onRevert={() =>
+                  act(async () => {
+                    await command(`/api/experiments/${exp.id}/integrations/revert`, {});
+                  })
+                }
+                onDontMerge={(value) =>
+                  act(async () => {
+                    await command(`/api/experiments/${exp.id}/dont-merge`, { value });
+                  })
+                }
+              />
               <div
                 className={`experiment-workspace ${conversationOpen && exp.phase === 'complete' ? 'with-conversation' : ''}`}
               >

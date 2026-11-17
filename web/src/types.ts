@@ -17,6 +17,7 @@ export type Stage = {
 };
 export type Job = {
   attempt?: number;
+  commit?: string;
   tensorboard?: {
     scalar: { tag: string; points: [number, number][] } | null;
     image: { tag: string; step: number; wall_time: number; src: string } | null;
@@ -161,6 +162,13 @@ export type Experiment = {
     updated_at: number;
   }[];
   reference_experiment_id?: string | null;
+  branch?: string;
+  head_commit?: string;
+  integration?: {
+    stage: string;
+    request_id: string;
+    candidate_commit: string | null;
+  };
   pending_commands?: {
     request_id: string;
     kind: string;
@@ -241,6 +249,7 @@ export type Status = {
   autopilot?: { available: boolean; schema_version: number };
   experiment_cancellation?: boolean;
   implementation_repair?: boolean;
+  branch_integration?: boolean;
   quota_reserve?: { five_hour_percent: number; weekly_percent: number };
   compute_policy?: {
     agent_selected_resources: boolean;

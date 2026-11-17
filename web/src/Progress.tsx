@@ -3,6 +3,7 @@ import { Check, ChevronDown, ChevronRight, Circle, Clock3, LoaderCircle, X } fro
 import type { Experiment, Status } from './types';
 import { Description } from './Description';
 import { TensorBoard } from './TensorBoard';
+import { shortCommit } from './integration';
 import {
   duration,
   jobTiming,
@@ -261,6 +262,11 @@ export function StageTimeline({ exp, status }: { exp: Experiment; status: Status
                           <div className="stage-job-meta">
                             <span>Job {job.job_id || 'submission awaiting reconciliation'}</span>
                             <span>{job.scheduler_state || job.state}</span>
+                            {job.commit && (
+                              <span>
+                                Commit <code title={job.commit}>{shortCommit(job.commit)}</code>
+                              </span>
+                            )}
                             <span>
                               {job.resources.partition && `${job.resources.partition} · `}
                               {job.resources.nodes &&
