@@ -317,3 +317,31 @@ async def test_unknown_conflict_input_is_not_queued(runtime, tmp_path):
     assert "manual inspection" in view["status"]
     assert workflow.agent_pool.primary.agent_task is None
     assert store.experiment(eid)["phase"] == "complete"
+
+
+@pytest.mark.asyncio
+async def test_absent_integrator_turn_fails_without_replaying_or_continuing(runtime, tmp_path):
+    store, _, _, workflow = runtime
+    repo, candidate = conflicted(tmp_path)
+    save_conflict(store, repo, candidate)
+    scripted(
+        workflow,
+        ScriptedAgent(
+            edit=lambda worktree: (worktree / "tracked.txt").write_text("resolved then lost\n"),
+            fail=NeedsAttention("lost"),
+        ),
+    )
+    await dispatch_one(workflow)
+    agent = workflow.agent_pool.primary.agent
+    agent.turns = []
+    workflow.resolver.dispatched_at = lambda _action: 0
+
+    await workflow.resolver.resolve()
+
+    row = action(store)
+    assert (row["state"], row["turn_id"], row["error"]) == ("failed", "turn-1", "turn_not_started")
+    assert [call[0] for call in agent.calls].count("begin") == 1
+    view = saved(store)
+    assert view["stage"] == "conflict"
+    assert view["status"] == "manual inspection: turn_not_started"
+    assert store.one("SELECT 1 FROM agent_actions WHERE previous_action_id=?", (row["id"],)) is None
