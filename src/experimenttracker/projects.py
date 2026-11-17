@@ -7,7 +7,7 @@ from pathlib import Path
 from uuid import UUID
 
 from . import agent_conventions, clock
-from .config import EnvironmentConfig, ProjectConfig
+from .config import EnvironmentConfig, IntegrationConfig, ProjectConfig
 from .execution_settings import ExecutionSettings
 from .models import CreateProject, UpdateProjectSettings
 from .store import Conflict, encode
@@ -26,14 +26,17 @@ class Projects:
         declared = {project.id: project for project in self.config.projects}
         self.store.projects = dict(declared)
         for row in self.store.rows("SELECT * FROM projects ORDER BY created_at"):
-            # The saved row owns folder identity; the configured environment stays
-            # the owner's declaration, so a fixed interpreter survives registration.
+            # The saved row owns folder identity; the environment, check command and
+            # integration settings stay the owner's declaration, so they survive
+            # registration.
             configured = declared.get(row["id"])
             self.store.projects[row["id"]] = ProjectConfig(
                 id=row["id"],
                 name=row["name"],
                 checkout=row["folder"],
                 environment=configured.environment if configured else EnvironmentConfig(),
+                check_command=configured.check_command if configured else None,
+                integration=configured.integration if configured else IntegrationConfig(),
             )
 
         for row in self.store.rows(

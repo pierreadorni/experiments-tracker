@@ -159,12 +159,21 @@ class EnvironmentConfig(StrictModel):
         return self
 
 
+class IntegrationConfig(StrictModel):
+    """Integration merges by itself unless the owner requires approval."""
+
+    require_approval: bool = False
+
+
 class ProjectConfig(StrictModel):
     id: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")
     name: str = Field(min_length=1, max_length=100)
     checkout: Path | None = None
     writable: bool = True
     environment: EnvironmentConfig = EnvironmentConfig()
+    # A fixed argv, executed without a shell, for the optional integration check.
+    check_command: list[str] | None = None
+    integration: IntegrationConfig = IntegrationConfig()
 
     @model_validator(mode="after")
     def valid_checkout(self):
@@ -172,6 +181,14 @@ class ProjectConfig(StrictModel):
             raise ValueError("project checkout must be absolute")
         if self.id != "test-project" and not self.checkout:
             raise ValueError("research projects need a checkout")
+        return self
+
+    @model_validator(mode="after")
+    def valid_check_command(self):
+        if self.check_command is not None and not (
+            self.check_command and all(part and "\0" not in part for part in self.check_command)
+        ):
+            raise ValueError("project.check_command must be a non-empty argv of non-empty strings")
         return self
 
     def public(self):

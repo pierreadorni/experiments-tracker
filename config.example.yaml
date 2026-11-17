@@ -24,6 +24,10 @@ projects:
   #   name: Research project
   #   checkout: /YOUR/RESEARCH/CHECKOUT
   #   environment: {python: /YOUR/CONDA/envs/research/bin/python}
+  #   # Optional fixed argv the integration check runs without a shell.
+  #   check_command: [pytest, -q, tests]
+  #   # Merging is automatic unless the owner requires approval.
+  #   integration: {require_approval: true}
 codex:
   executable: /YOUR/CHECKOUT/tools/codex/node_modules/.bin/codex
   expected_version: 0.160.1

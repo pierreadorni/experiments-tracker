@@ -445,8 +445,8 @@ def test_delete_project_blocks_uncertain_project_turn(config, runtime):
     assert "test-project" in store.projects
 
 
-def test_a_registered_project_keeps_its_declared_fixed_interpreter(config):
-    from experimenttracker.config import EnvironmentConfig
+def test_a_registered_project_keeps_its_declared_owner_settings(config):
+    from experimenttracker.config import EnvironmentConfig, IntegrationConfig
     from experimenttracker.projects import Projects
 
     interpreter = Path("/usr/bin/python3")
@@ -456,6 +456,8 @@ def test_a_registered_project_keeps_its_declared_fixed_interpreter(config):
             name="Research",
             checkout=config.state_dir.parent,
             environment=EnvironmentConfig(python=interpreter),
+            check_command=["pytest", "-q", "tests"],
+            integration=IntegrationConfig(require_approval=True),
         )
     )
     store = Store(config.state_dir / "workflow.sqlite")
@@ -471,6 +473,8 @@ def test_a_registered_project_keeps_its_declared_fixed_interpreter(config):
         store.close()
 
     assert saved.environment.python == interpreter
+    assert saved.check_command == ["pytest", "-q", "tests"]
+    assert saved.integration.require_approval is True
     assert saved.checkout == config.job_output_root
     assert saved.name == "Renamed by the owner"
 

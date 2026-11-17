@@ -86,3 +86,27 @@ def test_a_fixed_project_interpreter_must_be_absolute(tmp_path):
     with pytest.raises(ValidationError, match="absolute"):
         EnvironmentConfig(python=Path("python3"))
     assert EnvironmentConfig(python=tmp_path / "python").python == tmp_path / "python"
+
+
+def test_integration_settings_default_to_an_automatic_check_free_merge():
+    from experimenttracker.config import IntegrationConfig, ProjectConfig
+
+    project = ProjectConfig(id="research", name="Research", checkout=Path("/research"))
+    assert project.check_command is None
+    assert project.integration == IntegrationConfig(require_approval=False)
+    approved = ProjectConfig(
+        id="research",
+        name="Research",
+        checkout=Path("/research"),
+        check_command=["pytest", "-q", "tests"],
+        integration={"require_approval": True},
+    )
+    assert approved.check_command == ["pytest", "-q", "tests"]
+    assert approved.integration.require_approval is True
+    for argv in ([], [""], ["pytest", ""]):
+        with pytest.raises(ValidationError, match="check_command"):
+            ProjectConfig(id="research", name="Research", checkout=Path("/research"), check_command=argv)
+    with pytest.raises(ValidationError):
+        ProjectConfig(
+            id="research", name="Research", checkout=Path("/research"), integration={"approve": True}
+        )
