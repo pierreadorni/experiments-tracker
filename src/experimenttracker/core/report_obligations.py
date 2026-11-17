@@ -4,8 +4,6 @@ Call ``sync_report`` inside the transaction that changes a report version. It
 tracks saved readiness only; artifact delivery keeps its own saved identity.
 """
 
-import json
-
 from . import obligation_sources
 
 _SOURCE = "report-version"
@@ -21,8 +19,7 @@ def sync_report(db, experiment_id, version):
     responsibility; ready satisfies it, and failure or cancellation abandons it.
     A ready or failed version with no history stays without history.
     """
-    if not db.in_transaction:
-        raise RuntimeError("report obligation sync requires the caller's active transaction")
+    obligation_sources.require_transaction(db)
     if isinstance(version, bool) or not isinstance(version, int) or version < 1:
         raise ValueError("report version must be a positive integer")
     saved = db.execute(
@@ -31,10 +28,7 @@ def sync_report(db, experiment_id, version):
     ).fetchone()
     if saved is None:
         raise ValueError(f"saved report version does not exist: {experiment_id}:{version}")
-    experiment = db.execute("SELECT contract FROM experiments WHERE id=?", (experiment_id,)).fetchone()
-    if experiment is None:
-        raise ValueError(f"saved report experiment does not exist: {experiment_id}")
-    project_id = (json.loads(experiment["contract"]).get("project") or {}).get("id")
+    project_id = obligation_sources.source_project_id(db, experiment_id, "report experiment")
     return obligation_sources.sync_episode(
         db,
         _SOURCE,

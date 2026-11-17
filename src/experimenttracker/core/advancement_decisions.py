@@ -38,22 +38,12 @@ def open_lifetime(db, experiment_id):
     Only contract-3 creation establishes advancement; frozen legacy experiments
     and archives keep none, and no decision is saved until one is decided.
     """
-    _require_transaction(db)
+    obligation_sources.require_transaction(db)
     exp = _experiment(db, experiment_id)
     _require_saved(exp)
     if not _contract3(exp):
         return None
-    return obligation_sources.open_episode(
-        db,
-        _SOURCE_TYPE,
-        experiment_id,
-        experiment_id=experiment_id,
-        project_id=_project_id(exp),
-        kind="reconcile",
-        target=experiment_id,
-        owner="backend",
-        wait="none",
-    )
+    return _open(db, _SOURCE_TYPE, exp, wait="none")
 
 
 def close_lifetime(db, experiment_id, outcome):
@@ -62,16 +52,12 @@ def close_lifetime(db, experiment_id, outcome):
     The last saved decision stays on the closed episode as the final record, so a
     repaired retry opens the next episode instead of mutating it.
     """
-    _require_transaction(db)
+    obligation_sources.require_transaction(db)
     if outcome not in _TERMINAL:
         raise ValueError(f"unknown advancement lifetime outcome: {outcome}")
     latest = obligation_sources.latest_episode(db, _SOURCE_TYPE, experiment_id)
-    if latest is None or latest["state"] != "open":
-        return latest
-    episode = _episode(latest)
-    if outcome == "complete":
-        return obligation_sources.satisfy_episode(db, _SOURCE_TYPE, experiment_id, episode)
-    return obligation_sources.abandon_episode(db, _SOURCE_TYPE, experiment_id, episode)
+    operation = "satisfy" if outcome == "complete" else "abandon"
+    return obligation_sources.terminalize(db, _SOURCE_TYPE, experiment_id, latest, operation)
 
 
 def sync_lifetime(db, experiment_id, previous_phase, phase):
@@ -81,7 +67,7 @@ def sync_lifetime(db, experiment_id, previous_phase, phase):
     repair opens the next episode. A lifetime never opens here: creation owns
     that, and pre-existing rows stay without advancement until backfill.
     """
-    _require_transaction(db)
+    obligation_sources.require_transaction(db)
     if phase == previous_phase:
         return None
     if phase in _TERMINAL:
@@ -93,49 +79,28 @@ def sync_lifetime(db, experiment_id, previous_phase, phase):
         return None
     if obligation_sources.latest_episode(db, _SOURCE_TYPE, experiment_id) is None:
         return None
-    return obligation_sources.open_episode(
-        db,
-        _SOURCE_TYPE,
-        experiment_id,
-        source_transition=True,
-        experiment_id=experiment_id,
-        project_id=_project_id(exp),
-        kind="reconcile",
-        target=experiment_id,
-        owner="backend",
-        wait="none",
-    )
+    return _open(db, _SOURCE_TYPE, exp, wait="none", source_transition=True)
 
 
 def open_cancellation(db, experiment_id, *, unconfirmed=False):
     """Open the backend responsibility that reconciles this saved cancellation."""
-    _require_transaction(db)
+    obligation_sources.require_transaction(db)
     exp = _experiment(db, experiment_id)
-    return obligation_sources.open_episode(
-        db,
-        _CANCELLATION,
-        experiment_id,
-        experiment_id=experiment_id,
-        project_id=_project_id(exp),
-        kind="reconcile",
-        target=experiment_id,
-        owner="backend",
-        wait="cancellation_unconfirmed" if unconfirmed else "cancellation_pending",
+    return _open(
+        db, _CANCELLATION, exp, wait="cancellation_unconfirmed" if unconfirmed else "cancellation_pending"
     )
 
 
 def settle_cancellation(db, experiment_id):
     """Satisfy the open cancellation responsibility once that procedure completes."""
-    _require_transaction(db)
+    obligation_sources.require_transaction(db)
     latest = obligation_sources.latest_episode(db, _CANCELLATION, experiment_id)
-    if latest is None or latest["state"] != "open":
-        return latest
-    return obligation_sources.satisfy_episode(db, _CANCELLATION, experiment_id, _episode(latest))
+    return obligation_sources.terminalize(db, _CANCELLATION, experiment_id, latest, "satisfy")
 
 
 def read(db, experiment_id):
     """Return the latest validated decision: active, or final after a close."""
-    _require_transaction(db)
+    obligation_sources.require_transaction(db)
     exp = _experiment(db, experiment_id)
     _require_saved(exp)
     if not _contract3(exp):
@@ -161,7 +126,7 @@ def read(db, experiment_id):
 
 def set_decision(db, experiment_id, *, phase, evidence_revision, reason, wait):
     """Save or replay one supported source-less decision on the open lifetime."""
-    _require_transaction(db)
+    obligation_sources.require_transaction(db)
     exp = _experiment(db, experiment_id)
     _require_saved(exp)
     if exp["phase"] in _TERMINAL:
@@ -185,18 +150,7 @@ def set_decision(db, experiment_id, *, phase, evidence_revision, reason, wait):
         "wait": wait,
     }
     detail = json.dumps(record, sort_keys=True, separators=(",", ":"))
-    return obligation_sources.open_episode(
-        db,
-        _SOURCE_TYPE,
-        experiment_id,
-        experiment_id=experiment_id,
-        project_id=_project_id(exp),
-        kind="reconcile",
-        target=experiment_id,
-        owner="backend",
-        wait=wait,
-        detail=detail,
-    )
+    return _open(db, _SOURCE_TYPE, exp, wait=wait, detail=detail)
 
 
 def _validate_pair(reason, wait):
@@ -254,8 +208,20 @@ def _check_binding(row, exp):
         raise ValueError("advancement obligation identity, scope, or ownership is invalid")
 
 
-def _episode(row):
-    return int(row["id"].rsplit(":", 1)[1])
+def _open(db, source_type, exp, *, wait, detail=None, source_transition=False):
+    return obligation_sources.open_episode(
+        db,
+        source_type,
+        exp["id"],
+        source_transition=source_transition,
+        experiment_id=exp["id"],
+        project_id=_project_id(exp),
+        kind="reconcile",
+        target=exp["id"],
+        owner="backend",
+        wait=wait,
+        detail=detail,
+    )
 
 
 def _experiment(db, experiment_id):
@@ -298,8 +264,3 @@ def _check_generation(exp, phase, evidence_revision):
         or evidence_revision != exp["evidence_revision"]
     ):
         raise ValueError("advancement decision must match the saved phase and evidence")
-
-
-def _require_transaction(db):
-    if not db.in_transaction:
-        raise RuntimeError("advancement decisions require the caller's active transaction")

@@ -4,8 +4,6 @@ Call ``sync_wakeup`` inside the transaction that mutates the wakeup. It records
 only the persisted timer; it never dispatches a turn or changes dispatch intent.
 """
 
-import json
-
 from . import obligation_sources
 
 
@@ -16,16 +14,11 @@ def sync_wakeup(db, wakeup_id):
     saved action (whose own obligation then covers the work) or completing it
     satisfies the timer; supersession or failure abandons it.
     """
-    if not db.in_transaction:
-        raise RuntimeError("wakeup obligation sync requires the caller's active transaction")
+    obligation_sources.require_transaction(db)
     wakeup = db.execute("SELECT * FROM agent_wakeups WHERE id=?", (wakeup_id,)).fetchone()
     if wakeup is None:
         raise ValueError(f"saved wakeup does not exist: {wakeup_id}")
-    experiment = db.execute(
-        "SELECT contract FROM experiments WHERE id=?", (wakeup["experiment_id"],)
-    ).fetchone()
-    if experiment is None:
-        raise ValueError(f"saved wakeup experiment does not exist: {wakeup['experiment_id']}")
+    project_id = obligation_sources.source_project_id(db, wakeup["experiment_id"], "wakeup experiment")
     return obligation_sources.sync_episode(
         db,
         "wakeup",
@@ -35,7 +28,7 @@ def sync_wakeup(db, wakeup_id):
         satisfied_states={"queued", "complete"},
         abandoned_states={"superseded", "failed"},
         experiment_id=wakeup["experiment_id"],
-        project_id=(json.loads(experiment["contract"]).get("project") or {}).get("id"),
+        project_id=project_id,
         kind="timer",
         owner="backend",
         wait=f"wakeup:{wakeup_id}",

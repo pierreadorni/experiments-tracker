@@ -1,7 +1,5 @@
 """Map saved execution transfers to backend responsibility episodes."""
 
-import json
-
 from . import obligation_sources
 
 _SOURCE = "transfer"
@@ -18,8 +16,7 @@ def sync_transfer(db, identity, *, before=None):
     an already-open episode, and a terminal row with no history stays without history.
     This mapper records ownership and exact outcomes; it never performs transport.
     """
-    if not db.in_transaction:
-        raise RuntimeError("transfer obligation sync requires the caller's active transaction")
+    obligation_sources.require_transaction(db)
     if not isinstance(identity, str) or not identity:
         raise ValueError("transfer identity must be a non-empty string")
     saved = db.execute("SELECT * FROM execution_transfers WHERE id=?", (identity,)).fetchone()
@@ -33,13 +30,7 @@ def sync_transfer(db, identity, *, before=None):
         previous.get(field) != transfer[field] for field in ("id", "experiment_id", "direction", "payload")
     ):
         raise ValueError("saved transfer scope or immutable payload changed")
-    experiment = db.execute(
-        "SELECT contract FROM experiments WHERE id=?", (transfer["experiment_id"],)
-    ).fetchone()
-    if experiment is None:
-        raise ValueError(f"saved transfer experiment does not exist: {transfer['experiment_id']}")
-    contract = json.loads(experiment["contract"])
-    project_id = (contract.get("project") or {}).get("id")
+    project_id = obligation_sources.source_project_id(db, transfer["experiment_id"], "transfer experiment")
     detail = f"direction={transfer['direction']};payload={transfer['payload']}"
     latest = obligation_sources.latest_episode(db, _SOURCE, identity)
     _check_history(db, identity, transfer, project_id, detail)
@@ -70,16 +61,7 @@ def sync_transfer(db, identity, *, before=None):
 
 
 def _check_history(db, identity, transfer, project_id, detail):
-    prefix = f"{_SOURCE}:{identity}:"
-    source_key = f"{_SOURCE}:{identity}"
-    rows = [
-        dict(row)
-        for row in db.execute(
-            "SELECT * FROM obligations WHERE substr(id,1,?)=? ORDER BY id", (len(prefix), prefix)
-        )
-        if row["id"].rsplit(":", 1)[0] == source_key
-    ]
-    for row in rows:
+    for row in obligation_sources.history_rows(db, _SOURCE, identity):
         if (
             row["experiment_id"] != transfer["experiment_id"]
             or row["project_id"] != project_id

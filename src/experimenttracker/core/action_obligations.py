@@ -89,8 +89,7 @@ def sync_action(db, action_id, *, before=None):
     Only a state or exact turn-identity change proves a responsibility episode
     transition; result/error metadata updates alone remain replays.
     """
-    if not db.in_transaction:
-        raise RuntimeError("action obligation sync requires the caller's active transaction")
+    obligation_sources.require_transaction(db)
     row = db.execute("SELECT * FROM agent_actions WHERE id=?", (action_id,)).fetchone()
     if row is None:
         raise ValueError(f"saved agent action does not exist: {action_id}")
@@ -118,9 +117,9 @@ def sync_action(db, action_id, *, before=None):
     if state not in _LIVE_STATES | _TERMINAL_STATES:
         raise ValueError(f"unsupported saved agent action state: {state}")
     if state == "completed":
-        return _terminalize(db, latest, action_id, "satisfy")
+        return obligation_sources.terminalize(db, _SOURCE, action_id, latest, "satisfy")
     if state in ("failed", "cancelled", "superseded"):
-        return _terminalize(db, latest, action_id, "abandon")
+        return obligation_sources.terminalize(db, _SOURCE, action_id, latest, "abandon")
 
     discussion = action["phase"].startswith("discuss:")
     if state == "pending" and (
@@ -128,7 +127,7 @@ def sync_action(db, action_id, *, before=None):
         or experiment["phase"] == "cancelled"
         or (contract.get("execution_contract") != 3 and not discussion)
     ):
-        return _terminalize(db, latest, action_id, "abandon")
+        return obligation_sources.terminalize(db, _SOURCE, action_id, latest, "abandon")
 
     exact_turn = state == "running" and bool(action["thread_id"] and action["turn_id"])
     if exact_turn:
@@ -172,13 +171,3 @@ def _check_saved_identity(latest, action, project_id, identity):
         raise ValueError("saved action obligation scope, phase, or evidence identity conflicts")
     if (latest["owner"], latest["kind"]) not in _ALLOWED_RESPONSIBILITIES:
         raise ValueError("saved action obligation owner/kind pair conflicts with action responsibility")
-
-
-def _terminalize(db, latest, action_id, operation):
-    if latest is None or latest["state"] != "open":
-        return latest
-    episode = int(latest["id"].rsplit(":", 1)[1])
-    terminalize = (
-        obligation_sources.satisfy_episode if operation == "satisfy" else obligation_sources.abandon_episode
-    )
-    return terminalize(db, _SOURCE, action_id, episode)

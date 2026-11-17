@@ -5,21 +5,17 @@ Call ``sync_request`` inside the transaction that changes
 replies, resumes work or changes source state.
 """
 
-import json
-
 from . import obligation_sources
 
 _SOURCE = "request"
+_LIVE_STATES = frozenset({"awaiting_answer"})
+_SATISFIED_STATES = frozenset({"answered"})
+_ABANDONED_STATES = frozenset({"abandoned"})
 
 
 def saved_pending(db, experiment_id):
     """Return the saved pending request decoded, read in the caller's transaction."""
-    if not db.in_transaction:
-        raise RuntimeError("request obligation read requires the caller's active transaction")
-    row = db.execute("SELECT pending_request FROM experiments WHERE id=?", (experiment_id,)).fetchone()
-    if row is None:
-        raise ValueError(f"saved experiment does not exist: {experiment_id}")
-    return _request(json.loads(row["pending_request"]) if row["pending_request"] else None)
+    return obligation_sources.saved_json(db, experiment_id, "pending_request", _request)
 
 
 def sync_request(db, experiment_id, *, before):
@@ -29,56 +25,36 @@ def sync_request(db, experiment_id, *, before):
     unanswered request holds one open episode; recording the owner's answer
     satisfies it, and clearing or replacing it without that answer abandons it.
     """
-    if not db.in_transaction:
-        raise RuntimeError("request obligation sync requires the caller's active transaction")
+    obligation_sources.require_transaction(db)
     if not isinstance(experiment_id, str) or not experiment_id:
         raise ValueError("experiment_id must be a non-empty string")
-    experiment = db.execute("SELECT contract FROM experiments WHERE id=?", (experiment_id,)).fetchone()
-    if experiment is None:
-        raise ValueError(f"saved experiment does not exist: {experiment_id}")
+    project_id = obligation_sources.source_project_id(db, experiment_id, "experiment")
     previous = _request(before)
     current = saved_pending(db, experiment_id)
     if previous is not None and (current is None or current["id"] != previous["id"]):
-        _terminalize(db, experiment_id, previous, "satisfy" if previous.get("answer") else "abandon")
+        state = "answered" if previous.get("answer") else "abandoned"
+        _sync(db, experiment_id, previous, project_id, state)
     if current is None:
         return None
-    if current.get("answer"):
-        return _terminalize(db, experiment_id, current, "satisfy")
-    return _open(db, experiment_id, current, json.loads(experiment["contract"]))
+    state = "answered" if current.get("answer") else "awaiting_answer"
+    return _sync(db, experiment_id, current, project_id, state)
 
 
-def _open(db, experiment_id, request, contract):
-    saved_id = _saved_id(experiment_id, request)
-    latest = obligation_sources.latest_episode(db, _SOURCE, saved_id)
-    if latest is not None and latest["state"] != "open":
-        raise ValueError("live saved owner request conflicts with terminal obligation history")
-    return obligation_sources.open_episode(
+def _sync(db, experiment_id, request, project_id, state):
+    return obligation_sources.sync_episode(
         db,
         _SOURCE,
-        saved_id,
+        f"{experiment_id}:{request['id']}",
+        state=state,
+        live_states=_LIVE_STATES,
+        satisfied_states=_SATISFIED_STATES,
+        abandoned_states=_ABANDONED_STATES,
         experiment_id=experiment_id,
-        project_id=(contract.get("project") or {}).get("id"),
+        project_id=project_id,
         kind="owner_answer",
-        target=saved_id,
         owner="owner",
         wait=f"request:{request['id']}",
     )
-
-
-def _terminalize(db, experiment_id, request, operation):
-    saved_id = _saved_id(experiment_id, request)
-    latest = obligation_sources.latest_episode(db, _SOURCE, saved_id)
-    if latest is None or latest["state"] != "open":
-        return latest
-    episode = int(latest["id"].rsplit(":", 1)[1])
-    settle = (
-        obligation_sources.satisfy_episode if operation == "satisfy" else obligation_sources.abandon_episode
-    )
-    return settle(db, _SOURCE, saved_id, episode)
-
-
-def _saved_id(experiment_id, request):
-    return f"{experiment_id}:{request['id']}"
 
 
 def _request(value):

@@ -52,8 +52,7 @@ def sync_job(db, intent_id, *, before=None):
     resolver-proven not-submitted intent abandons backend reconciliation because
     no external job exists.
     """
-    if not db.in_transaction:
-        raise RuntimeError("job obligation sync requires the caller's active transaction")
+    obligation_sources.require_transaction(db)
     if not isinstance(intent_id, str) or not intent_id:
         raise ValueError("intent_id must be a non-empty string")
     saved = db.execute("SELECT * FROM jobs WHERE intent_id=?", (intent_id,)).fetchone()
@@ -70,18 +69,14 @@ def sync_job(db, intent_id, *, before=None):
         if old_id is not None and old_id != job["job_id"]:
             raise ValueError("saved scheduler job ID cannot change or be cleared")
 
-    experiment = db.execute("SELECT contract FROM experiments WHERE id=?", (job["experiment_id"],)).fetchone()
-    if experiment is None:
-        raise ValueError(f"saved job experiment does not exist: {job['experiment_id']}")
-    contract = json.loads(experiment["contract"])
-    project_id = (contract.get("project") or {}).get("id")
+    project_id = obligation_sources.source_project_id(db, job["experiment_id"], "job experiment")
     detail = f"stage={job['stage_id']};attempt={job['attempt']}"
     latest = obligation_sources.latest_episode(db, _SOURCE, intent_id)
     pseudo_job = _is_agent_pseudo_job(job)
     _check_saved_identity(db, latest, job, project_id, detail, pseudo=pseudo_job)
 
     if pseudo_job:
-        return _terminalize(db, latest, intent_id, "abandon")
+        return obligation_sources.terminalize(db, _SOURCE, intent_id, latest, "abandon")
 
     job_id = job["job_id"]
     if job_id is not None and (not isinstance(job_id, str) or not job_id):
@@ -117,7 +112,7 @@ def sync_job(db, intent_id, *, before=None):
         raise ValueError("unresolved saved job cannot reopen terminal obligation history")
     if scheduler_outcome is None:
         return obligation
-    return _terminalize(db, obligation, intent_id, scheduler_outcome)
+    return obligation_sources.terminalize(db, _SOURCE, intent_id, obligation, scheduler_outcome)
 
 
 def _absence_outcome(job):
@@ -150,21 +145,13 @@ def _is_agent_pseudo_job(job):
 def _check_saved_identity(db, latest, job, project_id, detail, *, pseudo=False):
     if latest is None:
         return
-    source_key = f"{_SOURCE}:{job['intent_id']}"
     wanted = {
         "experiment_id": job["experiment_id"],
         "project_id": project_id,
         "target": job["intent_id"],
         "detail": detail,
     }
-    prefix = source_key + ":"
-    history = [
-        dict(row)
-        for row in db.execute(
-            "SELECT * FROM obligations WHERE substr(id,1,?)=? ORDER BY id", (len(prefix), prefix)
-        )
-        if row["id"].rsplit(":", 1)[0] == source_key
-    ]
+    history = obligation_sources.history_rows(db, _SOURCE, job["intent_id"])
     for row in history:
         if any(row[field] != value for field, value in wanted.items()):
             raise ValueError("saved job obligation scope, stage, or attempt identity conflicts")
@@ -177,13 +164,3 @@ def _check_saved_identity(db, latest, job, project_id, detail, *, pseudo=False):
             saved_id = job["job_id"]
             if saved_id is None or row["wait"] != f"job:{saved_id}":
                 raise ValueError("saved external scheduler identity conflicts with the current job ID")
-
-
-def _terminalize(db, latest, intent_id, operation):
-    if latest is None or latest["state"] != "open":
-        return latest
-    episode = int(latest["id"].rsplit(":", 1)[1])
-    terminalize = (
-        obligation_sources.satisfy_episode if operation == "satisfy" else obligation_sources.abandon_episode
-    )
-    return terminalize(db, _SOURCE, intent_id, episode)

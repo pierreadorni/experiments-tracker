@@ -5,8 +5,6 @@ Call ``sync_review`` inside the transaction that changes
 approves, revises or dispatches work.
 """
 
-import json
-
 from . import obligation_sources
 
 _SOURCE = "review"
@@ -18,12 +16,7 @@ _SUPERSEDED_STATES = _ENDED_STATES | _LIVE_STATES | {"drafting"}
 
 def saved_review(db, experiment_id):
     """Return the saved plan review decoded, read in the caller's transaction."""
-    if not db.in_transaction:
-        raise RuntimeError("review obligation read requires the caller's active transaction")
-    row = db.execute("SELECT plan_review FROM experiments WHERE id=?", (experiment_id,)).fetchone()
-    if row is None:
-        raise ValueError(f"saved experiment does not exist: {experiment_id}")
-    return _review(json.loads(row["plan_review"]) if row["plan_review"] else None)
+    return obligation_sources.saved_json(db, experiment_id, "plan_review", _review)
 
 
 def sync_review(db, experiment_id, *, before):
@@ -34,16 +27,12 @@ def sync_review(db, experiment_id, *, before):
     or a replacement by another revision abandons that generation. A drafting
     revision owes nothing until it is saved as awaiting review again.
     """
-    if not db.in_transaction:
-        raise RuntimeError("review obligation sync requires the caller's active transaction")
+    obligation_sources.require_transaction(db)
     if not isinstance(experiment_id, str) or not experiment_id:
         raise ValueError("experiment_id must be a non-empty string")
-    experiment = db.execute("SELECT contract FROM experiments WHERE id=?", (experiment_id,)).fetchone()
-    if experiment is None:
-        raise ValueError(f"saved experiment does not exist: {experiment_id}")
+    project_id = obligation_sources.source_project_id(db, experiment_id, "experiment")
     previous = _review(before)
     current = saved_review(db, experiment_id)
-    project_id = (json.loads(experiment["contract"]).get("project") or {}).get("id")
     if previous is not None and (current is None or current["revision"] != previous["revision"]):
         _sync(db, experiment_id, previous, project_id, live=frozenset(), ended=_SUPERSEDED_STATES)
     if current is None or current["state"] == "drafting":

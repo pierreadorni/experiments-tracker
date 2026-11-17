@@ -4,6 +4,8 @@ Call these helpers inside the same transaction as the source transition. A calle
 may set ``source_transition`` only after proving that transition from saved state.
 """
 
+import json
+
 from . import obligations
 
 _FIXED_FIELDS = ("experiment_id", "project_id", "kind", "target", "owner")
@@ -18,6 +20,40 @@ def episode_id(source_type, saved_id, episode):
     return f"{source_type}:{saved_id}:{episode}"
 
 
+# The obligation layer owns the guard; mappers above it share the same one.
+require_transaction = obligations.require_transaction
+
+
+def history_rows(db, source_type, saved_id):
+    """Return the saved obligation rows of one source in saved-ID order."""
+    prefix = f"{source_type}:{saved_id}:"
+    source_key = f"{source_type}:{saved_id}"
+    return [
+        dict(row)
+        for row in db.execute(
+            "SELECT * FROM obligations WHERE substr(id,1,?)=? ORDER BY id", (len(prefix), prefix)
+        )
+        if row["id"].rsplit(":", 1)[0] == source_key
+    ]
+
+
+def source_project_id(db, experiment_id, label):
+    """Return the saved experiment's contract project ID for one source mapper."""
+    row = db.execute("SELECT contract FROM experiments WHERE id=?", (experiment_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"saved {label} does not exist: {experiment_id}")
+    return (json.loads(row["contract"]).get("project") or {}).get("id")
+
+
+def saved_json(db, experiment_id, column, decode):
+    """Return one saved experiment JSON column decoded, read in the caller's transaction."""
+    require_transaction(db)
+    row = db.execute(f"SELECT {column} FROM experiments WHERE id=?", (experiment_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"saved experiment does not exist: {experiment_id}")
+    return decode(json.loads(row[column]) if row[column] else None)
+
+
 def latest_episode(db, source_type, saved_id):
     """Return the latest saved episode, without creating or changing anything.
 
@@ -25,7 +61,7 @@ def latest_episode(db, source_type, saved_id):
     and state before terminalizing the returned open row. A missing row stays
     missing; a terminal row is returned as terminal for the caller to inspect.
     """
-    _require_transaction(db)
+    require_transaction(db)
     _source_parts(source_type, saved_id)
     _, latest = _history(db, source_type, saved_id)
     return latest
@@ -53,7 +89,7 @@ def open_episode(
     source's old and new saved state in this transaction; replay/backfill must
     leave it false. Mutable wait/detail/due changes reuse the open episode.
     """
-    _require_transaction(db)
+    require_transaction(db)
     _source_parts(source_type, saved_id)
     if not isinstance(source_transition, bool):
         raise ValueError("source_transition must be a boolean")
@@ -122,7 +158,7 @@ def sync_episode(
     satisfied or abandoned state settles only an already-open episode, and a
     terminal state with no history stays without history.
     """
-    _require_transaction(db)
+    require_transaction(db)
     _source_parts(source_type, saved_id)
     if state in live_states:
         row = open_episode(
@@ -143,25 +179,30 @@ def sync_episode(
             raise ValueError(f"live {source_type} state conflicts with terminal obligation history")
         return row
     if state in satisfied_states:
-        settle = satisfy_episode
+        operation = "satisfy"
     elif state in abandoned_states:
-        settle = abandon_episode
+        operation = "abandon"
     else:
         raise ValueError(f"unsupported saved {source_type} state: {state}")
-    latest = latest_episode(db, source_type, saved_id)
-    if latest is None or latest["state"] != "open":
-        return latest
-    return settle(db, source_type, saved_id, int(latest["id"].rsplit(":", 1)[1]))
+    return terminalize(db, source_type, saved_id, latest_episode(db, source_type, saved_id), operation)
 
 
 def satisfy_episode(db, source_type, saved_id, episode):
-    _require_transaction(db)
+    require_transaction(db)
     return obligations.satisfy(db, episode_id(source_type, saved_id, episode))
 
 
 def abandon_episode(db, source_type, saved_id, episode):
-    _require_transaction(db)
+    require_transaction(db)
     return obligations.abandon(db, episode_id(source_type, saved_id, episode))
+
+
+def terminalize(db, source_type, saved_id, latest, operation):
+    """Settle the latest open episode; a missing or already terminal row stays saved."""
+    if latest is None or latest["state"] != "open":
+        return latest
+    settle = satisfy_episode if operation == "satisfy" else abandon_episode
+    return settle(db, source_type, saved_id, int(latest["id"].rsplit(":", 1)[1]))
 
 
 def _same_responsibility(row, wanted):
@@ -169,15 +210,7 @@ def _same_responsibility(row, wanted):
 
 
 def _history(db, source_type, saved_id):
-    prefix = f"{source_type}:{saved_id}:"
-    source_key = f"{source_type}:{saved_id}"
-    rows = [
-        dict(row)
-        for row in db.execute(
-            "SELECT * FROM obligations WHERE substr(id,1,?)=? ORDER BY id", (len(prefix), prefix)
-        )
-        if row["id"].rsplit(":", 1)[0] == source_key
-    ]
+    rows = history_rows(db, source_type, saved_id)
     episodes = {}
     for row in rows:
         suffix = row["id"].rsplit(":", 1)[1]
@@ -220,8 +253,3 @@ def _source_parts(source_type, saved_id):
         raise ValueError("source_type must be a non-empty string without ':'")
     if not isinstance(saved_id, str) or not saved_id:
         raise ValueError("saved_id must be a non-empty string")
-
-
-def _require_transaction(db):
-    if not db.in_transaction:
-        raise RuntimeError("obligation source helpers require the caller's active transaction")

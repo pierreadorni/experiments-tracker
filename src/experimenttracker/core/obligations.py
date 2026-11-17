@@ -48,7 +48,7 @@ def open(
     only where they differ, so unchanged timestamps survive a replay. Callers
     must inspect the returned row's state.
     """
-    _require_transaction(db)
+    require_transaction(db)
     _text(obligation_id, "obligation_id")
     _text(kind, "kind")
     _text(owner, "owner")
@@ -129,7 +129,7 @@ def _rank(row):
 
 
 def _transition(db, obligation_id, state):
-    _require_transaction(db)
+    require_transaction(db)
     _text(obligation_id, "obligation_id")
     row = _row(db, obligation_id)
     if row is None or row["state"] != "open":
@@ -137,7 +137,8 @@ def _transition(db, obligation_id, state):
     return _update(db, obligation_id, {"state": state, "updated_at": clock.now()})
 
 
-def _require_transaction(db):
+def require_transaction(db):
+    """Refuse an obligation read or write made outside the caller's transaction."""
     if not db.in_transaction:
         raise RuntimeError("obligations require the caller's active transaction")
 
