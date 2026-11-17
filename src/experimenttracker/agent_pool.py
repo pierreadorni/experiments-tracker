@@ -2,7 +2,7 @@
 
 Every admission site keeps its own authority checks and deterministic preparation,
 then offers a prepared proposal instead of creating a dispatch task. One selector
-sorts those proposals by priority class, re-checks eligibility and claims the owner,
+merges the roles' scan queues by priority class, re-checks eligibility and claims the owner,
 a free connection and one configured turn in a single synchronous section before
 the task exists. A turn needs both a free connection and free capacity: configured
 sessions minus live claims minus saved dispatching/running/uncertain turns of the
@@ -19,7 +19,6 @@ binding check before dispatch intent share.
 
 import asyncio
 from dataclasses import dataclass
-from functools import cmp_to_key
 
 from .quota import Decision, plenty
 
@@ -74,10 +73,9 @@ def role_for_phase(phase):
 class Proposal:
     """One prepared turn offered to the next selection; nothing is claimed yet.
 
-    Two proposals of the same role keep that role's own scan order (``rank``); a
-    proposal of another role shares only the priority class, so the two fall back to
-    the saved creation time, source table and row ID instead of comparing scan ranks
-    of unrelated roles.
+    A role's proposals keep that role's own scan order (``rank``); two different roles
+    share only the priority class, so their current heads fall back to the saved
+    creation time, source table and row ID instead of comparing unrelated scan ranks.
     """
 
     role: str
@@ -97,15 +95,10 @@ class Proposal:
     def created(self):
         return self.row.get("created_at") or 0
 
-
-def compare_proposals(left, right):
-    """Order two proposals: class, then each role's scan order or saved identity."""
-    if left.priority != right.priority:
-        return left.priority - right.priority
-    if left.role == right.role and left.rank != right.rank:
-        return left.rank - right.rank
-    left_key, right_key = (left.created, *left.key), (right.created, *right.key)
-    return (left_key > right_key) - (left_key < right_key)
+    @property
+    def head_key(self):
+        """What two role heads compare: priority class, then saved identity."""
+        return (self.priority, self.created, *self.key)
 
 
 @dataclass(frozen=True)
@@ -235,23 +228,45 @@ class AgentPool:
     def admit(self):
         """Claim and start the best eligible proposals; one synchronous section.
 
-        The sorted proposals are tried in order, so a busy owner or an occupied
-        connection skips only the work it cannot host and unrelated eligible work
-        still starts. Without a free configured turn nothing more starts. A proposal
-        no free connection can host is dropped with its source row still pending; a
-        turn whose outcome is unknown never returns here as a replacement.
+        Each role keeps its own queue in scan order; only the current head of each
+        role competes, by priority class then saved identity. The chosen head is popped
+        so its role's next proposal is exposed, and an ineligible head (settled row,
+        busy owner, no free connection) is skipped without hiding the rest of its
+        queue or reordering another role's scan. Without a free configured turn, or
+        once shutdown started, nothing more starts; a proposal no free connection can
+        host is dropped with its source row still pending, and a turn whose outcome is
+        unknown never returns here as a replacement.
         """
-        pending = sorted(self.proposals, key=cmp_to_key(compare_proposals))
+        queues = {}
+        for proposal in self.proposals:
+            queues.setdefault(proposal.role, []).append(proposal)
+        for queue in queues.values():
+            queue.sort(key=lambda proposal: proposal.rank)
         self.proposals = []
-        for proposal in pending:
+        while queues:
             if self.closing or self.turn_capacity() <= 0:
                 return
+            role = min(queues, key=lambda role: queues[role][0].head_key)
+            proposal = queues[role].pop(0)
+            if not queues[role]:
+                del queues[role]
             if not self.unchanged(proposal):
                 continue
             workflow = self.free_connection(proposal)
             if workflow is None or not self.owner_free(proposal.owner):
                 continue
             self.start(proposal, workflow)
+
+    def process_busy(self, workflow):
+        """Whether a live claim of any role still runs on this workflow's process.
+
+        Every role keeps its turn on the connection it was dispatched through, so a
+        lane may reconnect only when no claim of any source table survives on its
+        current process. A reconstructed or restarted reservation names another
+        process and never blocks this one.
+        """
+        connection = self.connection(workflow, workflow.agent.start_count)
+        return any(reservation.connection == connection for reservation in self.reservations.values())
 
     def turn_debt(self):
         """Saved turns that may still be live on the account, each counted once."""

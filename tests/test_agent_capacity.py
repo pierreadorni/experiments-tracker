@@ -9,14 +9,14 @@ no managed turn is sent.
 
 import asyncio
 import json
-from functools import cmp_to_key
 from uuid import uuid4
 
+import pytest
 from helpers import wait_until
 from test_iteration_autopilot import activated
 from test_knowledge import completed
 
-from experimenttracker.agent_pool import EXPERIMENT_PRIORITY, compare_proposals, experiment_owner
+from experimenttracker.agent_pool import EXPERIMENT_PRIORITY, experiment_owner, project_owner
 from experimenttracker.codex_client import DemoAgent
 from experimenttracker.config import ProjectConfig
 from experimenttracker.workflow import Workflow
@@ -32,6 +32,10 @@ class GatedAgent(DemoAgent):
 
     gate = None
     begun = []
+
+    def __init__(self):
+        super().__init__()
+        self.closes = 0
 
     async def begin(self, thread, prompt, schema, *, workspace=None, effort="low", project_workspace=None):
         # A stage prompt carries PAYLOAD, a project decision carries PROJECT.
@@ -56,6 +60,9 @@ class GatedAgent(DemoAgent):
         await type(self).gate.wait()
         return await super().finish(thread, turn)
 
+    async def close(self):
+        self.closes += 1
+
 
 def create(store):
     return store.command(
@@ -74,13 +81,13 @@ def insert_action(store, eid, state, *, phase="title", thread=None, turn=None, c
     return store.one("SELECT * FROM agent_actions WHERE id=?", (action_id,))
 
 
-def insert_project_turn(store, *, thread, turn):
+def insert_project_turn(store, *, thread, turn, project="test-project"):
     identity = str(uuid4())
     with store.tx() as db:
         db.execute(
             "INSERT INTO project_turns(id,project_id,payload,origin,state,thread_id,turn_id,created_at,updated_at) "
             "VALUES(?,?,'{}','local','dispatching',?,?,0,0)",
-            (identity, "test-project", thread, turn),
+            (identity, project, thread, turn),
         )
     return store.one("SELECT * FROM project_turns WHERE id=?", (identity,))
 
@@ -285,7 +292,7 @@ async def test_priority_orders_research_before_a_weekly_project_turn(runtime, mo
     await wf.close()
 
 
-def offer(wf, row, started, *, role="stage"):
+def offer(wf, row, started, *, role="stage", connections=None):
     """Offer one saved row as a proposal whose dispatch reports its start."""
 
     async def dispatch(_lane):
@@ -297,7 +304,7 @@ def offer(wf, row, started, *, role="stage"):
         row=row,
         owner=experiment_owner(row["experiment_id"]),
         priority=EXPERIMENT_PRIORITY,
-        connections=(wf,),
+        connections=(wf,) if connections is None else connections,
         dispatch=dispatch,
     )
 
@@ -369,27 +376,81 @@ async def test_a_live_claim_counts_one_turn_until_its_row_settles(runtime):
     await wf.close()
 
 
-def test_cross_role_proposals_compare_saved_identity_not_scan_rank(runtime):
-    store, _, _, wf = runtime
-    first = insert_action(store, create(store), "pending", phase="plan", created_at=0)
-    second = insert_action(store, create(store), "pending", phase="plan", created_at=1)
-    watch = insert_action(store, create(store), "pending", phase="monitor", created_at=2)
-    # Offered in scan order: the two stage turns rank 0 and 1, the monitor turn 0.
-    for role, row in (("stage", first), ("stage", second), ("monitor", watch)):
+@pytest.mark.parametrize(
+    "offers",
+    [("head", "later", "watch"), ("head", "watch", "later"), ("watch", "head", "later")],
+)
+async def test_role_heads_merge_by_priority_and_saved_identity(runtime, offers):
+    wf = await pooled(runtime, sessions=3)
+    store, lanes = wf.store, tuple(wf.lanes)
+    # The stage scan ranks a newer turn first while the monitor turn's saved identity
+    # sits between the two: scan rank and creation time conflict on purpose.
+    rows = {
+        "head": insert_action(store, create(store), "pending", phase="plan", created_at=5),
+        "later": insert_action(store, create(store), "pending", phase="plan", created_at=0),
+        "watch": insert_action(store, create(store), "pending", phase="monitor", created_at=3),
+    }
+    roles = {"head": "stage", "later": "stage", "watch": "monitor"}
+    started = []
+    for name in offers:
+        offer(wf, rows[name], started, role=roles[name], connections=lanes)
+    wf.agent_pool.admit()
+    await asyncio.gather(*[lane.agent_task for lane in wf.lanes if lane.agent_task is not None])
+    # Only role heads compete: the monitor head wins on saved identity, then the stage
+    # queue keeps its own scan order, independent of the order the roles offered.
+    assert started == [rows["watch"]["id"], rows["head"]["id"], rows["later"]["id"]]
+    await wf.close()
 
-        async def dispatch(_lane):
-            return None
 
-        wf.agent_pool.propose(
-            role=role,
-            source_table="agent_actions",
+async def test_an_ineligible_role_head_does_not_hide_its_next_offer(runtime):
+    wf = await pooled(runtime)
+    store, lanes = wf.store, tuple(wf.lanes)
+    head = insert_action(store, create(store), "pending", phase="plan", created_at=5)
+    later = insert_action(store, create(store), "pending", phase="plan", created_at=0)
+    watch = insert_action(store, create(store), "pending", phase="monitor", created_at=3)
+    started = []
+    for role, row in (("stage", head), ("stage", later), ("monitor", watch)):
+        offer(wf, row, started, role=role, connections=lanes)
+    # The stage head settled outside this selection: its role's next offer still runs
+    # on the second free connection instead of being hidden behind the stale head.
+    store.db.execute("UPDATE agent_actions SET state='completed' WHERE id=?", (head["id"],))
+    wf.agent_pool.admit()
+    await asyncio.gather(*[lane.agent_task for lane in wf.lanes if lane.agent_task is not None])
+    assert started == [watch["id"], later["id"]]
+    assert wf.agent_pool.lookup("agent_actions", head["id"]) is None
+    await wf.close()
+
+
+async def test_a_live_project_role_keeps_its_process_from_reconnecting(runtime):
+    wf = await pooled(runtime)
+    store = wf.store
+    # A project turn still runs on each connection; a closed socket must not cost
+    # either one its process before that turn settles.
+    first = insert_project_turn(store, thread="first-thread", turn="first-turn")
+    second = insert_project_turn(store, thread="second-thread", turn="second-turn", project="other-project")
+    for lane, row in ((wf, first), (wf.lanes[1], second)):
+        wf.agent_pool.claim(
+            role="supervisor",
+            source_table="project_turns",
             row=row,
-            owner=experiment_owner(row["experiment_id"]),
-            priority=EXPERIMENT_PRIORITY,
-            connections=(wf,),
-            dispatch=dispatch,
+            owner=project_owner(row["project_id"]),
+            workflow=lane,
         )
-    ordered = [p.row["id"] for p in sorted(wf.agent_pool.proposals, key=cmp_to_key(compare_proposals))]
-    # The two stage turns keep their scan order; the monitor turn shares only the
-    # class, so it compares creation time instead of an unrelated role's rank.
-    assert ordered == [first["id"], second["id"], watch["id"]]
+    assert wf.agent_pool.process_busy(wf) and wf.agent_pool.process_busy(wf.lanes[1])
+    wf.agent_ready = False
+    wf.lanes[1].agent_ready = False
+    closed_at = wf.last_agent_start + 120
+    await wf.step_runtime(closed_at)
+    await wf.step_control_after_observe(closed_at)
+    assert [lane.agent.closes for lane in wf.lanes] == [0, 0]
+    assert [lane.agent.start_count for lane in wf.lanes] == [1, 1]
+    # Once both turns settle, the closed processes reconnect once each.
+    store.db.execute("UPDATE project_turns SET state='failed'")
+    wf.agent_pool.settle_row("project_turns", first["id"])
+    wf.agent_pool.settle_row("project_turns", second["id"])
+    assert not wf.agent_pool.process_busy(wf) and not wf.agent_pool.process_busy(wf.lanes[1])
+    await wf.step_runtime(closed_at)
+    await wf.step_control_after_observe(closed_at)
+    assert [lane.agent.closes for lane in wf.lanes] == [1, 1]
+    assert [lane.agent.start_count for lane in wf.lanes] == [2, 2]
+    await wf.close()

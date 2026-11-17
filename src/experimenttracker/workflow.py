@@ -608,7 +608,11 @@ class Workflow:
         if self.agent_ready and not self.agent.available:
             self.agent_ready = False
             self.agent_error = "App Server connection closed; saved turns require reconciliation"
-        if not self.agent_ready and not self.agent_task and now - self.last_agent_start >= 60:
+        if (
+            not self.agent_ready
+            and not self.agent_pool.process_busy(self)
+            and now - self.last_agent_start >= 60
+        ):
             await self.agent.close()
             await self.connect_agent()
         if self.agent_ready and now - self.last_quota_refresh >= 45:
@@ -672,7 +676,11 @@ class Workflow:
                 lane.agent_task.result()
                 lane.agent_task = None
                 lane.active_action = None
-            if not lane.agent_ready and not lane.agent_task and now - lane.last_agent_start >= 60:
+            if (
+                not lane.agent_ready
+                and not self.agent_pool.process_busy(lane)
+                and now - lane.last_agent_start >= 60
+            ):
                 await lane.agent.close()
                 await lane.connect_agent()
         await legacy_archive_actions.settle_actions(self)
