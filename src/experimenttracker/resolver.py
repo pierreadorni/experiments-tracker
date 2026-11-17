@@ -213,9 +213,6 @@ class TurnResolver:
             if action["id"] in owned:
                 continue
             try:
-                if action["phase"].startswith("integration:"):
-                    await self.workflow.integration_resolver.resolve_uncertain(action)
-                    continue
                 await self.resolve_action(action)
             except Exception:
                 # A resolver failure keeps this action for the operator; the tick continues.
@@ -224,7 +221,10 @@ class TurnResolver:
     async def resolve_action(self, action):
         store = self.workflow.store
         exp = store.experiment(action["experiment_id"])
-        if legacy_archive.execution_frozen(exp) or exp["phase"] in ("complete", "failed", "cancelled"):
+        integration = action["phase"].startswith("integration:")
+        if legacy_archive.execution_frozen(exp) or (
+            exp["phase"] in ("complete", "failed", "cancelled") and not integration
+        ):
             return
         now = clock.now()
         if now < self.failures.get(action["id"], (0, 0))[1]:
@@ -247,18 +247,23 @@ class TurnResolver:
         else:
             matches = [turn for turn in turns if turn["prompt_sha256"] == prompt_hash]
         if len(matches) > 1:
-            self.ask_owner(
-                exp,
-                f"Uncertain agent turn {action['id']} matches several saved turns: "
-                + ", ".join(turn["id"] for turn in matches),
+            text = f"Uncertain agent turn {action['id']} matches several saved turns: " + ", ".join(
+                turn["id"] for turn in matches
             )
+            if integration:
+                self.workflow.integration_resolver._fail(action, text)
+            else:
+                self.ask_owner(exp, text)
             return
         if matches:
             # Only a completed turn is adoptable; a live or terminal matching turn stays
             # with operator reconciliation, exactly as the operator readback reports it.
             if matches[0]["status"] == "completed":
                 self.failures.pop(action["id"], None)
-                await self.workflow.adopt_turn(action["id"], turn_id=matches[0]["id"])
+                if integration:
+                    await self.workflow.integration_resolver.adopt(action, matches[0]["id"])
+                else:
+                    await self.workflow.adopt_turn(action["id"], turn_id=matches[0]["id"])
                 self.workflow.agent_pool.settle_row("agent_actions", action["id"])
             return
         if now - self.dispatched_at(action) <= ABSENT_AFTER_SECONDS:
@@ -277,6 +282,7 @@ class TurnResolver:
     def absent(self, action, exp, turns):
         """A readable thread without the turn proves it never started: continue it once."""
         store = self.workflow.store
+        integration = action["phase"].startswith("integration:")
         evidence = {
             "action_id": action["id"],
             "thread_id": action["thread_id"],
@@ -293,7 +299,7 @@ class TurnResolver:
             # A diagnostic wake owns its own failure handling; other roles admit a continuation.
             continuation = (
                 None
-                if action["phase"] == "monitor"
+                if integration or action["phase"] == "monitor"
                 else store.continue_action(failed, feedback=NOT_STARTED, _db=db)
             )
             if continuation and action["phase"].startswith("discuss:"):
@@ -309,6 +315,8 @@ class TurnResolver:
                 )
         if continuation and not action["phase"].startswith("discuss:"):
             store.update(exp["id"], hold_reason="agent_continuation", error=NOT_STARTED)
+        if integration:
+            self.workflow.integration_resolver.failed(action, NOT_STARTED)
         self.workflow.agent_pool.settle_row("agent_actions", action["id"])
 
     def ask_owner(self, exp, text):
@@ -323,4 +331,8 @@ class TurnResolver:
             clock.now() + RETRY_SECONDS[min(failures, len(RETRY_SECONDS)) - 1],
         )
         if failures == UNREADABLE_LIMIT:
-            self.ask_owner(exp, f"Uncertain agent turn {action['id']} has no readable thread: {exc}")
+            text = f"Uncertain agent turn {action['id']} has no readable thread: {exc}"
+            if action["phase"].startswith("integration:"):
+                self.workflow.integration_resolver._fail(action, text)
+            else:
+                self.ask_owner(exp, text)

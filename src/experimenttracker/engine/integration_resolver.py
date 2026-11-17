@@ -35,7 +35,6 @@ PHASE_PREFIX = "integration:"
 ROLE = "integration"
 MAX_ERROR = 1800
 MAX_STATUS = 500
-UNPROVEN_ABSENT_SECONDS = 300
 _INSTRUCTIONS = (
     "Resolve one saved Git integration conflict. Work only in the supplied worktree and edit "
     "only the listed conflicted files. Remove every conflict marker, combine both sides' intended "
@@ -369,35 +368,12 @@ class IntegrationResolver:
             return
         self.workflow._action_state(action_id, "completed", result=result, expected=action)
 
-    async def resolve_uncertain(self, action):
-        """Read back one uncertain integrator turn; never resend it or infer absence early."""
+    async def adopt(self, action, turn_id):
+        """Adopt one exact completed turn with the restart resolver's backoff/readback."""
         reservation = self.workflow.agent_pool.lookup("agent_actions", action["id"])
         slot = self.workflow.agent_pool.read_slot(reservation)
         if slot is None:
             return
-        try:
-            if not action["thread_id"]:
-                raise NeedsAttention("saved integration dispatch has no thread identity")
-            prompt_hash = self.workflow.dispatch_prompt_hash(action)
-            turns = await slot.agent.read_thread(action["thread_id"])
-        except Exception:
-            return
-        if action["turn_id"]:
-            matches = [turn for turn in turns if turn["id"] == action["turn_id"]]
-        else:
-            matches = [turn for turn in turns if turn.get("prompt_sha256") == prompt_hash]
-        if len(matches) > 1:
-            self._fail(action, "several saved turns match this integration resolution")
-            return
-        if not matches:
-            if clock.now() - self.workflow.resolver.dispatched_at(action) > UNPROVEN_ABSENT_SECONDS:
-                self._fail(action, "the integration resolution turn was not found; no replay was made")
-            return
-        turn = matches[0]
-        if turn.get("status") != "completed":
-            self._fail(action, "the saved integration resolution turn is not completed")
-            return
-        turn_id = turn["id"]
         try:
             result = await slot.agent.read_turn(action["thread_id"], turn_id)
         except Exception:
@@ -416,7 +392,10 @@ class IntegrationResolver:
             except Exception:
                 return
         self._finish(action["id"], result)
-        self.workflow.agent_pool.settle_row("agent_actions", action["id"])
+
+    def failed(self, action, error):
+        """Save one queue status for an integration action the resolver already failed."""
+        self._status(action["phase"][len(PHASE_PREFIX) :], "manual inspection: " + _text(error))
 
     def _fail(self, action, error):
         self.workflow._action_state(action["id"], "failed", error=_text(error), expected=action)
