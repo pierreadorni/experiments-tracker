@@ -35,11 +35,11 @@ async def settle_actions(workflow):
         try:
             result = await lane.agent.read_turn(action["thread_id"], action["turn_id"])
         except TerminalTurnError as exc:
-            workflow._action_state(action["id"], "failed", error=str(exc))
+            workflow._action_state(action["id"], "failed", error=str(exc), expected=action)
         except Exception as exc:
-            workflow._action_state(action["id"], "uncertain", error=str(exc))
+            workflow._action_state(action["id"], "uncertain", error=str(exc), expected=action)
         else:
-            workflow._action_state(action["id"], "completed", result=result)
+            workflow._action_state(action["id"], "completed", result=result, expected=action)
 
     for checks in (workflow.output_checks, workflow.evidence_checks):
         for identity, value in list(checks.items()):

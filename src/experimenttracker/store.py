@@ -907,10 +907,15 @@ class Store:
             "WHERE experiment_id=? AND state NOT IN ('complete','failed','cancelled')",
             (now, eid),
         )
+        pending_actions = db.execute(
+            "SELECT * FROM agent_actions WHERE experiment_id=? AND state='pending'", (eid,)
+        ).fetchall()
         db.execute(
             "UPDATE agent_actions SET state='superseded',updated_at=? WHERE experiment_id=? AND state='pending'",
             (now, eid),
         )
+        for action in pending_actions:
+            action_obligations.sync_action(db, action["id"], before=action)
         db.execute(
             "UPDATE steering SET state='cancelled',applied_at=? WHERE experiment_id=? AND state IN ('pending','cancelling')",
             (now, eid),

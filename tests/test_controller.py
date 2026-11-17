@@ -7,6 +7,7 @@ claim managed inference, real Slurm scientific success or physical-phone access.
 import asyncio
 import json
 import threading
+from types import SimpleNamespace
 from uuid import uuid4
 
 import httpx
@@ -187,6 +188,51 @@ async def test_saved_monitor_turn_is_adopted_after_restart_without_duplicate_dis
     finally:
         wf.controller.server = None
         await wf.close()
+
+
+async def test_monitor_action_obligation_tracks_creation_and_pending_supersession(runtime, monkeypatch):
+    store, _, _, wf = runtime
+    eid = create(store)
+    store.update(eid, phase="training")
+    wake_id = str(uuid4())
+    with store.tx() as db:
+        db.execute(
+            "INSERT INTO agent_wakeups(id,experiment_id,reason,due_at,state,created_at) "
+            "VALUES(?,?,?,0,'pending',0)",
+            (wake_id, eid, json.dumps({"reason": "synthetic telemetry gap"})),
+        )
+    wf.controller.server = object()
+    wf.agent_ready = True
+    monkeypatch.setattr(wf.controller, "diagnostic_jobs", lambda _: [{"intent_id": "synthetic-job"}])
+    monkeypatch.setattr(wf.gate, "decide", lambda: SimpleNamespace(admitted=True))
+
+    async def no_dispatch(_action):
+        return None
+
+    monkeypatch.setattr(wf, "dispatch", no_dispatch)
+    try:
+        await wf.controller.advance()
+        action = store.one("SELECT * FROM agent_actions WHERE experiment_id=?", (eid,))
+        assert action["phase"] == "monitor" and action["state"] == "pending"
+        obligation_id = f"agent-action:{action['id']}:0"
+        assert store.one("SELECT state FROM obligations WHERE id=?", (obligation_id,))["state"] == "open"
+        assert store.one("SELECT kind FROM events WHERE kind='agent_wakeup_queued'")
+        if wf.agent_task:
+            await wf.agent_task
+        wf.agent_task = wf.active_action = None
+        with store.tx() as db:
+            db.execute("UPDATE experiments SET phase='complete' WHERE id=?", (eid,))
+        await wf.controller.advance()
+        assert (
+            store.one("SELECT state FROM agent_actions WHERE id=?", (action["id"],))["state"] == "superseded"
+        )
+        assert store.one("SELECT state FROM obligations WHERE id=?", (obligation_id,))["state"] == "abandoned"
+        assert store.one(
+            "SELECT 1 FROM events WHERE kind='agent_action_changed' AND json_extract(payload,'$.action_id')=?",
+            (action["id"],),
+        )
+    finally:
+        wf.controller.server = None
 
 
 async def test_manual_planning_retry_has_same_revision_and_duplicate_receipt(runtime):

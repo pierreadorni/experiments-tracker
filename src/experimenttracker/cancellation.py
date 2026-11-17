@@ -58,9 +58,9 @@ async def process_cancellations(workflow):
                 try:
                     result = await lane.agent.read_turn(action["thread_id"], action["turn_id"])
                 except TerminalTurnError as exc:
-                    lane._action_state(action["id"], "failed", error=str(exc))
+                    lane._action_state(action["id"], "failed", error=str(exc), expected=action)
                 else:
-                    lane._action_state(action["id"], "completed", result=result)
+                    lane._action_state(action["id"], "completed", result=result, expected=action)
             except Exception as exc:
                 errors.append(str(exc))
         for job in store.rows(

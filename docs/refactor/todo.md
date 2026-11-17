@@ -245,7 +245,7 @@ and archived fixtures still render their report via the API.
 - Open/close obligations transactionally for actions, jobs, transfers, pending
   requests, plan review and publication; split by source before delegation.
 - [Rollout decisions and bounded cards](notes/t1.3b-rollout-design.md): [x] b1 inert
-  episode/lookup helpers; [x] b2a inert action mapping; [x] b5a inert job mapping; [x] b2b Workflow actions; [x] b3 Store/Conversation actions; [ ] b4–b14 remaining runtime source integration and bounded backfill.
+  episode/lookup helpers; [x] b2a inert action mapping; [x] b5a inert job mapping; [x] b2b Workflow actions; [x] b3 Store/Conversation actions; [x] b4 Controller/cancellation/archived actions; [ ] b5b–b14 remaining runtime source integration and bounded backfill.
 
 ### [ ] T1.3c Derived holds (C2) · F+R · M per call-site group
 - [x] c1a inert source-less admission decisions; source-backed/terminal/cancellation families and activation remain pending.
@@ -552,3 +552,5 @@ Record completed tasks here: `date · task · commit · notes`.
 2026-11-17 · T1.3b-b3 · Frozen Luna candidate, independent Luna review and coordinator scoped integration. Store continuation/session retry/title admission and Conversation queue/correction/dispatch/readback synchronize obligations with existing source/event transactions. Async callbacks check saved action identities; completed-parent discussions retain their reader path. Added correction rollback/child-admission and terminal lifecycle/restart history assertions. Source +35/−5; tests +238/−0; 278 changed source/test lines (M). Ruff,46 targeted cases across focused runs and full670 Python tests pass (423.97s); logs/XML in isolated validation check-results/t1-b3-*. No projection/backfill or live activation.
 
 2026-11-17 · T1.3b-b7 planning · Focused Astra read-only review and coordinator acceptance of transfer replacement design. Explicit pending admission models complete-row replay; unchanged pending retry retains age; exact episode/identity guards refuse stale callbacks. Planned exact preview identity/terminal supersession and Store cancellation are separate bounded cards; historical UUID diagnostics remain mandatory b14/d1 acceptance. No schema/config/reasons, retry cadence or live activation changed. Documentation only; production delta zero and phase-wide net-negative forecast remains unfunded.
+
+2026-11-17 · T1.3b-b4 · this commit · Luna implementation, independent review and coordinator integration. Monitor action creation and pending supersession (now with an existing agent_action_changed event), same-transaction cancellation supersession of pending actions, and exact expected snapshots for cancellation/controller/archived readback callbacks. Source +30/−8; tests +97/−1. Ruff, 33 targeted and all 672 Python tests pass (413.62s). No live activation.

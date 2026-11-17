@@ -13,6 +13,7 @@ from pydantic import Field
 from . import artifacts, clock, early_repair, iteration, reporting
 from .codex_client import TerminalTurnError
 from .config import StrictModel
+from .core import action_obligations
 from .legacy_archive import archive_active, execution_frozen
 from .models import Analysis, Implementation, ReportDocument, ResearchPlan
 from .store import Conflict, encode
@@ -549,7 +550,21 @@ class Controller:
                     )
                 ):
                     with wf.store.tx() as db:
-                        db.execute("UPDATE agent_actions SET state='superseded' WHERE id=?", (action["id"],))
+                        before = db.execute(
+                            "SELECT * FROM agent_actions WHERE id=? AND state='pending'", (action["id"],)
+                        ).fetchone()
+                        if before:
+                            db.execute(
+                                "UPDATE agent_actions SET state='superseded' WHERE id=? AND state='pending'",
+                                (action["id"],),
+                            )
+                            action_obligations.sync_action(db, action["id"], before=before)
+                            wf.store.emit(
+                                db,
+                                exp["id"],
+                                "agent_action_changed",
+                                {"action_id": action["id"], "state": "superseded"},
+                            )
                         db.execute("UPDATE agent_wakeups SET state='superseded' WHERE id=?", (wake["id"],))
                     continue
                 if action["state"] == "completed":
@@ -595,11 +610,12 @@ class Controller:
                             action["id"],
                             "completed",
                             result=await wf.agent.read_turn(action["thread_id"], action["turn_id"]),
+                            expected=action,
                         )
                     except TerminalTurnError as exc:
-                        wf._action_state(action["id"], "failed", error=str(exc))
+                        wf._action_state(action["id"], "failed", error=str(exc), expected=action)
                     except Exception as exc:
-                        wf._action_state(action["id"], "uncertain", error=str(exc))
+                        wf._action_state(action["id"], "uncertain", error=str(exc), expected=action)
                     continue
             else:
                 if wake["due_at"] > clock.now():
@@ -651,6 +667,7 @@ class Controller:
                         "INSERT INTO agent_actions(id,experiment_id,phase,evidence_revision,state,input,created_at,updated_at) VALUES(?,?,'monitor',?,'pending',?,?,?)",
                         (identity, exp["id"], exp["evidence_revision"], prompt, now, now),
                     )
+                    action_obligations.sync_action(db, identity)
                     db.execute(
                         "UPDATE agent_wakeups SET state='queued',action_id=? WHERE id=?",
                         (identity, wake["id"]),

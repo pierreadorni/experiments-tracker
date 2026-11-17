@@ -6,7 +6,8 @@ from uuid import uuid4
 import pytest
 
 from experimenttracker.cancellation import process_cancellations
-from experimenttracker.codex_client import TerminalTurnError
+from experimenttracker.codex_client import NeedsAttention, TerminalTurnError
+from experimenttracker.core import action_obligations
 from experimenttracker.maintenance import blockers
 from experimenttracker.models import ActionCommand
 from experimenttracker.remote import RemoteSlurmScheduler, TransferCancelled, TransferPending
@@ -23,6 +24,55 @@ def create(store):
 def cancel(store, eid, request_id=None):
     payload = ActionCommand(request_id=request_id or uuid4(), action="cancel").model_dump(mode="json")
     return store.command(payload["request_id"], "action", payload, eid=eid)
+
+
+async def test_cancel_supersedes_pending_action_obligation_atomically_and_replays(runtime, monkeypatch):
+    store, _, _, wf = runtime
+    eid = create(store)
+    action_id, request_id = str(uuid4()), uuid4()
+    with store.tx() as db:
+        db.execute(
+            "INSERT INTO agent_actions(id,experiment_id,phase,evidence_revision,state,input,created_at,updated_at) "
+            "VALUES(?,?,'monitor',1,'pending','prompt',0,0)",
+            (action_id, eid),
+        )
+        action_obligations.sync_action(db, action_id)
+    expected = store.one("SELECT * FROM agent_actions WHERE id=?", (action_id,))
+    with store.tx() as db:
+        db.execute("UPDATE agent_actions SET turn_id='replacement' WHERE id=?", (action_id,))
+    with pytest.raises(NeedsAttention, match="saved action changed"):
+        wf._action_state(action_id, "failed", expected=expected)
+    with store.tx() as db:
+        db.execute("UPDATE agent_actions SET turn_id=NULL WHERE id=?", (action_id,))
+
+    def fail_sync(*args, **kwargs):
+        raise RuntimeError("synthetic obligation failure")
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(action_obligations, "sync_action", fail_sync)
+        with pytest.raises(RuntimeError, match="synthetic obligation failure"):
+            cancel(store, eid)
+    assert store.one("SELECT state FROM agent_actions WHERE id=?", (action_id,))["state"] == "pending"
+    assert store.one("SELECT phase FROM experiments WHERE id=?", (eid,))["phase"] != "cancelled"
+
+    first = cancel(store, eid, request_id)
+    latest = store.one(
+        "SELECT state FROM obligations WHERE id=?",
+        (f"agent-action:{action_id}:0",),
+    )
+    assert store.one("SELECT state FROM agent_actions WHERE id=?", (action_id,))["state"] == "superseded"
+    assert latest["state"] == "abandoned"
+    count = store.one(
+        "SELECT COUNT(*) AS n FROM obligations WHERE id LIKE ?", (f"agent-action:{action_id}:%",)
+    )["n"]
+    assert cancel(store, eid, request_id) == first
+    assert (
+        store.one(
+            "SELECT COUNT(*) AS n FROM obligations WHERE id LIKE ?",
+            (f"agent-action:{action_id}:%",),
+        )["n"]
+        == count
+    )
 
 
 @pytest.mark.parametrize(
