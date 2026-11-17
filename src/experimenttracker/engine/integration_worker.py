@@ -9,9 +9,11 @@ through ``integration.apply``, which revalidates the exact base branch, checkout
 and candidate commit, so a stale approval refuses instead of fast-forwarding. A
 returned prepare must match every captured identity field, and an apply
 ``WorkspaceUnavailable`` is an unknown outcome: both wait and keep the exact candidate
-ref/worktree for inspection, never re-preparing or re-applying. T3.4c wires commands,
-settings and the runner; T3.5 wires conflict resolution. Re-preparing a checked or
-conflicted candidate is left to T3.4c, which can discard and re-queue it.
+ref/worktree for inspection, never re-preparing or re-applying. A finalized conflict
+resolution saved back to ``claimed`` is the exception: its exact ready candidate reruns
+the project check and approval. T3.4c wires commands, settings and the runner; T3.5
+wires conflict resolution. Re-preparing a checked or conflicted candidate is left to
+T3.4c, which can discard and re-queue it.
 """
 
 import hashlib
@@ -226,6 +228,10 @@ def _apply_ready(store, view, apply, discard, settle, guard):
 def _obtain(store, view, config, head, prepare, prepare_revert):
     candidate = view["candidate"]
     if candidate is not None:
+        if candidate.get("state") == "ready":
+            # A finalized conflict re-enters this driver at ``claimed`` so the project
+            # check and any owner approval run again before apply.
+            return candidate
         preparing = candidate.get("state") == PREPARING
         reason = "prepare outcome unknown" if preparing else "re-preparation is left to T3.4c"
         if not (view["status"] or "").startswith(reason):

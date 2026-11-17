@@ -88,12 +88,16 @@ def safe_filename(value):
     return name
 
 
+def redact_secrets(value):
+    """Replace bearer credentials and known token prefixes in public text."""
+    text = str(value)
+    text = re.sub(r"(?i)bearer\s+[a-z0-9._~+/-]+", "Bearer [redacted]", text)
+    return re.sub(r"\b(?:sk-|ghp_|ghs_)[a-zA-Z0-9_-]+", "[redacted]", text)
+
+
 def public_activity_text(value):
     """Bound public model summaries; never use raw reasoning or tool output."""
-    text = " ".join(str(value).split())
-    text = re.sub(r"(?i)bearer\s+[a-z0-9._~+/-]+", "Bearer [redacted]", text)
-    text = re.sub(r"\b(?:sk-|ghp_|ghs_)[a-zA-Z0-9_-]+", "[redacted]", text)
-    return text[:1200]
+    return redact_secrets(" ".join(str(value).split()))[:1200]
 
 
 class DiscussionActivity:

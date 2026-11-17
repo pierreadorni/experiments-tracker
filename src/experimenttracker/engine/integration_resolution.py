@@ -1,4 +1,4 @@
-"""Finalize a resolved integration conflict as one exact pinned merge (T3.5a).
+"""Bounded conflict resolver seam and exact pinned finalization (T3.5a-b).
 
 ``integration.prepare`` leaves a conflicted ``--no-ff`` merge in the locked detached
 ``.worktrees/_integration`` worktree and returns ``state`` ``"conflict"`` with the
@@ -8,6 +8,15 @@ and commits the merge with the saved parents, pinned under the saved candidate r
 returns the shape ``integration.apply`` accepts; it never applies the candidate, runs a
 project check, removes the worktree or dispatches an agent.
 
+``resolver_input`` is the bounded contract for that resolver turn: the exact saved
+candidate, its conflicted paths, redacted and bounded logs for both sides and the saved
+experiment summary, built without changing Git state. ``accept_resolution`` finalizes
+the resolver's edits and moves the saved request back to ``claimed``, never to
+``ready``, so the integration driver reruns the project check and any owner approval.
+The accepted next dispatch seam is one integrator action dispatched through the
+existing periodic integration path with this input; it must return edits only inside
+the saved worktree and must record them through ``accept_resolution``.
+
 Every refusal leaves the conflict directory and the base branch untouched. A merge
 commit that was created but could not be verified or pinned stays unbound in the
 worktree for inspection: it is never reset and the operation is never repeated. A
@@ -16,14 +25,23 @@ reason, and a merge without Git's recorded automatic result (``AUTO_MERGE``) is
 refused rather than judged from the working tree alone.
 """
 
+import json
 from pathlib import Path, PurePosixPath
 
+from ..progress import redact_secrets
 from ..workspaces import WorkspaceUnavailable, git
+from . import integration_queue as queue
 from .gitworkspace import AUTHOR, EMAIL, _commit, _main_checkout
 from .integration import LOCK_PREFIX, _claim, _conflicts, _entry_at, _ref_commit, _saved
 
 _MARKERS = (b"<<<<<<<", b"=======", b">>>>>>>")
 _OTHER_OPERATIONS = ("REVERT_HEAD", "CHERRY_PICK_HEAD")
+MAX_LOG_COMMITS = 20
+MAX_LOG_CHARS = 1500
+MAX_SUMMARY_CHARS = 1200
+MAX_INPUT_BYTES = 8192
+_OMITTED = "[older commits omitted]"
+RESOLVED_STATUS = "resolved conflict; project check and approval required"
 
 
 def _permitted(candidate):
@@ -56,6 +74,15 @@ def _merge_head(worktree, head_commit):
         raise WorkspaceUnavailable("The saved integration conflict has no merge in progress") from None
     if merged != [head_commit]:
         raise WorkspaceUnavailable("The saved integration conflict merges another commit")
+
+
+def _only_conflict(worktree):
+    """Refuse a worktree where another Git operation replaced the saved conflict."""
+    for name in _OTHER_OPERATIONS:
+        if _git_path(worktree, name).exists():
+            raise WorkspaceUnavailable(
+                "Another Git operation is in progress; only the saved conflict is available"
+            )
 
 
 def _auto_merge(worktree):
@@ -152,11 +179,7 @@ def finalize(repo, candidate):
         raise WorkspaceUnavailable("The worktree is not at the saved conflict; an unpinned merge was kept")
     if _claim(root, worktree, candidate["key"], saved["base_commit"]) is None:
         raise WorkspaceUnavailable("The saved integration worktree is missing; nothing was finalized")
-    for name in _OTHER_OPERATIONS:
-        if _git_path(worktree, name).exists():
-            raise WorkspaceUnavailable(
-                "Another Git operation is in progress; only the saved conflict is finalizable"
-            )
+    _only_conflict(worktree)
     _merge_head(worktree, saved["head_commit"])
     auto_tree = _auto_merge(worktree)
     if any(name not in permitted for name in _conflicts(worktree)):
@@ -195,3 +218,124 @@ def finalize(repo, candidate):
     if _claim(root, worktree, candidate["key"], commit) is None:
         raise WorkspaceUnavailable("The resolved candidate worktree is missing; it was not recorded")
     return {**candidate, "candidate_commit": commit, "state": "ready", "conflicts": []}
+
+
+def _redacted(value, limit):
+    return redact_secrets(" ".join(str(value).split()))[:limit]
+
+
+def _side_log(root, older, newer):
+    """One side's commits since the other, bounded and redacted for the resolver prompt."""
+    rows = git(
+        root,
+        "log",
+        "--no-color",
+        "--no-decorate",
+        f"--max-count={MAX_LOG_COMMITS + 1}",
+        "--format=%h %s",
+        f"{older}..{newer}",
+    )
+    lines, size = [], 0
+    for row in rows.decode("utf-8", "replace").splitlines():
+        text = _redacted(row, MAX_LOG_CHARS)
+        if not text:
+            continue
+        if len(lines) >= MAX_LOG_COMMITS or size + len(text) + 1 > MAX_LOG_CHARS:
+            lines.append(text[:MAX_LOG_CHARS] if not lines else _OMITTED)
+            break
+        lines.append(text)
+        size += len(text) + 1
+    return lines
+
+
+def _experiment_summary(experiment):
+    """A bounded, redacted title and plan/brief summary of the saved experiment."""
+    if not isinstance(experiment, dict):
+        raise WorkspaceUnavailable("A saved experiment summary is required")
+    snapshot = experiment.get("snapshot")
+    plan = snapshot.get("plan") if isinstance(snapshot, dict) else None
+    plan = plan if isinstance(plan, dict) else {}
+    title = experiment.get("title") or plan.get("title")
+    summary = plan.get("summary") or experiment.get("brief")
+    parts = [value.strip() for value in (title, summary) if isinstance(value, str) and value.strip()]
+    if not parts:
+        raise WorkspaceUnavailable("A saved experiment summary is required")
+    return _redacted("\n".join(parts), MAX_SUMMARY_CHARS)
+
+
+def resolver_input(repo, candidate, experiment):
+    """Build the bounded, redacted input for one saved integration conflict.
+
+    The candidate must be the exact saved ``state`` ``"conflict"`` identity, still
+    checked out in its locked worktree with the saved merge in progress and the same
+    unmerged paths. ``base_log`` and ``head_log`` are each bounded and redacted;
+    ``experiment_summary`` combines the saved title and plan/brief summary. No Git
+    state is changed and no agent is dispatched.
+    """
+    root = _main_checkout(repo)
+    saved = _saved(root, candidate)
+    if candidate.get("state") != "conflict" or saved["candidate_commit"] is not None:
+        raise WorkspaceUnavailable("Only a saved integration conflict can be resolved")
+    if saved["kind"] != "merge":
+        raise WorkspaceUnavailable(
+            "Revert conflicts need a specialized resolution path; the conflict was kept"
+        )
+    permitted = _permitted(candidate)
+    worktree = Path(candidate["worktree"])
+    if _claim(root, worktree, candidate["key"], saved["base_commit"]) is None:
+        raise WorkspaceUnavailable("The saved integration worktree is missing; nothing was resolved")
+    _only_conflict(worktree)
+    _merge_head(worktree, saved["head_commit"])
+    _auto_merge(worktree)
+    if _conflicts(worktree) != permitted:
+        raise WorkspaceUnavailable("The integration worktree no longer matches the saved conflict")
+    value = {
+        "key": candidate["key"],
+        "kind": saved["kind"],
+        "base": saved["base"],
+        "base_commit": saved["base_commit"],
+        "head_commit": saved["head_commit"],
+        "worktree": str(worktree),
+        "ref": saved["ref"],
+        "conflicts": permitted,
+        "base_log": _side_log(root, saved["head_commit"], saved["base_commit"]),
+        "head_log": _side_log(root, saved["base_commit"], saved["head_commit"]),
+        "experiment_summary": _experiment_summary(experiment),
+    }
+    if len(json.dumps(value, ensure_ascii=False).encode("utf-8")) > MAX_INPUT_BYTES:
+        raise WorkspaceUnavailable("The resolver input exceeds its bound")
+    return value
+
+
+def accept_resolution(store, request_id, candidate):
+    """Finalize the saved conflict and return it to the gated check/approval path.
+
+    The request must still be the open saved ``conflict`` with exactly ``candidate``.
+    ``finalize`` pins the verified merge first; if Git refuses or its outcome is
+    uncertain the queue stays at ``conflict`` for inspection. Only then does the
+    request move to ``claimed`` with the finalized candidate, so the driver reruns the
+    project check and any owner approval. This function never moves the request to
+    ``ready`` and never applies it. If recording the transition fails after the pin,
+    the exact merge stays pinned and the request stays at ``conflict`` for inspection;
+    it is never finalized twice.
+    """
+    with store.tx() as db:
+        view = queue.saved(db, request_id)
+    if view is None:
+        raise ValueError(f"unknown integration request: {request_id}")
+    if view["state"] != "open" or view["stage"] != "conflict":
+        raise ValueError("only an open saved integration conflict can be resolved")
+    if view["candidate"] != candidate:
+        raise ValueError("only the exact saved integration conflict can be resolved")
+    ready = finalize(view["repo"], candidate)
+    with store.tx() as db:
+        current = queue.saved(db, request_id)
+        if current is None or current["state"] != "open" or current["stage"] != "conflict":
+            raise ValueError("the saved integration conflict changed before the resolution was recorded")
+        return queue.checkpoint(
+            db,
+            request_id,
+            "claimed",
+            candidate=ready,
+            status=RESOLVED_STATUS,
+        )

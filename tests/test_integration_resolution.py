@@ -1,13 +1,17 @@
-"""Real Git proves only a verified resolution becomes the pinned merge candidate (T3.5a)."""
+"""Real Git proves the bounded resolver seam and its exact pinned merge (T3.5a-b)."""
 
+import json
 from pathlib import Path
 
 import pytest
 
+from experimenttracker.engine import integration_queue as queue
 from experimenttracker.engine import integration_resolution
+from experimenttracker.engine import integration_worker as worker
 from experimenttracker.engine.gitworkspace import commit, create
 from experimenttracker.engine.integration import apply, discard, prepare
-from experimenttracker.engine.integration_resolution import finalize
+from experimenttracker.engine.integration_resolution import accept_resolution, finalize, resolver_input
+from experimenttracker.store import Store
 from experimenttracker.workspaces import WorkspaceUnavailable, git
 
 
@@ -43,6 +47,26 @@ def head(repo, ref="HEAD"):
 
 def ref_exists(repo, ref):
     return bool(git(repo, "for-each-ref", "--format=%(refname)", ref).decode().strip())
+
+
+PROJECT = {"base": "main", "check_command": ["python", "-V"], "check_timeout": 30, "require_approval": False}
+
+
+@pytest.fixture
+def store(tmp_path):
+    value = Store(tmp_path / "state" / "workflow.sqlite")
+    yield value
+    value.close()
+
+
+def queued_conflict(store, tmp_path):
+    """A real saved conflict request, exactly as the driver leaves it for the resolver."""
+    repo, candidate = conflicted(tmp_path)
+    with store.tx() as db:
+        queue.enqueue(db, repo, "r1", {"kind": "merge"})
+        queue.claim(db, repo)
+        saved = queue.checkpoint(db, "r1", "conflict", candidate=candidate, status="integration conflict")
+    return repo, saved["candidate"]
 
 
 def test_finalize_commits_the_exact_resolved_merge_and_stays_applyable(tmp_path):
@@ -295,4 +319,149 @@ def test_finalize_reports_a_lost_commit_response_as_unknown(tmp_path, monkeypatc
     assert not ref_exists(repo, candidate["ref"])
     assert head(worktree) == candidate["base_commit"]
     assert (worktree / "tracked.txt").read_text() == "resolved\n"
+    assert head(repo) == candidate["base_commit"]
+
+
+def test_resolver_input_is_the_exact_conflict_with_bounded_redacted_logs(tmp_path):
+    repo = make_repo(tmp_path)
+    worktree = Path(create(repo, "demo")["worktree"])
+    for index in range(24):
+        (worktree / "tracked.txt").write_text(f"experiment {index}\n")
+        commit(worktree, f"head {index} Bearer master-secret sk-live-{index} " + "h" * 200)
+    (worktree / "tracked.txt").write_text("experiment\n")
+    head_commit = commit(worktree, "head final")[0]
+    for index in range(24):
+        (repo / "tracked.txt").write_text(f"main {index}\n")
+        git(repo, "add", "--", "tracked.txt")
+        git(repo, "commit", "-m", f"base {index} Bearer base-secret ghp_{index} " + "b" * 200)
+    (repo / "tracked.txt").write_text("main\n")
+    git(repo, "add", "--", "tracked.txt")
+    git(repo, "commit", "-m", "Move main")
+    candidate = prepare(repo, "conflict", head_commit)
+    experiment = {
+        "title": "Conflict sk-title",
+        "snapshot": {"plan": {"summary": "plan Bearer plan-secret " + "x" * 4000}},
+    }
+
+    value = resolver_input(repo, candidate, experiment)
+
+    assert value["key"] == candidate["key"]
+    assert (value["kind"], value["base"]) == ("merge", "main")
+    assert value["base_commit"] == candidate["base_commit"]
+    assert value["head_commit"] == candidate["head_commit"] == head_commit
+    assert (value["worktree"], value["ref"]) == (candidate["worktree"], candidate["ref"])
+    assert value["conflicts"] == ["tracked.txt"]
+    assert value["head_log"][0].endswith("head final")
+    assert value["base_log"][0].endswith("Move main")
+    for rows in (value["head_log"], value["base_log"]):
+        assert len(rows) <= integration_resolution.MAX_LOG_COMMITS + 1
+        assert sum(len(row) + 1 for row in rows) <= (
+            integration_resolution.MAX_LOG_CHARS + len("[older commits omitted]")
+        )
+        assert rows[-1] == "[older commits omitted]"
+    for line in value["head_log"]:
+        assert "master-secret" not in line and "sk-live" not in line
+    assert any("Bearer [redacted]" in line for line in value["head_log"])
+    for line in value["base_log"]:
+        assert "base-secret" not in line and "ghp_" not in line
+    summary = value["experiment_summary"]
+    assert summary.startswith("Conflict [redacted]")
+    assert "plan Bearer [redacted]" in summary and "plan-secret" not in summary
+    assert len(summary) <= integration_resolution.MAX_SUMMARY_CHARS
+    assert len(json.dumps(value, ensure_ascii=False).encode()) <= integration_resolution.MAX_INPUT_BYTES
+
+
+def test_resolver_input_refuses_a_stale_or_unknown_conflict(tmp_path):
+    repo, candidate = conflicted(tmp_path)
+    with pytest.raises(WorkspaceUnavailable, match="experiment summary"):
+        resolver_input(repo, candidate, {})
+    with pytest.raises(WorkspaceUnavailable, match="Only a saved integration conflict"):
+        resolver_input(repo, {**candidate, "state": "ready"}, {"title": "demo"})
+    with pytest.raises(WorkspaceUnavailable, match="merges another commit"):
+        resolver_input(repo, {**candidate, "head_commit": candidate["base_commit"]}, {"title": "demo"})
+    with pytest.raises(WorkspaceUnavailable, match="not safe"):
+        resolver_input(repo, {**candidate, "conflicts": ["../escape.txt"]}, {"title": "demo"})
+
+    worktree = Path(candidate["worktree"])
+    (worktree / "tracked.txt").write_text("resolved\n")
+    git(worktree, "--literal-pathspecs", "add", "-A", "--", "tracked.txt")
+    with pytest.raises(WorkspaceUnavailable, match="no longer matches"):
+        resolver_input(repo, candidate, {"title": "demo"})
+
+
+def test_resolver_input_refuses_a_missing_worktree(tmp_path):
+    repo, candidate = conflicted(tmp_path)
+    git(repo, "worktree", "remove", "--force", "--force", candidate["worktree"])
+
+    with pytest.raises(WorkspaceUnavailable, match="worktree is missing"):
+        resolver_input(repo, candidate, {"title": "demo"})
+
+
+def test_accept_resolution_returns_the_pinned_merge_to_check_and_approval(store, tmp_path):
+    repo, candidate = queued_conflict(store, tmp_path)
+    worktree = Path(candidate["worktree"])
+    (worktree / "tracked.txt").write_text("resolved\n")
+    base = head(repo)
+
+    view = accept_resolution(store, "r1", candidate)
+
+    finalized = view["candidate"]
+    assert (view["stage"], view["state"], view["owner"]) == ("claimed", "open", "backend")
+    assert (finalized["state"], finalized["conflicts"]) == ("ready", [])
+    assert head(repo) == base
+    assert head(repo, finalized["ref"]) == finalized["candidate_commit"]
+    checked = []
+    project = {**PROJECT, "require_approval": True}
+
+    def check(cwd, command, timeout):
+        checked.append(Path(cwd))
+        return True, "ok"
+
+    waiting = worker.drive(store, "r1", project=project, check=check, approval=lambda *_: None)
+
+    assert waiting["outcome"] == "awaiting_approval"
+    assert checked == [worktree]
+    assert head(repo) == base
+    applied = worker.drive(store, "r1", project=project, check=check, approval=lambda *_: True)
+    assert applied["outcome"] == "applied"
+    assert head(repo) == finalized["candidate_commit"]
+
+
+def test_accept_resolution_keeps_the_saved_conflict_when_git_is_uncertain(store, tmp_path, monkeypatch):
+    repo, candidate = queued_conflict(store, tmp_path)
+    worktree = Path(candidate["worktree"])
+    (worktree / "tracked.txt").write_text("resolved\n")
+    real = integration_resolution.git
+
+    def lost(folder, *args):
+        if "commit" in args:
+            raise WorkspaceUnavailable("Git could not establish the isolated checkout")
+        return real(folder, *args)
+
+    monkeypatch.setattr(integration_resolution, "git", lost)
+    with pytest.raises(WorkspaceUnavailable, match="outcome is unknown"):
+        accept_resolution(store, "r1", candidate)
+
+    with store.tx() as db:
+        saved = queue.saved(db, "r1")
+    assert (saved["stage"], saved["candidate"], saved["status"]) == (
+        "conflict",
+        candidate,
+        "integration conflict",
+    )
+    assert head(repo) == candidate["base_commit"]
+    assert head(worktree) == candidate["base_commit"]
+
+
+def test_accept_resolution_refuses_anything_but_the_exact_open_conflict(store, tmp_path):
+    repo, candidate = queued_conflict(store, tmp_path)
+    with pytest.raises(ValueError, match="unknown"):
+        accept_resolution(store, "missing", candidate)
+    with pytest.raises(ValueError, match="exact saved"):
+        accept_resolution(store, "r1", {**candidate, "head_commit": candidate["base_commit"]})
+
+    (Path(candidate["worktree"]) / "tracked.txt").write_text("resolved\n")
+    accept_resolution(store, "r1", candidate)
+    with pytest.raises(ValueError, match="open saved integration conflict"):
+        accept_resolution(store, "r1", candidate)
     assert head(repo) == candidate["base_commit"]
