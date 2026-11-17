@@ -443,3 +443,33 @@ def test_delete_project_blocks_uncertain_project_turn(config, runtime):
     assert receipt["state"] == "rejected"
     assert "agent work" in receipt["error"]
     assert "test-project" in store.projects
+
+
+def test_a_registered_project_keeps_its_declared_fixed_interpreter(config):
+    from experimenttracker.config import EnvironmentConfig
+    from experimenttracker.projects import Projects
+
+    interpreter = Path("/usr/bin/python3")
+    config.projects.append(
+        ProjectConfig(
+            id="research",
+            name="Research",
+            checkout=config.state_dir.parent,
+            environment=EnvironmentConfig(python=interpreter),
+        )
+    )
+    store = Store(config.state_dir / "workflow.sqlite")
+    try:
+        with store.tx() as db:
+            db.execute(
+                "INSERT INTO projects VALUES(?,?,?,?,?,?,?)",
+                ("research", "Renamed by the owner", str(config.job_output_root), 1, 2, 0, 0.0),
+            )
+        Projects(config, store)
+        saved = store.projects["research"]
+    finally:
+        store.close()
+
+    assert saved.environment.python == interpreter
+    assert saved.checkout == config.job_output_root
+    assert saved.name == "Renamed by the owner"

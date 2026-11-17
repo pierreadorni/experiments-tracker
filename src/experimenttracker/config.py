@@ -147,11 +147,24 @@ class GatewayConfig(StrictModel):
         return self
 
 
+class EnvironmentConfig(StrictModel):
+    """A fixed interpreter replaces the shared lock cache for this project."""
+
+    python: Path | None = None
+
+    @model_validator(mode="after")
+    def absolute_python(self):
+        if self.python and not self.python.is_absolute():
+            raise ValueError("project.environment.python must be absolute")
+        return self
+
+
 class ProjectConfig(StrictModel):
     id: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")
     name: str = Field(min_length=1, max_length=100)
     checkout: Path | None = None
     writable: bool = True
+    environment: EnvironmentConfig = EnvironmentConfig()
 
     @model_validator(mode="after")
     def valid_checkout(self):

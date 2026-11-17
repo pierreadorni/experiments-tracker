@@ -78,3 +78,11 @@ def test_initialize_writes_recipe_free_config(tmp_path, monkeypatch):
     initialize(path, "demo", None)
 
     assert "recipe_dir" not in yaml.safe_load(path.read_text())
+
+
+def test_a_fixed_project_interpreter_must_be_absolute(tmp_path):
+    from experimenttracker.config import EnvironmentConfig
+
+    with pytest.raises(ValidationError, match="absolute"):
+        EnvironmentConfig(python=Path("python3"))
+    assert EnvironmentConfig(python=tmp_path / "python").python == tmp_path / "python"

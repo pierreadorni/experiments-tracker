@@ -456,7 +456,7 @@ role busy flags it still writes. All retire with the contract-3 engine in T4.8.
 - **Tests:** real Git in `tmp_path`: create, commit with a large file skipped, export,
   and verify that pinned commits survive `git gc --prune=now`.
 
-### [ ] T3.2 Shared environment cache · F · M
+### [x] T3.2 Shared environment cache · F · M
 - New `engine/envs.py`: `env_for(project, worktree) -> python path`. Compute the
   lockhash and build once under `<repo>/.experimenttracker/envs/<hash>` using
   `uv sync --frozen` (or `uv venv` plus `uv pip install -r` when there is no lock),
@@ -542,6 +542,8 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 ---
 
 ## Log
+
+- **T3.2, 2026-11-17:** Shared environments and the fixed-interpreter option landed without changing runtime selection yet. T3.3b replaces per-experiment venv creation for eligible named worktrees; old and uncovered cases retain their existing runtime. The builder excludes its cache from Git and publishes readiness only after the exact dependencies finish building. Production +231/−3; tests +252/−0; example config +6/−0. Isolated Node 24 locked setup, Ruff check and format, 39 targeted tests, **878 Python tests passed** (one dependency warning), and contract-3 synthetic demo completed. No live activation.
 
 Record completed tasks here: `date · task · commit · notes`.
 

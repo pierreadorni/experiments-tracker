@@ -15,9 +15,15 @@ scheduler_seconds: 30
 # New projects can also be added from the app; this directory holds newly created folders.
 projects_root: /YOUR/CHECKOUT/.local/projects
 # Optional seeded working folders; selected folders are writable for new runs.
+# Projects with a dependency lock share one read-only environment per lock hash under
+# <checkout>/.experimenttracker/envs/; a fixed interpreter replaces that cache.
 projects:
   - id: test-project
     name: Test project
+  # - id: research-project
+  #   name: Research project
+  #   checkout: /YOUR/RESEARCH/CHECKOUT
+  #   environment: {python: /YOUR/CONDA/envs/research/bin/python}
 codex:
   executable: /YOUR/CHECKOUT/tools/codex/node_modules/.bin/codex
   expected_version: 0.160.1

@@ -7,7 +7,7 @@ from pathlib import Path
 from uuid import UUID
 
 from . import clock
-from .config import ProjectConfig
+from .config import EnvironmentConfig, ProjectConfig
 from .execution_settings import ExecutionSettings
 from .models import CreateProject, UpdateProjectSettings
 from .store import Conflict, encode
@@ -23,10 +23,17 @@ class Projects:
         self.reload()
 
     def reload(self):
-        self.store.projects = {p.id: p for p in self.config.projects}
+        declared = {project.id: project for project in self.config.projects}
+        self.store.projects = dict(declared)
         for row in self.store.rows("SELECT * FROM projects ORDER BY created_at"):
+            # The saved row owns folder identity; the configured environment stays
+            # the owner's declaration, so a fixed interpreter survives registration.
+            configured = declared.get(row["id"])
             self.store.projects[row["id"]] = ProjectConfig(
-                id=row["id"], name=row["name"], checkout=row["folder"]
+                id=row["id"],
+                name=row["name"],
+                checkout=row["folder"],
+                environment=configured.environment if configured else EnvironmentConfig(),
             )
 
         for row in self.store.rows(
