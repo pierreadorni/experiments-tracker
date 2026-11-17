@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from . import clock
 from .config import ProjectConfig
-from .core import action_obligations, report_obligations
+from .core import action_obligations, report_obligations, transfer_obligations
 from .legacy_archive import archive_active, execution_frozen
 from .models import STAGES, request_answer
 from .title import title_prompt
@@ -897,11 +897,18 @@ class Store:
             "pending_request=NULL,plan_review=?,hold_reason='cancellation_pending',error=NULL WHERE id=?",
             (encode(review) if review else None, eid),
         )
+        transfers = db.execute(
+            "SELECT * FROM execution_transfers "
+            "WHERE experiment_id=? AND state NOT IN ('complete','failed','cancelled')",
+            (eid,),
+        ).fetchall()
         db.execute(
             "UPDATE execution_transfers SET state='cancelled',result='Experiment cancelled',updated_at=? "
             "WHERE experiment_id=? AND state NOT IN ('complete','failed','cancelled')",
             (now, eid),
         )
+        for transfer in transfers:
+            transfer_obligations.sync_transfer(db, transfer["id"], before=transfer)
         db.execute(
             "UPDATE stages SET state='cancelled',error=NULL,updated_at=? "
             "WHERE experiment_id=? AND state NOT IN ('complete','failed','cancelled')",

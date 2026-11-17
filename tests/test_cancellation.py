@@ -7,7 +7,7 @@ import pytest
 
 from experimenttracker.cancellation import process_cancellations
 from experimenttracker.codex_client import NeedsAttention, TerminalTurnError
-from experimenttracker.core import action_obligations, job_obligations
+from experimenttracker.core import action_obligations, job_obligations, transfer_obligations
 from experimenttracker.maintenance import blockers
 from experimenttracker.models import ActionCommand
 from experimenttracker.remote import RemoteSlurmScheduler, TransferCancelled, TransferPending
@@ -165,6 +165,82 @@ async def test_failed_transfer_cancellation_needs_no_server_access(runtime):
     await process_cancellations(wf)
     assert store.experiment(eid)["hold_reason"] is None
     assert not store.one("SELECT 1 FROM jobs WHERE experiment_id=?", (eid,))
+    await wf.close()
+
+
+async def test_cancel_abandons_exact_pending_transfer_obligations_atomically_and_replays(
+    runtime, monkeypatch
+):
+    store, _, _, wf = runtime
+    eid = create(store)
+    for identity, state in (("mine", "pending"), ("done", "complete")):
+        with store.tx() as db:
+            db.execute(
+                "INSERT INTO execution_transfers VALUES(?,?,'up','{}',?,NULL,0)", (identity, eid, state)
+            )
+    with store.tx() as db:
+        transfer_obligations.sync_transfer(db, "mine")
+
+    def fail_sync(*args, **kwargs):
+        raise RuntimeError("synthetic obligation failure")
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(transfer_obligations, "sync_transfer", fail_sync)
+        with pytest.raises(RuntimeError, match="synthetic obligation failure"):
+            cancel(store, eid)
+    assert store.experiment(eid)["phase"] != "cancelled"
+    assert store.one("SELECT state FROM execution_transfers WHERE id='mine'")["state"] == "pending"
+    assert store.one("SELECT state FROM obligations WHERE id='transfer:mine:0'")["state"] == "open"
+    assert not store.one("SELECT 1 FROM events WHERE kind='experiment_cancel_requested'")
+
+    request = uuid4()
+    first = cancel(store, eid, request)
+    assert store.one("SELECT state,result FROM execution_transfers WHERE id='mine'") == {
+        "state": "cancelled",
+        "result": "Experiment cancelled",
+    }
+    assert store.one("SELECT state FROM obligations WHERE id='transfer:mine:0'")["state"] == "abandoned"
+    # Saved terminal rows keep their history: cancellation settles open work only.
+    assert store.one("SELECT state FROM execution_transfers WHERE id='done'")["state"] == "complete"
+    assert not store.one("SELECT 1 FROM obligations WHERE id LIKE 'transfer:done:%'")
+    assert cancel(store, eid, request) == first
+    assert store.one("SELECT COUNT(*) n FROM obligations WHERE id LIKE 'transfer:mine:%'")["n"] == 1
+    await wf.close()
+
+
+async def test_cancel_during_transfer_replay_abandons_the_episode_and_refuses_late_outcome(runtime):
+    store, _, _, wf = runtime
+    eid = create(store)
+    remote = RemoteSlurmScheduler(
+        wf, store.experiment(eid), {"context": "jean-zay", "remote_project": "/synthetic"}
+    )
+    remote.layout = {"host": "synthetic"}
+    assert await remote.transfer("up", lambda: asyncio.sleep(0, result="first"), identity="copy") == "first"
+    assert store.one("SELECT state FROM obligations WHERE id='transfer:copy:0'")["state"] == "satisfied"
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def delayed():
+        started.set()
+        await release.wait()
+        return "late"
+
+    replay = asyncio.create_task(remote.transfer("up", delayed, identity="copy"))
+    await started.wait()
+    assert store.one("SELECT state FROM execution_transfers WHERE id='copy'")["state"] == "pending"
+    assert store.one("SELECT state FROM obligations WHERE id='transfer:copy:1'")["state"] == "open"
+    cancel(store, eid)
+    assert store.one("SELECT state FROM obligations WHERE id='transfer:copy:1'")["state"] == "abandoned"
+    with pytest.raises(TransferCancelled):
+        remote._save_transfer_outcome("copy", "transfer:copy:1", "complete")
+    assert store.one("SELECT state FROM obligations WHERE id='transfer:copy:1'")["state"] == "abandoned"
+    release.set()
+    with pytest.raises(TransferCancelled):
+        await replay
+    assert store.one("SELECT state FROM execution_transfers WHERE id='copy'")["state"] == "cancelled"
+    assert not store.one("SELECT 1 FROM obligations WHERE id='transfer:copy:2'")
+    # A cancelled row is never dispatched again.
+    with pytest.raises(TransferCancelled):
+        await remote.transfer("up", lambda: asyncio.sleep(0, result="third"), identity="copy")
     await wf.close()
 
 

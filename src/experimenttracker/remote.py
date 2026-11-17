@@ -258,7 +258,15 @@ class RemoteSlurmScheduler(SlurmScheduler):
         self.user = self.association_user = user
         return {**await super().discover(), "execution_context": "jean-zay"}
 
-    async def transfer(self, direction, operation, *, identity=None):
+    async def transfer(self, direction, operation, *, identity=None, supersedes=None, superseded_by=None):
+        """Run one exact saved transfer episode under its caller's saved identity.
+
+        A terminal delivery admission passes the same job's ``supersedes`` preview
+        row, which is recorded cancelled in that same transaction because an
+        obsolete optional refresh is abandoned, never completed. A preview
+        admission passes that job's ``superseded_by`` delivery row and is refused
+        once it exists.
+        """
         if self.store.experiment(self.exp["id"])["phase"] == "cancelled":
             raise TransferCancelled("Experiment cancelled")
         layout = await self.resolve()
@@ -282,6 +290,11 @@ class RemoteSlurmScheduler(SlurmScheduler):
                 raise TransferCancelled("Experiment cancelled")
             if before and before["state"] == "cancelled":
                 raise TransferCancelled("Transfer cancelled")
+            if (
+                superseded_by
+                and db.execute("SELECT 1 FROM execution_transfers WHERE id=?", (superseded_by,)).fetchone()
+            ):
+                raise TransferCancelled("Terminal delivery admitted; event preview refused")
             now = clock.now()
             if before is None:
                 db.execute(
@@ -298,6 +311,18 @@ class RemoteSlurmScheduler(SlurmScheduler):
                 )
             elif before["state"] != "pending":
                 raise ValueError(f"transfer cannot be retried from saved state {before['state']}")
+            if supersedes:
+                stale = db.execute(
+                    "SELECT * FROM execution_transfers WHERE id=? AND state='pending'", (supersedes,)
+                ).fetchone()
+                if stale is not None:
+                    db.execute(
+                        "UPDATE execution_transfers SET state='cancelled',"
+                        "result='Superseded by terminal delivery',updated_at=? "
+                        "WHERE id=? AND state='pending'",
+                        (now, supersedes),
+                    )
+                    transfer_obligations.sync_transfer(db, supersedes, before=stale)
             obligation = transfer_obligations.sync_transfer(db, identity, before=before)
             admitted_episode = obligation["id"]
             self.store.emit(
@@ -643,9 +668,14 @@ class RemoteSlurmScheduler(SlurmScheduler):
                 (pending / record["name"]).replace(root / record["name"])
             (pending / receipt_name).replace(root / receipt_name)
 
-        identity = (
-            hashlib.sha256((job["intent_id"] + ":terminal-delivery").encode()).hexdigest()
-            if terminal
-            else None
+        # A repeated preview refresh replays this job's own saved row instead of a
+        # fresh UUID; a terminal delivery supersedes that exact preview row.
+        preview = hashlib.sha256((job["intent_id"] + ":preview").encode()).hexdigest()
+        delivery = hashlib.sha256((job["intent_id"] + ":terminal-delivery").encode()).hexdigest()
+        await self.transfer(
+            "down",
+            download,
+            identity=delivery if terminal else preview,
+            supersedes=preview if terminal else None,
+            superseded_by=None if terminal else delivery,
         )
-        await self.transfer("down", download, identity=identity)
