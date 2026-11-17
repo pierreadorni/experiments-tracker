@@ -12,6 +12,7 @@ from test_projects import register
 
 from experimenttracker import clock, early_repair
 from experimenttracker.engine import gitworkspace
+from experimenttracker.store import encode
 from experimenttracker.workflow import Workflow
 from experimenttracker.workspaces import WorkspaceUnavailable, git, initialize_project
 
@@ -266,6 +267,174 @@ async def test_named_branch_experiment_runs_from_its_own_worktree(runtime, tmp_p
             assert (attempt / "snapshot/project/shared.py").read_text() == "value = 4\n"
         # The main checkout keeps its committed source and is never edited or committed to.
         assert git(source, "status", "--porcelain", "-z") == b""
-        assert git(row["worktree"], "rev-parse", "HEAD").decode().strip() == row["base_commit"]
+        head = git(row["worktree"], "rev-parse", "HEAD").decode().strip()
+        assert head != row["base_commit"]
+        assert row["head_commit"] == head
+        assert git(row["worktree"], "show", f"{head}:shared.py").decode() == "value = 4\n"
+        for job in jobs:
+            manifest = json.loads(job["execution_manifest"])
+            assert manifest["commit"] == head
+            assert manifest["source_context"]["git_commit"] == head
+        for job in jobs:
+            assert git(row["repo"], "rev-parse", f"refs/et/jobs/{job['intent_id']}").decode().strip() == head
+    finally:
+        await workflow.close()
+
+
+async def test_accepted_implementation_commit_records_head_and_reports_skipped(
+    runtime, tmp_path, monkeypatch
+):
+    class SkippingAgent(IterationAgent):
+        async def begin(self, thread_id, prompt, schema, *, workspace=None, project_workspace=None, **kwargs):
+            payload = json.loads(prompt.split("\nPAYLOAD:\n", 1)[1])
+            turn = await super().begin(
+                thread_id, prompt, schema, workspace=workspace, project_workspace=project_workspace, **kwargs
+            )
+            if payload["phase"] == "prepare":
+                (project_workspace / "shared.py").write_text("value = 4\n")
+                (project_workspace / ".ssh").mkdir(exist_ok=True)
+                (project_workspace / ".ssh" / "id").write_text("private\n")
+                self.results[(thread_id, turn)]["project_files"] = ["shared.py"]
+            return turn
+
+    store, scheduler, _, old = runtime
+    source = git_project(old, store, tmp_path)
+    workflow = Workflow(old.config, store, scheduler, SkippingAgent())
+    monkeypatch.setattr(gitworkspace, "_today", lambda: "20260101")
+    eid = create(store)
+    try:
+        await approve_plan(workflow, store, eid)
+        await until(workflow, store, eid, lambda e: e["phase"] == "training")
+        row = workflow.workspaces.branch(eid)
+        worktree = Path(row["worktree"])
+        head = git(worktree, "rev-parse", "HEAD").decode().strip()
+        assert head != row["base_commit"]
+        assert row["head_commit"] == head
+        assert git(worktree, "show", f"{head}:shared.py").decode() == "value = 4\n"
+        with pytest.raises(WorkspaceUnavailable):
+            git(worktree, "cat-file", "-e", f"{head}:.ssh/id")
+        committed = [
+            json.loads(event["payload"])
+            for event in store.rows(
+                "SELECT payload FROM events WHERE experiment_id=? AND kind='workspace_committed'", (eid,)
+            )
+        ]
+        assert committed == [{"kind": "implementation", "commit": head}]
+        skipped = [
+            json.loads(event["payload"])
+            for event in store.rows(
+                "SELECT payload FROM events WHERE experiment_id=? AND kind='workspace_commit_skipped'",
+                (eid,),
+            )
+        ]
+        assert skipped == [
+            {
+                "kind": "implementation",
+                "commit": head,
+                "skipped": [".ssh/id"],
+                "skipped_count": 1,
+            }
+        ]
+        # The user's main checkout is never edited or committed to by the backend.
+        assert git(source, "status", "--porcelain", "-z") == b""
+    finally:
+        await workflow.close()
+
+
+async def test_branch_commit_uses_the_saved_tree_and_reconciles_a_lost_response(
+    runtime, tmp_path, monkeypatch
+):
+    store, _, _, workflow = runtime
+    _, row = await branch_experiment(runtime, tmp_path, monkeypatch)
+    eid, worktree = row["experiment_id"], Path(row["worktree"])
+    # A repair candidate is a copy for editing, never the tree this commit names.
+    candidate = workflow.projects.base_root(eid) / "repair-candidates" / "2" / "project"
+    candidate.mkdir(parents=True)
+    (candidate / "shared.py").write_text("repair candidate\n")
+    work = workflow.projects.base_root(eid) / "repair-candidates" / "2" / "work"
+    work.mkdir(parents=True)
+    (work / "shared.py").write_text("candidate work\n")
+    contract = store.experiment(eid)["contract"]
+    contract["working_directory"] = str(work)
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(contract), eid))
+    assert workflow.working_directory(store.experiment(eid)) == work
+
+    (worktree / "shared.py").write_text("branch work\n")
+    message = "Job sources train revision 1"
+    # Simulate a lost backend commit response: Git changed state, the saved head did not.
+    lost, _ = gitworkspace.commit(worktree, message)
+    assert lost != row["head_commit"]
+    outcome = workflow.workspaces.commit_branch(eid, message)
+    assert outcome["commit"] == lost
+    assert outcome["skipped"] == []
+    assert store.one("SELECT head_commit FROM experiment_branches WHERE experiment_id=?", (eid,)) == {
+        "head_commit": lost
+    }
+    assert workflow.workspaces.branch_checkout(eid) == str(worktree)
+    assert git(worktree, "show", f"{lost}:shared.py").decode() == "branch work\n"
+    assert (candidate / "shared.py").read_text() == "repair candidate\n"
+    assert (work / "shared.py").read_text() == "candidate work\n"
+
+    # An unrelated external commit is never adopted as this request's commit.
+    (worktree / "shared.py").write_text("unrelated work\n")
+    gitworkspace.commit(worktree, "Unrelated change")
+    with pytest.raises(WorkspaceUnavailable, match="saved commit"):
+        workflow.workspaces.commit_branch(eid, message)
+    assert store.one("SELECT head_commit FROM experiment_branches WHERE experiment_id=?", (eid,)) == {
+        "head_commit": lost
+    }
+
+
+async def test_agent_and_scheduler_jobs_record_the_exact_committed_sources(runtime, tmp_path, monkeypatch):
+    from test_iteration_agent_stages import MixedAgent
+
+    class BranchMixedAgent(MixedAgent):
+        async def begin(self, thread_id, prompt, schema, *, workspace=None, project_workspace=None, **kwargs):
+            payload = json.loads(prompt.split("\nPAYLOAD:\n", 1)[1])
+            turn = await super().begin(
+                thread_id, prompt, schema, workspace=workspace, project_workspace=project_workspace, **kwargs
+            )
+            if payload["phase"] == "prepare":
+                (project_workspace / "shared.py").write_text("value = 5\n")
+                value = self.results[(thread_id, turn)]
+                value["project_files"] = ["shared.py"]
+            return turn
+
+    store, scheduler, _, old = runtime
+    git_project(old, store, tmp_path)
+    agent = BranchMixedAgent()
+    workflow = Workflow(old.config, store, scheduler, agent)
+    monkeypatch.setattr(gitworkspace, "_today", lambda: "20260101")
+    eid = create(store)
+    agent.wf, agent.store, agent.eid, agent.scheduler = workflow, store, eid, scheduler
+    try:
+        await approve_plan(workflow, store, eid)
+        await until(workflow, store, eid, lambda e: e["phase"] == "complete")
+        row = workflow.workspaces.branch(eid)
+        head = row["head_commit"]
+        agent_row = store.one(
+            "SELECT * FROM jobs WHERE experiment_id=? AND json_extract(execution_manifest, '$.executor') IS 'agent'",
+            (eid,),
+        )
+        agent_manifest = json.loads(agent_row["execution_manifest"])
+        assert agent_manifest["commit"] == head
+        assert agent_manifest["source_context"]["git_commit"] == head
+        jobs = store.rows(
+            "SELECT * FROM jobs WHERE experiment_id=? AND json_extract(execution_manifest, '$.executor') IS NOT 'agent'",
+            (eid,),
+        )
+        assert len(jobs) == 3
+        for job in jobs:
+            manifest = json.loads(job["execution_manifest"])
+            assert manifest["commit"] == head
+            assert manifest["source_context"]["git_commit"] == head
+            assert git(row["repo"], "rev-parse", f"refs/et/jobs/{job['intent_id']}").decode().strip() == head
+            attempt = Path(job["execution_root"])
+            assert (
+                git(row["worktree"], "show", f"{head}:shared.py").decode()
+                == (attempt / "snapshot/project/shared.py").read_text()
+            )
+        assert git(row["worktree"], "show", f"{head}:shared.py").decode() == "value = 5\n"
     finally:
         await workflow.close()

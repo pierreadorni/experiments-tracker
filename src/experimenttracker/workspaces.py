@@ -228,6 +228,56 @@ class Workspaces:
             return row["worktree"]
         return gitworkspace.verify(row["repo"], _branch_identity(row), lock=_branch_lock(eid))["worktree"]
 
+    def saved_commit(self, eid):
+        """The verified head of this experiment's saved branch, or None for other workspaces."""
+        from .engine import gitworkspace
+
+        row = self.branch(eid)
+        if not row:
+            return None
+        return gitworkspace.verify(row["repo"], branch_identity(row), lock=branch_lock(eid))["head_commit"]
+
+    def commit_branch(self, eid, message):
+        """Commit the exact saved branch worktree and record its new head.
+
+        Only the saved worktree is committed: a repair candidate's bytes/SHA never
+        stand in for another branch tree. Repeating a request whose Git state already
+        changed reconciles one matching child commit instead of failing silently.
+        """
+        from .engine import gitworkspace
+
+        row = self.branch(eid)
+        if not row:
+            raise WorkspaceUnavailable("The saved experiment branch identity is missing")
+        confirmed = gitworkspace.verify_commit(
+            row["repo"], branch_identity(row), message, lock=branch_lock(eid)
+        )
+        head, skipped = gitworkspace.commit(confirmed["worktree"], message)
+        if head != row["head_commit"]:
+            with self.store.tx() as db:
+                db.execute(
+                    "UPDATE experiment_branches SET head_commit=?,updated_at=? WHERE experiment_id=?",
+                    (head, clock.now(), eid),
+                )
+        return {
+            "branch": row["branch"],
+            "worktree": row["worktree"],
+            "previous": row["head_commit"],
+            "commit": head,
+            "skipped": skipped,
+        }
+
+    def pin_job_commit(self, eid, intent_id, commit):
+        """Pin one job's exact commit so later Git maintenance cannot drop it."""
+        from .engine import gitworkspace
+
+        row = self.branch(eid)
+        if not row:
+            raise WorkspaceUnavailable("The saved experiment branch identity is missing")
+        identity = {**branch_identity(row), "head_commit": commit}
+        gitworkspace.verify(row["repo"], identity, lock=branch_lock(eid))
+        return gitworkspace.pin(row["repo"], commit, f"refs/et/jobs/{intent_id}")
+
     def isolated(self, eid):
         """True when this experiment edits its own checkout instead of the project folder."""
         return bool(self.row(eid) or self.branch(eid))

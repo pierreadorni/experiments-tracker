@@ -127,7 +127,35 @@ def input_refs(store, exp, stage):
     return refs
 
 
-def stage_attempt(wf, exp, stage, intent):
+def committed_project_sources(project, commit, project_sources, files):
+    """The copied project sources must be exactly the blobs of the job's commit.
+
+    A repair candidate or a dirty worktree is never allowed to stand in for another
+    tree: the attempt's file SHA and the commit's blob SHA must name the same bytes.
+    """
+    import subprocess
+
+    from .workspaces import WorkspaceUnavailable
+
+    if not project:
+        raise WorkspaceUnavailable("declared executable project sources need a project checkout")
+    for name, target_name in project_sources.items():
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(project), "cat-file", "blob", f"{commit}:{name}"],
+                capture_output=True,
+                timeout=2,
+                check=True,
+            )
+        except (OSError, subprocess.SubprocessError):
+            raise WorkspaceUnavailable(f"the job commit does not contain project source {name}") from None
+        import hashlib
+
+        if hashlib.sha256(result.stdout).hexdigest() != files[target_name]:
+            raise WorkspaceUnavailable(f"the copied project source {name} differs from the job commit")
+
+
+def stage_attempt(wf, exp, stage, intent, commit=None):
     from .models import Implementation
 
     started = time.monotonic()
@@ -136,9 +164,11 @@ def stage_attempt(wf, exp, stage, intent):
         raise ValueError("attempt folder must be owned and not a symlink")
     root.mkdir(parents=True, exist_ok=True)
     plan = Implementation.model_validate(exp["snapshot"]["plan"])
-    files, project_sources, source_bytes = capture_sources(
-        root, plan, wf.working_directory(exp), wf.project_context(exp)["checkout"]
-    )
+    workspace = wf.working_directory(exp)
+    project = wf.project_context(exp)["checkout"]
+    files, project_sources, source_bytes = capture_sources(root, plan, workspace, project)
+    if commit is not None:
+        committed_project_sources(project, commit, project_sources, files)
     (root / "snapshot/project").mkdir(exist_ok=True)
     refs = input_refs(wf.store, exp, stage)
     spec = next(s for s in exp["snapshot"]["plan"]["stages"] if s["id"] == stage)
@@ -157,14 +187,22 @@ def stage_attempt(wf, exp, stage, intent):
     saved_path = root / "snapshot/manifest.json"
     if saved_path.exists():
         saved = artifacts.read_json(saved_path, root)
-        if saved["files"] != files or saved["inputs"] != refs or saved["plan"] != exp["snapshot"]["plan"]:
+        if (
+            saved["files"] != files
+            or saved["inputs"] != refs
+            or saved["plan"] != exp["snapshot"]["plan"]
+            or saved.get("commit") != commit
+        ):
             raise ValueError(
                 "pre-dispatch attempt identity already has different sources/inputs; use a new request ID"
             )
         return root, saved, refs
     source_context = {}
-    project = wf.project_context(exp)["checkout"]
-    if project:
+    if commit is not None:
+        # The exact branch commit owns every copied project source; never read a
+        # repair candidate or a different checkout as this job's provenance.
+        source_context["git_commit"] = commit
+    elif project:
         import subprocess
 
         try:
@@ -180,7 +218,7 @@ def stage_attempt(wf, exp, stage, intent):
             source_context["note"] = "optional Git context unavailable"
     manifest = {
         **exp["snapshot"],
-        **({"executor": "agent", "remote_execution": False} if spec.get("executor") == "agent" else {}),
+        **(({"executor": "agent", "remote_execution": False}) if spec.get("executor") == "agent" else {}),
         "files": files,
         "project_sources": project_sources,
         "reused_stages": {},
@@ -192,6 +230,8 @@ def stage_attempt(wf, exp, stage, intent):
         "provenance_bytes_read": 0,
         "bookkeeping_ms": (time.monotonic() - started) * 1000,
     }
+    if commit is not None:
+        manifest["commit"] = commit
     # No Git traversal or dependency/environment freeze. This identity protects
     # the small command payload, not scientific bytes or later checkout equality.
     import hashlib
@@ -210,7 +250,7 @@ def agent_job(wf, exp, phase):
     )
 
 
-def queue_agent(wf, exp, stage):
+def queue_agent(wf, exp, stage, commit=None):
     """Record the local attempt and input bindings before any managed turn."""
     from uuid import uuid4
 
@@ -218,7 +258,7 @@ def queue_agent(wf, exp, stage):
     if existing:
         return existing
     intent = str(uuid4())
-    root, manifest, refs = stage_attempt(wf, exp, stage, intent)
+    root, manifest, refs = stage_attempt(wf, exp, stage, intent, commit=commit)
     with wf.store.tx() as db:
         db.execute(
             "INSERT INTO jobs(intent_id,experiment_id,stage_id,attempt,state,script_hash,resources,snapshot_hash,created_at,execution_root,execution_manifest) VALUES(?,?,?,?,'agent',?,'{}',?,?,?,?)",

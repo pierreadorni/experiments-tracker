@@ -1440,7 +1440,15 @@ class Workflow:
                 if exp["pause_compute"] and not job:
                     self.store.update(eid, hold_reason="new_compute_paused")
                     continue
-                iteration.queue_agent(self, exp, stage)
+                try:
+                    commit = await self.commit_branch(
+                        exp, f"Job sources {stage} revision {exp['evidence_revision']}"
+                    )
+                except WorkspaceUnavailable as exc:
+                    self.store.update(eid, hold_reason="workspace_unavailable", error=str(exc))
+                    return
+                self.report_skipped_commit(eid, commit, kind="job", stage=stage)
+                iteration.queue_agent(self, exp, stage, commit=commit["commit"] if commit else None)
                 await self.agent_stage(exp, "agent:" + stage)
                 continue
             if job:
@@ -1604,6 +1612,17 @@ class Workflow:
         ) < (exp["contract"].get("execution", {}).get("poll_seconds", 600) if self.is_remote(exp) else 60):
             return {"state": "held", "reason": exp["hold_reason"] or "resources_unavailable"}
         intent_id = request_id or str(uuid4())
+        job_commit = None
+        try:
+            committed = await self.commit_branch(
+                exp, f"Job sources {stage} revision {exp['evidence_revision']}"
+            )
+        except WorkspaceUnavailable as exc:
+            self.store.update(eid, hold_reason="workspace_unavailable", error=str(exc))
+            return {"state": "held", "reason": "workspace_unavailable"}
+        if committed:
+            job_commit = committed["commit"]
+            self.report_skipped_commit(eid, committed, kind="job", stage=stage)
         python = self.experiment_python(exp)
         project = self.project_context(exp)["checkout"]
         resources = self.stage_resources(exp, stage)
@@ -1615,7 +1634,9 @@ class Workflow:
         submission_manifest = exp["snapshot"]
         refs = []
         scheduler = self.scheduler_for(exp)
-        root, submission_manifest, refs = iteration.stage_attempt(self, exp, stage, intent_id)
+        root, submission_manifest, refs = iteration.stage_attempt(
+            self, exp, stage, intent_id, commit=job_commit
+        )
         scheduler = self.scheduler_for(
             {**exp, "snapshot": submission_manifest, "_attempt_id": intent_id, "_attempt_root": str(root)}
         )
@@ -1657,7 +1678,17 @@ class Workflow:
             or admitted["snapshot"]["snapshot_hash"] != exp["snapshot"]["snapshot_hash"]
         ):
             return {"state": "held", "reason": "execution_authorization_changed"}
+        if job_commit is not None:
+            # Pin before the intent is saved; a repeated request for this intent must
+            # confirm the same commit, never rewrite an earlier pinned identity.
+            try:
+                await asyncio.to_thread(self.workspaces.pin_job_commit, eid, intent_id, job_commit)
+            except WorkspaceUnavailable as exc:
+                self.store.update(eid, hold_reason="workspace_unavailable", error=str(exc))
+                return {"state": "held", "reason": "workspace_unavailable"}
         execution_manifest = dict(submission_manifest)
+        if job_commit is not None:
+            execution_manifest["commit"] = job_commit
         execution_manifest["command"] = iteration.bounded_bytes(script, root).decode()
         execution_manifest["parameters"] = submission_manifest["parameters"]
         if self.is_remote(exp):
@@ -1672,6 +1703,7 @@ class Workflow:
             "script_hash": artifacts.sha256(script),
             "source_files": submission_manifest["files"],
             "project_sources": execution_manifest.get("project_sources_at_submission", {}),
+            "commit": job_commit,
             "resources": resources.model_dump(),
         }
         record_path.write_text(encode(record))
@@ -2385,6 +2417,8 @@ class Workflow:
                         reused=reused,
                         remote_execution=self.is_remote(exp),
                     )
+                    if not await self.commit_accepted_implementation(exp):
+                        return
                     if early_repair.preparing(exp):
                         early_repair.apply(self, exp, plan, manifest)
                     else:
@@ -2594,6 +2628,47 @@ class Workflow:
             priority=EXPERIMENT_PRIORITY,
             any_lane=True,
         )
+
+    async def commit_branch(self, exp, message):
+        """Commit this experiment's exact saved named branch; None for other workspaces."""
+        if not self.workspaces.branch(exp["id"]):
+            return None
+        return await asyncio.to_thread(self.workspaces.commit_branch, exp["id"], message)
+
+    def report_skipped_commit(self, eid, outcome, *, kind, stage=None):
+        """Report bounded skipped untracked files from one exact new branch commit."""
+        if not outcome or not outcome["skipped"] or outcome["commit"] == outcome["previous"]:
+            return
+        payload = {
+            "kind": kind,
+            "commit": outcome["commit"],
+            "skipped": outcome["skipped"][:50],
+            "skipped_count": len(outcome["skipped"]),
+        }
+        if stage is not None:
+            payload["stage"] = stage
+        with self.store.tx() as db:
+            self.store.emit(db, eid, "workspace_commit_skipped", payload)
+
+    async def commit_accepted_implementation(self, exp):
+        """Commit accepted work to its named branch, after freezing and before saving it."""
+        eid = exp["id"]
+        message = f"Accept implementation revision {exp['evidence_revision']}"
+        try:
+            outcome = await self.commit_branch(exp, message)
+        except WorkspaceUnavailable as exc:
+            self.store.update(eid, hold_reason="workspace_unavailable", error=str(exc))
+            return False
+        if outcome and outcome["commit"] != outcome["previous"]:
+            with self.store.tx() as db:
+                self.store.emit(
+                    db,
+                    eid,
+                    "workspace_committed",
+                    {"kind": "implementation", "commit": outcome["commit"]},
+                )
+            self.report_skipped_commit(eid, outcome, kind="implementation")
+        return True
 
     async def prepare_workspace(self, exp):
         if early_repair.preparing(exp):

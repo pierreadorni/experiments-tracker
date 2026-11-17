@@ -179,6 +179,35 @@ def verify(repo, identity, lock=None):
     return {**identity, "head_commit": head}
 
 
+def verify_commit(repo, identity, message, lock=None):
+    """Confirm the exact saved worktree before committing its next head.
+
+    A backend commit can change Git state and then lose its reply. Repeating the
+    same request adopts exactly one child commit whose parent is the saved head and
+    whose subject is this request's message; any other difference is refused.
+    """
+    root = _main_checkout(repo)
+    branch, worktree, base_commit = _identity(root, identity)
+    if _branch_at(root, worktree) != f"refs/heads/{branch}":
+        raise WorkspaceUnavailable("The exact experiment branch worktree is missing")
+    if worktree.is_symlink() or not worktree.is_dir():
+        raise WorkspaceUnavailable("The saved experiment worktree is missing or replaced")
+    if lock is not None and _at(root, worktree)[1] != lock:
+        raise WorkspaceUnavailable("The exact experiment worktree lock identity changed")
+    _commit(root, base_commit)
+    head = git(worktree, "rev-parse", "HEAD").decode().strip()
+    saved = identity.get("head_commit")
+    if saved not in (None, head):
+        try:
+            parent = git(worktree, "rev-parse", "--verify", f"{head}^").decode().strip()
+        except WorkspaceUnavailable:
+            parent = None
+        subject = git(worktree, "log", "-1", "--format=%s", head).decode().strip()
+        if parent != saved or subject != message:
+            raise WorkspaceUnavailable("The experiment worktree HEAD is not its saved commit")
+    return {**identity, "head_commit": head}
+
+
 def create_planned(identity, lock=None):
     """Create exactly the identity its caller saved before Git changed state.
 
