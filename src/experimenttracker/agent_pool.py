@@ -9,10 +9,14 @@ routed through the reservation, so it reaches only the owner its saved turn prov
 a reservation is reconstructed from the authoritative source row and never becomes a
 second execution database. Interrupts, readback and shutdown also leave through the
 reservation's own live connection; a reservation without one keeps its uncertainty.
+The pool also owns the one quota-policy decision that selection filters and the
+binding check before dispatch intent share.
 """
 
 import asyncio
 from dataclasses import dataclass
+
+from .quota import Decision, plenty
 
 # Priority classes: the next free connection serves the lowest class first.
 # Conversation, experiment (stage and monitor), research, supervisor, title. A
@@ -31,6 +35,9 @@ UNSETTLED_STATES_SQL = "('dispatching','running','uncertain','received')"
 
 # Turns whose identity can outlive the process that sent them.
 SAVED_OWNED_STATES = "('dispatching','running','uncertain')"
+
+# Weekly synthesis needs spare quota, not merely the ordinary admission threshold.
+WEEKLY_PLENTY_REASON = "weekly synthesis requires plentiful subscription quota"
 
 TITLED_PHASES = {"title": "title", "summarize_title": "title"}
 
@@ -115,6 +122,26 @@ class AgentPool:
         # Shutdown closes the transports and later the store; a task that ends then
         # must not read or rewrite the rows its withdrawal already left uncertain.
         self.closing = False
+
+    def quota(self, *, eid=None, run=None, origin=None):
+        """The one quota decision for a saved turn, at selection and before dispatch.
+
+        An experiment turn of an Autopilot member takes that run's stricter reserve
+        policy, a research turn its own run's, and a weekly synthesis also needs
+        plenty of quota left; every other turn keeps the ordinary threshold. The
+        gate keeps its own hysteresis and reserve arithmetic. A selection decision is
+        a filter only, so each dispatch path asks again immediately before it saves
+        dispatch intent; a denial there claims nothing and launches nothing.
+        """
+        gate, service = self.workflow.gate, self.workflow.research.service
+        if run is not None:
+            return service.quota(gate, run=run)
+        if eid is not None:
+            return service.quota(gate, eid=eid)
+        decision = gate.decide()
+        if origin == "weekly" and decision.admitted and not plenty(gate, decision):
+            return Decision(False, WEEKLY_PLENTY_REASON, decision.remaining, decision.observed_at)
+        return decision
 
     def slot(self, workflow):
         """Physical lane index for a dispatch, or None for an unlisted workflow."""
@@ -260,7 +287,7 @@ class AgentPool:
             workflow=workflow,
         )
         task = asyncio.create_task(proposal.dispatch(workflow))
-        task.add_done_callback(lambda _task: self.settle(reservation))
+        task.add_done_callback(lambda finished: self.settle(reservation, finished))
         self.occupy(proposal, workflow, task)
         return reservation
 
@@ -288,7 +315,7 @@ class AgentPool:
         self.reservations[reservation.key] = reservation
         return reservation
 
-    def settle(self, reservation):
+    def settle(self, reservation, task=None):
         """Release a terminal or never-sent turn; unresolved work keeps its owner.
 
         A returned task proves nothing about the remote turn, so the source row
@@ -308,6 +335,25 @@ class AgentPool:
             reservation.turn_id = saved["turn_id"]
             return
         self.reservations.pop(reservation.key, None)
+        # A row without a saved turn was never sent, so the busy flag its claim
+        # published is cleared with it instead of waiting for the role's own drain.
+        if task is not None and (saved is None or saved["turn_id"] is None):
+            self.release_flag(reservation, task)
+
+    def release_flag(self, reservation, task):
+        """Clear the busy flag of a released never-sent claim, where its role reads it."""
+        if reservation.source_table in ("autopilot_actions", "project_turns"):
+            owner = (
+                self.workflow.research
+                if reservation.source_table == "autopilot_actions"
+                else self.workflow.supervisor
+            )
+            if owner.task is task:
+                owner.task, owner.active_id = None, None
+            return
+        lane = self.lane(reservation.connection.slot) if reservation.connection else None
+        if lane is not None and lane.agent_task is task:
+            lane.agent_task, lane.active_action = None, None
 
     def remember_answer(self, pending_id, connection, reservation):
         """Bind a saved answer to the process and reservation that asked for it."""

@@ -408,7 +408,7 @@ class Conversation:
                     (eid,),
                 )
                 else "quota_hold"
-                if not self.workflow.gate.decide().admitted
+                if not self.workflow.agent_pool.quota(eid=eid).admitted
                 else None
             )
             if reason:
@@ -502,7 +502,8 @@ class Conversation:
         agent, eid = self.workflow.agent, message["experiment_id"]
         expected = dict(action)
         try:
-            decision = await self.workflow.refresh_quota()
+            await self.workflow.refresh_quota()
+            decision = self.workflow.agent_pool.quota(eid=eid)
             if not decision.admitted:
                 self.hold(message["id"], "quota_hold", decision.reason)
                 return
@@ -530,6 +531,11 @@ class Conversation:
                 model=model,
             )
             wire, saved_input = self.turn_prompt(action, thread_id)
+            # Session setup may await; the binding decision precedes saved intent.
+            decision = self.workflow.agent_pool.quota(eid=eid)
+            if not decision.admitted:
+                self.hold(message["id"], "quota_hold", decision.reason)
+                return
             with self.store.tx() as db:
                 db.execute("UPDATE agent_actions SET input=? WHERE id=?", (saved_input, action["id"]))
                 db.execute(

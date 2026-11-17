@@ -665,7 +665,7 @@ class Controller:
                 or wf.store.one(
                     "SELECT 1 FROM agent_actions WHERE state IN ('dispatching','running','uncertain')"
                 )
-                or not wf.gate.decide().admitted
+                or not wf.agent_pool.quota(eid=exp["id"]).admitted
             ):
                 continue
             if action is None:

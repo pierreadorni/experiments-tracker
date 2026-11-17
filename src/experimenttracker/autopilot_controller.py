@@ -170,7 +170,7 @@ class ResearchController:
                     reason = "autopilot_" + run["status"]
                 elif action["control_revision"] != run["control_revision"]:
                     reason = "autopilot_authority_changed"
-                elif not self.service.quota(wf.gate, run=run).admitted:
+                elif not wf.agent_pool.quota(run=run).admitted:
                     reason = "quota_hold"
                 if (
                     reason
@@ -187,7 +187,7 @@ class ResearchController:
                 reason = self.service.authority(
                     action["experiment_id"], action["phase"], action["phase"].removeprefix("agent:")
                 )
-                if not reason and not self.service.quota(wf.gate, eid=action["experiment_id"]).admitted:
+                if not reason and not wf.agent_pool.quota(eid=action["experiment_id"]).admitted:
                     reason = "quota_hold"
                 if reason and action["interrupt_reason"] != reason:
                     pool.hold(action, reason)
@@ -247,7 +247,7 @@ class ResearchController:
             policy = self.service.policy(run)
             if clock.now() < policy.start_at or run["project_id"] not in wf.store.projects:
                 continue
-            quota = self.service.quota(wf.gate, run=run)
+            quota = wf.agent_pool.quota(run=run)
             reason = None if quota.admitted else quota.reason
             if run["hold_reason"] != reason:
                 with wf.store.tx() as db:
@@ -398,7 +398,7 @@ class ResearchController:
             if (
                 blocked(wf.store)
                 or run["status"] in ("paused", "stopped", "completed")
-                or not self.service.quota(wf.gate, run=run).admitted
+                or not wf.agent_pool.quota(run=run).admitted
             ):
                 return
             policy = self.service.policy(run)
@@ -434,7 +434,7 @@ class ResearchController:
                 current["control_revision"] != row["control_revision"]
                 or current["status"] in ("paused", "stopped", "completed")
                 or blocked(wf.store)
-                or not self.service.quota(wf.gate, run=current).admitted
+                or not wf.agent_pool.quota(run=current).admitted
             ):
                 self.state(row["id"], "superseded")
                 return

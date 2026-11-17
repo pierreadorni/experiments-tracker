@@ -1,6 +1,5 @@
 import asyncio
 import json
-from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -213,13 +212,12 @@ async def test_dispatch_archived_during_turn_preserves_returned_identity_and_raw
         await release.wait()
         return {"unvalidated": ["raw", 7]}
 
-    async def quota():
-        return SimpleNamespace(admitted=True, reason=None)
-
     monkeypatch.setattr(agent, "session", session)
     monkeypatch.setattr(agent, "begin", begin)
     monkeypatch.setattr(agent, "finish", finish)
-    monkeypatch.setattr(workflow, "refresh_quota", quota)
+    # The dispatch asks the shared quota policy after refreshing, so it needs a
+    # real fresh snapshot instead of a stubbed decision.
+    workflow.gate.update(await agent.quota())
     task = asyncio.create_task(workflow.dispatch(action))
     await asyncio.wait_for(entered.wait(), 2)
     contract = {**store.experiment(eid)["contract"], "execution_contract": 2}

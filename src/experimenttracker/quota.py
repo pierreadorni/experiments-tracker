@@ -13,6 +13,16 @@ class Decision:
     observed_at: float | None
 
 
+def plenty(gate, decision):
+    """Whether a weekly synthesis may draw on quota: well above the reserve, not merely admitted."""
+    config = gate.config
+    return (
+        decision.admitted
+        and decision.remaining.get("300", 0) >= max(50, config.five_hour_min_remaining + 10)
+        and decision.remaining.get("10080", 0) >= max(50, config.weekly_min_remaining + 10)
+    )
+
+
 class QuotaGate:
     """Track freshness per window; sparse updates never erase or refresh an absent window."""
 

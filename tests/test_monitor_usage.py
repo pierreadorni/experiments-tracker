@@ -195,7 +195,9 @@ async def test_monitor_uses_small_fresh_thread_and_preserves_research_session(ru
     agent.finish = AsyncMock(
         return_value={"summary": "Logs stopped; cause unknown", "next_check_seconds": 60}
     )
-    wf.refresh_quota = AsyncMock(return_value=SimpleNamespace(admitted=True))
+    # The dispatch asks the shared quota policy again after refreshing, so this
+    # monitor turn needs a real fresh snapshot rather than a stubbed decision.
+    wf.gate.update(await agent.quota())
     action = str(uuid4())
     prompt = "Diagnosis\nPAYLOAD:\n" + encode({"jobs": wf.controller.diagnostic_jobs(eid)})
     with store.tx() as db:

@@ -581,14 +581,6 @@ class ProjectSupervisor:
             )
         )
 
-    def plenty(self, decision):
-        config = self.workflow.gate.config
-        return (
-            decision.admitted
-            and decision.remaining.get("300", 0) >= max(50, config.five_hour_min_remaining + 10)
-            and decision.remaining.get("10080", 0) >= max(50, config.weekly_min_remaining + 10)
-        )
-
     async def interrupt(self):
         """Interrupt every occupied project turn through its own live process."""
         pool = self.workflow.agent_pool
@@ -693,8 +685,9 @@ class ProjectSupervisor:
                 state["project_id"]
             ):
                 continue
-            if not memory.view(state["project_id"])["pending_experiment_ids"] or not self.plenty(
-                wf.gate.decide()
+            if (
+                not memory.view(state["project_id"])["pending_experiment_ids"]
+                or not wf.agent_pool.quota(origin="weekly").admitted
             ):
                 continue
             identity = str(uuid5(NAMESPACE_URL, f"project-week:{state['project_id']}:{state['next_due']}"))
@@ -754,8 +747,7 @@ class ProjectSupervisor:
             if not wf.agent_ready:
                 memory.state(row["id"], "waiting", hold_reason="agent_unavailable")
                 return
-            decision = wf.gate.decide()
-            if not decision.admitted or (row["origin"] == "weekly" and not self.plenty(decision)):
+            if not wf.agent_pool.quota(origin=row["origin"]).admitted:
                 memory.state(row["id"], "waiting", hold_reason="quota_hold")
                 return
             if json.loads(row["payload"])["kind"] == "synthesize" and not memory.summaries(row["project_id"]):
@@ -774,10 +766,10 @@ class ProjectSupervisor:
     async def dispatch(self, row):
         wf, memory, agent = self.workflow, self.memory, self.workflow.agent
         try:
-            decision = await wf.refresh_quota()
+            await wf.refresh_quota()
             if blocked(wf.store):
                 return
-            if not decision.admitted or (row["origin"] == "weekly" and not self.plenty(decision)):
+            if not wf.agent_pool.quota(origin=row["origin"]).admitted:
                 memory.state(row["id"], "waiting", hold_reason="quota_hold")
                 return
             command = json.loads(row["payload"])
@@ -795,6 +787,9 @@ class ProjectSupervisor:
                 None, workspace, writable=False, model=model, approval_policy="never"
             )
             if blocked(wf.store):
+                return
+            if not wf.agent_pool.quota(origin=row["origin"]).admitted:
+                memory.state(row["id"], "waiting", hold_reason="quota_hold")
                 return
             memory.state(row["id"], "dispatching", thread_id=thread)
             turn = await agent.begin(thread, prompt, KnowledgeReply.model_json_schema(), effort=effort)

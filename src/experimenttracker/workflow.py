@@ -862,7 +862,7 @@ class Workflow:
             if (
                 self.agent_task
                 or not self.agent_ready
-                or not self.gate.decide().admitted
+                or not self.agent_pool.quota(eid=exp["id"]).admitted
                 or self.store.one(
                     "SELECT 1 FROM agent_actions WHERE state IN ('dispatching','running','uncertain') LIMIT 1"
                 )
@@ -903,7 +903,7 @@ class Workflow:
             )
             if action and action["state"] != "pending":
                 continue
-            if self.agent_task or not self.agent_ready or not self.gate.decide().admitted:
+            if self.agent_task or not self.agent_ready or not self.agent_pool.quota(eid=exp["id"]).admitted:
                 return
             if self.store.one(
                 "SELECT 1 FROM agent_actions WHERE state IN ('dispatching','running','uncertain') LIMIT 1"
@@ -957,7 +957,7 @@ class Workflow:
     async def dispatch_title(self, action):
         if (
             self.research.busy
-            or not self.research.service.quota(self.gate, eid=action["experiment_id"]).admitted
+            or not self.agent_pool.quota(eid=action["experiment_id"]).admitted
             or self.research.service.authority(action["experiment_id"], "title")
         ):
             return
@@ -967,12 +967,12 @@ class Workflow:
         try:
             if legacy_archive.execution_frozen(self.store.experiment(eid)):
                 return
-            decision = await self.refresh_quota()
+            await self.refresh_quota()
             if legacy_archive.execution_frozen(self.store.experiment(eid)):
                 return
             if blocked(self.store):
                 return
-            if not decision.admitted:
+            if not self.agent_pool.quota(eid=eid).admitted:
                 return
             exp = self.store.experiment(eid)
             if exp["pause_agent"]:
@@ -994,6 +994,8 @@ class Workflow:
             if blocked(self.store) or self.store.experiment(eid)["phase"] == "cancelled":
                 return
             if legacy_archive.execution_frozen(self.store.experiment(eid)):
+                return
+            if not self.agent_pool.quota(eid=eid).admitted:
                 return
             with self.store.tx() as db:
                 expected = action_obligations.transition(
@@ -2609,7 +2611,7 @@ class Workflow:
             return
         if self.research.busy:
             return
-        decision = self.research.service.quota(self.gate, eid=eid)
+        decision = self.agent_pool.quota(eid=eid)
         if not decision.admitted:
             self.store.update(eid, hold_reason="quota_hold", error=decision.reason)
             return
@@ -3411,11 +3413,10 @@ class Workflow:
         try:
             if legacy_archive.execution_frozen(self.store.experiment(eid)):
                 return
-            decision = await self.refresh_quota()
+            await self.refresh_quota()
             if legacy_archive.execution_frozen(self.store.experiment(eid)):
                 return
-            if self.research.service.member(eid):
-                decision = self.research.service.quota(self.gate, eid=eid)
+            decision = self.agent_pool.quota(eid=eid)
             if blocked(self.store):
                 return
             if not decision.admitted:
@@ -3596,10 +3597,7 @@ class Workflow:
                         "UPDATE experiments SET hold_reason=? WHERE id=?", (held or "agent_paused", eid)
                     )
                     return
-                if (
-                    self.research.service.member(eid)
-                    and not self.research.service.quota(self.gate, eid=eid).admitted
-                ):
+                if not self.agent_pool.quota(eid=eid).admitted:
                     db.execute("UPDATE experiments SET hold_reason='quota_hold' WHERE id=?", (eid,))
                     return
                 db.execute(
