@@ -20,6 +20,7 @@ from . import (
     reporting,
     resolver,
 )
+from .agent_pool import AgentPool, experiment_owner
 from .autopilot_controller import ResearchController
 from .cancellation import process_cancellations
 from .codex_client import CodexAgent, NeedsAttention, RpcRejected, SessionUnavailable, TerminalTurnError
@@ -150,6 +151,7 @@ class Workflow:
         self.submissions_in_flight = set()
         self.pool_owner = self
         self.lanes = [self]
+        self.agent_pool = AgentPool(self)
         self.agent_assignments = {}
         self.output_checks = {}
         self.evidence_checks = {}
@@ -261,6 +263,15 @@ class Workflow:
         lane.last_cluster_refresh = owner.last_cluster_refresh
         return lane
 
+    def spawn_agent(self, coroutine, *, role, source_table, row, owner):
+        """Claim this workflow's agent before the turn exists, then settle its source row."""
+        reservation = self.agent_pool.claim(
+            role=role, source_table=source_table, row=row, owner=owner, workflow=self
+        )
+        task = asyncio.create_task(coroutine)
+        task.add_done_callback(lambda _task: self.agent_pool.settle(reservation))
+        return task
+
     async def start_agent_pool(self):
         for index in range(1, self.config.codex.max_sessions):
             if getattr(self.agent, "is_demo", False):
@@ -269,6 +280,7 @@ class Workflow:
                 agent = CodexAgent(self.config.codex, self.config.state_dir / f"agent-slot-{index}")
             lane = Workflow(self.config, self.store, self.scheduler, agent)
             lane.pool_owner = self
+            lane.agent_pool = self.agent_pool
             lane.gate = self.gate
             lane.controller = self.controller
             lane.research = self.research
@@ -398,6 +410,7 @@ class Workflow:
         obligation_backfill.backfill(self.store)
         self.config.job_output_root.mkdir(parents=True, exist_ok=True)
         await self.refresh_cluster()
+        self.agent_pool.reconstruct()
         await self.connect_agent()
         # A request belongs to its original connection. Never replay an obsolete RPC ID after restart.
         for row in self.store.rows(
@@ -813,7 +826,13 @@ class Workflow:
                     )
                 action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (action["id"],))
             self.active_action = action["id"]
-            self.agent_task = asyncio.create_task(self.dispatch_title(action))
+            self.agent_task = self.spawn_agent(
+                self.dispatch_title(action),
+                role="title",
+                source_table="agent_actions",
+                row=action,
+                owner=experiment_owner(exp["id"]),
+            )
             return
         for row in self.store.rows(
             "SELECT id FROM experiments WHERE recipe_id='agent_experiment_v1' AND deleted_at IS NULL "
@@ -863,7 +882,13 @@ class Workflow:
                     )
                 action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (action_id,))
             self.active_action = action["id"]
-            self.agent_task = asyncio.create_task(self.dispatch_title(action))
+            self.agent_task = self.spawn_agent(
+                self.dispatch_title(action),
+                role="title",
+                source_table="agent_actions",
+                row=action,
+                owner=experiment_owner(exp["id"]),
+            )
             return
 
     @staticmethod
@@ -2533,7 +2558,13 @@ class Workflow:
             self.store.update(eid, hold_reason="quota_hold", error=decision.reason)
             return
         self.active_action = action["id"]
-        self.agent_task = asyncio.create_task(self.dispatch(action))
+        self.agent_task = self.spawn_agent(
+            self.dispatch(action),
+            role="stage",
+            source_table="agent_actions",
+            row=action,
+            owner=experiment_owner(eid),
+        )
 
     async def prepare_workspace(self, exp):
         if early_repair.preparing(exp):

@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 from pydantic import Field
 
 from . import artifacts, clock, early_repair, iteration, reporting
+from .agent_pool import experiment_owner
 from .codex_client import TerminalTurnError
 from .config import StrictModel
 from .core import action_obligations, wakeup_obligations
@@ -694,7 +695,13 @@ class Controller:
                 action = wf.store.one("SELECT * FROM agent_actions WHERE id=?", (identity,))
             if action["state"] == "pending":
                 wf.active_action = action["id"]
-                wf.agent_task = asyncio.create_task(wf.dispatch(action))
+                wf.agent_task = wf.spawn_agent(
+                    wf.dispatch(action),
+                    role="monitor",
+                    source_table="agent_actions",
+                    row=action,
+                    owner=experiment_owner(exp["id"]),
+                )
                 return
 
     async def close(self):

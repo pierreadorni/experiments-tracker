@@ -11,6 +11,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from pydantic import Field, model_validator
 
 from . import artifacts, clock
+from .agent_pool import project_owner
 from .codex_client import RpcRejected, TerminalTurnError
 from .config import StrictModel
 from .maintenance import blocked
@@ -754,7 +755,13 @@ class ProjectSupervisor:
                 memory.state(row["id"], "failed", error="No completed experiments to incorporate")
                 continue
             self.active_id = row["id"]
-            self.task = asyncio.create_task(self.dispatch(row))
+            self.task = wf.spawn_agent(
+                self.dispatch(row),
+                role="supervisor",
+                source_table="project_turns",
+                row=row,
+                owner=project_owner(row["project_id"]),
+            )
             return
 
     async def dispatch(self, row):

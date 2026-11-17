@@ -513,6 +513,10 @@ async def test_configured_sessions_let_another_plan_progress_while_one_turn_wait
         assert {a["experiment_id"] for a in running} == {first, second}
         assert {a["phase"] for a in running} == {"plan"}
         assert len({a["thread_id"] for a in running}) == 2
+        # Each lane holds its own reservation; the two live turns keep two slots.
+        claims = {a["id"]: wf.agent_pool.lookup("agent_actions", a["id"]) for a in running}
+        assert {claim.slot for claim in claims.values()} == {0, 1}
+        assert {claim.role for claim in claims.values()} == {"stage"}
         assert wf.lanes[0].gate is wf.lanes[1].gate
         release_turns.set()
         await wait_until(

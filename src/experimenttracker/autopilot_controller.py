@@ -9,6 +9,7 @@ import sys
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from . import clock
+from .agent_pool import project_owner
 from .autopilot import Autopilot
 from .autopilot_models import ProjectDecision
 from .autopilot_tools import MODELS, Compile
@@ -283,7 +284,13 @@ class ResearchController:
                     )
                 row = wf.store.one("SELECT * FROM autopilot_actions WHERE id=?", (identity,))
             self.active_id = row["id"]
-            self.task = asyncio.create_task(self.dispatch(row))
+            self.task = wf.spawn_agent(
+                self.dispatch(row),
+                role="research",
+                source_table="autopilot_actions",
+                row=row,
+                owner=project_owner(run["project_id"]),
+            )
             return
 
     def guidance_wait(self, db, row, decision):

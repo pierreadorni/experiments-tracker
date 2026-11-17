@@ -10,6 +10,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from pydantic import ValidationError
 
 from . import artifacts, clock, discussion_outputs, iteration, reporting
+from .agent_pool import experiment_owner
 from .codex_client import NeedsAttention
 from .core import action_obligations
 from .models import DiscussionReply
@@ -441,7 +442,13 @@ class Conversation:
                     )
                 action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (identity,))
             self.workflow.active_action = action["id"]
-            self.workflow.agent_task = asyncio.create_task(self.dispatch(message, action))
+            self.workflow.agent_task = self.workflow.spawn_agent(
+                self.dispatch(message, action),
+                role="conversation",
+                source_table="agent_actions",
+                row=action,
+                owner=experiment_owner(eid),
+            )
             return
 
     def correct_outputs(self, message, action, error):
