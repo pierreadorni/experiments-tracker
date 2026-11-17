@@ -214,7 +214,7 @@ def apply(wf, exp, plan, manifest):
 
 
 async def cancel(wf, exp, intent, request, reason):
-    if not iteration.enabled(exp) or not preparing(exp):
+    if not preparing(exp):
         raise ValueError("job cancellation requires an active contract 3 repair")
     intent, request = str(UUID(intent)), str(UUID(request))
     job = wf.store.one("SELECT * FROM jobs WHERE experiment_id=? AND intent_id=?", (exp["id"], intent))

@@ -396,7 +396,7 @@ class Controller:
                         wf.store.emit(db, eid, "execution_configured", {"execution": execution})
             return receipt
         if name == "update_report":
-            if not iteration.enabled(exp) or not exp["snapshot"]:
+            if not exp["snapshot"]:
                 raise ValueError("working reports require an iteration-first saved implementation")
             document = ReportDocument.model_validate(args["document"])
             records = wf.store.rows("SELECT * FROM artifacts WHERE experiment_id=?", (eid,))

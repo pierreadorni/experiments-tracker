@@ -1712,18 +1712,6 @@ class Store:
             self.emit(db, eid, "report_requested", {"report_version": version})
             return version
 
-    def initial_report(self, eid, document):
-        with self.tx() as db:
-            prior = db.execute(
-                "SELECT document FROM report_versions WHERE experiment_id=? AND version=1", (eid,)
-            ).fetchone()
-            if prior:
-                if prior["document"] != encode(document):
-                    raise Conflict("initial report document changed")
-                return
-            self._insert_report(db, eid, 1, document, "initial-report:" + eid)
-            self.emit(db, eid, "report_requested", {"report_version": 1})
-
     def report_state(self, eid, version, state, error=None):
         if self.experiment(eid)["phase"] == "cancelled":
             return

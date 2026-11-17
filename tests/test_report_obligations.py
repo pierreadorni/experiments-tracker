@@ -58,14 +58,16 @@ def test_request_creation_opens_one_episode_and_replay_keeps_it(runtime):
     assert len(history(store, eid, version)) == 1
 
 
-def test_initial_report_opens_version_one_episode(runtime):
+def test_first_report_opens_version_one_episode(runtime):
     store, _, _, _ = runtime
     eid = create(store)
-    store.initial_report(eid, document())
-    saved = episode(store, eid, 1)
+    request_id = f"initial-report:{eid}"
+    version = store.working_report(eid, document(), request_id)
+    saved = episode(store, eid, version)
+    assert version == 1
     assert saved["state"] == "open"
-    assert saved["detail"] == f"request=initial-report:{eid}"
-    store.initial_report(eid, document())
+    assert saved["detail"] == f"request={request_id}"
+    assert store.working_report(eid, document(), request_id) == version
     assert len(history(store, eid, 1)) == 1
 
 

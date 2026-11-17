@@ -234,8 +234,6 @@ class Workflow:
         )
 
     def execution_instruction(self, exp, phase):
-        if not iteration.enabled(exp):
-            raise ValueError("archived legacy execution instructions are read-only")
         return (
             "Execution machine: "
             + ("Jean Zay via acacia owner" if self.is_remote(exp) else "acacia")
@@ -1123,7 +1121,7 @@ class Workflow:
                 continue
             if self.config.mode != "live" or exp["recipe_id"] != "agent_experiment_v1" or not exp["snapshot"]:
                 continue
-            if iteration.enabled(exp) and exp["hold_reason"] != "resources_unavailable":
+            if exp["hold_reason"] != "resources_unavailable":
                 await early_repair.queue(self, exp)
                 continue
             resource_revision = exp["hold_reason"] == "resources_unavailable"
@@ -1148,7 +1146,7 @@ class Workflow:
                 )
             ):
                 continue
-            if iteration.enabled(exp) and not self.workspaces.row(eid):
+            if not self.workspaces.row(eid):
                 project_id = exp["contract"].get("project", {}).get("id", "test-project")
                 # Queue one editor at a time for an existing shared checkout.
                 # Simultaneously reactivating two failed editors would make
@@ -1433,11 +1431,11 @@ class Workflow:
         }
         requested_done = bool(requested) and all(stages[s] == "complete" for s in requested)
         for index, stage in enumerate(compute_stages):
-            if iteration.enabled(exp) and requested_done and stage not in requested:
+            if requested_done and stage not in requested:
                 continue
             if stages[stage] == "complete":
                 continue
-            if iteration.enabled(exp) and early_repair.active_predecessor(self, exp, stage):
+            if early_repair.active_predecessor(self, exp, stage):
                 continue
             job = self.store.one(
                 "SELECT * FROM jobs WHERE experiment_id=? AND stage_id=? AND attempt=?",
@@ -1463,7 +1461,7 @@ class Workflow:
                     artifacts.register(self.store, eid, stage, root, names)
                     self.store.stage(eid, stage, "complete", outputs=names)
                 elif job["state"] == "failed":
-                    if iteration.enabled(exp) and stage not in requested:
+                    if stage not in requested:
                         continue
                     self.fail(eid, "compute_failed", job["error"] or "scheduler job failed")
                     return
@@ -1499,8 +1497,7 @@ class Workflow:
                 return
         if any(stages[stage] != "complete" for stage in compute_stages if stage in requested):
             return
-        if iteration.enabled(exp):
-            self.prepare_iteration_results(exp)
+        self.prepare_iteration_results(exp)
         if stages["interpret"] != "complete":
             await self.agent_stage(exp, "interpret")
             return
@@ -1553,10 +1550,9 @@ class Workflow:
         ):
             raise ValueError("submission requires an active saved implementation")
         root = self.root(eid)
-        if iteration.enabled(exp):
-            held = early_repair.submission_hold(self, exp, stage)
-            if held:
-                return held
+        held = early_repair.submission_hold(self, exp, stage)
+        if held:
+            return held
         compute_stages = self.compute_stages(exp)
         if stage not in compute_stages:
             raise ValueError("stage is not in the saved implementation")
@@ -1633,12 +1629,11 @@ class Workflow:
         submission_manifest = exp["snapshot"]
         refs = []
         scheduler = self.scheduler_for(exp)
-        if iteration.enabled(exp):
-            root, submission_manifest, refs = iteration.stage_attempt(self, exp, stage, intent_id)
-            scheduler = self.scheduler_for(
-                {**exp, "snapshot": submission_manifest, "_attempt_id": intent_id, "_attempt_root": str(root)}
-            )
-            project = root / "snapshot/project"
+        root, submission_manifest, refs = iteration.stage_attempt(self, exp, stage, intent_id)
+        scheduler = self.scheduler_for(
+            {**exp, "snapshot": submission_manifest, "_attempt_id": intent_id, "_attempt_root": str(root)}
+        )
+        project = root / "snapshot/project"
         script = wrapper(
             root,
             stage,
@@ -1647,7 +1642,7 @@ class Workflow:
             resources=resources,
             script=plan_stage.get("script"),
             project=project,
-            iteration_mode=iteration.enabled(exp),
+            iteration_mode=True,
         )
         if self.config.mode == "live":
             self.last_preflight[(eid, exp["evidence_revision"], stage)] = clock.now()
@@ -1678,9 +1673,8 @@ class Workflow:
         ):
             return {"state": "held", "reason": "execution_authorization_changed"}
         execution_manifest = dict(submission_manifest)
-        if iteration.enabled(exp):
-            execution_manifest["command"] = iteration.bounded_bytes(script, root).decode()
-            execution_manifest["parameters"] = submission_manifest["parameters"]
+        execution_manifest["command"] = iteration.bounded_bytes(script, root).decode()
+        execution_manifest["parameters"] = submission_manifest["parameters"]
         if self.is_remote(exp):
             execution_manifest["execution"] = scheduler.metadata()
         record_name = f"job-source-{intent_id}.json"
@@ -2371,7 +2365,7 @@ class Workflow:
                     if early_repair.preparing(exp):
                         early_repair.validate(self, exp, plan)
                     reused = {}
-                    if iteration.enabled(exp) and exp["contract"].get("auto_repair"):
+                    if exp["contract"].get("auto_repair"):
                         reused = iteration.reuse(self, exp, plan)
                     elif plan.reuse_stages:
                         raise ValueError("stage reuse requires saved successful work in this experiment")
@@ -2459,25 +2453,19 @@ class Workflow:
                             ),
                             analysis.presentation,
                         )
-                    if iteration.enabled(exp):
-                        root = self.root(eid)
-                        name = f"analysis-{action['id']}.json"
-                        target = root / name
-                        data = encode(analysis.model_dump()).encode()
-                        if target.exists():
-                            if iteration.bounded_bytes(target, root) != data:
-                                raise ValueError(
-                                    "saved analysis action already has different published bytes"
-                                )
-                        else:
-                            target.write_bytes(data)
-                        artifacts.register(self.store, eid, phase, root, [name])
-                        if not (root / "analysis.json").exists():
-                            iteration.copy_small(target, root, root / "analysis.json")
-                        artifacts.register(self.store, eid, phase, root, ["analysis.json"])
+                    root = self.root(eid)
+                    name = f"analysis-{action['id']}.json"
+                    target = root / name
+                    data = encode(analysis.model_dump()).encode()
+                    if target.exists():
+                        if iteration.bounded_bytes(target, root) != data:
+                            raise ValueError("saved analysis action already has different published bytes")
                     else:
-                        (self.root(eid) / "analysis.json").write_text(encode(analysis.model_dump()))
-                        artifacts.register(self.store, eid, phase, self.root(eid), ["analysis.json"])
+                        target.write_bytes(data)
+                    artifacts.register(self.store, eid, phase, root, [name])
+                    if not (root / "analysis.json").exists():
+                        iteration.copy_small(target, root, root / "analysis.json")
+                    artifacts.register(self.store, eid, phase, root, ["analysis.json"])
                     with self.store.tx() as db:
                         db.execute(
                             "UPDATE experiments SET analysis=?,scientific_outcome=? WHERE id=?",
@@ -2793,17 +2781,13 @@ class Workflow:
         return resources
 
     def validate_resource_plan(self, exp, plan):
-        if iteration.enabled(exp) and plan.schema_version != 3:
+        if plan.schema_version != 3:
             raise ValueError("new execution contract requires schema_version 3")
-        if not iteration.enabled(exp) and plan.schema_version == 3:
-            raise ValueError("saved historical contracts cannot switch execution semantics")
         budget = exp["contract"].get("max_jobs", self.config.slurm.max_jobs_per_experiment)
         if budget is not None and sum(s.executor == "slurm" for s in plan.stages) > budget:
             raise ValueError(f"plan exceeds the {budget}-job experiment budget")
         for stage in plan.stages:
             if stage.executor == "agent":
-                if not iteration.enabled(exp):
-                    raise ValueError("agent stages require execution contract 3")
                 continue
             if (
                 self.config.mode == "live"
@@ -3636,7 +3620,7 @@ class Workflow:
                 if action["phase"] == "prepare"
                 else Analysis.model_json_schema()
             )
-            if generic_prepare and iteration.enabled(exp):
+            if generic_prepare:
                 # Older saved implementations omit this field. New turns must
                 # explicitly distinguish a ready graph from blocked work.
                 schema.setdefault("required", []).append("outcome")
@@ -3729,63 +3713,55 @@ class Workflow:
         analysis = Analysis.model_validate(exp["analysis"])
         report = root / "report.html"
         if analysis.presentation:
-            version = 1
-            if iteration.enabled(exp):
-                version = self.store.working_report(
-                    eid,
-                    analysis.presentation.model_dump(mode="json"),
-                    "final-report:"
-                    + self.store.one(
-                        "SELECT id FROM agent_actions WHERE experiment_id=? AND phase='interpret' AND state='completed' ORDER BY rowid DESC LIMIT 1",
-                        (eid,),
-                    )["id"],
-                )
-            else:
-                self.store.initial_report(eid, analysis.presentation.model_dump(mode="json"))
+            version = self.store.working_report(
+                eid,
+                analysis.presentation.model_dump(mode="json"),
+                "final-report:"
+                + self.store.one(
+                    "SELECT id FROM agent_actions WHERE experiment_id=? AND phase='interpret' AND state='completed' ORDER BY rowid DESC LIMIT 1",
+                    (eid,),
+                )["id"],
+            )
             report_version = self.store.one(
                 "SELECT * FROM report_versions WHERE experiment_id=? AND version=?", (eid, version)
             )
             if report_version["state"] == "failed":
-                if iteration.enabled(exp):
-                    action = self.store.one(
-                        "SELECT * FROM agent_actions WHERE experiment_id=? AND phase='interpret' ORDER BY rowid DESC LIMIT 1",
-                        (eid,),
-                    )
-                    if action and action["state"] == "completed" and action["turn_id"]:
-                        with self.store.tx() as db:
-                            before = action_obligations.expected_saved(db, action)
-                            feedback = "agent output validation: report rendering: " + report_version["error"]
-                            cursor = db.execute(
-                                "UPDATE agent_actions SET state='failed',error=?,updated_at=? WHERE id=? AND state='completed'",
-                                (feedback, clock.now(), action["id"]),
-                            )
-                            if not cursor.rowcount:
-                                raise NeedsAttention("saved report action changed during correction")
-                            action_obligations.sync_action(db, action["id"], before=before)
-                            db.execute(
-                                "UPDATE stages SET state='pending',error=?,updated_at=? WHERE experiment_id=? AND id='interpret'",
-                                (report_version["error"], clock.now(), eid),
-                            )
-                            db.execute(
-                                "UPDATE experiments SET phase='interpreting',hold_reason='agent_continuation',error=? WHERE id=?",
-                                (report_version["error"], eid),
-                            )
-                            self.store.emit(
-                                db,
-                                eid,
-                                "report_correction_required",
-                                {
-                                    "action_id": action["id"],
-                                    "report_version": version,
-                                    "error": report_version["error"],
-                                },
-                            )
-                        return
-                    self.fail(eid, "report_failed", report_version["error"])
-                    return
-                raise ExperimentFailure(
-                    "validation_failed", "initial report failed: " + report_version["error"]
+                action = self.store.one(
+                    "SELECT * FROM agent_actions WHERE experiment_id=? AND phase='interpret' ORDER BY rowid DESC LIMIT 1",
+                    (eid,),
                 )
+                if action and action["state"] == "completed" and action["turn_id"]:
+                    with self.store.tx() as db:
+                        before = action_obligations.expected_saved(db, action)
+                        feedback = "agent output validation: report rendering: " + report_version["error"]
+                        cursor = db.execute(
+                            "UPDATE agent_actions SET state='failed',error=?,updated_at=? WHERE id=? AND state='completed'",
+                            (feedback, clock.now(), action["id"]),
+                        )
+                        if not cursor.rowcount:
+                            raise NeedsAttention("saved report action changed during correction")
+                        action_obligations.sync_action(db, action["id"], before=before)
+                        db.execute(
+                            "UPDATE stages SET state='pending',error=?,updated_at=? WHERE experiment_id=? AND id='interpret'",
+                            (report_version["error"], clock.now(), eid),
+                        )
+                        db.execute(
+                            "UPDATE experiments SET phase='interpreting',hold_reason='agent_continuation',error=? WHERE id=?",
+                            (report_version["error"], eid),
+                        )
+                        self.store.emit(
+                            db,
+                            eid,
+                            "report_correction_required",
+                            {
+                                "action_id": action["id"],
+                                "report_version": version,
+                                "error": report_version["error"],
+                            },
+                        )
+                    return
+                self.fail(eid, "report_failed", report_version["error"])
+                return
             if report_version["state"] != "ready":
                 return
         if not report.exists():
