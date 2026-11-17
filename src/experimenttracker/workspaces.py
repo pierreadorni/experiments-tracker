@@ -237,6 +237,30 @@ class Workspaces:
             return None
         return gitworkspace.verify(row["repo"], branch_identity(row), lock=branch_lock(eid))["head_commit"]
 
+    def shared_runtime(self, eid, *, build=True):
+        """The shared environment of an eligible named branch worktree, or None.
+
+        Eligible means the worktree has dependency manifests or the project declares a
+        fixed interpreter. Remote execution keeps its executor runtime, so it is never
+        eligible. Without ``build`` the returned path may not exist yet; the prepare
+        step publishes it before the agent turn uses it.
+        """
+        from .engine import envs
+
+        exp = self.store.experiment(eid)
+        if exp["contract"].get("execution", {}).get("context") == "jean-zay":
+            return None
+        row = self.branch(eid)
+        if not row:
+            return None
+        project = self.store.projects.get(exp["contract"].get("project", {}).get("id", "test-project"))
+        if not project:
+            return None
+        worktree = self.branch_checkout(eid)
+        if not project.environment.python and envs.lock_hash(worktree) is None:
+            return None
+        return envs.env_for(project, worktree) if build else envs.runtime_for(project, worktree)
+
     def commit_branch(self, eid, message):
         """Commit the exact saved branch worktree and record its new head.
 

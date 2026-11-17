@@ -70,11 +70,8 @@ def lock_hash(worktree):
     return digest.hexdigest() if files else None
 
 
-def env_for(project, worktree):
-    """Resolve the shared interpreter for one worktree.
-
-    Blocking: a first build runs uv. Async callers must use `asyncio.to_thread`.
-    """
+def runtime_for(project, worktree):
+    """The interpreter this project worktree would run with, without building it."""
     if project.environment.python:
         python = Path(project.environment.python)
         if not python.is_file():
@@ -93,16 +90,29 @@ def env_for(project, worktree):
     if cache.is_symlink() or cache.parent.is_symlink():
         raise EnvironmentUnavailable("The shared environment cache cannot be under a symlink")
     root = cache / digest
+    return Runtime(python=root / "bin/python", root=root, lock_hash=digest)
+
+
+def env_for(project, worktree):
+    """Resolve the shared interpreter for one worktree.
+
+    Blocking: a first build runs uv. Async callers must use `asyncio.to_thread`.
+    """
+    runtime = runtime_for(project, worktree)
+    if runtime.root is None:
+        return runtime
+    root, digest = runtime.root, runtime.lock_hash
+    worktree = Path(worktree)
     if not _ready(root, digest):
-        ensure_excluded(Path(repo))
-        with _exclusive(cache / f"{digest}.lock"):
+        ensure_excluded(Path(project.checkout))
+        with _exclusive(Path(project.checkout) / CACHE / f"{digest}.lock"):
             if lock_hash(worktree) != digest:
                 raise EnvironmentUnavailable(
                     "The project's dependency files changed while resolving its environment"
                 )
             if not _ready(root, digest):
                 _build(worktree, root, digest)
-    return Runtime(python=root / "bin/python", root=root, lock_hash=digest)
+    return runtime
 
 
 def ensure_excluded(repo):

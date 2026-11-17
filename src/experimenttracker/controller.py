@@ -194,7 +194,8 @@ class Controller:
         if kind in ("plan", "prepare"):
             wf.validate_resource_plan(exp, parsed)
         if kind == "prepare":
-            python = wf.prepared_python(exp, parsed)
+            runtime = await asyncio.to_thread(wf.workspaces.shared_runtime, exp["id"])
+            python = wf.prepared_python(exp, parsed, runtime)
             for name in parsed.files:
                 source = artifacts.allowed_path(wf.working_directory(exp) / name, wf.working_directory(exp))
                 if name.endswith(".py"):

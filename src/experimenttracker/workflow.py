@@ -2232,6 +2232,11 @@ class Workflow:
                         error="Execution cluster discovery unavailable",
                     )
                     return
+            if phase == "prepare" and exp["contract"].get("branch_workspace"):
+                # Ensure the exact worktree and its shared environment before the prompt
+                # names the interpreter this prepare turn should use.
+                if not await self.prepare_workspace(exp):
+                    return
             prompt = await asyncio.to_thread(self.prompt, exp, phase)
             fresh = self.store.experiment(eid)
             if fresh["phase"] == "cancelled":
@@ -2360,7 +2365,12 @@ class Workflow:
                                 "Implementation needs a change to the approved plan. Review it before compute starts.",
                             )
                             return
-                    python = self.prepared_python(exp, plan)
+                    try:
+                        runtime = await asyncio.to_thread(self.workspaces.shared_runtime, eid)
+                    except ProjectUnavailable as exc:
+                        self.store.update(eid, hold_reason="workspace_unavailable", error=str(exc))
+                        return
+                    python = self.prepared_python(exp, plan, runtime)
                     for name in plan.files:
                         if name.endswith((".py", ".sh", ".sbatch")):
                             try:
@@ -2679,8 +2689,11 @@ class Workflow:
             # the first dispatch and a busy project never gates it.
             try:
                 await asyncio.to_thread(self.workspaces.ensure_branch, eid)
+                # Publish the shared environment before a prepare turn names it. This
+                # is a no-op for a branch without dependency manifests or fixed python.
+                await asyncio.to_thread(self.workspaces.shared_runtime, eid)
                 return True
-            except WorkspaceUnavailable as exc:
+            except ProjectUnavailable as exc:
                 self.store.update(eid, hold_reason="workspace_unavailable", error=str(exc))
                 return False
         if self.workspaces.row(eid):
@@ -2774,7 +2787,7 @@ class Workflow:
     def compute_stages(exp):
         return [stage["id"] for stage in exp["snapshot"]["plan"]["stages"]]
 
-    def prepared_python(self, exp, plan):
+    def prepared_python(self, exp, plan, runtime=None):
         if self.is_remote(exp):
             if any(stage.executor == "slurm" and not stage.script for stage in plan.stages):
                 raise ValueError(
@@ -2783,7 +2796,9 @@ class Workflow:
             return Path(sys.executable)
 
         candidate = (
-            Path(plan.python_executable)
+            runtime.python
+            if runtime is not None
+            else Path(plan.python_executable)
             if plan.python_executable
             else self.working_directory(exp) / ".venv/bin/python"
         )
@@ -2792,6 +2807,10 @@ class Workflow:
         allowed = [self.working_directory(exp)] + ([Path(project)] if project else [])
         if context.get("source_checkout"):
             allowed.append(Path(context["source_checkout"]) / ".venv")
+        if runtime is not None:
+            # The shared cache or a project's fixed interpreter is owner-owned, not an
+            # arbitrary executable an agent chose for this experiment.
+            allowed.append(runtime.root if runtime.root is not None else runtime.python.parent)
         # Reusing an exact saved runtime from this experiment is valid even
         # when the current checkout is a worktree or a newer repair directory.
         base = self.projects.base_root(exp["id"])
@@ -2813,6 +2832,11 @@ class Workflow:
             exp["snapshot"].get("python_executable")
             or self.root(exp["id"]) / exp["snapshot"].get("python_relative_path", "work/.venv/bin/python")
         )
+
+    def prompt_python(self, exp):
+        """The interpreter a prepare turn should use; previews an unbuilt shared environment."""
+        runtime = self.workspaces.shared_runtime(exp["id"], build=False)
+        return str(runtime.python if runtime else self.working_directory(exp) / ".venv/bin/python")
 
     def stage_resources(self, exp, stage):
         resources = self.config.slurm.defaults()
@@ -2997,7 +3021,7 @@ class Workflow:
                 exp["contract"].get("project", {}).get("id", "test-project")
             ),
             workspace=str(self.working_directory(exp)),
-            python=str(self.working_directory(exp) / ".venv/bin/python"),
+            python=self.prompt_python(exp),
             execution_context=self.execution_context(exp),
             cluster=self.cluster_for(exp),
             resources=self.config.slurm.model_dump(),
@@ -3249,7 +3273,8 @@ class Workflow:
         plan = (ResearchPlan if action["phase"] == "plan" else Implementation).model_validate(result)
         self.validate_resource_plan(exp, plan)
         if action["phase"] == "prepare":
-            self.prepared_python(exp, plan)
+            runtime = await asyncio.to_thread(self.workspaces.shared_runtime, exp["id"])
+            self.prepared_python(exp, plan, runtime)
             for name in plan.files:
                 artifacts.allowed_path(self.working_directory(exp) / name, self.working_directory(exp))
         # Adoption, phase and outbox are one transaction. Attempts and identities
@@ -3585,7 +3610,8 @@ class Workflow:
             elif generic_prepare:
                 workspace = self.working_directory(exp)
                 workspace.mkdir(parents=True, exist_ok=True)
-                if not (workspace / ".venv/bin/python").exists():
+                runtime = await asyncio.to_thread(self.workspaces.shared_runtime, eid, build=False)
+                if runtime is None and not (workspace / ".venv/bin/python").exists():
                     await command("uv", "venv", "--python", "/usr/bin/python3", str(workspace / ".venv"))
                 thread_id, model = await slot.agent.session(
                     action["thread_id"]
