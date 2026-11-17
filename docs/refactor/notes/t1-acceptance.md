@@ -6,9 +6,9 @@ not installation or live-research acceptance. No Slurm, managed-account,
 installation restart, private gateway deployment or phone access was authorized
 or performed.
 
-## Final reviewed tree
+## Original reviewed tree
 
-Final implementation commits:
+Original final implementation commits (T1.8 close-out follows below):
 
 - `349a0c2` — T1.6a-4a: mechanical connection vocabulary and removal of
   `pool_owner` aliases; intermediate clones retained only until a-4b.
@@ -70,10 +70,64 @@ Per-commit final retirement counts:
 | a-4b | 179 / 133 | 229 / 170 | 711 |
 
 The coordinator approved two individually green mechanical cards rather than
-one oversized card. Final production delta from `42829f4` across
+one oversized card. Original acceptance production delta from `42829f4` across
 `src gateway/src web/src scripts recipes`: **+5,175/−2,492 = +2,683**.
+After T1.8 close-out it is **+5,203/−2,596 = +2,607** (net −76 since
+`7046b07`), still above the previously reported +2,500 notification threshold.
 The former net-negative target was waived by owner §7; the +2,500 notification
 threshold was reported during b-2 and the final count is recorded here.
+
+## T1.8 legacy-deletion close-out
+
+Post-acceptance review at `7046b07` found dominated legacy branches and frozen
+rechecks still present despite the T1.1d–h status. T1.8 closes that gap, without
+altering archived readers, saved identity settlement or the deferred hold writers.
+[The inventory](t1.8-site-inventory.md) proves saved execution-contract immutability,
+records every baseline site and lists every survivor at its final-tree line.
+Today's creator does not establish the shape of saved historical records: the
+coordinator rejected that initial inventory inference and preserved reachable
+terminal-title settlement, recovery/repair guards and historical observation.
+
+| Card | Commit | Source +/− | Tests +/− |
+|---|---|---:|---:|
+| a: inventory / Store immutability regression | `7ff0a11` | 0 / 0 | 85 / 0 |
+| b: 21 always-true predicate collapses, orphaned initial-report writer retirement | `e02aa91` | 78 / 114 | 7 / 5 |
+| c: 13 dispatch/title recheck deletions, saved-fixture test replacement | `a57ab65` | 0 / 27 | 65 / 57 |
+| d: 11 advancement recheck deletions and close-out docs | this close-out commit | 5 / 18 | 0 / 0 |
+
+The docs/test-only a is production-neutral; all deletion cards are net-negative
+and within their source/test budgets. No production behavior is added. Archived
+queued reports retain their revision-filtered SQL arms; conversation readers,
+legacy remote scheduler identity selection and six saved historical observation
+branches remain. `Store.initial_report` lost its last production caller and was
+deleted; the obligation/idempotence test uses the existing `working_report` API.
+The two cross-await contract-flip test parameters construct an impossible state
+and are replaced by stronger saved-legacy-state coverage of exact identity/raw
+result, no advancement, no dispatch and replay safety (§7.3 of the inventory).
+No saved-fixture settlement or cancellation assertion was dropped.
+
+Coordinator acceptance on byte-identical source/tests/scripts in the isolated
+`.worktrees/t1-8-validation` checkout, Node 24.18.0:
+
+- Locked `make setup` passes; no manifest changes.
+- Contract-3 synthetic demo passes before edits and again on the final combined
+  tree (about 3 s); nonempty report and SVG prediction figure inspected, synthetic
+  labeling present. Final log: `/tmp/t1-8-final-demo.log`.
+- Per-card archive/fixture/conversation/audit/scenario targets pass.
+- Combined Ruff check and format pass; **866 Python tests pass**, one dependency
+  deprecation warning, **453.80 seconds**. Log: `/tmp/t1-8-combined-pytest.log`.
+- The validation checkout retains the untracked `recipes/` directory required by
+  the synthetic maintenance handover fixture; that test passes, unlike fresh
+  worker checkouts missing the directory.
+- Final searches: **17** `iteration.enabled` calls and **28** `execution_frozen`
+  matches (27 calls + definition), all READER/SETTLE/ENTRY or the definition;
+  the final site table matches the tree.
+- Web/gateway unchanged; prior 29 web / 45 gateway results remain historical,
+  not newly rerun. The card does not require `make check` for Python-only edits.
+
+No live activation, scheduler or managed-runtime experiment, deployment or owner
+restart follows. The phase remains +2,607 production lines above `42829f4`, not
+net-negative; the owner waiver and prior +2,500 notification still apply.
 
 ## Continuing work
 

@@ -214,6 +214,9 @@ One commit per area, removing only branches that T1.1a marked not needed for rea
 - [x] g: contract ≤2 repair (`repair_failed_experiments` legacy parts, `repairs/` roots);
 - [x] h: `artifacts.py` execution writers and shipped recipe; archived readers stay.
   Status: [x] h.1ab · [x] h.4 · [x] h.5 · [x] h.1c · [x] h.2 · [x] h.3 · [x] h.6 · [x] h.7a execution tail · [x] h.7b command/reply tail · [x] h.7c final execution fallbacks.
+  T1.8 closes the remaining dominated predicates/rechecks found after acceptance;
+  reachable archived readers and exact settlement remain intentionally supported.
+  See [the final site table](notes/t1.8-site-inventory.md#10-final-tree-site-table-and-acceptance).
 
 Delete or replace the matching tests. Acceptance for each: the remaining suite passes,
 and archived fixtures still render their report via the API.
@@ -358,6 +361,89 @@ Move code without changing behaviour; each commit keeps the tests green.
 - e: workspace helpers → `engine/workspaces.py`;
 - f: remote helpers.
 
+### [x] T1.8 Close-out: finish the legacy deletion that T1.1d–h claims (C10, F1) · F+R · M per subcard
+Post-acceptance review (2026-11-18, `7046b07`, 866 Python tests green) found T1.1d–h
+marked done while its branches remain. This card deletes them before Phase 3 edits
+the same functions (T3.3 touches `prepare_workspace`, `_submit_prepared_stage` and
+`agent_stage`). It adds no behaviour, schema, config key, hold reason or event.
+
+**Measured baseline (reproduced at `7046b07`):**
+- `rg -c 'iteration\.enabled\(' src` → 38 (workflow 30, conversation 6,
+  controller 1, early_repair 1; audit F1
+  counted about 50/41). By function in `workflow.py`: `observe_jobs` 6,
+  `_submit_prepared_stage` 4, `advance` 4, `advance_reports` 4,
+  `validate_resource_plan` 3, `agent_stage` 2, `publish` 2,
+  `repair_failed_experiments` 2, `dispatch` 1, `execution_instruction` 1,
+  `scheduler_for` 1; plus `controller.call` 1, `early_repair.cancel` 1,
+  `conversation.prompt` 3, `conversation.validate` 3.
+- `rg -c 'execution_frozen\(' src` → 52 (51 calls + definition; workflow 42): `dispatch` 10, `advance` 6,
+  `agent_stage` 5, `dispatch_title` 5, the rest 1–2 per function. Many repeat after
+  each `await` in one function (e.g. `workflow.py:975–1027`).
+- `execution_frozen(exp)` reads only `contract.execution_contract`. The review found
+  no writer that changes that key after creation (`store.py:885,1272,1372,1412`
+  rewrite `contract` for other keys). If that holds, a re-check after an entry
+  guard can never change its answer.
+
+**Subcards (one worker, one commit each; a before b–d; b–d touch different
+functions and may run in parallel lanes):**
+- [x] **a · inventory and proof (F, S, docs + one test).** Write
+  `notes/t1.8-site-inventory.md`: every site above as `file:function:line` with one
+  disposition — DEAD (behind a frozen entry guard, always true/false), READER
+  (reachable for a completed or archived legacy record), SETTLE (legacy exact
+  job/turn settlement), ENTRY (the one guard a public entry point keeps). Name the
+  caller that makes each READER/SETTLE site reachable. Prove immutability: list
+  every `UPDATE experiments SET contract` and every in-memory contract rewrite, and
+  add one regression test that each Store path preserves `execution_contract`.
+  Stop and ask if any path can change it.
+- [x] **b · collapse always-true `iteration.enabled` (F+R).** For DEAD sites, keep
+  the contract-3 arm and delete the conditional and the legacy arm, including the
+  `evidence_revision` SQL variants in `advance_reports` if a shows them dead.
+  Expected survivors: the six `conversation.py` readers, `scheduler_for` (legacy
+  settlement key), and whatever a marks READER/SETTLE. Delete helpers that lose
+  their last caller.
+- [x] **c · agent paths (F+R).** `dispatch`, `dispatch_title`, `advance_title`,
+  `title_applicable`, `adopt_turn`, `recover_terminal_actions`,
+  `reconcile_agent_output`: one ENTRY guard per entry point; delete re-checks and
+  the unreachable settle-as-frozen arms behind them.
+- [x] **d · advancement paths (F+R).** `advance`, `agent_stage`,
+  `_submit_prepared_stage`, `publish`, `reconcile_outputs`,
+  `repair_failed_experiments`, `step_control_after_observe`, `steering`,
+  `controller.call`: same rule.
+
+**Rules:**
+- Deletion only. Blocked/cancelled/quota re-checks that sit next to a frozen
+  re-check stay; they guard states that do change across awaits.
+- Keep untouched: archived readers (`audit.py`, `Preparation`, schema-1/2 plan
+  models, `artifacts.verify_snapshot`, `Store.projection`, report/API delivery),
+  `legacy_archive.settle_job` and saved-turn settlement, the startup/tick archive
+  sweep, the Store/gateway command refusals for archived records, and all
+  `hold_reason` writers (deferred to T4.8).
+- A test may be removed only if it constructs a state a proves unreachable
+  (contract flipped mid-flight). List each one in the log with the surviving test
+  that covers the same safety property from a saved fixture. Never delete a
+  late-settlement, cancellation or no-duplicate-dispatch assertion.
+- Reviewer (coordinator) reads each diff against a, concentrating on settlement
+  and identity paths, not on line counts.
+- Stop and ask if a site is reachable in a way a did not record, or if removing a
+  re-check changes any test that starts from a saved legacy fixture.
+
+**Acceptance:**
+- `rg 'iteration\.enabled\(' src` and `rg 'execution_frozen\(' src` return only the
+  sites a lists as READER, SETTLE or ENTRY; the note's table matches the tree.
+- Every deletion subcard (b–d) is net-negative in production source; the explicitly
+  docs/test-only a has zero production delta. b–d add no production lines
+  beyond moved guards. Report `git show --numstat` per commit.
+- `tests/test_legacy_archive*.py`, `tests/test_legacy_fixture.py`,
+  `tests/test_conversation*.py`, `tests/test_audit.py` and `tests/scenario` pass
+  per card; Ruff and the full suite pass once on the combined tree. `make check`
+  is not needed unless web or gateway files change (they should not).
+- Update the T1.1d–h entry, `notes/t1-acceptance.md` (counts, new phase delta) and
+  the log. No live activation.
+
+**Out of scope, recorded so nobody reopens them here:** the `workflow.py` split
+(T1.7), derived holds (T1.3c), `AgentPool` taking the whole `Workflow`, and the
+role busy flags it still writes. All retire with the contract-3 engine in T4.8.
+
 ---
 
 ## Phase 3 — Git-native workspaces (C6)
@@ -458,6 +544,8 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 ## Log
 
 Record completed tasks here: `date · task · commit · notes`.
+
+2026-11-17 · T1.8a–d · 7ff0a11, e02aa91, a57ab65, this close-out commit · Flash workers, coordinator source/identity review and isolated combined acceptance. Corrected the initial inventory's invalid inference from today's create path to saved historical row shapes. Preserved terminal archived title settlement, archived recovery/repair entry guards, all six historical observation readers and four queued-report SQL variants. Deleted 21 dominated iteration predicates, 24 frozen rechecks and the now-orphaned `Store.initial_report` writer; no archive reader, exact settlement, mutable-state recheck or hold authority removed. Final predicate counts 17 / 28 (including the frozen definition), matching the [site table](notes/t1.8-site-inventory.md#10-final-tree-site-table-and-acceptance). Per-commit `git show --numstat`: a source 0, tests +85/−0, docs +533/−0 before final site-table additions; b source +78/−114, tests +7/−5; c source +0/−27, tests +65/−57; d source +5/−18, tests 0, close-out docs separately. Net production −76; phase delta +5,203/−2,596 = +2,607, still over the previously reported +2,500 threshold. a's one new Store regression test and b–d individually fit S/M budgets. Removed only the unreachable `test_dispatch_archived_during_turn_preserves_returned_identity_and_raw_result[begin/finish]` cross-await contract-flip cases: `test_saved_archived_turn_settles_identity_and_raw_result_without_advancing` retains exact thread/turn/result, stage/job/hold invariance, zero dispatch and replay assertions; unchanged `test_settles_exact_raw_legacy_turn_outcomes_and_replays`, `test_readback_uses_a_configured_connection_without_starting_a_turn` and `test_archived_operator_reconcile_saves_exact_raw_result` retain saved-fixture safety coverage. The initial-report obligation test now uses `working_report` with an explicit stable identity; no safety property deleted. Per-card archive/fixture/conversation/audit/scenario targets pass (a 115, b widened 183, c widened 120, d 115 plus 112 workflow/iteration and 5 publication tests). Combined Node 24.18.0 Ruff check/format and all 866 Python tests pass (453.80 s), byte-identical source/tests/scripts in the isolated validation checkout with the retained untracked `recipes/` fixture; fresh lanes' known maintenance copy failure was not counted as a pass. Locked `make setup` and a separate contract-3 synthetic demo passed; report and prediction figure produced. Web/gateway unchanged, so no `make check` required for this card. No live activation.
 
 2026-11-14 · T1.1m-P-b3 · 3faf68b · Luna implementation and coordinator review finish Python toy-create producers. Saved historical knowledge fixtures retain selected project/execution identity and synthetic scope; backup now compares exact saved stage rows instead of a legacy-only count. Source 0; tests +42/−11 (53 changed). Isolated Ruff, 44 focused and full Python pass (580 tests). No live activation.
 

@@ -1389,7 +1389,7 @@ class Workflow:
         root = await asyncio.to_thread(self.root, eid)
         await asyncio.to_thread(root.mkdir, parents=True, exist_ok=True)
         exp = self.store.experiment(eid)
-        if legacy_archive.execution_frozen(exp) or exp["phase"] == "cancelled":
+        if exp["phase"] == "cancelled":
             return
         generic = exp["recipe_id"] == "agent_experiment_v1"
         if generic and exp["contract"].get("planning_version") and stages["plan"] != "complete":
@@ -1399,10 +1399,8 @@ class Workflow:
             await self.agent_stage(exp, "prepare")
             return
         await asyncio.to_thread(artifacts.verify_snapshot, root, exp["snapshot"])
-        if legacy_archive.execution_frozen(self.store.experiment(eid)):
-            return
         exp = self.store.experiment(eid)
-        if legacy_archive.execution_frozen(exp) or exp["phase"] == "cancelled":
+        if exp["phase"] == "cancelled":
             return
         if stages["prepare"] != "complete":
             await self.agent_stage(exp, "prepare")
@@ -1447,8 +1445,6 @@ class Workflow:
             if job:
                 if job["state"] == "complete":
                     names = await asyncio.to_thread(artifacts.validate_stage, root, stage, exp["snapshot"])
-                    if legacy_archive.execution_frozen(self.store.experiment(eid)):
-                        return
                     artifacts.register(self.store, eid, stage, root, names)
                     self.store.stage(eid, stage, "complete", outputs=names)
                 elif job["state"] == "failed":
@@ -1482,8 +1478,6 @@ class Workflow:
                 )
                 return
             outcome = await self.submit_prepared_stage(exp, stage)
-            if legacy_archive.execution_frozen(self.store.experiment(eid)):
-                return
             if outcome and outcome.get("state") == "uncertain":
                 return
         if any(stages[stage] != "complete" for stage in compute_stages if stage in requested):
@@ -1656,8 +1650,7 @@ class Workflow:
                 return {"state": "held", "reason": "resources_unavailable"}
         admitted = self.store.experiment(eid)
         if (
-            legacy_archive.execution_frozen(admitted)
-            or blocked(self.store)
+            blocked(self.store)
             or admitted["pause_compute"]
             or admitted["phase"] in ("failed", "cancelled", "complete")
             or admitted["snapshot"]["snapshot_hash"] != exp["snapshot"]["snapshot_hash"]
@@ -2208,7 +2201,7 @@ class Workflow:
                     return
             prompt = await asyncio.to_thread(self.prompt, exp, phase)
             fresh = self.store.experiment(eid)
-            if legacy_archive.execution_frozen(fresh) or fresh["phase"] == "cancelled":
+            if fresh["phase"] == "cancelled":
                 return
             action_id = str(uuid4())
             with self.store.tx() as db:
@@ -2351,7 +2344,7 @@ class Workflow:
                             except RuntimeError as exc:
                                 raise ValueError(f"prepared source does not compile: {name}: {exc}") from exc
                     fresh = self.store.experiment(eid)
-                    if legacy_archive.execution_frozen(fresh) or fresh["phase"] == "cancelled":
+                    if fresh["phase"] == "cancelled":
                         return
                     if early_repair.preparing(exp):
                         early_repair.validate(self, exp, plan)
@@ -2474,8 +2467,6 @@ class Workflow:
                 self.store.update(eid, hold_reason=None, error=None)
                 return
             except ValueError as exc:
-                if legacy_archive.execution_frozen(self.store.experiment(eid)):
-                    return
                 self._action_state(
                     action["id"],
                     "failed",
@@ -2589,8 +2580,6 @@ class Workflow:
         if phase == "prepare" and exp["recipe_id"] == "agent_experiment_v1":
             if not await self.prepare_workspace(exp):
                 return
-        if legacy_archive.execution_frozen(self.store.experiment(eid)):
-            return
         decision = self.agent_pool.quota(eid=eid)
         if not decision.admitted:
             self.store.update(eid, hold_reason="quota_hold", error=decision.reason)
@@ -3669,8 +3658,6 @@ class Workflow:
 
     async def publish(self, exp):
         eid = exp["id"]
-        if legacy_archive.execution_frozen(self.store.experiment(eid)):
-            return
         if self.store.experiment(eid)["phase"] == "cancelled":
             return
         root = self.root(eid)
