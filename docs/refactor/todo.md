@@ -312,11 +312,27 @@ and archived fixtures still render their report via the API.
   one-slot and same-owner work serialize; uncertain outcomes prevent duplicate
   turns while independent owners can progress.
 
+### [ ] T1.6a-4 Retire cloned Workflow lanes (C4) · S · M per bounded subcard
+- Final acceptance audit found the named retirement in
+  [owner decision §7](notes/t1-owner-decisions.md#7-net-negative-waiver-2026-11-17)
+  still pending: `Workflow.start_agent_pool` constructs another `Workflow` per
+  connection and manually shares selected fields. The a/b cards removed global
+  guards but did not remove this duplicate owner scaffolding.
+- Replace clones with explicit per-connection transport/task state owned by the
+  pool; preserve one controller/research/supervisor/conversation owner, slot/process
+  generations, saved identities, binding admission and exact reconciliation.
+  Delete the clone construction and manual field-sharing path in the same rollout.
+  No new schema/config/reasons or changed scientific execution semantics.
+- Before implementation, inspect and split the dispatch/readback callback seams
+  into bounded cards; keep the mixed-role matrix and full suite green. T1 remains
+  incomplete until this retirement and the research binding-denial repair pass.
+
 ### [~] T1.6c Mixed-role recovery scenarios (C4, C12) · S · M
 - [Approved matrix](notes/t1.6c-recovery-scenarios-design.md): c-1 overlap/owner
   exclusion, c-2 restart/debt/routing, c-3 binding quota/shutdown; bounded cards.
 - Status: [x] c-1 shared-backend overlap, one-slot and typed-owner scenarios;
-  [x] c-2 restart/debt/routing; [ ] c-3 binding quota/interruption/shutdown.
+  [x] c-2 restart/debt/routing; [x] c-3 binding quota/interruption/shutdown.
+  Final acceptance awaits the research binding-denial repair and a-4 retirement.
 - Depends on T1.6b and the T1.2b harness. Cover experiment plus research, experiment
   plus supervisor, discussion plus unrelated experiment, single-slot and same-owner
   exclusion, lost outcome/restart, callback/reply routing, quota interrupts and
@@ -603,3 +619,5 @@ Record completed tasks here: `date · task · commit · notes`.
 2026-11-17 · T1.6c-1 · 35c4499 · DeepSeek Flash implementation, coordinator review. Separate multi_scenario fixture clones no-argument synthetic connections against one explicit FakeCodexBackend; one-slot fixture assertion preserved. Added finish gates, quota knobs and call logs by slot/instance/start count; driver awaits deduplicated lane/research/supervisor tasks. Six real-engine scenarios prove experiment+research, experiment+weekly synthesis and discussion+unrelated experiment overlap with independent result application, one-slot serialization, title→approved implementation same-owner exclusion with spare-slot progress, and research+weekly typed-project exclusion (weekly started before research activation because simultaneous weekly enqueue under active research is prohibited). Production source 0; tests +591/−15 (606 changed lines, reviewed overrun for shared fixture plus six scenarios). Ruff and all 854 Python tests pass (451.78s). c-2/c-3 remain; fake process counters alone are not managed-runtime acceptance. No live activation.
 
 2026-11-17 · T1.6c-2 · 91723b8 · DeepSeek Flash implementation, coordinator review. Four synthetic recovery scenarios preserve accepted-then-lost experiment/project turns across restart (no invented project lost-start adoption), prove 2→1/debt-two negative capacity with exact readback and eventual positive progress, keep unreadable turns counted while independent work uses remaining capacity, and exercise the production CodexAgent callback/request generation path against an in-memory stub transport. Normal answers reply once to the originating connection; obsolete answers expire, wrong-connection requests fail closed, other-owner state/activity unchanged. Shared fake logs read_thread/read_turn/interrupt/reply; MultiScenario.restart supports shrink. Direct-row fixtures are labeled as accounting/routing evidence, not dispatch integration. Production source 0; tests +602/−2 (604 changed lines, reviewed overrun for four scenarios plus stub). Ruff and all 858 Python tests pass (449.92s). c-3 remains; JSONL/process behavior and live managed-runtime acceptance are not claimed. No live activation.
+
+2026-11-17 · T1.6c-3 · 46206f6 · DeepSeek Flash implementation, coordinator review. Test-only shared-backend scenarios cover post-session fresh quota denial on experiment/project dispatch, exact per-process interrupts across two occupied role slots, unreadable outcomes surviving fresh quota and client shutdown, and full-slot shutdown with experiment+weekly/research occupants (closing before role shutdown, each transport closed once, saved identities unchanged after store close). Production source 0; tests +407/−0. Ruff and all 864 Python tests pass (459.13s). Audit found two open acceptance issues: research quota-only binding denial supersedes instead of retaining the pending action (repair in progress), and cloned Workflow transport lanes remain despite owner §7 retirement requirement (new explicit a-4 card). Do not claim T1 complete. No live activation.
