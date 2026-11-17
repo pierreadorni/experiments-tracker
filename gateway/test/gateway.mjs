@@ -1770,7 +1770,11 @@ test('branch integration commands require the executor capability and stay bound
         .bind(eid)
         .all()
     ).results.map((row) => [row.request_id, row.kind, JSON.parse(row.payload)]);
-  const integrate = { schema_version: 1, request_id: randomUUID(), reason: 'keep the measured gain' };
+  const integrate = {
+    schema_version: 1,
+    request_id: randomUUID(),
+    reason: 'keep the measured gain',
+  };
   const before = await db
     .prepare('SELECT payload,received_at FROM executor_status WHERE id=?')
     .bind('acacia')
@@ -1779,11 +1783,13 @@ test('branch integration commands require the executor capability and stay bound
   assert.equal((await post('integrate', integrate)).status, 409);
   assert.deepEqual(await queued(), []);
   assert.equal(
-    (await req(`/api/experiments/${eid}/integrate`, {
-      token: executor,
-      method: 'POST',
-      body: JSON.stringify(integrate),
-    })).status,
+    (
+      await req(`/api/experiments/${eid}/integrate`, {
+        token: executor,
+        method: 'POST',
+        body: JSON.stringify(integrate),
+      })
+    ).status,
     401,
   );
   await db
@@ -1828,10 +1834,11 @@ test('branch integration commands require the executor capability and stay bound
         'waiting_for_executor',
       );
     const pending = (await (await req(`/api/experiments/${eid}`)).json()).pending_commands;
-    assert.deepEqual(
-      pending.map((command) => command.kind).sort(),
-      ['dont_merge', 'integrate', 'revert_integration'],
-    );
+    assert.deepEqual(pending.map((command) => command.kind).sort(), [
+      'dont_merge',
+      'integrate',
+      'revert_integration',
+    ]);
   } finally {
     await db.prepare('DELETE FROM executor_status WHERE id=?').bind('acacia').run();
     if (before)
