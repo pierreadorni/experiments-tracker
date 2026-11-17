@@ -67,3 +67,22 @@ Update the task sequence/splits without changing the reviewed semantics, then
 continue bounded Flash implementation for the approved demo/fixture work.
 The coordinator retains diff review, targeted/full checks, commit and publication
 responsibility. F+R cards receive stronger review; S designs retain Opus decisions.
+
+## 7. Net-negative waiver (2026-11-17)
+
+The owner delegated the decision to the coordinator, which waived decision 1's
+phase-wide net-negative target. Reason: the target was set to stop new engines
+being layered over old ones, but most T1 additions are required capability with
+no predecessor to delete (the obligation ledger, the C5 resolvers, the runner and
+the agent pool). At +1,282 production lines, the only way left to meet it was
+deleting the unshipped `web/src/mock/` design study (T5.4 scope), which would
+satisfy the number without improving the code.
+
+The intent is kept as a replacement rule (README, "Replacement, not layering"):
+each card names and deletes what it replaces; dual paths have a named removal
+card that T1 must finish. The ones already known: c4b removes direct
+`hold_reason` writes and the `Store.update` setter; d1b replaces the interim
+watchdog heuristic; T1.5c deletes the outer production tick loop; T1.6 removes the
+cloned-`Workflow` lanes and the global research/supervisor/conversation guards.
+Per-commit numstat reporting and consolidation cards (such as R2) continue. The
+owner is told if the phase delta passes +2,500 production lines.

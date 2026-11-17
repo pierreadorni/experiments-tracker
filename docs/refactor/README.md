@@ -48,10 +48,18 @@ Code publication does not authorize live activation.
   reviews the overrun before anything is committed, and splits the card rather
   than accepting the drift.
 - **Report net source lines.** Every commit reports `git show --numstat` totals for
-  source and for tests/docs, so review sees whether code was removed. **Phase 2
-  must come out net negative in production source overall.** The owner-approved
-  T1 rollout permits additive intermediate cards; retain bounded tasks, explicit
-  counts and the planned consolidation rather than deleting safety coverage.
+  source and for tests/docs, so review sees whether code was removed.
+- **Replacement, not layering (owner waiver 2026-11-17).** The former Phase 2
+  net-negative line target is waived; see
+  [the decision](notes/t1-owner-decisions.md#7-net-negative-waiver-2026-11-17).
+  New required capability may add production code, but every card names the
+  old code it replaces and deletes it in the same card or in a named retirement
+  card. A helper whose callers keep their old copies is not accepted. Temporary
+  dual paths have a named removal card, and T1 is not done while one is pending.
+  A card adding more than 150 net production lines records in the log why
+  existing code could not be reused. Keep consolidation cards when found; never
+  delete unrelated or shipped code, or tests, to move the numbers. Tell the owner
+  if the phase delta from `42829f4` passes +2,500 production lines.
 - **F+R and S tasks.** A fresh-context reviewer, or the coordinator, checks the diff
   against the task card and design.md before the commit.
 - **Live state is off limits.** No edits to `.local/`, no live owner restarts, no
