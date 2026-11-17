@@ -1696,6 +1696,101 @@ test('implementation repair requires executor capability', async () => {
       .run();
 });
 
+test('branch integration commands require the executor capability and stay bounded', async () => {
+  const { payload: created, result } = await create({
+    brief: 'Integrate the saved branch',
+    recipe_id: 'agent_experiment_v1',
+  });
+  await req('/api/executor/ack', {
+    token: executor,
+    method: 'POST',
+    body: JSON.stringify({ schema_version: 1, request_ids: [created.request_id] }),
+  });
+  const eid = result.experiment_id;
+  const db = await mf.getD1Database('DB');
+  const post = (suffix, value) =>
+    req(`/api/experiments/${eid}/${suffix}`, { method: 'POST', body: JSON.stringify(value) });
+  const queued = async () =>
+    (
+      await db
+        .prepare(
+          "SELECT request_id,kind,payload FROM commands WHERE experiment_id=? AND kind!='create' ORDER BY kind",
+        )
+        .bind(eid)
+        .all()
+    ).results.map((row) => [row.request_id, row.kind, JSON.parse(row.payload)]);
+  const integrate = { schema_version: 1, request_id: randomUUID(), reason: 'keep the measured gain' };
+  const before = await db
+    .prepare('SELECT payload,received_at FROM executor_status WHERE id=?')
+    .bind('acacia')
+    .first();
+  await db.prepare('DELETE FROM executor_status WHERE id=?').bind('acacia').run();
+  assert.equal((await post('integrate', integrate)).status, 409);
+  assert.deepEqual(await queued(), []);
+  assert.equal(
+    (await req(`/api/experiments/${eid}/integrate`, {
+      token: executor,
+      method: 'POST',
+      body: JSON.stringify(integrate),
+    })).status,
+    401,
+  );
+  await db
+    .prepare('INSERT INTO executor_status(id,payload,received_at) VALUES(?,?,?)')
+    .bind('acacia', JSON.stringify({ branch_integration: true }), Date.now() / 1000)
+    .run();
+  try {
+    for (const [suffix, value] of [
+      ['integrate', { ...integrate, head_commit: 'd'.repeat(40) }],
+      ['integrate', { ...integrate, request_id: randomUUID(), reason: '   ' }],
+      ['integrate', { ...integrate, request_id: randomUUID(), reason: 'x'.repeat(2001) }],
+      ['dont-merge', { schema_version: 1, request_id: randomUUID(), value: 'yes' }],
+      [
+        'integrations/revert',
+        { schema_version: 1, request_id: randomUUID(), merge_commit: 'c'.repeat(40) },
+      ],
+    ])
+      assert.equal((await post(suffix, value)).status, 422, `${suffix} ${JSON.stringify(value)}`);
+    assert.deepEqual(await queued(), []);
+    const accepted = await post('integrate', integrate);
+    assert.equal(accepted.status, 202);
+    assert.equal((await accepted.json()).state, 'waiting_for_executor');
+    assert.equal((await post('integrate', integrate)).status, 202);
+    assert.equal(
+      (await post('integrate', { ...integrate, reason: 'a different reason' })).status,
+      409,
+    );
+    const revert = { schema_version: 1, request_id: randomUUID() };
+    assert.equal((await post('integrations/revert', revert)).status, 202);
+    const flag = { schema_version: 1, request_id: randomUUID(), value: true };
+    assert.equal((await post('dont-merge', flag)).status, 202);
+    const rows = await queued();
+    assert.deepEqual(rows, [
+      [flag.request_id, 'dont_merge', flag],
+      [integrate.request_id, 'integrate', integrate],
+      [revert.request_id, 'revert_integration', revert],
+    ]);
+    const requestIds = [integrate.request_id, revert.request_id, flag.request_id];
+    for (const requestId of requestIds)
+      assert.equal(
+        (await (await req(`/api/commands/${requestId}`)).json()).state,
+        'waiting_for_executor',
+      );
+    const pending = (await (await req(`/api/experiments/${eid}`)).json()).pending_commands;
+    assert.deepEqual(
+      pending.map((command) => command.kind).sort(),
+      ['dont_merge', 'integrate', 'revert_integration'],
+    );
+  } finally {
+    await db.prepare('DELETE FROM executor_status WHERE id=?').bind('acacia').run();
+    if (before)
+      await db
+        .prepare('INSERT INTO executor_status(id,payload,received_at) VALUES(?,?,?)')
+        .bind('acacia', before.payload, before.received_at)
+        .run();
+  }
+});
+
 test('historical event replay is bounded, idempotent and cannot publish a state or claim readiness', async () => {
   const { result } = await create();
   const initial = await (await req(`/api/experiments/${result.experiment_id}`)).json();

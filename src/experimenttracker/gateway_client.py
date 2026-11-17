@@ -16,10 +16,13 @@ from .models import (
     CreateExperiment,
     DeleteCommand,
     DiscussCommand,
+    DontMergeCommand,
+    IntegrateCommand,
     NoteCommand,
     PlanReviewCommand,
     PresentCommand,
     ReserveCommand,
+    RevertIntegrationCommand,
     SteerCommand,
 )
 from .projects import Projects
@@ -81,6 +84,9 @@ class GatewayClient:
             "answer": AnswerCommand,
             "plan_review": PlanReviewCommand,
             "steer": SteerCommand,
+            "integrate": IntegrateCommand,
+            "revert_integration": RevertIntegrationCommand,
+            "dont_merge": DontMergeCommand,
             "reserve": ReserveCommand,
         }
         for command in commands:

@@ -384,6 +384,7 @@ def test_local_api_commands_carry_only_identity_and_saved_scope(config, runtime,
     monkeypatch.setattr("experimenttracker.api.Runner", IdleRunner)
     eid = make_experiment(store)
     seed_branch(store, eid, tmp_path / "repo")
+    assert workflow.status(None)["branch_integration"] is True
     app = create_app(config, components=(None, store, workflow))
     headers = {"Authorization": "Bearer " + "t" * 40}
     with TestClient(app) as client:

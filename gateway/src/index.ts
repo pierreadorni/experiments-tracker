@@ -195,6 +195,33 @@ const reserveSchema = z
     weekly_percent: z.number().int().min(0).max(90),
   })
   .strict();
+const integrateSchema = z
+  .object({
+    ...base,
+    reason: z
+      .string()
+      .max(2000)
+      .refine((value) => Boolean(value.trim()), 'Integration reason must contain text')
+      .optional(),
+  })
+  .strict();
+const revertIntegrationSchema = z.object(base).strict();
+const dontMergeSchema = z.object({ ...base, value: z.boolean() }).strict();
+const experimentCommandRoutes: Record<
+  string,
+  { kind: string; schema: z.ZodType<Record<string, unknown>> }
+> = {
+  notes: { kind: 'note', schema: noteSchema },
+  'plan-review': { kind: 'plan_review', schema: planReviewSchema },
+  steering: { kind: 'steer', schema: steeringSchema },
+  conversation: { kind: 'discuss', schema: discussSchema },
+  actions: { kind: 'action', schema: actionSchema },
+  delete: { kind: 'delete', schema: deleteSchema },
+  answers: { kind: 'answer', schema: answerSchema },
+  integrate: { kind: 'integrate', schema: integrateSchema },
+  'dont-merge': { kind: 'dont_merge', schema: dontMergeSchema },
+  'integrations/revert': { kind: 'revert_integration', schema: revertIntegrationSchema },
+};
 const artifactSchema = z
   .object({
     id: uuid,
@@ -674,6 +701,10 @@ function projectSettingsReceipt(row: Record<string, unknown>) {
 }
 const experimentProject = (exp: any) =>
   exp.project_id || exp.contract?.project?.id || 'test-project';
+async function executorSupports(env: Env, capability: string) {
+  const row = await first(env, 'SELECT payload FROM executor_status WHERE id=?', env.EXECUTOR_ID);
+  return Boolean(row && JSON.parse(String(row.payload))[capability]);
+}
 async function enqueue(env: Env, kind: string, payload: Record<string, unknown>, eid?: string) {
   if (await first(env, 'SELECT 1 FROM settings_commands WHERE request_id=?', payload.request_id))
     throw new HttpError(409, 'request_id was already used for another command');
@@ -774,24 +805,18 @@ async function enqueue(env: Env, kind: string, payload: Record<string, unknown>,
         'Agent retry requires a held session or confirmed failed agent/compute work',
       );
     if (kind === 'action' && payload.action === 'cancel') {
-      const owner = await first(
-        env,
-        'SELECT payload FROM executor_status WHERE id=?',
-        env.EXECUTOR_ID,
-      );
-      if (!owner || !JSON.parse(String(owner.payload)).experiment_cancellation)
+      if (!(await executorSupports(env, 'experiment_cancellation')))
         throw new HttpError(409, 'Install the executor update to enable cancellation');
       if (exp.phase === 'complete')
         throw new HttpError(409, 'A completed experiment cannot be cancelled');
     }
     if (kind === 'action' && payload.action === 'repair_implementation') {
-      const owner = await first(
-        env,
-        'SELECT payload FROM executor_status WHERE id=?',
-        env.EXECUTOR_ID,
-      );
-      if (!owner || !JSON.parse(String(owner.payload)).implementation_repair)
+      if (!(await executorSupports(env, 'implementation_repair')))
         throw new HttpError(409, 'Install the executor update to enable implementation repair');
+    }
+    if (['integrate', 'revert_integration', 'dont_merge'].includes(kind)) {
+      if (!(await executorSupports(env, 'branch_integration')))
+        throw new HttpError(409, 'Install the executor update to enable branch integration');
     }
     if (kind === 'discuss' && exp.phase !== 'complete')
       throw new HttpError(409, 'Discussion is available when the experiment is complete');
@@ -2184,7 +2209,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     });
   }
   const experiment = p.match(
-    /^\/api\/experiments\/([^/]+)(?:\/(notes|actions|answers|delete|conversation|plan-review|steering))?$/,
+    /^\/api\/experiments\/([^/]+)(?:\/(notes|actions|answers|delete|conversation|plan-review|steering|integrate|dont-merge|integrations\/revert))?$/,
   );
   if (experiment) {
     const id = uuid.parse(experiment[1]);
@@ -2216,35 +2241,9 @@ async function route(request: Request, env: Env): Promise<Response> {
       });
     }
     if (experiment[2] && request.method === 'POST') {
-      const kind =
-        experiment[2] === 'notes'
-          ? 'note'
-          : experiment[2] === 'plan-review'
-            ? 'plan_review'
-            : experiment[2] === 'steering'
-              ? 'steer'
-              : experiment[2] === 'conversation'
-                ? 'discuss'
-                : experiment[2] === 'actions'
-                  ? 'action'
-                  : experiment[2] === 'delete'
-                    ? 'delete'
-                    : 'answer';
-      const payload = (
-        kind === 'note'
-          ? noteSchema
-          : kind === 'plan_review'
-            ? planReviewSchema
-            : kind === 'steer'
-              ? steeringSchema
-              : kind === 'discuss'
-                ? discussSchema
-                : kind === 'action'
-                  ? actionSchema
-                  : kind === 'delete'
-                    ? deleteSchema
-                    : answerSchema
-      ).parse(await body(request));
+      const route = experimentCommandRoutes[experiment[2]];
+      const payload = route.schema.parse(await body(request));
+      const kind = route.kind;
       if (kind === 'answer') {
         const row = await requiredProjection(env, id);
         const projected = JSON.parse(String(row.payload));

@@ -3,6 +3,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from test_integration_commands import seed_branch
 
 from experimenttracker.config import GatewayConfig
 from experimenttracker.gateway_client import GatewayClient
@@ -254,6 +255,103 @@ async def test_reserve_command_has_no_experiment_identity(config, runtime, tmp_p
         assert len(store.rows("SELECT * FROM commands WHERE kind='reserve'")) == 1
     finally:
         await client.close()
+
+
+async def test_gateway_integrate_replays_the_saved_branch_once(config, runtime, tmp_path):
+    store, _, _, _ = runtime
+    token = tmp_path / "integration-token"
+    token.write_text("e" * 40)
+    config.gateway = GatewayConfig(url="https://gateway.example", credential_file=token)
+    eid = store.command(
+        uuid4(),
+        "create",
+        {"brief": "Integrate the saved branch.", "recipe_id": "agent_experiment_v1"},
+    )["experiment_id"]
+    repo = tmp_path / "repo"
+    seed_branch(store, eid, repo)
+    request_id = str(uuid4())
+    payload = {"schema_version": 1, "request_id": request_id, "reason": "keep the measured gain"}
+    queued = {
+        "request_id": request_id,
+        "experiment_id": eid,
+        "executor_id": "acacia",
+        "kind": "integrate",
+        "payload": payload,
+    }
+    acknowledgements = []
+
+    async def handler(request):
+        if request.url.path == "/api/executor/commands":
+            return httpx.Response(200, json={"schema_version": 1, "commands": [queued]})
+        if request.url.path == "/api/executor/ack":
+            acknowledgements.append(json.loads(request.content))
+            return httpx.Response(200, json={"schema_version": 1, "acknowledged": [request_id]})
+        raise AssertionError(request.url.path)
+
+    client = GatewayClient(config, store, transport=httpx.MockTransport(handler))
+    try:
+        await client.commands()
+        await client.commands()
+    finally:
+        await client.close()
+    assert acknowledgements == [{"schema_version": 1, "request_ids": [request_id]}] * 2
+    assert store.one("SELECT state FROM commands WHERE request_id=?", (request_id,))["state"] == "applied"
+    detail = json.loads(store.one("SELECT detail FROM obligations WHERE kind='integration'")["detail"])
+    assert detail["repo"] == str(repo.resolve())
+    assert detail["request"] == {
+        "schema_version": 1,
+        "kind": "merge",
+        "experiment_id": eid,
+        "branch": f"exp/20260101-{eid}",
+        "base": "main",
+        "reason": "keep the measured gain",
+    }
+
+
+async def test_gateway_revert_without_an_applied_merge_stays_rejected(config, runtime, tmp_path):
+    store, _, _, _ = runtime
+    token = tmp_path / "revert-token"
+    token.write_text("e" * 40)
+    config.gateway = GatewayConfig(url="https://gateway.example", credential_file=token)
+    eid = store.command(
+        uuid4(),
+        "create",
+        {"brief": "Revert only an applied merge.", "recipe_id": "agent_experiment_v1"},
+    )["experiment_id"]
+    seed_branch(store, eid, tmp_path / "repo")
+    request_id = str(uuid4())
+    queued = {
+        "request_id": request_id,
+        "experiment_id": eid,
+        "executor_id": "acacia",
+        "kind": "revert_integration",
+        "payload": {"schema_version": 1, "request_id": request_id},
+    }
+    rejections = []
+
+    async def handler(request):
+        if request.url.path == "/api/executor/commands":
+            return httpx.Response(200, json={"schema_version": 1, "commands": [queued]})
+        if request.url.path == "/api/executor/reject":
+            rejections.append(json.loads(request.content))
+            return httpx.Response(200, json={"schema_version": 1, "rejected": [request_id]})
+        raise AssertionError("A refused revert must never be acknowledged")
+
+    client = GatewayClient(config, store, transport=httpx.MockTransport(handler))
+    try:
+        await client.commands()
+        await client.commands()
+    finally:
+        await client.close()
+    reason = "only an applied integration can be reverted"
+    assert (
+        rejections
+        == [{"schema_version": 1, "rejections": [{"request_id": request_id, "reason": reason}]}] * 2
+    )
+    assert not store.one("SELECT 1 FROM commands WHERE request_id=?", (request_id,))
+    saved = store.one("SELECT kind,error FROM rejected_gateway_commands WHERE request_id=?", (request_id,))
+    assert saved == {"kind": "revert_integration", "error": reason}
+    assert not store.rows("SELECT * FROM obligations WHERE kind='integration'")
 
 
 def publication_client(config, store, tmp_path, handler):

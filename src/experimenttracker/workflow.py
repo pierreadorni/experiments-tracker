@@ -330,6 +330,7 @@ class Workflow:
         return {
             "experiment_cancellation": True,
             "implementation_repair": True,
+            "branch_integration": True,
             "autopilot": {"available": True, "schema_version": 1},
             "maintenance": self.maintenance.status(self),
             "projects": self.projects.catalog() if projects is None else projects,
