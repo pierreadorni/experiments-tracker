@@ -4,6 +4,7 @@ import pytest
 
 from experimenttracker import legacy_archive
 from experimenttracker import remote as remote_module
+from experimenttracker.core import job_obligations
 from experimenttracker.slurm import Observation
 from experimenttracker.store import encode
 
@@ -79,6 +80,8 @@ class Scheduler:
 async def test_settlement_records_scheduler_facts_without_advancing(runtime, observation, state):
     store, _, _, workflow = runtime
     exp, job = legacy_job(store)
+    with store.tx() as db:
+        opened = job_obligations.sync_job(db, job["intent_id"])
     scheduler = Scheduler(observation)
     workflow.scheduler_for = lambda saved_exp, saved_job: scheduler
     stages = store.rows(
@@ -91,6 +94,15 @@ async def test_settlement_records_scheduler_facts_without_advancing(runtime, obs
     saved = store.one("SELECT * FROM jobs WHERE intent_id=?", (job["intent_id"],))
     assert saved["state"] == state
     assert saved["scheduler_state"] == observation.state
+    expected = (
+        "satisfied"
+        if observation.state == "COMPLETED" and observation.exit_code == "0:0"
+        else "abandoned"
+        if observation.state in legacy_archive.TERMINAL_BAD
+        else "open"
+    )
+    settled = store.one("SELECT state,wait FROM obligations WHERE id=?", (opened["id"],))
+    assert settled == {"state": expected, "wait": "job:123"}
     assert store.experiment(exp["id"])["phase"] == "training"
     assert store.experiment(exp["id"])["hold_reason"] == "legacy_contract_archived"
     assert (
@@ -151,6 +163,28 @@ async def test_observation_error_only_records_job_error(runtime):
     saved = store.one("SELECT state,error,scheduler_state FROM jobs WHERE intent_id=?", (job["intent_id"],))
     assert saved == {"state": "submitted", "error": "scheduler unavailable", "scheduler_state": None}
     assert store.experiment(exp["id"])["hold_reason"] == "legacy_contract_archived"
+
+
+async def test_terminal_source_and_obligation_roll_back_with_existing_event(runtime, monkeypatch):
+    store, _, _, workflow = runtime
+    exp, job = legacy_job(store)
+    with store.tx() as db:
+        opened = job_obligations.sync_job(db, job["intent_id"])
+    workflow.scheduler_for = lambda saved_exp, saved_job: Scheduler(Observation("FAILED", "1:0"))
+    emit = store.emit
+
+    def reject_terminal_event(db, experiment_id, kind, payload=None):
+        if kind == "job_observed":
+            raise RuntimeError("injected event failure")
+        return emit(db, experiment_id, kind, payload)
+
+    monkeypatch.setattr(store, "emit", reject_terminal_event)
+    assert not await legacy_archive.settle_job(workflow, exp, job)
+    saved = store.one(
+        "SELECT state,scheduler_state,exit_code FROM jobs WHERE intent_id=?", (job["intent_id"],)
+    )
+    assert saved == {"state": "submitted", "scheduler_state": None, "exit_code": None}
+    assert store.one("SELECT state FROM obligations WHERE id=?", (opened["id"],))["state"] == "open"
 
 
 @pytest.mark.parametrize("failure_site", ["routing", "remote_due"])

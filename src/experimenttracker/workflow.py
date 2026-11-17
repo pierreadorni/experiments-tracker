@@ -1782,10 +1782,14 @@ class Workflow:
                         await scheduler.fetch(job, observed)
                     except TransferPending as exc:
                         with self.store.tx() as db:
+                            before = job_obligations.locked_job(db, job, "state")
+                            if before is None:
+                                continue
                             db.execute(
                                 "UPDATE jobs SET scheduler_state=?,exit_code=?,observed_at=? WHERE intent_id=?",
                                 (observed.state, observed.exit_code, clock.now(), job["intent_id"]),
                             )
+                            job_obligations.sync_backend(db, job["intent_id"], before=before)
                         self.store.update(
                             eid,
                             hold_reason="results_transfer_pending"
@@ -1888,6 +1892,10 @@ class Workflow:
                 if self.store.experiment(eid)["phase"] == "cancelled":
                     continue
                 with self.store.tx() as db:
+                    before = job_obligations.locked_job(db, job)
+                    parent = db.execute("SELECT phase FROM experiments WHERE id=?", (eid,)).fetchone()
+                    if before is None or parent is None or parent["phase"] == "cancelled":
+                        continue
                     registration_started = time.monotonic()
                     selected = early_repair.selected(self, exp, job)
                     if completed_names is not None and not selected:
@@ -1912,6 +1920,7 @@ class Workflow:
                             job["intent_id"],
                         ),
                     )
+                    job_obligations.sync_backend(db, job["intent_id"], before=before)
                     db.execute("UPDATE experiments SET observed_at=? WHERE id=?", (now, eid))
                     if completed_names is not None:
                         db.execute(
@@ -1975,17 +1984,25 @@ class Workflow:
                 selected = early_repair.selected(self, self.store.experiment(eid), job)
                 if selected:
                     self.store.stage(eid, job["stage_id"], "failed", error=str(exc))
-                with self.store.tx() as db:
-                    db.execute(
-                        "UPDATE jobs SET state='failed',error=? WHERE intent_id=?",
-                        (str(exc), job["intent_id"]),
-                    )
-                    if observed is not None:
+                try:
+                    with self.store.tx() as db:
+                        before = job_obligations.locked_job(db, job)
+                        if before is None:
+                            continue
                         db.execute(
-                            "UPDATE jobs SET scheduler_state=?,exit_code=?,observed_at=? WHERE intent_id=?",
-                            (observed.state, observed.exit_code, clock.now(), job["intent_id"]),
+                            "UPDATE jobs SET state='failed',error=? WHERE intent_id=?",
+                            (str(exc), job["intent_id"]),
                         )
-                    self.store.emit(db, eid, "output_validation_failed", {"error": str(exc)})
+                        if observed is not None:
+                            db.execute(
+                                "UPDATE jobs SET scheduler_state=?,exit_code=?,observed_at=? WHERE intent_id=?",
+                                (observed.state, observed.exit_code, clock.now(), job["intent_id"]),
+                            )
+                        job_obligations.sync_backend(db, job["intent_id"], before=before)
+                        self.store.emit(db, eid, "output_validation_failed", {"error": str(exc)})
+                except RuntimeError as mapping_error:
+                    self.store.update(eid, hold_reason="executor_unavailable", error=str(mapping_error))
+                    continue
                 optional = iteration.enabled(exp) and not next(
                     s for s in job_manifest["plan"]["stages"] if s["id"] == job["stage_id"]
                 ).get("requested", True)

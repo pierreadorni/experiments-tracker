@@ -214,6 +214,16 @@ async def test_failed_run_restart_reconciles_a_job_that_was_last_seen_running(ru
         store.one("SELECT scheduler_state FROM jobs WHERE experiment_id=?", (eid,))["scheduler_state"]
         == "CANCELLED"
     )
+    saved_job = store.one("SELECT intent_id,job_id FROM jobs WHERE experiment_id=?", (eid,))
+    obligation = store.one(
+        "SELECT state,owner,wait FROM obligations WHERE id LIKE ? ORDER BY id DESC LIMIT 1",
+        (f"job:{saved_job['intent_id']}:%",),
+    )
+    assert obligation == {
+        "state": "abandoned",
+        "owner": "external",
+        "wait": f"job:{saved_job['job_id']}",
+    }
     await workflow.close()
 
 

@@ -4,6 +4,7 @@ import json
 from uuid import NAMESPACE_URL, uuid5
 
 from . import clock
+from .core import job_obligations
 from .legacy_archive import execution_frozen
 from .store import encode
 
@@ -86,10 +87,14 @@ async def process_restarts(workflow):
                     store.update(eid, hold_reason="steering_waiting_for_job_identity", error=str(exc))
                     continue
                 with store.tx() as db:
+                    before = job_obligations.locked_job(db, job, "state", "scheduler_state", "exit_code")
+                    if before is None:
+                        continue
                     db.execute(
                         "UPDATE jobs SET scheduler_state=?,exit_code=?,observed_at=? WHERE intent_id=?",
                         (observed.state, observed.exit_code, clock.now(), job["intent_id"]),
                     )
+                    job_obligations.sync_job(db, job["intent_id"], before=before)
                     store.emit(
                         db,
                         eid,

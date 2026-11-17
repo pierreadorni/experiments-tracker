@@ -7,7 +7,7 @@ import pytest
 
 from experimenttracker.cancellation import process_cancellations
 from experimenttracker.codex_client import NeedsAttention, TerminalTurnError
-from experimenttracker.core import action_obligations
+from experimenttracker.core import action_obligations, job_obligations
 from experimenttracker.maintenance import blockers
 from experimenttracker.models import ActionCommand
 from experimenttracker.remote import RemoteSlurmScheduler, TransferCancelled, TransferPending
@@ -201,13 +201,23 @@ async def test_cancel_saved_job_without_downloading_outputs_or_starting_replacem
     scheduler = Scheduler()
     wf.scheduler = scheduler
     intent = job(store, eid, None)
+    with store.tx() as db:
+        job_obligations.sync_job(db, intent)
     cancel(store, eid)
     await process_cancellations(wf)
     assert scheduler.cancelled == [("123", intent)]
+    episodes = store.rows(
+        "SELECT id,owner,wait,state FROM obligations WHERE id LIKE ? ORDER BY id", (f"job:{intent}:%",)
+    )
+    assert [(row["owner"], row["wait"], row["state"]) for row in episodes] == [
+        ("backend", f"reconcile:{intent}", "abandoned"),
+        ("external", "job:123", "open"),
+    ]
     assert store.one("SELECT payload FROM events WHERE kind='job_cancellation_intent'")
     wf.last_cancellation.clear()
     await process_cancellations(wf)
     assert store.one("SELECT state FROM jobs WHERE intent_id=?", (intent,))["state"] == "cancelled"
+    assert store.one("SELECT state FROM obligations WHERE id=?", (episodes[1]["id"],))["state"] == "abandoned"
     assert store.experiment(eid)["hold_reason"] is None
     assert len(store.rows("SELECT id FROM experiments")) == 1
     await wf.close()

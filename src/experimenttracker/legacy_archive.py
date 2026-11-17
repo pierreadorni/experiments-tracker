@@ -1,6 +1,7 @@
 """Inert helpers for observing saved work on frozen execution contracts."""
 
 from . import clock
+from .core import job_obligations
 
 TERMINAL_BAD = {
     "FAILED",
@@ -59,13 +60,18 @@ async def settle_job(workflow, exp, job):
             if not job_id:
                 return False
             with workflow.store.tx() as db:
+                before = job_obligations.locked_job(db, job, "state")
+                if before is None:
+                    return False
                 cursor = db.execute(
                     "UPDATE jobs SET job_id=?,state='submitted' "
                     "WHERE intent_id=? AND job_id IS NULL AND state=?",
                     (job_id, intent_id, job["state"]),
                 )
-                if cursor.rowcount:
-                    workflow.store.emit(db, exp["id"], "job_reconciled", {"job_id": job_id})
+                if not cursor.rowcount:
+                    return False
+                job_obligations.sync_job(db, intent_id, before=before)
+                workflow.store.emit(db, exp["id"], "job_reconciled", {"job_id": job_id})
             saved = workflow.store.one("SELECT * FROM jobs WHERE intent_id=?", (intent_id,))
             if not saved or saved["job_id"] != job_id or saved["state"] != "submitted":
                 return False
@@ -99,6 +105,9 @@ async def settle_job(workflow, exp, job):
             )
         )
         with workflow.store.tx() as db:
+            before = job_obligations.locked_job(db, job, "state")
+            if before is None:
+                return False
             cursor = db.execute(
                 "UPDATE jobs SET state=?,scheduler_state=?,exit_code=?,observed_at=?,error=?,"
                 "started_at=COALESCE(?,started_at),ended_at=COALESCE(?,ended_at) "
@@ -117,6 +126,7 @@ async def settle_job(workflow, exp, job):
                 ),
             )
             if cursor.rowcount and changed:
+                job_obligations.sync_job(db, intent_id, before=before)
                 workflow.store.emit(
                     db,
                     exp["id"],

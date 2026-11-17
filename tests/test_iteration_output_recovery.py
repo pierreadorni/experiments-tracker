@@ -139,6 +139,11 @@ async def failed_evaluate(runtime):
     assert (failed["state"], exp["hold_reason"]) == ("failed", "validation_failed")
     assert failed["error"] == exp["error"]
     assert (failed["scheduler_state"], failed["exit_code"]) == ("COMPLETED", "0:0")
+    obligation = store.one(
+        "SELECT state,owner,wait FROM obligations WHERE id LIKE ? ORDER BY id DESC LIMIT 1",
+        (f"job:{failed['intent_id']}:%",),
+    )
+    assert obligation == {"state": "satisfied", "owner": "external", "wait": f"job:{failed['job_id']}"}
     assert not store.rows("SELECT * FROM output_refs WHERE intent_id=?", (failed["intent_id"],))
     assert exp["partial_results"] is None
     assert (scheduler.submissions, agent.calls) == (2, 2)
@@ -155,7 +160,7 @@ async def test_recovery_adopts_failed_attempt_outputs_once(failed_evaluate, monk
         "external",
         "job",
         f"job:{job['job_id']}",
-        "open",
+        "satisfied",
     )
     with monkeypatch.context() as patch:
         forbid_experiment_root_traversal(patch)
