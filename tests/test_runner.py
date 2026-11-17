@@ -11,6 +11,7 @@ from scenario import FakeClock, FakeGate
 from experimenttracker import retention
 from experimenttracker.api import create_app
 from experimenttracker.engine.runner import Runner
+from experimenttracker.workflow import CONTROL_SERVICE, OBSERVE_SERVICE
 
 # The sequential positions around the omitted observation, then the gated region.
 CONTROL_FRAGMENTS = [
@@ -86,6 +87,35 @@ async def test_maintenance_gate_skips_gated_work_and_completes_the_control_pass(
     assert await runner.run_once("research") is True
     assert advanced == []
     assert "research" in runner.last_success
+
+
+async def test_successful_passes_record_the_families_they_really_served(runtime, monkeypatch):
+    _, _, _, workflow = runtime
+    calls = []
+    record_steps(monkeypatch, workflow, CONTROL_FRAGMENTS + GATED_CONTROL_FRAGMENTS, calls)
+    monkeypatch.setattr(workflow, "step_observe", recorder(calls, "step_observe"))
+    monkeypatch.setattr(workflow.maintenance, "launch", lambda: None)
+    runner = Runner(workflow)
+
+    assert await runner.run_once("control") is True
+    assert set(CONTROL_SERVICE) <= set(workflow.serviced_at)
+    workflow.serviced_at.clear()
+
+    assert await runner.run_once("observe") is True
+    assert set(OBSERVE_SERVICE) <= set(workflow.serviced_at)
+
+
+async def test_a_failed_pass_records_no_service(runtime, monkeypatch):
+    _, _, _, workflow = runtime
+
+    async def failing_control():
+        raise RuntimeError("synthetic control failure")
+
+    monkeypatch.setattr(workflow, "step_control", failing_control)
+    runner = Runner(workflow)
+
+    assert await runner.run_once("control") is False
+    assert workflow.serviced_at == {}
 
 
 async def test_stuck_observation_does_not_stop_control_or_watchdog(runtime, monkeypatch):

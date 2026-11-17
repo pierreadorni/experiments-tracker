@@ -31,6 +31,7 @@ from .core import (
     action_obligations,
     advancement_decisions,
     job_obligations,
+    liveness,
     obligation_backfill,
     request_obligations,
     review_obligations,
@@ -88,6 +89,13 @@ HEALTH_COUNTED_STEPS = (
 
 RETENTION_SECONDS = 5  # Between bounded outbox-pruning batches
 BACKUP_SECONDS = 60  # Between background state backups
+# The backend source families a successful pass really handles. Its handler returns
+# are the watchdog's only service evidence, so each family is recorded by the pass
+# that drives it: control advances experiments, publications and cancellations,
+# observation adopts saved job intents. A saved transfer row is its own evidence for
+# that family, so it needs no service record even though both passes move transfers.
+CONTROL_SERVICE = ("agent-action", "cancellation", "report-version")
+OBSERVE_SERVICE = ("job",)
 
 
 class Workflow:
@@ -120,6 +128,8 @@ class Workflow:
         self.quota_task = None
         self.active_action = None
         self.started = False
+        self.started_at = None
+        self.serviced_at = {}
         self.closing = False
         self.last_quota_refresh = 0
         self.retention_cursor = 0
@@ -403,6 +413,9 @@ class Workflow:
             self.store.activity(action, *description)
 
     async def start(self):
+        # This process's restart grace starts here: until a real handler returns for a
+        # backend family, the watchdog gives that family one interval from this time.
+        self.started_at = clock.now()
         self.store.archive_legacy_experiments()
         # A database saved before the obligation source hooks keeps the same open
         # responsibilities once ticking starts; a second start re-saves nothing.
@@ -541,11 +554,13 @@ class Workflow:
         now = clock.now()
         await self.step_runtime(now)
         await self.step_observe(now, force_observe=force_observe)
+        self.record_service(OBSERVE_SERVICE)
         await self.step_control_after_observe(now)
         await self.step_resolver()
         if blocked(self.store):
             return
         await self.step_control_advance()
+        self.record_service(CONTROL_SERVICE)
         await self.step_watchdog(now)
         await self.step_control_finish()
         await self.step_supervisor()
@@ -719,8 +734,22 @@ class Workflow:
                 self.error_backoff.pop(eid, None)
 
     async def step_watchdog(self, now):
-        """Judge engine liveness against the current clock reading."""
-        engine_watchdog(self.store, now, self.config.watchdog_minutes)
+        """Judge engine liveness against the current clock and this process's service."""
+        engine_watchdog(self.store, now, self.config.watchdog_minutes, self.service_evidence())
+
+    def record_service(self, families):
+        """Record that this pass really handled these backend source families.
+
+        Only a handler that returned counts: an obligation's age and arbitrary events
+        never do. The engine runner and the manual tick adapter record the same way.
+        """
+        now = clock.now()
+        for family in families:
+            self.serviced_at[family] = now
+
+    def service_evidence(self):
+        """This process's proof of which backend families it actually serviced."""
+        return liveness.ServiceEvidence(self.started_at or clock.now(), dict(self.serviced_at))
 
     async def step_control_finish(self):
         """Discard failed implementations, queue late reports, advance conversation/title/controller."""

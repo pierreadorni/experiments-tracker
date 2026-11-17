@@ -3,7 +3,7 @@
 from uuid import uuid4
 
 from experimenttracker import clock
-from experimenttracker.workflow import HEALTH_COUNTED_STEPS, Workflow
+from experimenttracker.workflow import CONTROL_SERVICE, HEALTH_COUNTED_STEPS, OBSERVE_SERVICE, Workflow
 
 STEPS = (
     "step_control_before_observe",
@@ -66,6 +66,19 @@ async def test_maintenance_gate_still_stops_after_the_resolver(runtime, monkeypa
 
     # Observation, input replies and agent draining keep running; the gated work stops.
     assert calls == list(UNBLOCKED_STEPS)
+    assert set(workflow.serviced_at) == set(OBSERVE_SERVICE)
+    await workflow.close()
+
+
+async def test_tick_records_the_service_of_the_passes_it_ran(runtime, monkeypatch):
+    _, _, _, workflow = runtime
+    calls = []
+    record_steps(monkeypatch, calls)
+
+    await workflow.tick(force_observe=True)
+
+    assert set(CONTROL_SERVICE + OBSERVE_SERVICE) <= set(workflow.serviced_at)
+    assert workflow.started_at is not None
     await workflow.close()
 
 

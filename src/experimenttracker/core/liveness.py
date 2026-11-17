@@ -4,7 +4,8 @@ Each family is checked against the exact saved source its writer recorded, never
 against an age, a hold column or a guessed event: an exact agent turn, the owner
 notice the writer already emits, the saved job or transfer row, the saved wakeup
 identity and due time, the advancement lifetime's concrete dependency, or a
-process-local record of real backend handler returns.
+process-local record of real backend handler returns. Advancement alone reads the
+saved experiment revision, because its dependency is the experiment's own progress.
 
 Causes are short and machine-readable: ``source_missing``, ``source_not_live``,
 ``identity_mismatch``, ``notice_missing``, ``overdue``, ``unserviced``,
@@ -77,16 +78,18 @@ class LivenessReport:
         return tuple(verdict for verdict in self.verdicts if verdict.cause is not None)
 
 
-def inspect(db, now, *, interval, service):
+def inspect(db, now, *, interval, service, owner_holds=()):
     """Classify every open obligation and every saved contract-3 lifetime.
 
     ``interval`` is the existing watchdog interval in seconds; ``service`` is the
-    process-local record of real backend handler returns plus the process start.
+    process-local record of real backend handler returns plus the process start;
+    ``owner_holds`` are the saved holds whose next step belongs to the owner, so
+    their experiment owes no other dependency than that answer.
     """
     obligation_sources.require_transaction(db)
     _check(now, interval, service)
     rows = obligations.open_for(db)
-    watched = _Watch(db, rows, now, interval, service)
+    watched = _Watch(db, rows, now, interval, service, owner_holds)
     verdicts = [LivenessVerdict(r["experiment_id"], r["id"], _family(r), watched.cause(r)) for r in rows]
     verdicts.extend(_missing_lifetimes(db))
     return LivenessReport(tuple(verdicts))
@@ -95,11 +98,13 @@ def inspect(db, now, *, interval, service):
 class _Watch:
     """The saved evidence one inspection pass reads once and shares."""
 
-    def __init__(self, db, rows, now, interval, service):
+    def __init__(self, db, rows, now, interval, service, owner_holds):
         self.now = now
         self.interval = interval
         self.service = service
+        self.owner_holds = owner_holds
         self.saved = _saved_sources(db, rows)
+        self.experiments = _experiments(db, rows)
         self.noticed = _notices(db, rows)
         self.open_counts = Counter(row["experiment_id"] for row in rows)
 
@@ -164,7 +169,14 @@ class _Watch:
         # there, and advancement only needs one to delegate to.
         if self.open_counts[row["experiment_id"]] > 1:
             return None
-        return None if self._serviced(row) is None else "missing_dependency"
+        saved = self.experiments.get(row["experiment_id"])
+        if saved is None:
+            return "source_missing"
+        if saved["hold_reason"] in self.owner_holds:
+            return None
+        # The saved revision is this experiment's concrete service evidence: an
+        # advance pass that really moved it wrote `updated_at` with revision+1.
+        return None if self.now - saved["updated_at"] <= self.interval else "missing_dependency"
 
     def _serviced(self, row):
         last = self.service.serviced_at.get(_family(row), self.service.started_at)
@@ -187,6 +199,15 @@ def _by_id(db, table, key, rows, kind):
         return {}
     sql = f"SELECT * FROM {table} WHERE {key} IN ({','.join('?' * len(ids))})"
     return {saved[key]: dict(saved) for saved in db.execute(sql, ids)}
+
+
+def _experiments(db, rows):
+    """The saved revision time and hold of every experiment an advancement covers."""
+    ids = sorted({row["experiment_id"] for row in rows if _family(row) == "advancement"})
+    if not ids:
+        return {}
+    sql = f"SELECT id,hold_reason,updated_at FROM experiments WHERE id IN ({','.join('?' * len(ids))})"
+    return {saved["id"]: dict(saved) for saved in db.execute(sql, ids)}
 
 
 def _notices(db, rows):

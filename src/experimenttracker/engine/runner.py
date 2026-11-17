@@ -14,7 +14,13 @@ import logging
 
 from .. import clock
 from ..maintenance import blocked
-from ..workflow import BACKUP_SECONDS, HEALTH_COUNTED_STEPS, RETENTION_SECONDS
+from ..workflow import (
+    BACKUP_SECONDS,
+    CONTROL_SERVICE,
+    HEALTH_COUNTED_STEPS,
+    OBSERVE_SERVICE,
+    RETENTION_SECONDS,
+)
 
 log = logging.getLogger(__name__)
 ENGINE_ERROR = "executor loop failed; inspect daemon logs"
@@ -141,6 +147,8 @@ class Runner:
         """Intake, draining, resolution and advancement without observation."""
         async with self.lock:
             await self.workflow.step_control()
+            # The pass returned, so the families it drives were really serviced.
+            self.workflow.record_service(CONTROL_SERVICE)
             # The resolver fragment runs inside this pass, after agent draining and
             # before advancement, so the pass that ran it records its health.
             self.last_success["resolver"] = clock.now()
@@ -148,6 +156,7 @@ class Runner:
 
     async def observe(self):
         await self.workflow.step_observe(clock.now())
+        self.workflow.record_service(OBSERVE_SERVICE)
 
     async def watchdog(self):
         await self.workflow.step_watchdog(clock.now())

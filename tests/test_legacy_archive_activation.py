@@ -7,8 +7,9 @@ import pytest
 
 from experimenttracker import legacy_archive
 from experimenttracker.agent_pool import experiment_owner
+from experimenttracker.core import liveness
 from experimenttracker.store import Conflict, encode
-from experimenttracker.watchdog import stuck_experiments
+from experimenttracker.watchdog import engine_watchdog
 
 
 def legacy_experiment(store):
@@ -77,7 +78,7 @@ def test_watchdog_excludes_archived_owner_hold(runtime):
     eid = legacy_experiment(store)
     store.archive_legacy_experiments()
     assert store.experiment(eid)["hold_reason"] == "legacy_contract_archived"
-    assert not stuck_experiments(store, 10**12, 1)
+    assert engine_watchdog(store, 10**12, 1, liveness.ServiceEvidence(10**12, {})) == 0
 
 
 @pytest.mark.asyncio

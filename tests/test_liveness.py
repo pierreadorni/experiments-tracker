@@ -83,10 +83,10 @@ def run(store, sql, args=()):
         db.execute(sql, args)
 
 
-def inspect(store, now, *, serviced=None, started_at=None):
+def inspect(store, now, *, serviced=None, started_at=None, owner_holds=()):
     evidence = liveness.ServiceEvidence(now if started_at is None else started_at, serviced or {})
     with store.tx() as db:
-        return liveness.inspect(db, now, interval=INTERVAL, service=evidence)
+        return liveness.inspect(db, now, interval=INTERVAL, service=evidence, owner_holds=owner_holds)
 
 
 def cause(report, obligation_id):
@@ -168,20 +168,32 @@ def test_backend_families_need_service_evidence_or_restart_grace(store):
     assert cause(inspect(store, 211.0, serviced={"agent-action": 150.0}), obligation_id) == "unserviced"
 
 
-def test_advancement_is_live_with_an_open_dependency_or_its_own_service(store):
+def test_advancement_is_live_with_an_open_dependency_or_a_fresh_revision(store):
     eid = create(store)
     obligation_id = f"advancement:{eid}:0"
-    assert cause(inspect(store, 100.0, started_at=1.0), obligation_id) == "missing_dependency"
+    run(store, "UPDATE experiments SET updated_at=100.0 WHERE id=?", (eid,))
+    assert cause(inspect(store, 100.0), obligation_id) is None
+    run(store, "UPDATE experiments SET updated_at=0.0 WHERE id=?", (eid,))
+    assert cause(inspect(store, 100.0), obligation_id) == "missing_dependency"
 
     identity = save_transfer(store, eid)
-    assert cause(inspect(store, 100.0, started_at=1.0), obligation_id) is None
-    assert cause(inspect(store, 100.0, started_at=1.0), f"transfer:{identity}:0") is None
+    assert cause(inspect(store, 100.0), obligation_id) is None
+    assert cause(inspect(store, 100.0), f"transfer:{identity}:0") is None
 
     run(store, "UPDATE execution_transfers SET state='complete' WHERE id=?", (identity,))
     with store.tx() as db:
         transfer_obligations.sync_transfer(db, identity)
-    assert cause(inspect(store, 100.0, started_at=1.0), obligation_id) == "missing_dependency"
-    assert cause(inspect(store, 100.0, serviced={"advancement": 100.0}), obligation_id) is None
+    assert cause(inspect(store, 100.0), obligation_id) == "missing_dependency"
+    run(store, "UPDATE experiments SET updated_at=100.0 WHERE id=?", (eid,))
+    assert cause(inspect(store, 100.0), obligation_id) is None
+
+
+def test_an_owner_hold_alone_keeps_advancement_live(store):
+    eid = create(store)
+    run(store, "UPDATE experiments SET updated_at=0.0,hold_reason='needs_attention' WHERE id=?", (eid,))
+    obligation_id = f"advancement:{eid}:0"
+    assert cause(inspect(store, 100.0), obligation_id) == "missing_dependency"
+    assert cause(inspect(store, 100.0, owner_holds=("needs_attention",)), obligation_id) is None
 
 
 def test_a_contract3_experiment_without_its_lifetime_is_a_defect_until_backfilled(store):
