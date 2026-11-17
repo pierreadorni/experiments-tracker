@@ -70,6 +70,20 @@ TERMINAL_BAD = {
     "DEADLINE",
 }
 
+# Tasks whose last success and latest error feed the existing /healthz heartbeat
+# (design rule 8): the work the sequential tick used to run end to end, plus the
+# resolver that now runs inside it. "control" covers every step_control_* fragment;
+# backup stays out because it was already a background task.
+HEALTH_COUNTED_STEPS = (
+    "control",
+    "observe",
+    "research",
+    "supervisor",
+    "watchdog",
+    "retention",
+    "resolver",
+)
+
 
 class Workflow:
     def __init__(self, config, store, scheduler, agent):
@@ -484,6 +498,34 @@ class Workflow:
         )
 
     async def tick(self, *, force_observe=False):
+        """Run one manual pass over the shared steps in their original order.
+
+        The maintenance gate keeps its exact position: observation, input replies
+        and agent draining run before the ``blocked()`` return, and everything after
+        it stays gated. All steps still run inside this one pass, so health keeps the
+        sequential task set in ``HEALTH_COUNTED_STEPS`` and an empty heartbeat cannot
+        hide a hung step. Only this manual adapter keeps the lazy ``start()``.
+        """
+        await self.step_control_before_observe()
+        if not self.started:
+            await self.start()
+        now = clock.now()
+        await self.step_runtime(now)
+        await self.step_observe(now, force_observe=force_observe)
+        await self.step_control_after_observe(now)
+        await self.step_resolver()
+        if blocked(self.store):
+            return
+        await self.step_control_advance()
+        await self.step_watchdog(now)
+        await self.step_control_finish()
+        await self.step_supervisor()
+        await self.step_research()
+        await self.step_retention(now)
+        await self.step_backup(now)
+
+    async def step_control_before_observe(self):
+        """Intake: legacy archive, input replies, cancellations, projects and reserve."""
         self.store.archive_legacy_experiments()
         self.research.service.tick()
         await self.research.reply_inputs()
@@ -509,9 +551,9 @@ class Workflow:
             )
             if changed and self.active_action and self.agent_ready:
                 await self.refresh_quota()
-        if not self.started:
-            await self.start()
-        now = clock.now()
+
+    async def step_runtime(self, now):
+        """Keep the cluster snapshot, agent connection and quota refresh current."""
         if self.config.mode == "live" and now - self.last_cluster_refresh >= 60:
             await self.refresh_cluster()
         if self.agent_ready and not self.agent.available:
@@ -523,10 +565,16 @@ class Workflow:
         if self.agent_ready and now - self.last_quota_refresh >= 45:
             if not self.quota_task or self.quota_task.done():
                 self.quota_task = asyncio.create_task(self.refresh_quota())
+
+    async def step_observe(self, now, *, force_observe=False):
+        """Observe saved jobs and settle autopilot accounting when the cadence is due."""
         if force_observe or now - self.last_scheduler >= self.config.scheduler_seconds:
             await self.observe_jobs()
             await self.reconcile_autopilot_accounting()
             self.last_scheduler = now
+
+    async def step_control_after_observe(self, now):
+        """Submit input replies, drain finished turns and settle saved action identities."""
         for row in self.store.rows("SELECT id FROM experiments WHERE pending_request IS NOT NULL"):
             exp = self.store.experiment(row["id"])
             pending = exp["pending_request"]
@@ -573,11 +621,15 @@ class Workflow:
                 await lane.agent.close()
                 await lane.connect_agent()
         await legacy_archive_actions.settle_actions(self)
+
+    async def step_resolver(self):
+        """Resolve saved uncertain turns before any experiment advances."""
         # Resolve saved uncertain turns before any experiment advances: no live task
         # owns these rows, and a continuation queued here is admitted in this same tick.
         await self.resolver.resolve()
-        if blocked(self.store):
-            return
+
+    async def step_control_advance(self):
+        """Steer, restart, repair, report and advance every eligible experiment."""
         self.apply_planning_steering()
         await process_restarts(self)
         await self.repair_failed_experiments()
@@ -608,15 +660,30 @@ class Workflow:
                 self.hold_advance_error(eid, exc)
             else:
                 self.error_backoff.pop(eid, None)
+
+    async def step_watchdog(self, now):
+        """Judge engine liveness against the current clock reading."""
         engine_watchdog(self.store, now, self.config.watchdog_minutes)
+
+    async def step_control_finish(self):
+        """Discard failed implementations, queue late reports, advance conversation/title/controller."""
         self.discard_failed_implementation()
         queue_late_reports(self)
         if not self.supervisor.blocks_dispatch:
             await self.conversation.advance()
             await self.advance_title()
             await self.controller.advance()
+
+    async def step_supervisor(self):
+        """Advance the project supervisor."""
         await self.supervisor.advance()
+
+    async def step_research(self):
+        """Advance the research controller."""
         await self.research.advance()
+
+    async def step_retention(self, now):
+        """Prune outbox payloads in bounded batches when the retention window is due."""
         if now - self.last_retention >= 5:
             from .retention import prune_batch
 
@@ -628,6 +695,9 @@ class Workflow:
             except Exception:
                 log.exception("outbox retention failed; payloads retained for investigation")
             self.last_retention = now
+
+    async def step_backup(self, now):
+        """Start a background state backup when the backup window is due."""
         if now - self.last_backup >= 60 and (not self.backup_task or self.backup_task.done()):
             self.backup_task = asyncio.create_task(self.backup_state())
             self.last_backup = now
