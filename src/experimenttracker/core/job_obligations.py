@@ -12,6 +12,18 @@ from . import obligation_sources
 _SOURCE = "job"
 _IDENTITY_FIELDS = ("intent_id", "experiment_id", "stage_id", "attempt")
 _ALLOWED_RESPONSIBILITIES = {("backend", "reconcile"), ("external", "job")}
+NOT_SUBMITTED_PREFIX = "not_submitted:"
+NOT_SUBMITTED_ERROR = NOT_SUBMITTED_PREFIX + " no scheduler record after accounting lag"
+
+
+def not_submitted(job):
+    """True when the resolver proved this saved intent has no scheduler record."""
+    return (
+        job["state"] == "failed"
+        and job["job_id"] is None
+        and job["scheduler_state"] is None
+        and str(job["error"] or "").startswith(NOT_SUBMITTED_PREFIX)
+    )
 
 
 def locked_job(db, job, *fields):
@@ -36,7 +48,9 @@ def sync_job(db, intent_id, *, before=None):
     ``before`` is the row captured inside that transaction before its update. A
     missing-to-saved scheduler ID proves the backend-to-external handoff. A
     nonempty saved scheduler ID is immutable. Terminal callbacks close only an
-    already-open episode and only when exact scheduler accounting is saved.
+    already-open episode and only when exact scheduler accounting is saved. A
+    resolver-proven not-submitted intent abandons backend reconciliation because
+    no external job exists.
     """
     if not db.in_transaction:
         raise RuntimeError("job obligation sync requires the caller's active transaction")
@@ -72,7 +86,7 @@ def sync_job(db, intent_id, *, before=None):
     job_id = job["job_id"]
     if job_id is not None and (not isinstance(job_id, str) or not job_id):
         raise ValueError("saved scheduler job ID must be a non-empty string or None")
-    scheduler_outcome = _scheduler_outcome(job) if job_id is not None else None
+    scheduler_outcome = _scheduler_outcome(job) if job_id is not None else _absence_outcome(job)
     source_transition = bool(previous is not None and previous.get("job_id") is None and job_id is not None)
 
     if scheduler_outcome is not None and latest is None:
@@ -104,6 +118,11 @@ def sync_job(db, intent_id, *, before=None):
     if scheduler_outcome is None:
         return obligation
     return _terminalize(db, obligation, intent_id, scheduler_outcome)
+
+
+def _absence_outcome(job):
+    """A resolver-proven absence leaves no external responsibility to reconcile."""
+    return "abandon" if not_submitted(job) else None
 
 
 def _scheduler_outcome(job):

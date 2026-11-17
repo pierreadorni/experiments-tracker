@@ -15,6 +15,9 @@ class ExecutionSettings(StrictModel):
     rsync_up: str = Field(default="", max_length=8000)
     rsync_down: str = Field(default="", max_length=8000)
     poll_seconds: int = Field(default=600, ge=600, le=86400, strict=True)
+    # How long a saved submission intent may stay without a scheduler record
+    # before the resolver treats the missing record as proof of no submission.
+    accounting_lag_seconds: int = Field(default=600, ge=60, le=86400, strict=True)
 
     @model_validator(mode="after")
     def commands(self):

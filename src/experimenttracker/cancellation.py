@@ -1,6 +1,6 @@
 """Stop queued work immediately; reconcile only exact dispatched identities."""
 
-from . import clock
+from . import clock, resolver
 from .codex_client import TerminalTurnError
 from .core import job_obligations
 from .steering import TERMINAL_JOBS
@@ -77,19 +77,9 @@ async def process_cancellations(workflow):
                     if not job_id:
                         errors.append("Submission outcome is unknown; the saved intent needs reconciliation.")
                         continue
-                    with store.tx() as db:
-                        before = job_obligations.locked_job(db, job, "state")
-                        if before is None:
-                            continue
-                        db.execute(
-                            "UPDATE jobs SET job_id=?,state='submitted' WHERE intent_id=?",
-                            (job_id, job["intent_id"]),
-                        )
-                        job_obligations.sync_job(db, job["intent_id"], before=before)
-                        store.emit(
-                            db, eid, "job_reconciled", {"intent_id": job["intent_id"], "job_id": job_id}
-                        )
-                    job = store.one("SELECT * FROM jobs WHERE intent_id=?", (job["intent_id"],))
+                    job = resolver.adopt(store, eid, job, job_id, observer="cancellation")
+                    if not job:
+                        continue
                 observed = None
                 terminal = job["scheduler_state"] in TERMINAL_JOBS
                 if not terminal:

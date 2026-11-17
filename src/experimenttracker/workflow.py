@@ -10,7 +10,16 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
-from . import artifacts, clock, early_repair, iteration, legacy_archive, legacy_archive_actions, reporting
+from . import (
+    artifacts,
+    clock,
+    early_repair,
+    iteration,
+    legacy_archive,
+    legacy_archive_actions,
+    reporting,
+    resolver,
+)
 from .autopilot_controller import ResearchController
 from .cancellation import process_cancellations
 from .codex_client import CodexAgent, NeedsAttention, RpcRejected, SessionUnavailable, TerminalTurnError
@@ -1707,9 +1716,11 @@ class Workflow:
             "WHERE (j.state IN ('submitting','submitted') OR "
             "(json_extract(e.contract, '$.execution_contract')=3 AND j.state='failed' "
             "AND json_extract(j.execution_manifest, '$.executor') IS NOT 'agent' "
+            "AND (j.error IS NULL OR j.error NOT LIKE ?) "
             "AND (j.scheduler_state IS NULL OR j.scheduler_state NOT IN "
             "('COMPLETED','FAILED','CANCELLED','TIMEOUT','OUT_OF_MEMORY','NODE_FAIL','PREEMPTED','BOOT_FAIL','DEADLINE','REVOKED') "
-            "OR j.exit_code IS NULL))) AND e.phase!='cancelled' ORDER BY j.created_at"
+            "OR j.exit_code IS NULL))) AND e.phase!='cancelled' ORDER BY j.created_at",
+            (f"{job_obligations.NOT_SUBMITTED_PREFIX}%",),
         ):
             eid = job["experiment_id"]
             observed = None
@@ -1735,28 +1746,12 @@ class Workflow:
                             (clock.now(), job["intent_id"]),
                         )
                 if not job["job_id"]:
-                    job_id = await self.scheduler_for(
-                        self.store.experiment(job["experiment_id"]), job
-                    ).reconcile(job["intent_id"])
-                    if not job_id:
-                        self.store.update(
-                            eid,
-                            hold_reason="submission_uncertain",
-                            error="No matching job found; operator reconciliation required",
-                        )
+                    # C5 owns every intent without a scheduler identity: adoption,
+                    # quarantine or a proven absence is saved here, at the scheduler
+                    # cadence, before advancement may submit for this experiment.
+                    job = await resolver.resolve(self, exp, job)
+                    if not job:
                         continue
-                    with self.store.tx() as db:
-                        before = job_obligations.locked_job(db, job, "state")
-                        if before is None:
-                            raise RuntimeError("saved job changed before reconciliation ID save")
-                        db.execute(
-                            "UPDATE jobs SET job_id=?,state='submitted' WHERE intent_id=?",
-                            (job_id, job["intent_id"]),
-                        )
-                        job_obligations.sync_backend(db, job["intent_id"], before=before)
-                        self.store.emit(db, eid, "job_reconciled", {"job_id": job_id})
-                    job = self.store.one("SELECT * FROM jobs WHERE intent_id=?", (job["intent_id"],))
-                    self.store.update(eid, hold_reason=None, error=None)
                 observed = check[1] if check else await scheduler.observe(job["job_id"])
                 if self.store.experiment(eid)["phase"] == "cancelled":
                     continue

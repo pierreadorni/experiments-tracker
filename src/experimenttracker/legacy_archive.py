@@ -59,20 +59,9 @@ async def settle_job(workflow, exp, job):
             job_id = await scheduler.reconcile(intent_id)
             if not job_id:
                 return False
-            with workflow.store.tx() as db:
-                before = job_obligations.locked_job(db, job, "state")
-                if before is None:
-                    return False
-                cursor = db.execute(
-                    "UPDATE jobs SET job_id=?,state='submitted' "
-                    "WHERE intent_id=? AND job_id IS NULL AND state=?",
-                    (job_id, intent_id, job["state"]),
-                )
-                if not cursor.rowcount:
-                    return False
-                job_obligations.sync_job(db, intent_id, before=before)
-                workflow.store.emit(db, exp["id"], "job_reconciled", {"job_id": job_id})
-            saved = workflow.store.one("SELECT * FROM jobs WHERE intent_id=?", (intent_id,))
+            from . import resolver
+
+            saved = resolver.adopt(workflow.store, exp["id"], job, job_id, observer="legacy_archive")
             if not saved or saved["job_id"] != job_id or saved["state"] != "submitted":
                 return False
             job = saved
