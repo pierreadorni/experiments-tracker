@@ -223,11 +223,16 @@ def main():
     recover.add_argument(
         "--turn-id", help="recover a lost response using an exact completed turn with matching input"
     )
-    workspaces = sub.add_parser("workspaces", help="inspect saved experiment checkouts without changing them")
+    workspaces = sub.add_parser("workspaces", help="inspect or explicitly adopt saved experiment checkouts")
     workspace_commands = workspaces.add_subparsers(dest="workspaces_command", required=True)
-    workspace_commands.add_parser(
+    adopt = workspace_commands.add_parser(
         "adopt-legacy",
-        help="dry run: plan exp/legacy branches for exact tracker-locked detached worktrees",
+        help="plan exp/legacy branches for exact tracker-locked detached worktrees",
+    )
+    adopt.add_argument(
+        "--apply",
+        action="store_true",
+        help="attach and commit only exact ready legacy worktrees; the default is a dry run",
     )
     backup = sub.add_parser("backup")
     backup.add_argument("--destination", type=Path)
@@ -260,11 +265,22 @@ def main():
     if args.command == "workspaces":
         from .engine import legacy_workspaces
 
-        reader = Store.read_only(config.state_dir / "workflow.sqlite")
-        try:
-            report = legacy_workspaces.plan(reader)
-        finally:
-            reader.close()
+        if args.apply:
+            lock = OwnershipLock(config.state_dir)
+            try:
+                store = Store(config.state_dir / "workflow.sqlite")
+                try:
+                    report = legacy_workspaces.apply(store)
+                finally:
+                    store.close()
+            finally:
+                lock.close()
+        else:
+            reader = Store.read_only(config.state_dir / "workflow.sqlite")
+            try:
+                report = legacy_workspaces.plan(reader)
+            finally:
+                reader.close()
         print(json.dumps(report, indent=2))
         raise SystemExit(0 if report["ok"] else 1)
     if args.command == "serve":

@@ -160,7 +160,8 @@ class Workspaces:
     def row(self, eid):
         return self.store.one("SELECT * FROM isolated_workspaces WHERE experiment_id=?", (eid,))
 
-    def validate(self, row):
+    @staticmethod
+    def validate(row, expected_head=None, branch=None):
         target = Path(row["folder"])
         common = Path(row["common_dir"])
         if (
@@ -184,17 +185,27 @@ class Workspaces:
         actual_common = (target / git(target, "rev-parse", "--git-common-dir").decode().strip()).resolve()
         if actual_common != common:
             raise WorkspaceUnavailable("The isolated checkout belongs to a different Git repository")
-        if git(target, "rev-parse", "HEAD").decode().strip() != row["head"]:
-            raise WorkspaceUnavailable("The isolated checkout HEAD differs from the saved baseline")
+        if branch is not None:
+            attached = git(target, "rev-parse", "--abbrev-ref", "HEAD").decode().strip()
+            if attached != branch:
+                raise WorkspaceUnavailable("The adopted legacy checkout is not on its saved branch")
+        if git(target, "rev-parse", "HEAD").decode().strip() != (expected_head or row["head"]):
+            raise WorkspaceUnavailable(
+                "The adopted legacy checkout HEAD differs from its saved branch"
+                if branch is not None
+                else "The isolated checkout HEAD differs from the saved baseline"
+            )
 
     def checkout(self, eid):
-        row = self.row(eid)
+        row, branch = self.row(eid), self.branch(eid)
         if row:
             if row["state"] != "ready":
                 raise WorkspaceUnavailable("The saved workspace creation needs reconciliation")
+            if branch and (branch["repo"], branch["worktree"]) == (row["source"], row["folder"]):
+                return self.branch_checkout(eid)
             self.validate(row)
             return row["folder"]
-        if self.branch(eid):
+        if branch:
             return self.branch_checkout(eid)
         workspace = self.projects.workspace(eid)
         return workspace["folder"] if workspace else None
@@ -209,6 +220,12 @@ class Workspaces:
         row = self.branch(eid)
         if not row:
             raise WorkspaceUnavailable("The saved experiment branch identity is missing")
+        saved = self.row(eid)
+        if saved and (saved["source"], saved["folder"]) == (row["repo"], row["worktree"]):
+            # An adopted legacy checkout keeps its historical isolated row; verify only
+            # the exact directory/common lock and the attached branch/head recorded since.
+            self.validate(saved, expected_head=row["head_commit"], branch=row["branch"])
+            return row["worktree"]
         return gitworkspace.verify(row["repo"], _branch_identity(row), lock=_branch_lock(eid))["worktree"]
 
     def isolated(self, eid):
