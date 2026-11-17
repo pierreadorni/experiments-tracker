@@ -397,11 +397,6 @@ class Conversation:
                 if exp["pending_request"]
                 else "agent_unavailable"
                 if not self.workflow.agent_ready
-                else "agent_busy"
-                if self.workflow.agent_task
-                or self.store.one(
-                    "SELECT 1 FROM agent_actions WHERE state IN ('dispatching','running','uncertain')"
-                )
                 else "report_publication"
                 if self.store.one(
                     "SELECT 1 FROM report_versions WHERE experiment_id=? AND state IN ('queued','building','publishing')",
@@ -447,12 +442,13 @@ class Conversation:
                     )
                 action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (identity,))
             self.workflow.propose_agent(
-                lambda _lane, message=message, action=action: self.dispatch(message, action),
+                lambda lane, message=message, action=action: self.dispatch(lane, message, action),
                 role="conversation",
                 source_table="agent_actions",
                 row=action,
                 owner=experiment_owner(eid),
                 priority=CONVERSATION_PRIORITY,
+                any_lane=True,
             )
             return
 
@@ -498,11 +494,11 @@ class Conversation:
                 {"discussion_id": message["id"], "action_id": continuation["id"]},
             )
 
-    async def dispatch(self, message, action):
-        agent, eid = self.workflow.agent, message["experiment_id"]
+    async def dispatch(self, lane, message, action):
+        agent, eid = lane.agent, message["experiment_id"]
         expected = dict(action)
         try:
-            await self.workflow.refresh_quota()
+            await lane.refresh_quota()
             decision = self.workflow.agent_pool.quota(eid=eid)
             if not decision.admitted:
                 self.hold(message["id"], "quota_hold", decision.reason)

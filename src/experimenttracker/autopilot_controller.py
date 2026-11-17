@@ -233,11 +233,7 @@ class ResearchController:
                 self.state(row["id"], "uncertain", error=str(exc)[:2000])
             wf.agent_pool.settle_row("autopilot_actions", row["id"])
             return
-        if self.busy or wf.supervisor.blocks_dispatch or any(lane.agent_task for lane in wf.lanes):
-            return
-        if wf.store.one(
-            "SELECT 1 FROM project_turns WHERE state NOT IN ('completed','failed') AND origin!='weekly'"
-        ) or wf.store.one("SELECT 1 FROM discussions WHERE state IN ('queued','waiting','running')"):
+        if self.busy:
             return
         if not wf.agent_ready or blocked(wf.store):
             return
@@ -294,12 +290,13 @@ class ResearchController:
                     )
                 row = wf.store.one("SELECT * FROM autopilot_actions WHERE id=?", (identity,))
             wf.propose_agent(
-                lambda _lane, row=row: self.dispatch(row),
+                lambda lane, row=row: self.dispatch(lane, row),
                 role="research",
                 source_table="autopilot_actions",
                 row=row,
                 owner=project_owner(run["project_id"]),
                 priority=RESEARCH_PRIORITY,
+                any_lane=True,
             )
             return
 
@@ -390,10 +387,10 @@ class ResearchController:
                 (clock.now(), row["id"]),
             )
 
-    async def dispatch(self, row):
-        wf = self.workflow
+    async def dispatch(self, lane, row):
+        wf, agent = self.workflow, lane.agent
         try:
-            await wf.refresh_quota()
+            await lane.refresh_quota()
             run = self.service.run(run_id=row["run_id"])
             if (
                 blocked(wf.store)
@@ -402,8 +399,8 @@ class ResearchController:
             ):
                 return
             policy = self.service.policy(run)
-            model = policy.model or getattr(wf.agent, "resolved_model", None)
-            option = next((m for m in getattr(wf.agent, "models", []) if m["id"] == model), None)
+            model = policy.model or getattr(agent, "resolved_model", None)
+            option = next((m for m in getattr(agent, "models", []) if m["id"] == model), None)
             effort = policy.reasoning_effort or (option or {}).get("default_effort", "medium")
             if not option or effort not in option["reasoning_efforts"]:
                 raise ValueError("selected model/effort unavailable; no fallback")
@@ -420,7 +417,7 @@ class ResearchController:
             self.state(row["id"], "pending", input=prompt)
             workspace = wf.config.state_dir / "autopilot" / run["id"] / "work"
             workspace.mkdir(parents=True, exist_ok=True, mode=0o700)
-            thread, _ = await wf.agent.session(
+            thread, _ = await agent.session(
                 None,
                 workspace,
                 writable=True,
@@ -439,11 +436,11 @@ class ResearchController:
                 self.state(row["id"], "superseded")
                 return
             self.state(row["id"], "dispatching", thread_id=thread)
-            turn = await wf.agent.begin(
+            turn = await agent.begin(
                 thread, prompt, ProjectDecision.model_json_schema(), workspace=workspace, effort=effort
             )
             self.state(row["id"], "running", turn_id=turn)
-            result = await wf.agent.finish(thread, turn)
+            result = await agent.finish(thread, turn)
             self.state(row["id"], "received", result=encode(result))
         except asyncio.CancelledError:
             raise

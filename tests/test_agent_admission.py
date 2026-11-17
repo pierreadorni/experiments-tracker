@@ -221,15 +221,20 @@ async def test_the_claim_precedes_the_task_and_an_unsent_start_releases_it(runti
     assert store.one("SELECT state FROM agent_actions WHERE id=?", (row["id"],))["state"] == "pending"
 
 
-async def test_one_session_guards_still_hold_a_second_role_back(runtime):
-    store, _, _, wf = runtime
+async def test_one_configured_turn_holds_a_second_role_back(runtime, monkeypatch):
+    store, _, agent, wf = runtime
     wf.agent_ready = True
+    wf.gate.update(await agent.quota())
+    monkeypatch.setattr(wf.conversation, "prompt", lambda exp, message: "Discuss\nPAYLOAD:\n{}")
     busy, waiting = create(store), create(store)
     saved_action(store, busy, state="running")
     store.update(waiting, phase="complete")
     store.command(uuid4(), "discuss", {"text": "Explain the synthetic result"}, eid=waiting)
     await wf.conversation.advance()
-    # The conversation site keeps the global unresolved-turn guard as its own rule.
-    assert wf.agent_pool.proposals == []
+    # The conversation site offers its prepared turn; the pool holds it because another
+    # experiment's saved running turn already occupies the one configured turn.
+    assert [proposal.role for proposal in wf.agent_pool.proposals] == ["conversation"]
+    wf.agent_pool.admit()
+    assert wf.agent_task is None
     discussion = store.one("SELECT * FROM discussions WHERE experiment_id=?", (waiting,))
-    assert discussion["hold_reason"] == "agent_busy"
+    assert (discussion["state"], discussion["hold_reason"]) == ("queued", None)

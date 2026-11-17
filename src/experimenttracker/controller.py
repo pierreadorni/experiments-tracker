@@ -661,10 +661,6 @@ class Controller:
                 exp["pause_agent"]
                 or exp["pending_request"]
                 or not wf.agent_ready
-                or wf.agent_task
-                or wf.store.one(
-                    "SELECT 1 FROM agent_actions WHERE state IN ('dispatching','running','uncertain')"
-                )
                 or not wf.agent_pool.quota(eid=exp["id"]).admitted
             ):
                 continue
@@ -705,6 +701,7 @@ class Controller:
                     row=action,
                     owner=experiment_owner(exp["id"]),
                     priority=EXPERIMENT_PRIORITY,
+                    any_lane=True,
                 )
                 return
 

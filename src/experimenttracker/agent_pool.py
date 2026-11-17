@@ -2,12 +2,16 @@
 
 Every admission site keeps its own authority checks and deterministic preparation,
 then offers a prepared proposal instead of creating a dispatch task. One selector
-sorts those proposals by priority class and each role's own scan order, re-checks
-eligibility and claims the owner and a free connection in a single synchronous
-section before the task exists. A callback (request, activity, pending answer) is
-routed through the reservation, so it reaches only the owner its saved turn proves;
-a reservation is reconstructed from the authoritative source row and never becomes a
-second execution database. Interrupts, readback and shutdown also leave through the
+sorts those proposals by priority class, re-checks eligibility and claims the owner,
+a free connection and one configured turn in a single synchronous section before
+the task exists. A turn needs both a free connection and free capacity: configured
+sessions minus live claims minus saved dispatching/running/uncertain turns of the
+three action tables, each counted once. A saved turn whose outcome is unknown
+therefore keeps holding the account until it is read back, while reconciliation
+needs no capacity. A callback (request, activity, pending answer) is routed through
+the reservation, so it reaches only the owner its saved turn proves; a reservation
+is reconstructed from the authoritative source row and never becomes a second
+execution database. Interrupts, readback and shutdown also leave through the
 reservation's own live connection; a reservation without one keeps its uncertainty.
 The pool also owns the one quota-policy decision that selection filters and the
 binding check before dispatch intent share.
@@ -15,6 +19,7 @@ binding check before dispatch intent share.
 
 import asyncio
 from dataclasses import dataclass
+from functools import cmp_to_key
 
 from .quota import Decision, plenty
 
@@ -33,8 +38,14 @@ TITLE_PRIORITY = 4
 UNSETTLED_STATES = frozenset({"dispatching", "running", "uncertain", "received"})
 UNSETTLED_STATES_SQL = "('dispatching','running','uncertain','received')"
 
-# Turns whose identity can outlive the process that sent them.
+# Turns whose identity can outlive the process that sent them, so each may still
+# occupy one configured turn of the managed account until it is read back.
 SAVED_OWNED_STATES = "('dispatching','running','uncertain')"
+TURN_DEBT_SOURCES = ("agent_actions", "project_turns", "autopilot_actions")
+
+# A saved row in one of these states proves its turn is over, so the claim of a task
+# that has not run its release callback yet no longer holds a configured turn.
+ENDED_STATES = frozenset({"received", "completed", "failed", "superseded", "waiting"})
 
 # Weekly synthesis needs spare quota, not merely the ordinary admission threshold.
 WEEKLY_PLENTY_REASON = "weekly synthesis requires plentiful subscription quota"
@@ -63,10 +74,10 @@ def role_for_phase(phase):
 class Proposal:
     """One prepared turn offered to the next selection; nothing is claimed yet.
 
-    ``order`` is the whole selection key: priority class, the proposal's rank in
-    its role's current scan, then creation time, source table and row ID. A role's
-    proposals therefore keep the scan order they always had, and proposals of two
-    roles sharing a priority class fall back to their saved identity.
+    Two proposals of the same role keep that role's own scan order (``rank``); a
+    proposal of another role shares only the priority class, so the two fall back to
+    the saved creation time, source table and row ID instead of comparing scan ranks
+    of unrelated roles.
     """
 
     role: str
@@ -83,8 +94,18 @@ class Proposal:
         return (self.source_table, self.row["id"])
 
     @property
-    def order(self):
-        return (self.priority, self.rank, self.row.get("created_at") or 0, *self.key)
+    def created(self):
+        return self.row.get("created_at") or 0
+
+
+def compare_proposals(left, right):
+    """Order two proposals: class, then each role's scan order or saved identity."""
+    if left.priority != right.priority:
+        return left.priority - right.priority
+    if left.role == right.role and left.rank != right.rank:
+        return left.rank - right.rank
+    left_key, right_key = (left.created, *left.key), (right.created, *right.key)
+    return (left_key > right_key) - (left_key < right_key)
 
 
 @dataclass(frozen=True)
@@ -216,19 +237,58 @@ class AgentPool:
 
         The sorted proposals are tried in order, so a busy owner or an occupied
         connection skips only the work it cannot host and unrelated eligible work
-        still starts. A proposal no free connection can host is dropped with its
-        source row still pending; a turn whose outcome is unknown never returns
-        here as a replacement.
+        still starts. Without a free configured turn nothing more starts. A proposal
+        no free connection can host is dropped with its source row still pending; a
+        turn whose outcome is unknown never returns here as a replacement.
         """
-        pending = sorted(self.proposals, key=lambda proposal: proposal.order)
+        pending = sorted(self.proposals, key=cmp_to_key(compare_proposals))
         self.proposals = []
         for proposal in pending:
-            if self.closing:
+            if self.closing or self.turn_capacity() <= 0:
                 return
+            if not self.unchanged(proposal):
+                continue
             workflow = self.free_connection(proposal)
             if workflow is None or not self.owner_free(proposal.owner):
                 continue
             self.start(proposal, workflow)
+
+    def turn_debt(self):
+        """Saved turns that may still be live on the account, each counted once."""
+        return {
+            (table, row["id"])
+            for table in TURN_DEBT_SOURCES
+            for row in self.store.rows(f"SELECT id FROM {table} WHERE state IN {SAVED_OWNED_STATES}")
+        }
+
+    def turn_capacity(self):
+        """Free configured turns: sessions minus claimed turns minus unclaimed saved turns.
+
+        A claim holds one turn until its saved row proves that turn over (received or
+        terminal), so a finished turn frees its unit even before the task's own
+        release callback runs; an unsent claim still counts because it can become a
+        real turn at its next await. A saved dispatching/running/uncertain row without
+        a claim may still be live remotely, so the conservative count keeps it and a
+        shrunken pool can hold fewer free turns than it has saved debt. Received,
+        pending never-sent and terminal rows consume no turn of their own, each saved
+        turn is counted once, and readback, interrupt and shutdown never ask for
+        capacity.
+        """
+        claimed = set()
+        for reservation in self.reservations.values():
+            if reservation.connection is None:
+                continue
+            saved = self.store.one(
+                f"SELECT state FROM {reservation.source_table} WHERE id=?", (reservation.action_id,)
+            )
+            if saved is None or saved["state"] not in ENDED_STATES:
+                claimed.add(reservation.key)
+        return self.workflow.config.codex.max_sessions - len(claimed) - len(self.turn_debt() - claimed)
+
+    def unchanged(self, proposal):
+        """A held proposal still describes the saved row it was prepared from."""
+        saved = self.store.one(f"SELECT state FROM {proposal.source_table} WHERE id=?", (proposal.row["id"],))
+        return saved is not None and saved["state"] == proposal.row["state"]
 
     def free_connection(self, proposal):
         """The proposal's first connection that no live claim or task occupies."""

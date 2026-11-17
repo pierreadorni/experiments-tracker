@@ -5,7 +5,7 @@ import json
 from uuid import uuid4
 
 import pytest
-from helpers import IterationAgent, approve_plan, until
+from helpers import IterationAgent, approve_plan, until, wait_until
 
 from experimenttracker.config import ProjectConfig
 from experimenttracker.slurm import Observation
@@ -161,7 +161,10 @@ async def test_model_turns_serialized_and_uncertainty_blocks_new_dispatch(runtim
 
     agent.finish = blocked
     first, second = create(store), create(store)
-    await until(workflow, store, second, lambda e: e["hold_reason"] == "agent_busy")
+    await wait_until(
+        lambda: store.one("SELECT 1 FROM agent_actions WHERE state='running'"),
+        ticks=lambda: workflow.tick(force_observe=True),
+    )
     for _ in range(4):
         await workflow.tick(force_observe=True)
         await asyncio.sleep(0.001)
@@ -176,8 +179,13 @@ async def test_model_turns_serialized_and_uncertainty_blocks_new_dispatch(runtim
     saved = store.one("SELECT id FROM agent_actions WHERE experiment_id=? LIMIT 1", (first,))
     workflow._action_state(saved["id"], "uncertain", error="saved outcome unknown")
     calls = agent.calls
-    await until(workflow, store, third, lambda e: e["hold_reason"] == "agent_busy")
+    await wait_until(
+        lambda: store.one("SELECT 1 FROM agent_actions WHERE experiment_id=? AND phase='plan'", (third,)),
+        ticks=lambda: workflow.tick(force_observe=True),
+    )
+    # The saved unknown outcome keeps the one configured turn: nothing new is sent.
     assert agent.calls == calls
+    assert not store.rows("SELECT * FROM agent_actions WHERE experiment_id=? AND state!='pending'", (third,))
     assert not store.rows("SELECT * FROM jobs WHERE experiment_id=?", (third,))
     await workflow.close()
 

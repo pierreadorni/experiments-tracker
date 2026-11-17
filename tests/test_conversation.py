@@ -385,13 +385,14 @@ async def test_completed_legacy_discussion_queues_an_admission_obligation(runtim
     workflow.agent_ready = True
     queued = []
 
-    async def dispatch(message, action):
+    async def dispatch(lane, message, action):
         queued.append((message, action))
 
     monkeypatch.setattr(workflow.conversation, "dispatch", dispatch)
     monkeypatch.setattr(workflow.conversation, "prompt", lambda exp, message: "saved reader prompt")
     identity = send(store, eid, "Explain the reported uncertainty")
     await role_step(workflow.conversation)
+    # The pool claims the connection and starts the prepared turn as its task.
     assert workflow.agent_task is not None
     await workflow.agent_task
     message = store.one("SELECT * FROM discussions WHERE id=?", (identity,))

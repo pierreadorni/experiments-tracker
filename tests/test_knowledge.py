@@ -183,7 +183,8 @@ async def test_lost_begin_never_redispatched_and_saved_result_recovers(runtime):
     for _ in range(3):
         await role_step(wf.supervisor)
     assert agent.calls == 1
-    assert wf.supervisor.blocks_dispatch
+    # The uncertain saved turn keeps the one configured turn: nothing else starts.
+    assert wf.agent_pool.turn_capacity() == 0
     # A second independent project command is held behind uncertain inference.
     enqueue(memory, "chat", text="What next?")
     await role_step(wf.supervisor)
@@ -328,7 +329,7 @@ async def test_terminal_failure_releases_slot_and_quota_hold_does_not_dispatch(r
     agent.finish = failed
     assert (await finish(wf.supervisor, identity))["state"] == "failed"
     await role_step(wf.supervisor)
-    assert not wf.supervisor.blocks_dispatch
+    assert wf.agent_pool.turn_capacity() == 1
     assert agent.calls == 1
     await wf.close()
 

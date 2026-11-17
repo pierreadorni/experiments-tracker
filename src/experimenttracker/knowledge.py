@@ -572,15 +572,6 @@ class ProjectSupervisor:
         self.active_id = None
         self.last_reconcile = {}
 
-    @property
-    def blocks_dispatch(self):
-        return bool(
-            self.task
-            or self.memory.store.one(
-                "SELECT 1 FROM project_turns WHERE state IN ('dispatching','running','uncertain')"
-            )
-        )
-
     async def interrupt(self):
         """Interrupt every occupied project turn through its own live process."""
         pool = self.workflow.agent_pool
@@ -667,8 +658,6 @@ class ProjectSupervisor:
 
     async def advance(self):
         wf, memory = self.workflow, self.memory
-        if wf.research.busy:
-            return
         if self.task:
             if not self.task.done():
                 return
@@ -739,11 +728,6 @@ class ProjectSupervisor:
             ):
                 memory.state(row["id"], "failed", error="Weekly synthesis was disabled before dispatch")
                 continue
-            if any(lane.agent_task for lane in wf.lanes) or memory.store.one(
-                "SELECT 1 FROM agent_actions WHERE state IN ('dispatching','running','uncertain')"
-            ):
-                memory.state(row["id"], "waiting", hold_reason="agent_busy")
-                return
             if not wf.agent_ready:
                 memory.state(row["id"], "waiting", hold_reason="agent_unavailable")
                 return
@@ -754,19 +738,20 @@ class ProjectSupervisor:
                 memory.state(row["id"], "failed", error="No completed experiments to incorporate")
                 continue
             wf.propose_agent(
-                lambda _lane, row=row: self.dispatch(row),
+                lambda lane, row=row: self.dispatch(lane, row),
                 role="supervisor",
                 source_table="project_turns",
                 row=row,
                 owner=project_owner(row["project_id"]),
                 priority=CONVERSATION_PRIORITY if row["origin"] != "weekly" else SUPERVISOR_PRIORITY,
+                any_lane=True,
             )
             return
 
-    async def dispatch(self, row):
-        wf, memory, agent = self.workflow, self.memory, self.workflow.agent
+    async def dispatch(self, lane, row):
+        wf, memory, agent = self.workflow, self.memory, lane.agent
         try:
-            await wf.refresh_quota()
+            await lane.refresh_quota()
             if blocked(wf.store):
                 return
             if not wf.agent_pool.quota(origin=row["origin"]).admitted:

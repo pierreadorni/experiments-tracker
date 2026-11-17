@@ -538,8 +538,9 @@ class Workflow:
         self.record_service(CONTROL_SERVICE)
         await self.step_watchdog(now)
         await self.step_control_finish()
-        # One selection after the control roles have prepared their proposals, so a
-        # whole pass competes by priority class instead of by call order.
+        # The one selection of a pass: every role's proposals still offered to the pool
+        # compete by priority class, not by the order their step happened to run. A
+        # proposal prepared after this point is selected by the next pass.
         self.agent_pool.admit()
         await self.step_supervisor()
         await self.step_research()
@@ -567,8 +568,9 @@ class Workflow:
             return
         await self.step_control_advance()
         await self.step_control_finish()
-        # The manual adapter and the production runner both select here, once the
-        # control roles have prepared every proposal of this pass.
+        # The manual adapter and the production runner both select once per pass, after
+        # every role has offered its prepared proposals to the pool. Supervisor and
+        # research proposals prepared after this point are selected by the next pass.
         self.agent_pool.admit()
 
     async def step_control_before_observe(self):
@@ -692,8 +694,6 @@ class Workflow:
             "WHERE e.deleted_at IS NULL AND e.phase NOT IN ('complete','failed','cancelled') "
             "ORDER BY COALESCE(m.priority,0) DESC,e.created_at,e.id"
         )
-        if self.supervisor.blocks_dispatch:
-            rows = []
         # Advance independent state machines under the same owner. Saved intents
         # and the account-wide agent slot remain the dispatch authority.
         for row in rows:
@@ -736,20 +736,17 @@ class Workflow:
         """Discard failed implementations, queue late reports, advance conversation/title/controller."""
         self.discard_failed_implementation()
         queue_late_reports(self)
-        if not self.supervisor.blocks_dispatch:
-            await self.conversation.advance()
-            await self.advance_title()
-            await self.controller.advance()
+        await self.conversation.advance()
+        await self.advance_title()
+        await self.controller.advance()
 
     async def step_supervisor(self):
-        """Advance the project supervisor, then select from what the step prepared."""
+        """Advance the project supervisor; the next control pass selects its proposal."""
         await self.supervisor.advance()
-        self.agent_pool.admit()
 
     async def step_research(self):
-        """Advance the research controller, then select from what the step prepared."""
+        """Advance the research controller; the next control pass selects its proposal."""
         await self.research.advance()
-        self.agent_pool.admit()
 
     async def step_retention(self, now):
         """Prune outbox payloads in bounded batches when the retention window is due."""
@@ -859,14 +856,7 @@ class Workflow:
                 continue
             if not self.title_applicable(exp, action, dispatch=True) or exp["pause_agent"]:
                 continue
-            if (
-                self.agent_task
-                or not self.agent_ready
-                or not self.agent_pool.quota(eid=exp["id"]).admitted
-                or self.store.one(
-                    "SELECT 1 FROM agent_actions WHERE state IN ('dispatching','running','uncertain') LIMIT 1"
-                )
-            ):
+            if not self.agent_ready or not self.agent_pool.quota(eid=exp["id"]).admitted:
                 return
             saved = json.loads(action["input"])
             if not saved.get("model"):
@@ -884,6 +874,7 @@ class Workflow:
                 row=action,
                 owner=experiment_owner(exp["id"]),
                 priority=TITLE_PRIORITY,
+                any_lane=True,
             )
             return
         for row in self.store.rows(
@@ -903,11 +894,7 @@ class Workflow:
             )
             if action and action["state"] != "pending":
                 continue
-            if self.agent_task or not self.agent_ready or not self.agent_pool.quota(eid=exp["id"]).admitted:
-                return
-            if self.store.one(
-                "SELECT 1 FROM agent_actions WHERE state IN ('dispatching','running','uncertain') LIMIT 1"
-            ):
+            if not self.agent_ready or not self.agent_pool.quota(eid=exp["id"]).admitted:
                 return
             if not action:
                 prompt = encode(
@@ -940,6 +927,7 @@ class Workflow:
                 row=action,
                 owner=experiment_owner(exp["id"]),
                 priority=TITLE_PRIORITY,
+                any_lane=True,
             )
             return
 
@@ -955,13 +943,11 @@ class Workflow:
         )
 
     async def dispatch_title(self, action):
-        if (
-            self.research.busy
-            or not self.agent_pool.quota(eid=action["experiment_id"]).admitted
-            or self.research.service.authority(action["experiment_id"], "title")
+        """Persist exact title turn identities; a lost outcome is never retried."""
+        if not self.agent_pool.quota(eid=action["experiment_id"]).admitted or self.research.service.authority(
+            action["experiment_id"], "title"
         ):
             return
-        """Persist exact title turn identities; a lost outcome is never retried."""
         eid = action["experiment_id"]
         expected = action
         try:
@@ -2591,25 +2577,19 @@ class Workflow:
         if not self.agent_ready:
             self.store.update(eid, hold_reason="agent_unavailable", error=self.agent_error)
             return
-        if self.agent_task:
-            self.store.update(eid, hold_reason="agent_busy")
-            return
-        active_sql = (
-            "SELECT 1 FROM agent_actions WHERE id!=? AND state IN ('dispatching','running','uncertain')"
-        )
-        active_args = (action["id"],)
-        if self.config.codex.max_sessions > 1:
-            active_sql += " AND experiment_id=?"
-            active_args += (eid,)
-        if self.store.one(active_sql, active_args):
+        # This experiment's own unrelated turn stays its exclusion; a turn of another
+        # owner consumes only a configured turn, which the pool accounts for.
+        if self.store.one(
+            "SELECT 1 FROM agent_actions WHERE id!=? AND experiment_id=? "
+            "AND state IN ('dispatching','running','uncertain')",
+            (action["id"], eid),
+        ):
             self.store.update(eid, hold_reason="agent_busy")
             return
         if phase == "prepare" and exp["recipe_id"] == "agent_experiment_v1":
             if not await self.prepare_workspace(exp):
                 return
         if legacy_archive.execution_frozen(self.store.experiment(eid)):
-            return
-        if self.research.busy:
             return
         decision = self.agent_pool.quota(eid=eid)
         if not decision.admitted:
