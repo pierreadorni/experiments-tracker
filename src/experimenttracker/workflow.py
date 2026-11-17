@@ -145,6 +145,9 @@ class Workflow:
         self.research = ResearchController(self)
         self.resolver = TurnResolver(self)
         self.submission_lock = asyncio.Lock()
+        # Intent IDs whose external submission is crossing the scheduler boundary right
+        # now. A submission token, not saved state: no observer may decide such an intent.
+        self.submissions_in_flight = set()
         self.pool_owner = self
         self.lanes = [self]
         self.agent_assignments = {}
@@ -270,6 +273,7 @@ class Workflow:
             lane.controller = self.controller
             lane.research = self.research
             lane.submission_lock = self.submission_lock
+            lane.submissions_in_flight = self.submissions_in_flight
             await lane.connect_agent()
             lane.started = True
             self.lanes.append(lane)
@@ -1652,25 +1656,33 @@ class Workflow:
                 ("evaluating" if index == len(compute_stages) - 1 else "training", eid),
             )
             self.store.emit(db, eid, "submission_intent", {"intent_id": intent_id, "stage": stage})
+        # This caller owns the intent from the commit above until the accepted identity
+        # (or the uncertain outcome) is saved: observation and the resolver decide
+        # nothing about an owner whose submission is still in flight.
+        self.submissions_in_flight.add(intent_id)
         try:
             job_id = await scheduler.submit(intent_id, script, root, resources=resources)
+            with self.store.tx() as db:
+                before = db.execute("SELECT * FROM jobs WHERE intent_id=?", (intent_id,)).fetchone()
+                if before is None:
+                    raise RuntimeError("saved submission intent disappeared before scheduler ID save")
+                before = dict(before)
+                if before["job_id"] == job_id:
+                    return {"intent_id": intent_id, "job_id": job_id, "state": before["state"]}
+                if before["state"] != "submitting" or before["job_id"] is not None:
+                    raise RuntimeError(
+                        f"saved submission changed before scheduler ID {job_id} was saved; no overwrite was made"
+                    )
+                db.execute(
+                    "UPDATE jobs SET job_id=?,state='submitted' WHERE intent_id=?", (job_id, intent_id)
+                )
+                job_obligations.sync_job(db, intent_id, before=before)
+                self.store.emit(db, eid, "job_submitted", {"intent_id": intent_id, "job_id": job_id})
         except SubmissionUncertain as exc:
             self.store.update(eid, hold_reason="submission_uncertain", error=str(exc))
             return {"state": "uncertain", "reason": "submission_uncertain"}
-        with self.store.tx() as db:
-            before = db.execute("SELECT * FROM jobs WHERE intent_id=?", (intent_id,)).fetchone()
-            if before is None:
-                raise RuntimeError("saved submission intent disappeared before scheduler ID save")
-            before = dict(before)
-            if before["job_id"] == job_id:
-                return {"intent_id": intent_id, "job_id": job_id, "state": before["state"]}
-            if before["state"] != "submitting" or before["job_id"] is not None:
-                raise RuntimeError(
-                    f"saved submission changed before scheduler ID {job_id} was saved; no overwrite was made"
-                )
-            db.execute("UPDATE jobs SET job_id=?,state='submitted' WHERE intent_id=?", (job_id, intent_id))
-            job_obligations.sync_job(db, intent_id, before=before)
-            self.store.emit(db, eid, "job_submitted", {"intent_id": intent_id, "job_id": job_id})
+        finally:
+            self.submissions_in_flight.discard(intent_id)
         return {"intent_id": intent_id, "job_id": job_id, "state": "submitted"}
 
     async def reconcile_outputs(self, eid):
@@ -1833,7 +1845,11 @@ class Workflow:
                 if not job["job_id"]:
                     # C5 owns every intent without a scheduler identity: adoption,
                     # quarantine or a proven absence is saved here, at the scheduler
-                    # cadence, before advancement may submit for this experiment.
+                    # cadence, before advancement may submit for this experiment. An
+                    # intent whose sbatch is still in flight has an owner that saves
+                    # its own outcome, so this list entry is not observed at all.
+                    if job["intent_id"] in self.submissions_in_flight:
+                        continue
                     job = await resolver.resolve(self, exp, job)
                     if not job:
                         continue

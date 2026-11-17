@@ -39,6 +39,7 @@ class FakeSlurmBackend:
         self.matches = {}  # intent_id -> accepted job IDs, including hidden ones
         self.accepted = []  # {"intent_id", "job_id", "intent_saved"}
         self.submit_calls = []
+        self.reconcile_calls = []
         self.refusals = []  # errors raised by an sbatch attempt before any acceptance
         self.lose_response = False  # accept, then lose the sbatch response
         self.lag = False  # accepted identities stay invisible until reveal()
@@ -66,10 +67,13 @@ class FakeSlurm:
     def __init__(self, backend=None):
         self.backend = backend or FakeSlurmBackend()
         self.saved_intent = None  # per-adapter probe: the owner saved the intent row
+        self.submit_gate = None  # optional FakeGate that parks a submission inside sbatch
 
     async def submit(self, intent_id, script, root, *, resources=None):
         backend = self.backend
         backend.submit_calls.append(intent_id)
+        if self.submit_gate is not None:
+            await self.submit_gate.wait()
         if backend.refusals:
             error = backend.refusals.pop(0)
             if isinstance(error, (RuntimeError, OSError)):
@@ -87,6 +91,7 @@ class FakeSlurm:
         return job_id
 
     async def reconcile(self, intent_id):
+        self.backend.reconcile_calls.append(intent_id)
         error = self.backend.unreachable_intents.get(intent_id)
         if error is not None:
             raise error

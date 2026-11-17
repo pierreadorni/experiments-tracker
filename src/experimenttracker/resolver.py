@@ -6,6 +6,10 @@ intent in ``jobs.state='submitting' AND job_id IS NULL``, before admission may
 consider another submission for the experiment. Observers that only record
 scheduler facts (cancellation, archived settlement) call :func:`adopt` directly.
 
+An intent whose external submission is still in flight has an owner that saves its
+own outcome; :func:`resolve` decides nothing about it. It also re-reads the saved
+row, so a list snapshot taken before that outcome is not decided either.
+
 ``Workflow.tick`` runs :class:`TurnResolver` after the saved dispatch tasks have
 been drained and before any experiment advances, so no live task owns a row it
 decides and a continuation it queues is admitted in that same tick.
@@ -66,21 +70,38 @@ def adopt(store, eid, job, job_id, *, observer):
     return store.one("SELECT * FROM jobs WHERE intent_id=?", (intent_id,))
 
 
+def _undecided(workflow, intent_id):
+    """The saved intent while it still needs a resolver decision.
+
+    An intent whose submission is still in flight belongs to that caller, and a row
+    that already got an identity or left ``submitting`` decides nothing: deciding
+    from a stale snapshot would write a false hold or an absence.
+    """
+    if intent_id in workflow.submissions_in_flight:
+        return None
+    job = workflow.store.one("SELECT * FROM jobs WHERE intent_id=?", (intent_id,))
+    if job is None or job["state"] != "submitting" or job["job_id"] is not None:
+        return None
+    return job
+
+
 async def resolve(workflow, exp, job):
     """Decide one active intent without a scheduler identity.
 
     Returns the saved job row when exactly one match was adopted, otherwise None.
     """
     store, eid = workflow.store, exp["id"]
+    job = _undecided(workflow, job["intent_id"])
+    if job is None:
+        return None
     try:
         job_id = await workflow.scheduler_for(exp, job).reconcile(job["intent_id"])
     except SubmissionUncertain as exc:
-        return _quarantine(store, eid, job, str(exc))
+        return _quarantine(workflow, eid, job, str(exc))
     except (RuntimeError, TimeoutError, OSError) as exc:
         # Unreadable scheduler: keep waiting. Remote reads are cached for the
         # configured poll interval, so repeats stay bounded without new state.
-        store.update(eid, hold_reason="submission_uncertain", error=str(exc))
-        return None
+        return _waiting(workflow, eid, job, str(exc))
     if job_id:
         saved = adopt(store, eid, job, job_id, observer="observe_jobs")
         if saved:
@@ -91,13 +112,23 @@ async def resolve(workflow, exp, job):
     # The accounting query covers seven days; older intents could have aged out,
     # so absence is provable only inside that window.
     if waited <= lag or waited > ACCOUNTING_WINDOW_SECONDS:
-        store.update(eid, hold_reason="submission_uncertain", error=WAITING_ERROR)
-        return None
+        return _waiting(workflow, eid, job, WAITING_ERROR)
     return _not_submitted(store, eid, job, lag)
 
 
-def _quarantine(store, eid, job, error):
+def _waiting(workflow, eid, job, error):
+    """Hold the intent for another observation, unless its owner decided it meanwhile."""
+    if _undecided(workflow, job["intent_id"]) is None:
+        return None
+    workflow.store.update(eid, hold_reason="submission_uncertain", error=error)
+    return None
+
+
+def _quarantine(workflow, eid, job, error):
     """Several exact matches: keep the intent and leave the owner to reconcile it."""
+    store = workflow.store
+    if _undecided(workflow, job["intent_id"]) is None:
+        return None
     saved = store.experiment(eid)
     recorded = (saved["hold_reason"], saved["error"]) == ("submission_uncertain", error)
     store.update(eid, hold_reason="submission_uncertain", error=error)
