@@ -210,6 +210,22 @@ async def test_one_integrator_turn_resolves_the_exact_conflict_and_returns_to_th
 
 
 @pytest.mark.asyncio
+async def test_paused_experiment_does_not_start_an_integrator_turn(runtime, tmp_path):
+    store, _, _, workflow = runtime
+    repo, candidate = conflicted(tmp_path)
+    eid = save_conflict(store, repo, candidate)
+    store.update(eid, pause_agent=True)
+    agent = scripted(workflow, ScriptedAgent(result={"summary": "unused"}))
+
+    await workflow.integration_resolver.advance()
+    workflow.agent_pool.admit()
+
+    assert workflow.agent_pool.primary.agent_task is None
+    assert agent.sessions == []
+    assert action(store)["state"] == "pending"
+
+
+@pytest.mark.asyncio
 async def test_quota_denial_never_starts_the_integrator_turn(runtime, tmp_path, monkeypatch):
     store, _, _, workflow = runtime
     repo, candidate = conflicted(tmp_path)

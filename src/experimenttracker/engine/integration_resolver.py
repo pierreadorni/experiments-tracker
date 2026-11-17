@@ -24,6 +24,7 @@ from ..agent_pool import EXPERIMENT_PRIORITY, experiment_owner
 from ..codex_client import NeedsAttention
 from ..config import StrictModel
 from ..core import action_obligations
+from ..legacy_archive import execution_frozen
 from ..store import encode
 from ..workspaces import WorkspaceUnavailable
 from . import integration_queue as queue
@@ -216,6 +217,7 @@ class IntegrationResolver:
         request = view["request"]
         if (
             experiment["deleted_at"]
+            or execution_frozen(experiment)
             or experiment["phase"] != "complete"
             or experiment["contract"].get("dont_merge")
             or request.get("experiment_id") != eid
@@ -241,6 +243,9 @@ class IntegrationResolver:
                 error="the saved integration conflict changed before the turn",
                 expected=action,
             )
+            return
+        experiment = self._experiment(action["experiment_id"], view)
+        if experiment is None or experiment["pause_agent"]:
             return
         self.workflow.propose_agent(
             lambda slot, action=action: self.dispatch(slot, action),
@@ -269,7 +274,9 @@ class IntegrationResolver:
             if not _exact(view, request_id, data["candidate"]):
                 self._fail(action, "the saved integration conflict changed before dispatch")
                 return
-            experiment = self.store.experiment(action["experiment_id"])
+            experiment = self._experiment(action["experiment_id"], view)
+            if experiment is None or experiment["pause_agent"]:
+                return
             value = await asyncio.to_thread(resolver_input, view["repo"], data["candidate"], experiment)
             prompt = _prompt(request_id, value)
             workspace = Path(data["candidate"]["worktree"])
@@ -280,6 +287,9 @@ class IntegrationResolver:
                 current = queue.saved(db, request_id)
                 if not _exact(current, request_id, data["candidate"]):
                     raise WorkspaceUnavailable("the saved integration conflict changed before dispatch")
+                experiment = self._experiment(action["experiment_id"], current)
+                if experiment is None or experiment["pause_agent"]:
+                    return
                 expected = action_obligations.expected_saved(db, expected)
                 expected = action_obligations.transition(
                     db,
