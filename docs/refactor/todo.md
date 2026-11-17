@@ -325,14 +325,15 @@ and archived fixtures still render their report via the API.
   No new schema/config/reasons or changed scientific execution semantics.
 - Before implementation, inspect and split the dispatch/readback callback seams
   into bounded cards; keep the mixed-role matrix and full suite green. T1 remains
-  incomplete until this retirement and the research binding-denial repair pass.
+  incomplete until this retirement passes. The research binding-denial repair
+  passed the full suite and is recorded below.
 
 ### [~] T1.6c Mixed-role recovery scenarios (C4, C12) · S · M
 - [Approved matrix](notes/t1.6c-recovery-scenarios-design.md): c-1 overlap/owner
   exclusion, c-2 restart/debt/routing, c-3 binding quota/shutdown; bounded cards.
 - Status: [x] c-1 shared-backend overlap, one-slot and typed-owner scenarios;
   [x] c-2 restart/debt/routing; [x] c-3 binding quota/interruption/shutdown.
-  Final acceptance awaits the research binding-denial repair and a-4 retirement.
+  Final acceptance awaits a-4 retirement; research binding-denial repair is complete.
 - Depends on T1.6b and the T1.2b harness. Cover experiment plus research, experiment
   plus supervisor, discussion plus unrelated experiment, single-slot and same-owner
   exclusion, lost outcome/restart, callback/reply routing, quota interrupts and
@@ -621,3 +622,5 @@ Record completed tasks here: `date · task · commit · notes`.
 2026-11-17 · T1.6c-2 · 91723b8 · DeepSeek Flash implementation, coordinator review. Four synthetic recovery scenarios preserve accepted-then-lost experiment/project turns across restart (no invented project lost-start adoption), prove 2→1/debt-two negative capacity with exact readback and eventual positive progress, keep unreadable turns counted while independent work uses remaining capacity, and exercise the production CodexAgent callback/request generation path against an in-memory stub transport. Normal answers reply once to the originating connection; obsolete answers expire, wrong-connection requests fail closed, other-owner state/activity unchanged. Shared fake logs read_thread/read_turn/interrupt/reply; MultiScenario.restart supports shrink. Direct-row fixtures are labeled as accounting/routing evidence, not dispatch integration. Production source 0; tests +602/−2 (604 changed lines, reviewed overrun for four scenarios plus stub). Ruff and all 858 Python tests pass (449.92s). c-3 remains; JSONL/process behavior and live managed-runtime acceptance are not claimed. No live activation.
 
 2026-11-17 · T1.6c-3 · 46206f6 · DeepSeek Flash implementation, coordinator review. Test-only shared-backend scenarios cover post-session fresh quota denial on experiment/project dispatch, exact per-process interrupts across two occupied role slots, unreadable outcomes surviving fresh quota and client shutdown, and full-slot shutdown with experiment+weekly/research occupants (closing before role shutdown, each transport closed once, saved identities unchanged after store close). Production source 0; tests +407/−0. Ruff and all 864 Python tests pass (459.13s). Audit found two open acceptance issues: research quota-only binding denial supersedes instead of retaining the pending action (repair in progress), and cloned Workflow transport lanes remain despite owner §7 retirement requirement (new explicit a-4 card). Do not claim T1 complete. No live activation.
+
+2026-11-17 · T1.6b-2 acceptance repair · b880ac6 · DeepSeek Flash implementation, coordinator review. Research dispatch separates post-session authority supersession from quota denial: quota alone preserves the same pending decision and records the existing inference_hold transaction via a shared hold helper; fresh quota later begins that exact decision once. Authority/control-revision changes still supersede. New shared-backend gated-session regression fails on the old source, asserts released claim/busy flags, zero begin on denial and exact later progress. Source +15/−7; tests +80/−1 (103 changed lines). Ruff and all 865 Python tests pass (505.25s). Only explicit cloned-Workflow retirement a-4 remains before final T1 acceptance. No live activation.
