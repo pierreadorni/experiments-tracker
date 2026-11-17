@@ -428,6 +428,10 @@ def shared_fake_slots():
             await super().reply(pending)
             calls.append(self.called("reply", pending=pending["id"], rpc=pending.get("rpc_id")))
 
+        async def close(self):
+            calls.append(self.called("close"))
+            await super().close()
+
     return SyntheticSlots(backend=backend, agent=SharedFakeCodex, calls=calls)
 
 
