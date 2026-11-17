@@ -84,16 +84,20 @@ async def queue(wf, exp):
     # Failures are established by the ordinary exact observer (or saved agent
     # turn). An uncertain dispatch never creates a failure incident.
     revision = exp["evidence_revision"] + 1
+    branch = wf.workspaces.branch(eid)
     root = wf.projects.base_root(eid) / "repair-candidates" / str(revision)
     work, project = root / "work", root / "project"
     original_work = wf.working_directory(exp)
     context = wf.project_context(exp)
     plan = exp["snapshot"]["plan"]
     total = 0
-    for names, source, target in (
-        (plan["files"], original_work, work),
-        (plan.get("project_files", []), context["checkout"], project),
-    ):
+    copies = [(plan["files"], original_work, work)]
+    if not branch:
+        # A named branch worktree is already this experiment's private checkout, so its
+        # repair edits stay in the branch the backend commits. A shared project folder
+        # needs a candidate copy so the original sources are not edited mid-repair.
+        copies.append((plan.get("project_files", []), context["checkout"], project))
+    for names, source, target in copies:
         target.mkdir(parents=True, exist_ok=True)
         for name in names:
             value = iteration.bounded_bytes(
@@ -133,7 +137,8 @@ async def queue(wf, exp):
         "original_work": str(original_work),
     }
     contract["working_directory"] = str(work)
-    contract["repair_project"] = str(project)
+    if not branch:
+        contract["repair_project"] = str(project)
     contract["repair_count"] = contract.get("repair_count", 0) + 1
     review = exp["plan_review"]
     if review:

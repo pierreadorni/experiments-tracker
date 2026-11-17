@@ -1,8 +1,9 @@
 """Named experiment branches, bounded commits and durable job source exports (T3.1).
 
 The module owns repository-local Git state only. Callers save the identity returned by
-``create`` in ``experiment_branches`` and decide when a commit, export or pin happens;
-nothing here dispatches work or writes project registrations.
+``plan`` in ``experiment_branches`` and pass it to ``create_planned``, so the branch,
+base commit and path are fixed before Git changes state. Nothing here dispatches work
+or writes project registrations.
 """
 
 import os
@@ -69,23 +70,32 @@ def _ref_commit(repo, ref):
 
 
 def _worktrees(repo):
-    result, path, branch = {}, None, None
+    """Registered worktrees by real path, each with its branch and lock reason."""
+    result, path, branch, lock = {}, None, None, None
     for field in git(repo, "worktree", "list", "--porcelain", "-z").decode().split("\0"):
         if not field:
             if path is not None:
-                result[Path(os.path.realpath(path))] = branch
-            path, branch = None, None
+                result[Path(os.path.realpath(path))] = (branch, lock)
+            path, branch, lock = None, None, None
         elif field.startswith("worktree "):
             path = field[len("worktree ") :]
         elif field.startswith("branch "):
             branch = field[len("branch ") :]
+        elif field == "locked":
+            lock = ""
+        elif field.startswith("locked "):
+            lock = field[len("locked ") :]
     if path is not None:
-        result[Path(os.path.realpath(path))] = branch
+        result[Path(os.path.realpath(path))] = (branch, lock)
     return result
 
 
+def _at(repo, target):
+    return _worktrees(repo).get(Path(os.path.realpath(target)), (None, None))
+
+
 def _branch_at(repo, target):
-    return _worktrees(repo).get(Path(os.path.realpath(target)))
+    return _at(repo, target)[0]
 
 
 def _today():
@@ -109,7 +119,7 @@ def _exclude_worktrees(repo):
 
 
 def plan(repo, slug, base="main"):
-    """Return the validated identity ``create`` would use, without changing Git state."""
+    """Return the validated identity to save before creating, without changing Git state."""
     root = _main_checkout(repo)
     if not isinstance(slug, str) or not _SLUG.fullmatch(slug):
         raise WorkspaceUnavailable("Experiment slugs must be one safe path component")
@@ -123,40 +133,73 @@ def plan(repo, slug, base="main"):
     }
 
 
-def verify(repo, identity):
-    """Confirm a saved identity names the exact branch and worktree; never adopt."""
-    root = _main_checkout(repo)
+def branch_eligible(folder, base="main"):
+    """True when ``folder`` is a main checkout that has the base branch to start from."""
+    try:
+        return bool(_commit(_main_checkout(folder), base))
+    except WorkspaceUnavailable:
+        return False
+
+
+def _identity(root, identity):
     try:
         branch = identity["branch"]
         worktree = Path(identity["worktree"])
         base_commit = identity["base_commit"]
     except (KeyError, TypeError):
         raise WorkspaceUnavailable("A saved experiment branch identity is required") from None
+    named = (
+        re.fullmatch(re.escape(BRANCH_PREFIX) + r"(\d{8})-(.+)", branch) if isinstance(branch, str) else None
+    )
     if (
-        not isinstance(branch, str)
-        or not branch.startswith(BRANCH_PREFIX)
+        not named
+        or not _SLUG.fullmatch(worktree.name)
+        or named.group(2) != worktree.name
         or worktree.parent != root / WORKTREES
         or identity.get("repo") not in (None, str(root))
     ):
         raise WorkspaceUnavailable("The saved experiment branch identity is not safe")
+    return branch, worktree, base_commit
+
+
+def verify(repo, identity, lock=None):
+    """Confirm a saved identity names the exact branch and worktree; never adopt or reset."""
+    root = _main_checkout(repo)
+    branch, worktree, base_commit = _identity(root, identity)
     if _branch_at(root, worktree) != f"refs/heads/{branch}":
         raise WorkspaceUnavailable("The exact experiment branch worktree is missing")
+    if worktree.is_symlink() or not worktree.is_dir():
+        raise WorkspaceUnavailable("The saved experiment worktree is missing or replaced")
+    if lock is not None and _at(root, worktree)[1] != lock:
+        raise WorkspaceUnavailable("The exact experiment worktree lock identity changed")
     _commit(root, base_commit)
     head = git(worktree, "rev-parse", "HEAD").decode().strip()
+    if identity.get("head_commit") not in (None, head):
+        raise WorkspaceUnavailable("The experiment worktree HEAD is not its saved commit")
     return {**identity, "head_commit": head}
 
 
-def create(repo, slug, base="main"):
-    """Create ``exp/<date>-<slug>`` at ``<repo>/.worktrees/<slug>`` from ``base``.
+def create_planned(identity, lock=None):
+    """Create exactly the identity its caller saved before Git changed state.
 
-    Returns the exact identity to save in ``experiment_branches``. Existing branches or
-    worktree paths are never adopted or overwritten.
+    Repeating the call for the same identity only confirms the exact branch worktree,
+    so a lost creation response reconciles instead of planning another branch. Another
+    branch, an occupied path or a foreign worktree is refused, never adopted or reset.
     """
-    identity = plan(repo, slug, base)
-    root = Path(identity["repo"])
-    branch, worktree, base_commit = identity["branch"], Path(identity["worktree"]), identity["base_commit"]
-    if _ref_commit(root, f"refs/heads/{branch}") or _branch_at(root, worktree) is not None:
-        raise WorkspaceUnavailable("The named experiment branch or worktree already exists")
+    try:
+        root = _main_checkout(identity["repo"])
+    except (KeyError, TypeError):
+        raise WorkspaceUnavailable("A saved experiment branch identity is required") from None
+    branch, worktree, base_commit = _identity(root, identity)
+    if identity.get("head_commit") not in (None, base_commit):
+        raise WorkspaceUnavailable("A new experiment branch starts at its saved base commit")
+    registered_branch = _branch_at(root, worktree)
+    if registered_branch == f"refs/heads/{branch}":
+        return verify(root, identity, lock=lock)
+    if registered_branch is not None:
+        raise WorkspaceUnavailable("The saved experiment worktree path belongs to another branch")
+    if _ref_commit(root, f"refs/heads/{branch}"):
+        raise WorkspaceUnavailable("The saved experiment branch already exists without its worktree")
     parent = root / WORKTREES
     if worktree.exists() or worktree.is_symlink():
         raise WorkspaceUnavailable("The intended experiment worktree path is already occupied")
@@ -164,13 +207,30 @@ def create(repo, slug, base="main"):
         raise WorkspaceUnavailable("The experiment worktree parent is not a safe directory")
     _exclude_worktrees(root)
     parent.mkdir(parents=True, exist_ok=True)
-    git(root, "worktree", "add", "-b", branch, str(worktree), base_commit)
+    locked = ["--lock", "--reason", lock] if lock else []
+    git(root, "worktree", "add", *locked, "-b", branch, str(worktree), base_commit)
     if _branch_at(root, worktree) != f"refs/heads/{branch}":
         raise WorkspaceUnavailable("Git did not register the exact experiment branch worktree")
     head = git(worktree, "rev-parse", "HEAD").decode().strip()
     if head != base_commit:
         raise WorkspaceUnavailable("The new experiment worktree does not start at the requested base")
-    return {**identity, "head_commit": head}
+    return verify(root, {**identity, "head_commit": head}, lock=lock)
+
+
+def create(repo, slug, base="main"):
+    """Create ``exp/<date>-<slug>`` at ``<repo>/.worktrees/<slug>`` from ``base``.
+
+    Returns the identity. Existing branches or worktree paths are never adopted or
+    overwritten; a durable caller saves ``plan`` output and uses ``create_planned``.
+    """
+    identity = plan(repo, slug, base)
+    root = Path(identity["repo"])
+    if (
+        _ref_commit(root, f"refs/heads/{identity['branch']}")
+        or _branch_at(root, Path(identity["worktree"])) is not None
+    ):
+        raise WorkspaceUnavailable("The named experiment branch or worktree already exists")
+    return create_planned(identity)
 
 
 def _allowed(folder, name, limit):

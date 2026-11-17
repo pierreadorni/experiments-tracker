@@ -10,12 +10,18 @@ from test_projects import register
 
 from experimenttracker.codex_client import DemoAgent
 from experimenttracker.slurm import Observation
+from experimenttracker.store import encode
 from experimenttracker.workflow import Workflow
 from experimenttracker.workspaces import Workspaces, WorkspaceUnavailable, git, initialize_project
 
 
 def experiment(store):
-    return store.command(
+    """A saved pre-migration experiment keeps the detached/shared checkout it started on.
+
+    T3.3 marks newly created Git-backed experiments for a named branch worktree. This
+    record is saved before that rollout, so the legacy lifecycle below remains covered.
+    """
+    eid = store.command(
         uuid4(),
         "create",
         {
@@ -24,6 +30,12 @@ def experiment(store):
             "project_id": "anyup-rs",
         },
     )["experiment_id"]
+    exp = store.experiment(eid)
+    assert exp["contract"]["execution_contract"] == 3
+    contract = {key: value for key, value in exp["contract"].items() if key != "branch_workspace"}
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(contract), eid))
+    return eid
 
 
 def source_repo(config, store, tmp_path):

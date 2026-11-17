@@ -36,6 +36,18 @@ class WorkspaceUnavailable(ProjectUnavailable):
     pass
 
 
+_BRANCH_FIELDS = ("repo", "branch", "worktree", "base_commit", "head_commit")
+
+
+def _branch_identity(row):
+    return {field: row[field] for field in _BRANCH_FIELDS}
+
+
+def _branch_lock(eid):
+    """The exact worktree lock reason for one experiment's named branch."""
+    return "experimenttracker:" + eid
+
+
 def git(folder, *args):
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env.update(GIT_TERMINAL_PROMPT="0", GIT_LFS_SKIP_SMUDGE="1")
@@ -182,8 +194,72 @@ class Workspaces:
                 raise WorkspaceUnavailable("The saved workspace creation needs reconciliation")
             self.validate(row)
             return row["folder"]
+        if self.branch(eid):
+            return self.branch_checkout(eid)
         workspace = self.projects.workspace(eid)
         return workspace["folder"] if workspace else None
+
+    def branch(self, eid):
+        return self.store.one("SELECT * FROM experiment_branches WHERE experiment_id=?", (eid,))
+
+    def branch_checkout(self, eid):
+        """The verified named-branch worktree; a missing, replaced or foreign one is refused."""
+        from .engine import gitworkspace
+
+        row = self.branch(eid)
+        if not row:
+            raise WorkspaceUnavailable("The saved experiment branch identity is missing")
+        return gitworkspace.verify(row["repo"], _branch_identity(row), lock=_branch_lock(eid))["worktree"]
+
+    def isolated(self, eid):
+        """True when this experiment edits its own checkout instead of the project folder."""
+        return bool(self.row(eid) or self.branch(eid))
+
+    def record_branch(self, eid):
+        """Plan and save the exact branch identity before Git changes state."""
+        from .engine import gitworkspace
+
+        workspace = self.projects.workspace(eid)
+        if not workspace:
+            raise WorkspaceUnavailable("Branch worktrees require a registered writable project")
+        planned = gitworkspace.plan(workspace["folder"], eid)
+        now = clock.now()
+        with self.store.tx() as db:
+            inserted = db.execute(
+                "INSERT INTO experiment_branches(experiment_id,repo,branch,worktree,base_commit,head_commit,state,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,'active',?,?) ON CONFLICT(experiment_id) DO NOTHING",
+                (eid, *(planned[field] for field in _BRANCH_FIELDS), now, now),
+            ).rowcount
+            if inserted:
+                self.store.emit(
+                    db,
+                    eid,
+                    "workspace_isolation_queued",
+                    {"kind": "branch", "base_commit": planned["base_commit"]},
+                )
+                self.store.emit(db, eid, "workspace_creation_intent", {"kind": "branch"})
+        return self.branch(eid)
+
+    def ensure_branch(self, eid):
+        """Create exactly the saved named branch once, then only verify it.
+
+        Nothing is reset or adopted: a worktree created by an interrupted call is
+        confirmed by its saved identity, and anything else raises for inspection.
+        """
+        from .engine import gitworkspace
+
+        row = self.branch(eid) or self.record_branch(eid)
+        identity = _branch_identity(row)
+        ready = "SELECT 1 FROM events WHERE experiment_id=? AND kind='workspace_isolated'"
+        if self.store.one(ready, (eid,)):
+            return self.branch_checkout(eid)
+        created = gitworkspace.create_planned(identity, lock=_branch_lock(eid))
+        with self.store.tx() as db:
+            if not db.execute(ready, (eid,)).fetchone():
+                self.store.emit(
+                    db, eid, "workspace_isolated", {"kind": "branch", "base_commit": row["base_commit"]}
+                )
+        return created["worktree"]
 
     def ensure(self, eid):
         row = self.row(eid)

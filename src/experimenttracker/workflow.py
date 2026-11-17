@@ -1137,7 +1137,7 @@ class Workflow:
                 )
             ):
                 continue
-            if not self.workspaces.row(eid):
+            if not self.workspaces.isolated(eid):
                 project_id = exp["contract"].get("project", {}).get("id", "test-project")
                 # Queue one editor at a time for an existing shared checkout.
                 # Simultaneously reactivating two failed editors would make
@@ -1150,7 +1150,7 @@ class Workflow:
                     (eid,),
                 )
                 if any(
-                    not self.workspaces.row(peer["id"])
+                    not self.workspaces.isolated(peer["id"])
                     and self.store.experiment(peer["id"])["contract"]
                     .get("project", {})
                     .get("id", "test-project")
@@ -2598,6 +2598,15 @@ class Workflow:
         if early_repair.preparing(exp):
             return True
         eid = exp["id"]
+        if exp["contract"].get("branch_workspace"):
+            # Creation saved this decision, so the named branch checkout exists before
+            # the first dispatch and a busy project never gates it.
+            try:
+                await asyncio.to_thread(self.workspaces.ensure_branch, eid)
+                return True
+            except WorkspaceUnavailable as exc:
+                self.store.update(eid, hold_reason="workspace_unavailable", error=str(exc))
+                return False
         if self.workspaces.row(eid):
             try:
                 await asyncio.to_thread(self.workspaces.ensure, eid)
@@ -2610,7 +2619,7 @@ class Workflow:
             self.store.experiment(row["id"])["contract"].get("project", {}).get("id", "test-project")
             == project_id
             # An isolated run edits its own checkout, not this project's folder.
-            and not self.workspaces.row(row["id"])
+            and not self.workspaces.isolated(row["id"])
             for row in self.store.rows(
                 "SELECT e.id FROM experiments e WHERE e.id!=? AND e.deleted_at IS NULL "
                 "AND ((e.snapshot IS NOT NULL OR EXISTS (SELECT 1 FROM agent_actions a "
@@ -2806,7 +2815,10 @@ class Workflow:
         identity = exp["contract"].get("project", {"id": "test-project", "name": "Test project"})
         saved = self.projects.workspace(exp["id"])
         project = self.store.projects.get(identity["id"])
-        if saved:
+        branch = self.workspaces.branch(exp["id"])
+        if branch:
+            checkout = self.workspaces.branch_checkout(exp["id"])
+        elif saved:
             checkout = self.workspaces.checkout(exp["id"])
         elif project and project.public()["available"]:
             checkout = str(project.checkout.resolve()) if project.checkout else None
@@ -2818,9 +2830,9 @@ class Workflow:
             **identity,
             "checkout": candidate or checkout,
             "access": "read-write" if saved else "read-only",
-            "isolation": "worktree" if isolated else "shared",
-            "source_checkout": saved["folder"] if saved else checkout,
-            "base_commit": isolated["head"] if isolated else None,
+            "isolation": "worktree" if isolated or branch else "shared",
+            "source_checkout": branch["repo"] if branch else saved["folder"] if saved else checkout,
+            "base_commit": branch["head_commit"] if branch else isolated["head"] if isolated else None,
             "read_only_repositories": json.loads(isolated["baseline"]).get("read_only_repositories", [])
             if isolated
             else [],
@@ -3461,7 +3473,7 @@ class Workflow:
                 turn_options["effort"] = "low"
             checkout = exp["contract"].get("repair_project") or self.workspaces.checkout(eid)
             project_workspace = Path(checkout) if checkout else None
-            isolated = self.workspaces.row(eid)
+            isolated = self.workspaces.isolated(eid)
             if isolated and action["phase"] == "prepare":
                 prompt = await asyncio.to_thread(self.prompt, exp, "prepare")
                 with self.store.tx() as db:

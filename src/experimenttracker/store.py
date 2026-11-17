@@ -979,10 +979,30 @@ class Store:
             report_obligations.sync_report(db, eid, report["version"])
         self.emit(db, eid, "experiment_cancel_requested")
 
+    def branch_workspace_for(self, payload):
+        """Decide once, at creation, whether this experiment edits a named branch worktree.
+
+        The answer is saved in the contract, so a later project or busy state cannot move
+        an existing run. Only a writable Git project with the main base branch takes this
+        path; a non-Git folder, an explicit shared workspace and the synthetic demo
+        project keep their old checkout.
+        """
+        from .engine.gitworkspace import branch_eligible
+
+        project = self.projects.get(payload.get("project_id") or "test-project")
+        if not project or not project.writable or not project.checkout:
+            return False
+        if payload.get("workspace_mode", "auto") == "shared":
+            return False
+        return branch_eligible(project.checkout)
+
     def command(self, request_id, kind, payload, *, eid=None, origin="local", experiment_id=None, _db=None):
         """Apply a validated user command atomically. Stable request IDs include a payload conflict check."""
         request_id = str(request_id)
         wire = encode(payload)
+        # The checkout is decided once, at creation, and saved in the contract: an
+        # existing run keeps its own path and a busy project never decides it.
+        branch_workspace = kind == "create" and self.branch_workspace_for(payload)
         with contextlib.nullcontext(_db) if _db is not None else self.tx() as db:
             prior = db.execute("SELECT * FROM commands WHERE request_id=?", (request_id,)).fetchone()
             if prior:
@@ -1061,6 +1081,8 @@ class Store:
                     "execution_contract": 3,
                     "workspace_mode": payload.get("workspace_mode", "auto"),
                 }
+                if branch_workspace:
+                    contract["branch_workspace"] = True
                 from .execution_settings import ExecutionSettings
 
                 preferences = db.execute(
