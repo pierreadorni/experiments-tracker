@@ -21,17 +21,20 @@ from ..workflow import (
     OBSERVE_SERVICE,
     RETENTION_SECONDS,
 )
+from . import integration_runtime
 
 log = logging.getLogger(__name__)
 ENGINE_ERROR = "executor loop failed; inspect daemon logs"
+INTEGRATION_SECONDS = 15  # Between drained integration requests (Git and checks)
 # The maintenance gate keeps the sequential positions: observation, input replies and
-# agent draining continue before it, and these steps stay skipped after it. The control
-# task applies the same gate to its own advancement region.
-GATED = ("watchdog", "research", "supervisor", "retention", "backup")
+# agent draining continue before it, and these steps stay skipped after it. Integration
+# joins them because it fast-forwards the project base checkout. The control task
+# applies the same gate to its own advancement region.
+GATED = ("watchdog", "research", "supervisor", "integration", "retention", "backup")
 # Cancelling a task that awaits ``asyncio.to_thread`` leaves its thread running, so the
-# retention loop is awaited instead of cancelled: the store must never close while a
-# pass it owns can still write.
-THREADED = ("retention",)
+# retention and integration loops are awaited instead of cancelled: the store must never
+# close while a pass they own can still write or fast-forward a checkout.
+THREADED = ("retention", "integration")
 
 
 class Runner:
@@ -39,7 +42,7 @@ class Runner:
 
     ``control``, ``research`` and ``supervisor`` hold one primary-agent lock: they
     mutate dispatch state, so their check-then-act regions stay exclusive across
-    awaits. Observation, the watchdog, retention and backup never take it.
+    awaits. Observation, the watchdog, integration, retention and backup never take it.
     """
 
     def __init__(self, workflow):
@@ -57,6 +60,7 @@ class Runner:
             "watchdog": self.watchdog,
             "research": self.research,
             "supervisor": self.supervisor,
+            "integration": self.integration,
             "retention": self.retention,
             "backup": self.backup,
         }
@@ -70,6 +74,7 @@ class Runner:
             "watchdog": pacing,
             "research": pacing,
             "supervisor": pacing,
+            "integration": INTEGRATION_SECONDS,
             "retention": RETENTION_SECONDS,
             "backup": BACKUP_SECONDS,
         }
@@ -168,6 +173,10 @@ class Runner:
     async def supervisor(self):
         async with self.lock:
             await self.workflow.step_supervisor()
+
+    async def integration(self):
+        """Drive already queued integration requests, one repository at a time."""
+        await asyncio.to_thread(integration_runtime.run, self.workflow.workspaces)
 
     async def retention(self):
         await self.workflow.step_retention(clock.now())

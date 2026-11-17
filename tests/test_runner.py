@@ -10,8 +10,9 @@ from scenario import FakeClock, FakeGate
 
 from experimenttracker import retention
 from experimenttracker.api import create_app
-from experimenttracker.engine.runner import Runner
-from experimenttracker.workflow import CONTROL_SERVICE, OBSERVE_SERVICE
+from experimenttracker.engine import integration_runtime
+from experimenttracker.engine.runner import INTEGRATION_SECONDS, Runner
+from experimenttracker.workflow import CONTROL_SERVICE, HEALTH_COUNTED_STEPS, OBSERVE_SERVICE
 
 # The sequential positions around the omitted observation, then the gated region.
 CONTROL_FRAGMENTS = [
@@ -296,3 +297,57 @@ async def test_heartbeat_is_the_oldest_counted_success_and_excludes_backup(runti
     clock.advance(120)
     assert runner.health() == (tick, None)  # backup was already a background task
     await workflow.backup_task
+
+
+async def test_integration_pass_is_gated_threaded_and_health_neutral(runtime, monkeypatch):
+    store, _, _, workflow = runtime
+    calls, threads = [], []
+
+    def record(workspaces):
+        calls.append(workspaces)
+        threads.append(threading.current_thread().name)
+
+    monkeypatch.setattr(integration_runtime, "run", record)
+    runner = Runner(workflow)
+    assert runner.periods()["integration"] == INTEGRATION_SECONDS
+    block_maintenance(store)
+
+    assert await runner.run_once("integration") is True
+    assert calls == []
+
+    with store.tx() as db:
+        db.execute("UPDATE maintenance SET state='complete'")
+    assert await runner.run_once("integration") is True
+    # The driver gets the same Workspaces instance the rest of the workflow uses.
+    assert calls == [workflow.workspaces]
+    # Git and the project check block, so the pass runs off the event loop.
+    assert threads and threads[0] != threading.current_thread().name
+    # A queued integration is drained work, not part of the counted heartbeat.
+    assert "integration" not in HEALTH_COUNTED_STEPS
+    assert runner.health() == (None, None)
+
+
+async def test_stop_waits_for_a_threaded_integration_pass(runtime, monkeypatch):
+    store, _, _, workflow = runtime
+    started, finished, release = threading.Event(), threading.Event(), threading.Event()
+
+    def parked(workspaces):
+        started.set()
+        assert release.wait(10)  # failure detector, never a progress condition
+        finished.set()
+
+    monkeypatch.setattr(integration_runtime, "run", parked)
+    runner = Runner(workflow)
+    slow_periods(runner, monkeypatch)
+    await runner.start()
+
+    stop = asyncio.create_task(runner.stop())
+    assert await asyncio.to_thread(started.wait, 10)
+    # A cancelled task would leave its thread fast-forwarding a checkout; stop waits.
+    assert not stop.done()
+    release.set()
+    async with asyncio.timeout(10):
+        await stop
+
+    assert finished.is_set()
+    assert runner.tasks == {}
