@@ -312,6 +312,15 @@ async def test_completed_turn_replays_after_restart_with_one_reply_and_one_repor
     await workflow.agent_task
     action = store.one("SELECT * FROM agent_actions WHERE phase=?", ("discuss:" + identity,))
     assert action["state"] == "completed"
+    prefix = f"agent-action:{action['id']}:"
+    episodes = store.rows(
+        "SELECT * FROM obligations WHERE substr(id,1,?)=? ORDER BY id", (len(prefix), prefix)
+    )
+    assert [(row["owner"], row["kind"], row["state"]) for row in episodes] == [
+        ("backend", "agent_turn", "abandoned"),
+        ("backend", "reconcile", "abandoned"),
+        ("agent", "agent_turn", "satisfied"),
+    ]
     await workflow.close()
     restarted = Workflow(workflow.config, store, workflow.scheduler, agent)
     await response(restarted, store, identity)
@@ -319,7 +328,82 @@ async def test_completed_turn_replays_after_restart_with_one_reply_and_one_repor
         await restarted.tick(force_observe=True)
     assert agent.calls == 1 and len(store.rows("SELECT * FROM report_versions")) == 1
     assert len(store.projection(eid)["conversation"]) == 1
+    assert (
+        store.rows("SELECT * FROM obligations WHERE substr(id,1,?)=? ORDER BY id", (len(prefix), prefix))
+        == episodes
+    )
     await restarted.close()
+
+
+async def test_restart_readback_rejects_changed_saved_turn_without_side_effects(runtime, monkeypatch):
+    store, _, agent, workflow = runtime
+    eid = load_legacy_completed(store, workflow)
+    identity = send(store, eid, "Explain the result")
+    action_id = str(uuid4())
+    import time
+
+    from experimenttracker.core import action_obligations
+
+    now = time.time()
+    with store.tx() as db:
+        db.execute(
+            "INSERT INTO agent_actions(id,experiment_id,phase,evidence_revision,state,thread_id,turn_id,input,created_at,updated_at) "
+            "VALUES(?,?,?,1,'running','saved-thread','saved-turn','saved input',?,?)",
+            (action_id, eid, "discuss:" + identity, now, now),
+        )
+        action_obligations.sync_action(db, action_id)
+        db.execute("UPDATE discussions SET action_id=?,state='running' WHERE id=?", (action_id, identity))
+
+    async def change_turn_during_readback(thread_id, turn_id):
+        assert (thread_id, turn_id) == ("saved-thread", "saved-turn")
+        with store.tx() as db:
+            db.execute("UPDATE agent_actions SET turn_id='changed-turn' WHERE id=?", (action_id,))
+        return {"raw": "result"}
+
+    monkeypatch.setattr(agent, "read_turn", change_turn_during_readback)
+    workflow.agent_ready = True
+    events_before = store.rows("SELECT * FROM events WHERE experiment_id=?", (eid,))
+    obligations_before = store.rows("SELECT * FROM obligations WHERE target=? ORDER BY id", (action_id,))
+
+    with pytest.raises(NeedsAttention, match="saved action changed during reconciliation"):
+        await asyncio.wait_for(workflow.conversation.advance(), timeout=3)
+
+    current = store.one("SELECT state,turn_id FROM agent_actions WHERE id=?", (action_id,))
+    assert current == {"state": "running", "turn_id": "changed-turn"}
+    assert store.one("SELECT state FROM discussions WHERE id=?", (identity,))["state"] == "running"
+    assert (
+        store.rows("SELECT * FROM obligations WHERE target=? ORDER BY id", (action_id,)) == obligations_before
+    )
+    assert store.rows("SELECT * FROM events WHERE experiment_id=?", (eid,)) == events_before
+
+
+async def test_completed_legacy_discussion_queues_an_admission_obligation(runtime, monkeypatch):
+    store, _, _, workflow = runtime
+    eid = load_legacy_completed(store, workflow)
+    workflow.gate.update(await workflow.agent.quota())
+    workflow.agent_ready = True
+    queued = []
+
+    async def dispatch(message, action):
+        queued.append((message, action))
+
+    monkeypatch.setattr(workflow.conversation, "dispatch", dispatch)
+    monkeypatch.setattr(workflow.conversation, "prompt", lambda exp, message: "saved reader prompt")
+    identity = send(store, eid, "Explain the reported uncertainty")
+    await workflow.conversation.advance()
+    assert workflow.agent_task is not None
+    await workflow.agent_task
+    message = store.one("SELECT * FROM discussions WHERE id=?", (identity,))
+    action = store.one("SELECT * FROM agent_actions WHERE id=?", (message["action_id"],))
+    assert message["state"] == "queued" and len(queued) == 1
+    assert queued[0][1]["id"] == action["id"]
+    prefix = f"agent-action:{action['id']}:"
+    episodes = store.rows(
+        "SELECT * FROM obligations WHERE substr(id,1,?)=? ORDER BY id", (len(prefix), prefix)
+    )
+    assert [(row["owner"], row["kind"], row["wait"], row["state"]) for row in episodes] == [
+        ("backend", "agent_turn", "admission", "open")
+    ]
 
 
 async def test_lost_dispatch_is_not_retried_and_exact_turn_can_be_reconciled(runtime):

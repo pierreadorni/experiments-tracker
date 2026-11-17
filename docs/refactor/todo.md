@@ -245,7 +245,7 @@ and archived fixtures still render their report via the API.
 - Open/close obligations transactionally for actions, jobs, transfers, pending
   requests, plan review and publication; split by source before delegation.
 - [Rollout decisions and bounded cards](notes/t1.3b-rollout-design.md): [x] b1 inert
-  episode/lookup helpers; [x] b2a inert action mapping; [x] b5a inert job mapping; [x] b2b Workflow actions; [ ] b3–b14 remaining runtime source integration and bounded backfill.
+  episode/lookup helpers; [x] b2a inert action mapping; [x] b5a inert job mapping; [x] b2b Workflow actions; [x] b3 Store/Conversation actions; [ ] b4–b14 remaining runtime source integration and bounded backfill.
 
 ### [ ] T1.3c Derived holds (C2) · F+R · M per call-site group
 - [x] c1a inert source-less admission decisions; source-backed/terminal/cancellation families and activation remain pending.
@@ -548,3 +548,5 @@ Record completed tasks here: `date · task · commit · notes`.
 2026-11-17 · T1.1h.7c · Luna call-graph audit and implementation, coordinator review. Removed the dead Controller legacy registration arm, schema1 sequential recovery fallback and toy publication/renderer paths. Current graph validation, metrics/figure escaping and archived audit/conversation/queued-report readers remain. Source+62/−92 (net−30); renderer test+40;194 changed lines. Ruff,63 shared focused cases,658 full Python,29 web and45 gateway tests with Node24 build/types/format pass. T1.1 d–h complete; runtime obligation source integration follows. No live activation.
 
 2026-11-17 · T1.3b-b2b · Luna implementation and coordinator scoped integration/review. Workflow action creation, thread/turn saves, state changes, reconciliation and report correction sync obligations in their source/event transaction. Post-await callbacks verify exact action/phase/evidence/thread/turn; identical terminal callback replay is a no-op and changed identity refuses mutation. Source+139/−41; tests+259 (439 changed lines). Ruff,94 targeted checks and full665 Python tests pass (488.63s). Store/conversation/controller and other source groups remain pending; projection/backfill unchanged. No live activation.
+
+2026-11-17 · T1.3b-b3 · Frozen Luna candidate, independent Luna review and coordinator scoped integration. Store continuation/session retry/title admission and Conversation queue/correction/dispatch/readback synchronize obligations with existing source/event transactions. Async callbacks check saved action identities; completed-parent discussions retain their reader path. Added correction rollback/child-admission and terminal lifecycle/restart history assertions. Source +35/−5; tests +238/−0; 278 changed source/test lines (M). Ruff,46 targeted cases across focused runs and full670 Python tests pass (423.97s); logs/XML in isolated validation check-results/t1-b3-*. No projection/backfill or live activation.

@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from . import artifacts, clock, discussion_outputs, iteration, reporting
 from .codex_client import NeedsAttention
+from .core import action_obligations
 from .models import DiscussionReply
 from .store import encode
 
@@ -368,10 +369,12 @@ class Conversation:
                         if not action["thread_id"] or not action["turn_id"]:
                             raise NeedsAttention("dispatch response lost; saved turn identity is required")
                         result = await self.workflow.agent.read_turn(action["thread_id"], action["turn_id"])
-                        self.workflow._action_state(action["id"], "completed", result=result)
+                        self.workflow._action_state(action["id"], "completed", result=result, expected=action)
                         continue
                     except Exception as exc:
-                        self.workflow._action_state(action["id"], "uncertain", error=str(exc))
+                        self.workflow._action_state(
+                            action["id"], "uncertain", error=str(exc), expected=action
+                        )
                         action["error"] = str(exc)
                 self.store.discussion_state(
                     message["id"], "uncertain", hold_reason="agent_dispatch_uncertain", error=action["error"]
@@ -425,6 +428,7 @@ class Conversation:
                             now,
                         ),
                     )
+                    action_obligations.sync_action(db, identity)
                     db.execute(
                         "UPDATE discussions SET action_id=?,state='queued',hold_reason=NULL,error=NULL,updated_at=? WHERE id=?",
                         (identity, now, message["id"]),
@@ -464,10 +468,13 @@ class Conversation:
             )
             return
         with self.store.tx() as db:
+            before = dict(db.execute("SELECT * FROM agent_actions WHERE id=?", (action["id"],)).fetchone())
+            self.workflow._check_reconciled_action(before, action, compare_result=True)
             db.execute(
                 "UPDATE agent_actions SET state='failed',error=?,updated_at=? WHERE id=?",
                 (error, clock.now(), action["id"]),
             )
+            action_obligations.sync_action(db, action["id"], before=before)
             failed = dict(action, state="failed", error=error)
             continuation = self.store.continue_action(failed, feedback=error, _db=db)
             instruction, payload = action["input"].split("\nPAYLOAD:\n", 1)
@@ -486,6 +493,7 @@ class Conversation:
 
     async def dispatch(self, message, action):
         agent, eid = self.workflow.agent, message["experiment_id"]
+        expected = dict(action)
         try:
             decision = await self.workflow.refresh_quota()
             if not decision.admitted:
@@ -516,6 +524,10 @@ class Conversation:
             )
             wire, saved_input = self.turn_prompt(action, thread_id)
             with self.store.tx() as db:
+                before = dict(
+                    db.execute("SELECT * FROM agent_actions WHERE id=?", (action["id"],)).fetchone()
+                )
+                self.workflow._check_reconciled_action(before, expected)
                 db.execute("UPDATE agent_actions SET input=? WHERE id=?", (saved_input, action["id"]))
                 db.execute(
                     "INSERT INTO discussion_threads VALUES(?,?) ON CONFLICT(experiment_id) DO UPDATE SET thread_id=excluded.thread_id",
@@ -524,6 +536,10 @@ class Conversation:
                 db.execute(
                     "UPDATE agent_actions SET thread_id=?,state='dispatching',attempts=attempts+1,updated_at=? WHERE id=?",
                     (thread_id, clock.now(), action["id"]),
+                )
+                action_obligations.sync_action(db, action["id"], before=before)
+                expected = dict(
+                    db.execute("SELECT * FROM agent_actions WHERE id=?", (action["id"],)).fetchone()
                 )
                 db.execute(
                     "UPDATE discussions SET state='running',model=?,reasoning_effort=?,hold_reason=NULL,error=NULL,updated_at=? WHERE id=?",
@@ -544,13 +560,21 @@ class Conversation:
                 **({"project_workspace": project_workspace} if project_workspace else {}),
             )
             with self.store.tx() as db:
+                before = dict(
+                    db.execute("SELECT * FROM agent_actions WHERE id=?", (action["id"],)).fetchone()
+                )
+                self.workflow._check_reconciled_action(before, expected)
                 db.execute(
                     "UPDATE agent_actions SET turn_id=?,state='running',updated_at=? WHERE id=?",
                     (turn_id, clock.now(), action["id"]),
                 )
+                action_obligations.sync_action(db, action["id"], before=before)
+                expected = dict(
+                    db.execute("SELECT * FROM agent_actions WHERE id=?", (action["id"],)).fetchone()
+                )
                 self.store.emit(db, eid, "discussion_turn_started", {"discussion_id": message["id"]})
             result = await agent.finish(thread_id, turn_id)
-            self.workflow._action_state(action["id"], "completed", result=result)
+            self.workflow._action_state(action["id"], "completed", result=result, expected=expected)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -560,7 +584,7 @@ class Conversation:
                 if current["state"] == "dispatching" or isinstance(exc, NeedsAttention)
                 else "failed"
             )
-            self.workflow._action_state(action["id"], state, error=str(exc)[:2000])
+            self.workflow._action_state(action["id"], state, error=str(exc)[:2000], expected=expected)
             self.store.discussion_state(
                 message["id"],
                 state,

@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from . import clock
 from .config import ProjectConfig
+from .core import action_obligations
 from .legacy_archive import archive_active, execution_frozen
 from .models import STAGES, request_answer
 from .title import title_prompt
@@ -481,13 +482,15 @@ class Store:
                     action["id"],
                 ),
             )
+            saved = dict(db.execute("SELECT * FROM agent_actions WHERE id=?", (identity,)).fetchone())
+            action_obligations.sync_action(db, identity)
             self.emit(
                 db,
                 action["experiment_id"],
                 "agent_continuation_queued",
                 {"action_id": identity, "previous_action_id": action["id"], "phase": action["phase"]},
             )
-            return dict(db.execute("SELECT * FROM agent_actions WHERE id=?", (identity,)).fetchone())
+            return saved
 
     def _consume_steering(self, db, eid, *, request_id=None):
         """Attach saved later guidance to an admitted recovery, in its transaction."""
@@ -1251,10 +1254,12 @@ class Store:
                                 raise Conflict(
                                     "resolve pending or uncertain work before retrying the session"
                                 )
+                            before = dict(session_failure)
                             db.execute(
                                 "UPDATE agent_actions SET state='pending',error=?,updated_at=? WHERE id=?",
                                 (guidance, now, session_failure["id"]),
                             )
+                            action_obligations.sync_action(db, session_failure["id"], before=before)
                             db.execute(
                                 "UPDATE experiments SET hold_reason=NULL,error=NULL WHERE id=?", (eid,)
                             )
@@ -1379,6 +1384,7 @@ class Store:
                             "VALUES(?,?,'summarize_title',?,'pending',?,?,?)",
                             (request_id, eid, revision, encode({"prompt": prompt}), now, now),
                         )
+                        action_obligations.sync_action(db, request_id)
                     else:
                         column = "pause_agent" if action.endswith("agent") else "pause_compute"
                         db.execute(
