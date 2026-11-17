@@ -218,7 +218,7 @@ async def test_dispatch_archived_during_turn_preserves_returned_identity_and_raw
     # The dispatch asks the shared quota policy after refreshing, so it needs a
     # real fresh snapshot instead of a stubbed decision.
     workflow.gate.update(await agent.quota())
-    task = asyncio.create_task(workflow.dispatch(action))
+    task = asyncio.create_task(workflow.dispatch(action, workflow.agent_pool.primary))
     await asyncio.wait_for(entered.wait(), 2)
     contract = {**store.experiment(eid)["contract"], "execution_contract": 2}
     with store.tx() as db:
@@ -318,11 +318,13 @@ async def test_frozen_reader_reply_requires_live_owned_discussion(runtime, monke
         source_table="agent_actions",
         row=store.one("SELECT * FROM agent_actions WHERE id=?", (action_id,)),
         owner=experiment_owner(eid),
-        workflow=workflow,
+        slot=workflow.agent_pool.primary,
     )
     # A live answer is bound to the process whose request asked for it.
     workflow.agent_pool.remember_answer(
-        pending["id"], workflow.agent_pool.connection(workflow, workflow.agent.start_count), reservation
+        pending["id"],
+        workflow.agent_pool.connection(workflow.agent_pool.primary, workflow.agent.start_count),
+        reservation,
     )
     calls = []
     turns = []

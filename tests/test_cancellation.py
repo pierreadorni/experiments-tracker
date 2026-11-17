@@ -345,7 +345,7 @@ async def test_cancel_interrupts_exact_agent_turn_and_retains_unknown_outcomes(r
         source_table="agent_actions",
         row=store.one("SELECT * FROM agent_actions WHERE id='action'"),
         owner=experiment_owner(eid),
-        workflow=wf,
+        slot=wf.agent_pool.primary,
     )
     calls = []
 

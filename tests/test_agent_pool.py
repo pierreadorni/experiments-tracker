@@ -7,6 +7,8 @@ rule that a finished task leaves behind.
 """
 
 import asyncio
+import contextlib
+import inspect
 import json
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -100,7 +102,7 @@ def test_finished_task_settles_from_its_source_row(runtime, state, retained):
         source_table="agent_actions",
         row=saved(store, "agent_actions", action_id),
         owner=experiment_owner(eid),
-        workflow=wf,
+        slot=wf.agent_pool.primary,
     )
     assert reservation.slot == 0
     wf.agent_pool.settle(reservation)
@@ -112,7 +114,7 @@ def test_finished_task_settles_from_its_source_row(runtime, state, retained):
     assert (kept.slot, kept.thread_id, kept.turn_id) == (None, "saved-thread", "saved-turn")
 
 
-async def test_stage_admission_claims_the_lane_before_dispatch(runtime):
+async def test_stage_admission_claims_the_slot_before_dispatch(runtime):
     store, scheduler, _, old = runtime
     agent = GatedIterationAgent("prepare")
     wf = Workflow(old.config, store, scheduler, agent)
@@ -300,16 +302,16 @@ async def test_start_reconstructs_saved_turns_before_connecting_the_agent(runtim
     connecting = {}
     original = Workflow.connect_agent
 
-    async def connect(self):
+    async def connect(self, slot=None):
         connecting.setdefault("keys", sorted(r.key for r in self.agent_pool.occupied()))
-        await original(self)
+        await original(self, slot)
 
     monkeypatch.setattr(Workflow, "connect_agent", connect)
     await resume.start()
     assert connecting["keys"] == sorted(
         [("agent_actions", action_id), ("project_turns", turn_id), ("autopilot_actions", research_id)]
     )
-    assert len(resume.slots) == sessions
+    assert len(resume.agent_pool.slots) == sessions
     # Reconstructed ownership has no live connection and keeps the exact saved turn.
     assert {r.key: (r.role, r.slot, r.thread_id, r.turn_id) for r in resume.agent_pool.occupied()} == {
         ("agent_actions", action_id): ("conversation", None, "action-thread", "action-turn"),
@@ -322,3 +324,39 @@ async def test_start_reconstructs_saved_turns_before_connecting_the_agent(runtim
     }
     assert resume.agent.calls == 0
     await resume.close()
+
+
+async def test_configured_slots_share_one_owner_and_keep_primary_state_canonical(runtime):
+    """A configured connection is slot state, not a second workflow with its own owner."""
+    store, scheduler, _, old = runtime
+    old.config.codex.max_sessions = 2
+    wf = Workflow(old.config, store, scheduler, DemoAgent())
+    await wf.connect_agent()
+    await wf.start_agent_pool()
+
+    # Every configured connection is a slot of the one pool; none is another workflow.
+    assert [slot.index for slot in wf.agent_pool.slots] == [0, 1]
+    assert not any(isinstance(slot, Workflow) for slot in wf.agent_pool.slots)
+    assert "Workflow(" not in inspect.getsource(Workflow.start_agent_pool)
+    # One owner, gate, registry and controller set: every slot names the same workflow.
+    assert {id(slot.workflow) for slot in wf.agent_pool.slots} == {id(wf)}
+    assert wf.agent_pool.workflow is wf and wf.agent_pool.primary is wf.agent_pool.slots[0]
+
+    # The primary connection's state is one state, readable and writable both ways.
+    primary = wf.agent_pool.primary
+    wf.agent_ready = True
+    assert primary.agent_ready is True
+    primary.agent_error = "synthetic connection error"
+    assert wf.agent_error == "synthetic connection error"
+    primary.agent_task = marker = asyncio.create_task(asyncio.Event().wait())
+    assert wf.agent_task is marker
+    marker.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await marker
+    wf.agent_task = None
+    # Replacing the primary transport cannot leave a stale copy in slot zero.
+    replacement = DemoAgent()
+    wf.agent = replacement
+    assert wf.agent_pool.slots[0].agent is replacement and wf.agent is replacement
+    assert wf.agent_pool.slots[1].agent is not replacement
+    await wf.close()

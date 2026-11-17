@@ -96,7 +96,8 @@ class Scenario:
         """The pool never grows a second slot under the one-session contract."""
         owner = self.workflow
         assert owner.config.codex.max_sessions == 1
-        assert owner.slots == [owner]
+        assert [slot.index for slot in owner.agent_pool.slots] == [0]
+        assert owner.agent_pool.slots[0].workflow is owner
 
     async def close(self):
         """Close the current workflow once; the engine's own flag marks it closed."""
@@ -142,13 +143,13 @@ class MultiScenario(Scenario):
         return self.workflow
 
     async def started(self):
-        """Start the engine's pool and label every synthetic clone with its slot."""
+        """Start the engine's pool and label every synthetic transport with its slot."""
         await self.workflow.start()
-        assert len(self.workflow.slots) == self.sessions
-        for index, lane in enumerate(self.workflow.slots):
-            lane.agent.slot = index
-            # Every clone is this per-test synthetic class, never a managed client.
-            assert type(lane.agent) is self.slots.agent and not isinstance(lane.agent, CodexAgent)
+        assert len(self.workflow.agent_pool.slots) == self.sessions
+        for index, slot in enumerate(self.workflow.agent_pool.slots):
+            slot.agent.slot = index
+            # Every transport is this per-test synthetic class, never a managed client.
+            assert type(slot.agent) is self.slots.agent and not isinstance(slot.agent, CodexAgent)
         return self.workflow
 
     async def restart(self, *, sessions=None):

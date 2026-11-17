@@ -134,7 +134,7 @@ async def test_activity_correlates_exact_turn_and_is_bounded_and_idempotent(runt
         source_table="agent_actions",
         row=store.one("SELECT * FROM agent_actions WHERE id=?", (aid,)),
         owner=experiment_owner(eid),
-        workflow=workflow,
+        slot=workflow.agent_pool.primary,
     )
 
     def message(i, method="item/started", thread="thread"):
@@ -148,17 +148,17 @@ async def test_activity_correlates_exact_turn_and_is_bounded_and_idempotent(runt
         }
 
     start_count = workflow.agent.start_count
-    await workflow._activity(message(0, thread="other"), start_count)
+    await workflow._activity(workflow.agent_pool.primary, message(0, thread="other"), start_count)
     assert not store.projection(eid)["stage_activity"]
-    await workflow._activity(message(0), start_count)
+    await workflow._activity(workflow.agent_pool.primary, message(0), start_count)
     revision = store.experiment(eid)["revision"]
-    await workflow._activity(message(0), start_count)
+    await workflow._activity(workflow.agent_pool.primary, message(0), start_count)
     assert store.experiment(eid)["revision"] == revision
-    await workflow._activity(message(0, "item/completed"), start_count)
-    await workflow._activity(message(0), start_count)
+    await workflow._activity(workflow.agent_pool.primary, message(0, "item/completed"), start_count)
+    await workflow._activity(workflow.agent_pool.primary, message(0), start_count)
     assert store.projection(eid)["stage_activity"][0]["state"] == "complete"
     for i in range(1, 75):
-        await workflow._activity(message(i), start_count)
+        await workflow._activity(workflow.agent_pool.primary, message(i), start_count)
     rows = store.projection(eid)["stage_activity"]
     assert len(rows) == 60 and "private reasoning" not in json.dumps(rows)
 

@@ -781,9 +781,10 @@ async def test_managed_project_input_is_durable_and_scoped(runtime, monkeypatch)
         source_table="autopilot_actions",
         row=service.store.one("SELECT * FROM autopilot_actions WHERE id=?", (identity,)),
         owner=project_owner("test-project"),
-        workflow=wf,
+        slot=wf.agent_pool.primary,
     )
     await wf._request(
+        wf.agent_pool.primary,
         {
             "id": 123,
             "method": "item/tool/requestUserInput",

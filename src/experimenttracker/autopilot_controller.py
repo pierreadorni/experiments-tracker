@@ -394,7 +394,7 @@ class ResearchController:
     async def dispatch(self, slot, row):
         wf, agent = self.workflow, slot.agent
         try:
-            await slot.refresh_quota()
+            await wf.refresh_quota(slot)
             run = self.service.run(run_id=row["run_id"])
             if (
                 blocked(wf.store)

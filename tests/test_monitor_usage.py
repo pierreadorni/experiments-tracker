@@ -205,7 +205,7 @@ async def test_monitor_uses_small_fresh_thread_and_preserves_research_session(ru
             "INSERT INTO agent_actions(id,experiment_id,phase,evidence_revision,state,input,created_at,updated_at) VALUES(?,?,'monitor',1,'pending',?,0,0)",
             (action, eid, prompt),
         )
-    await wf.dispatch(store.one("SELECT * FROM agent_actions WHERE id=?", (action,)))
+    await wf.dispatch(store.one("SELECT * FROM agent_actions WHERE id=?", (action,)), wf.agent_pool.primary)
     assert agent.session.call_args.args[0] is None
     assert "writable" not in agent.session.call_args.kwargs
     assert agent.begin.call_args.args[1] == prompt
@@ -230,7 +230,7 @@ async def test_live_token_notifications_are_saved_only_for_exact_turn(runtime):
         source_table="agent_actions",
         row=store.one("SELECT * FROM agent_actions WHERE id=?", (identity,)),
         owner=experiment_owner(eid),
-        workflow=wf,
+        slot=wf.agent_pool.primary,
     )
     message = {
         "method": "thread/tokenUsage/updated",
@@ -243,12 +243,12 @@ async def test_live_token_notifications_are_saved_only_for_exact_turn(runtime):
             },
         },
     }
-    await wf._activity(message, wf.agent.start_count)
+    await wf._activity(wf.agent_pool.primary, message, wf.agent.start_count)
     assert not store.rows("SELECT * FROM agent_usage")
     message["params"]["turnId"] = "turn"
     revision = store.experiment(eid)["revision"]
     publications = store.one("SELECT COUNT(*) AS n FROM outbox")["n"]
-    await wf._activity(message, wf.agent.start_count)
+    await wf._activity(wf.agent_pool.primary, message, wf.agent.start_count)
     record = store.one("SELECT * FROM agent_usage")
     usage = json.loads(record["payload"])
     assert (record["action_id"], record["thread_id"], record["turn_id"]) == (identity, "thread", "turn")
@@ -257,7 +257,7 @@ async def test_live_token_notifications_are_saved_only_for_exact_turn(runtime):
     assert store.experiment(eid)["revision"] == revision
     assert store.one("SELECT COUNT(*) AS n FROM outbox")["n"] == publications
     message["params"]["tokenUsage"]["total"]["inputTokens"] = 200
-    await wf._activity(message, wf.agent.start_count)
+    await wf._activity(wf.agent_pool.primary, message, wf.agent.start_count)
     assert store.one("SELECT COUNT(*) AS n FROM agent_usage")["n"] == 1
     assert (
         json.loads(store.one("SELECT payload FROM agent_usage")["payload"])["thread_total"]["inputTokens"]

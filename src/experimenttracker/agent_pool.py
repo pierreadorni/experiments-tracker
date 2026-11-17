@@ -15,12 +15,20 @@ execution database. Interrupts, readback and shutdown also leave through the
 reservation's own live connection; a reservation without one keeps its uncertainty.
 The pool also owns the one quota-policy decision that selection filters and the
 binding check before dispatch intent share.
+
+The pool's connections are explicit slots: each holds one agent process and the task
+state of its current process generation, while the workflow stays the single owner
+of controllers, registries, quota and the store.
 """
 
 import asyncio
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from .quota import Decision, plenty
+
+if TYPE_CHECKING:
+    from .workflow import Workflow
 
 # Priority classes: the next free connection serves the lowest class first.
 # Conversation, experiment (stage and monitor), research, supervisor, title. A
@@ -105,8 +113,29 @@ class Proposal:
 class Connection:
     """One App Server process: the slot that runs it and that slot's start count."""
 
-    slot: int | None
+    slot: int
     start: int
+
+
+@dataclass
+class AgentSlot:
+    """One configured connection: its agent process and this generation's task state.
+
+    A slot carries only what belongs to that connection. Controllers, registries,
+    quota, the store and the subscriptions stay on the one owning workflow, so no
+    slot can become a second execution owner.
+    """
+
+    index: int
+    agent: object
+    workflow: "Workflow"
+    agent_ready: bool = False
+    agent_error: str | None = None
+    last_agent_start: float = 0.0
+    last_quota_refresh: float = 0.0
+    agent_task: asyncio.Task | None = None
+    active_action: str | None = None
+    quota_task: asyncio.Task | None = None
 
 
 @dataclass
@@ -126,9 +155,12 @@ class Reservation:
 
 
 class AgentPool:
-    def __init__(self, workflow):
+    def __init__(self, workflow, agent):
         self.workflow = workflow
         self.store = workflow.store
+        # The primary connection is slot zero of the one pool; every other slot is
+        # added by ``start_agent_pool``. No slot is another workflow.
+        self.slots = [AgentSlot(index=0, agent=agent, workflow=workflow)]
         self.reservations = {}
         self.answers = {}
         # Prepared turns of the current selection round; never a persistent queue.
@@ -136,6 +168,17 @@ class AgentPool:
         # Shutdown closes the transports and later the store; a task that ends then
         # must not read or rewrite the rows its withdrawal already left uncertain.
         self.closing = False
+
+    @property
+    def primary(self):
+        """The one connection the workflow's own single-connection paths use."""
+        return self.slots[0]
+
+    def add_slot(self, agent):
+        """Register one configured connection with its own agent process."""
+        slot = AgentSlot(index=len(self.slots), agent=agent, workflow=self.workflow)
+        self.slots.append(slot)
+        return slot
 
     def quota(self, *, eid=None, run=None, origin=None):
         """The one quota decision for a saved turn, at selection and before dispatch.
@@ -157,28 +200,21 @@ class AgentPool:
             return Decision(False, WEEKLY_PLENTY_REASON, decision.remaining, decision.observed_at)
         return decision
 
-    def slot_index(self, workflow):
-        """Physical slot index for a dispatch, or None for an unlisted workflow."""
-        for index, slot in enumerate(self.workflow.slots):
-            if slot is workflow:
-                return index
-        return None
-
     def slot(self, index):
-        """The connection that owns a physical slot, or None outside the pool."""
-        if index is None or index >= len(self.workflow.slots):
+        """The physical slot with this index, or None outside the pool."""
+        if index is None or index >= len(self.slots) or index < 0:
             return None
-        return self.workflow.slots[index]
+        return self.slots[index]
 
-    def connection(self, workflow, start_count):
+    def connection(self, slot, start_count):
         """The App Server process a callback arrived on, read at receipt."""
-        return Connection(slot=self.slot_index(workflow), start=start_count)
+        return Connection(slot=slot.index, start=start_count)
 
     def live_slot(self, reservation):
-        """The connection whose current process still is this reservation's own.
+        """The slot whose current process still is this reservation's connection.
 
         A reconstructed or settled reservation names no process, and a restarted
-        connection holds a later start count; neither can speak for the saved turn.
+        slot holds a later start count; neither can speak for the saved turn.
         """
         connection = getattr(reservation, "connection", None)
         if connection is None:
@@ -194,7 +230,7 @@ class AgentPool:
         The saved row carries the exact thread/turn; the reservation must still
         hold that same process, so a settled or restarted owner is never credited.
         """
-        if connection.slot is None or not thread_id or not turn_id:
+        if not thread_id or not turn_id:
             return None
         # Only the few reservations on this process are candidates; each is checked
         # against its saved row by primary key, never by scanning a source table.
@@ -252,20 +288,20 @@ class AgentPool:
                 del queues[role]
             if not self.unchanged(proposal):
                 continue
-            workflow = self.free_connection(proposal)
-            if workflow is None or not self.owner_free(proposal.owner):
+            slot = self.free_connection(proposal)
+            if slot is None or not self.owner_free(proposal.owner):
                 continue
-            self.start(proposal, workflow)
+            self.start(proposal, slot)
 
-    def process_busy(self, workflow):
-        """Whether a live claim of any role still runs on this workflow's process.
+    def process_busy(self, slot):
+        """Whether a live claim of any role still runs on this slot's process.
 
         Every role keeps its turn on the connection it was dispatched through, so a
-        connection may reconnect only when no claim of any source table survives on its
+        slot may reconnect only when no claim of any source table survives on its
         current process. A reconstructed or restarted reservation names another
         process and never blocks this one.
         """
-        connection = self.connection(workflow, workflow.agent.start_count)
+        connection = self.connection(slot, slot.agent.start_count)
         return any(reservation.connection == connection for reservation in self.reservations.values())
 
     def turn_debt(self):
@@ -306,17 +342,16 @@ class AgentPool:
         return saved is not None and saved["state"] == proposal.row["state"]
 
     def free_connection(self, proposal):
-        """The proposal's first connection that no live claim or task occupies."""
-        for workflow in proposal.connections:
-            index = self.slot_index(workflow)
-            if not workflow.agent_ready or workflow.agent_task is not None:
+        """The proposal's first slot that no live claim or task occupies."""
+        for slot in proposal.connections:
+            if not slot.agent_ready or slot.agent_task is not None:
                 continue
             claimed = any(
-                reservation.slot == index and reservation.connection is not None
+                reservation.slot == slot.index and reservation.connection is not None
                 for reservation in self.reservations.values()
             )
             if not claimed:
-                return workflow
+                return slot
         return None
 
     def owner_free(self, owner):
@@ -348,44 +383,40 @@ class AgentPool:
             )
         )
 
-    def start(self, proposal, workflow):
+    def start(self, proposal, slot):
         """Claim owner and connection, then create the dispatch task for that claim."""
-        if workflow is not self.workflow:
-            # Another connection prepares with the primary's cluster snapshot, as before.
-            for name in ("cluster_snapshot", "cluster_error", "last_cluster_refresh"):
-                setattr(workflow, name, getattr(self.workflow, name))
         reservation = self.claim(
             role=proposal.role,
             source_table=proposal.source_table,
             row=proposal.row,
             owner=proposal.owner,
-            workflow=workflow,
+            slot=slot,
         )
-        task = asyncio.create_task(proposal.dispatch(workflow))
+        task = asyncio.create_task(proposal.dispatch(slot))
         task.add_done_callback(lambda finished: self.settle(reservation, finished))
-        self.occupy(proposal, workflow, task)
+        self.occupy(proposal, slot, task)
         return reservation
 
-    def occupy(self, proposal, workflow, task):
+    def occupy(self, proposal, slot, task):
         """Publish the claimed task in the busy flag its own role still reads."""
         if proposal.source_table == "autopilot_actions":
             self.workflow.research.task, self.workflow.research.active_id = task, proposal.row["id"]
         elif proposal.source_table == "project_turns":
             self.workflow.supervisor.task, self.workflow.supervisor.active_id = task, proposal.row["id"]
         else:
-            workflow.agent_task, workflow.active_action = task, proposal.row["id"]
+            slot.agent_task, slot.active_action = task, proposal.row["id"]
 
-    def claim(self, *, role, source_table, row, owner, workflow):
+    def claim(self, *, role, source_table, row, owner, slot):
         """Reserve an owner's agent before its dispatch task exists."""
         reservation = Reservation(
             source_table=source_table,
             action_id=row["id"],
             role=role,
             owner=owner,
-            slot=self.slot_index(workflow),
+            slot=slot.index,
             thread_id=row.get("thread_id"),
             turn_id=row.get("turn_id"),
-            connection=self.connection(workflow, workflow.agent.start_count),
+            connection=self.connection(slot, slot.agent.start_count),
         )
         self.reservations[reservation.key] = reservation
         return reservation
@@ -516,7 +547,7 @@ class AgentPool:
         slot = self.live_slot(reservation)
         if slot is not None and slot.agent_ready:
             return slot
-        return next((slot for slot in self.workflow.slots if slot.agent_ready), None)
+        return next((slot for slot in self.slots if slot.agent_ready), None)
 
     def lookup(self, source_table, action_id):
         return self.reservations.get((source_table, action_id))

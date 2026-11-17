@@ -751,7 +751,7 @@ class ProjectSupervisor:
     async def dispatch(self, slot, row):
         wf, memory, agent = self.workflow, self.memory, slot.agent
         try:
-            await slot.refresh_quota()
+            await wf.refresh_quota(slot)
             if blocked(wf.store):
                 return
             if not wf.agent_pool.quota(origin=row["origin"]).admitted:

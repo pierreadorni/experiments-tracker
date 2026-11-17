@@ -385,7 +385,7 @@ async def test_completed_legacy_discussion_queues_an_admission_obligation(runtim
     workflow.agent_ready = True
     queued = []
 
-    async def dispatch(lane, message, action):
+    async def dispatch(_slot, message, action):
         queued.append((message, action))
 
     monkeypatch.setattr(workflow.conversation, "dispatch", dispatch)
@@ -666,10 +666,11 @@ async def test_live_discussion_activity_projects_public_summaries_in_order(runti
         source_table="agent_actions",
         row=store.one("SELECT * FROM agent_actions WHERE id=?", (aid,)),
         owner=experiment_owner(eid),
-        workflow=workflow,
+        slot=workflow.agent_pool.primary,
     )
     for i in range(25):
         await workflow._activity(
+            workflow.agent_pool.primary,
             {
                 "method": "item/completed",
                 "params": {
@@ -691,6 +692,7 @@ async def test_live_discussion_activity_projects_public_summaries_in_order(runti
     assert projected[-1]["summary"] == "Public update 24"
     assert "raw reasoning" not in json.dumps(projected)
     await workflow._activity(
+        workflow.agent_pool.primary,
         {
             "method": "item/reasoning/summaryTextDelta",
             "params": {

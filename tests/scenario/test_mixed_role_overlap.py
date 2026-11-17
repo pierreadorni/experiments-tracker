@@ -91,15 +91,15 @@ def connection_evidence(scenario, wf, source_table, row):
     reservation = wf.agent_pool.lookup(source_table, row["id"])
     assert reservation is not None and reservation.connection is not None, f"{row['id']} is not live"
     connection = reservation.connection
-    lane = wf.slots[connection.slot]
+    slot = wf.agent_pool.slots[connection.slot]
     call = scenario.slots.begin(row["turn_id"])  # exactly one begin for this saved turn
     assert (call["slot"], call["instance"], call["generation"]) == (
         connection.slot,
-        lane.agent.instance,
+        slot.agent.instance,
         connection.start,
     )
-    # The registry's generation is the transport's own start count on this clone.
-    assert lane.agent.start_count == call["generation"] == connection.start
+    # The registry's generation is the transport's own start count on this slot.
+    assert slot.agent.start_count == call["generation"] == connection.start
     return connection
 
 
@@ -113,12 +113,12 @@ def live_both(scenario, wf, left, right):
 
 def turn_task(wf, source_table, row):
     """The dispatch task that holds this saved turn's live connection."""
-    lane = wf.slots[wf.agent_pool.lookup(source_table, row["id"]).connection.slot]
+    slot = wf.agent_pool.slots[wf.agent_pool.lookup(source_table, row["id"]).connection.slot]
     if source_table == "autopilot_actions":
         return wf.research.task
     if source_table == "project_turns":
         return wf.supervisor.task
-    return lane.agent_task
+    return slot.agent_task
 
 
 def begin_turns(scenario, phase):

@@ -356,10 +356,10 @@ class SyntheticSlots:
 def shared_fake_slots():
     """A per-test no-argument fake class whose clones share one explicit backend.
 
-    ``start_agent_pool`` clones a demo agent with no arguments, so the class itself
-    carries the shared backend and call log: every slot gets its own instance and
-    process generation while the saved external turns stay in one place. No clone
-    can become a managed-account client, because it is this synthetic class.
+    ``start_agent_pool`` constructs a demo agent with no arguments, so the class
+    itself carries the shared backend and call log: every slot gets its own instance
+    and process generation while the saved external turns stay in one place. No extra
+    agent can become a managed-account client, because it is this synthetic class.
     """
     backend, clones, calls = FakeCodexBackend(), [], []
 
@@ -459,7 +459,7 @@ def engine_tasks(workflow):
     identity, so a turn both the pool and a role recorded is awaited once.
     """
     owner = workflow
-    handles = [task for slot in owner.slots for task in (slot.agent_task, slot.quota_task)]
+    handles = [task for slot in owner.agent_pool.slots for task in (slot.agent_task, slot.quota_task)]
     handles += [owner.backup_task, owner.research.task, owner.supervisor.task]
     handles.extend(task for task, _ in owner.output_checks.values())
     handles.extend(owner.evidence_checks.values())

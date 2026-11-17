@@ -59,9 +59,9 @@ async def process_cancellations(workflow):
                 try:
                     result = await slot.agent.read_turn(action["thread_id"], action["turn_id"])
                 except TerminalTurnError as exc:
-                    slot._action_state(action["id"], "failed", error=str(exc), expected=action)
+                    workflow._action_state(action["id"], "failed", error=str(exc), expected=action)
                 else:
-                    slot._action_state(action["id"], "completed", result=result, expected=action)
+                    workflow._action_state(action["id"], "completed", result=result, expected=action)
                 pool.settle_row("agent_actions", action["id"])
             except Exception as exc:
                 errors.append(str(exc))

@@ -145,7 +145,9 @@ async def test_a_fresh_denial_after_the_cached_admit_never_reaches_begin(multi_s
     claimed = claimed_row()
     reservation = wf.agent_pool.lookup(source, claimed["id"])
     assert (claimed["turn_id"], reservation.connection is not None) == (None, True)
-    task = wf.supervisor.task if source == "project_turns" else wf.slots[reservation.slot].agent_task
+    task = (
+        wf.supervisor.task if source == "project_turns" else wf.agent_pool.slots[reservation.slot].agent_task
+    )
     assert (backend.turns_started, slots.named("begin")) == (0, [])
 
     # Fresh evidence arrives while the session setup waits: the binding check before the
@@ -160,10 +162,8 @@ async def test_a_fresh_denial_after_the_cached_admit_never_reaches_begin(multi_s
     assert final["id"] == claimed["id"] and (final["state"], final["turn_id"]) == expected
     if source == "agent_actions":
         assert store.experiment(experiment)["hold_reason"] == "quota_hold"
-        assert (wf.slots[reservation.slot].agent_task, wf.slots[reservation.slot].active_action) == (
-            None,
-            None,
-        )
+        slot = wf.agent_pool.slots[reservation.slot]
+        assert (slot.agent_task, slot.active_action) == (None, None)
     else:
         assert final["hold_reason"] == "quota_hold"
         assert (wf.supervisor.task, wf.supervisor.active_id) == (None, None)
@@ -267,11 +267,11 @@ async def test_denied_quota_interrupts_each_occupied_role_through_its_own_proces
     expected = set()
     for table, row in occupied.rows:
         reservation = wf.agent_pool.lookup(table, row["id"])
-        lane = wf.slots[reservation.connection.slot]
+        slot = wf.agent_pool.slots[reservation.connection.slot]
         expected.add(
             (
                 reservation.connection.slot,
-                lane.agent.instance,
+                slot.agent.instance,
                 reservation.connection.start,
                 row["thread_id"],
                 row["turn_id"],
@@ -439,7 +439,9 @@ async def test_shutdown_with_every_slot_occupied_closes_each_transport_once(
     assert observed == [(name, True, True, 0) for name in ("research", "supervisor", "controller")]
     assert plan_task.cancelled()
     assert [call["slot"] for call in slots.named("close")] == [0, 1]
-    assert [call["instance"] for call in slots.named("close")] == [lane.agent.instance for lane in wf.slots]
+    assert [call["instance"] for call in slots.named("close")] == [
+        entry.agent.instance for entry in wf.agent_pool.slots
+    ]
     # A withdrawn local task is not a finished remote turn: exact identities survive.
     for table, row in occupied.rows:
         kept = saved(store, table, id=row["id"])
@@ -451,7 +453,7 @@ async def test_shutdown_with_every_slot_occupied_closes_each_transport_once(
         reservation = wf.agent_pool.lookup(table, row["id"])
         assert reservation is not None and reservation.connection is not None
     assert wf.agent_pool.turn_capacity() == 0
-    pending = [wf.research.task, wf.supervisor.task, *(lane.agent_task for lane in wf.slots)]
+    pending = [wf.research.task, wf.supervisor.task, *(slot.agent_task for slot in wf.agent_pool.slots)]
     assert [task for task in pending if task is not None and not task.done()] == []
     assert (backend.turns_started, len(slots.named("begin"))) == (2, 2)
 

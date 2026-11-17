@@ -206,7 +206,7 @@ async def test_monitor_action_obligation_tracks_creation_and_pending_supersessio
     monkeypatch.setattr(wf.controller, "diagnostic_jobs", lambda _: [{"intent_id": "synthetic-job"}])
     monkeypatch.setattr(wf.gate, "decide", lambda: SimpleNamespace(admitted=True))
 
-    async def no_dispatch(_action):
+    async def no_dispatch(_action, _slot):
         return None
 
     monkeypatch.setattr(wf, "dispatch", no_dispatch)
@@ -513,11 +513,12 @@ async def test_configured_sessions_let_another_plan_progress_while_one_turn_wait
         assert {a["experiment_id"] for a in running} == {first, second}
         assert {a["phase"] for a in running} == {"plan"}
         assert len({a["thread_id"] for a in running}) == 2
-        # Each lane holds its own reservation; the two live turns keep two slots.
+        # Each slot holds its own reservation; the two live turns keep two slots.
         claims = {a["id"]: wf.agent_pool.lookup("agent_actions", a["id"]) for a in running}
         assert {claim.slot for claim in claims.values()} == {0, 1}
         assert {claim.role for claim in claims.values()} == {"stage"}
-        assert wf.slots[0].gate is wf.slots[1].gate
+        # Both connections keep the one owner, quota gate and pool.
+        assert {id(slot.workflow) for slot in wf.agent_pool.slots} == {id(wf)}
         release_turns.set()
         await wait_until(
             both_awaiting_review,

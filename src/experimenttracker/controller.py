@@ -695,7 +695,7 @@ class Controller:
                 action = wf.store.one("SELECT * FROM agent_actions WHERE id=?", (identity,))
             if action["state"] == "pending":
                 wf.propose_agent(
-                    lambda slot, action=action: slot.dispatch(action),
+                    lambda slot, action=action: wf.dispatch(action, slot),
                     role="monitor",
                     source_table="agent_actions",
                     row=action,

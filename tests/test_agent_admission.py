@@ -42,10 +42,10 @@ def saved_action(store, eid, *, state="pending", created_at=0):
 
 
 def offer(wf, *, role, priority, row, started, connections=None):
-    """Offer one proposal whose dispatch reports the connection it was given."""
+    """Offer one proposal whose dispatch reports the slot it was given."""
 
-    async def dispatch(connection):
-        started.append((role, wf.agent_pool.slot_index(connection)))
+    async def dispatch(slot):
+        started.append((role, slot.index))
 
     wf.agent_pool.propose(
         role=role,
@@ -53,7 +53,7 @@ def offer(wf, *, role, priority, row, started, connections=None):
         row=row,
         owner=experiment_owner(row["experiment_id"]),
         priority=priority,
-        connections=(wf,) if connections is None else connections,
+        connections=(wf.agent_pool.primary,) if connections is None else connections,
         dispatch=dispatch,
     )
 
@@ -118,7 +118,7 @@ async def test_a_busy_owner_never_holds_up_another_eligible_proposal(runtime):
     store = wf.store
     shared, other = create(store), create(store)
     started = []
-    connections = tuple(wf.slots)
+    connections = tuple(wf.agent_pool.slots)
     offer(
         wf,
         role="conversation",
@@ -144,7 +144,7 @@ async def test_a_busy_owner_never_holds_up_another_eligible_proposal(runtime):
         connections=connections,
     )
     wf.agent_pool.admit()
-    await asyncio.gather(*[wf.agent_task] + [lane.agent_task for lane in wf.slots[1:]])
+    await asyncio.gather(*[wf.agent_task] + [slot.agent_task for slot in wf.agent_pool.slots[1:]])
     # The shared owner claims one connection; the unrelated owner still gets the other.
     assert sorted(started) == [("conversation", 0), ("title", 1)]
     await wf.close()
@@ -169,8 +169,8 @@ async def test_a_live_claim_keeps_its_owner_off_a_second_connection(runtime):
     eid = create(wf.store)
     started, release_turn = [], asyncio.Event()
 
-    async def waiting(connection):
-        started.append(wf.agent_pool.slot_index(connection))
+    async def waiting(slot):
+        started.append(slot.index)
         await release_turn.wait()
 
     for row in (saved_action(wf.store, eid), saved_action(wf.store, eid)):
@@ -180,7 +180,7 @@ async def test_a_live_claim_keeps_its_owner_off_a_second_connection(runtime):
             row=row,
             owner=experiment_owner(eid),
             priority=EXPERIMENT_PRIORITY,
-            connections=tuple(wf.slots),
+            connections=tuple(wf.agent_pool.slots),
             dispatch=waiting,
         )
     wf.agent_pool.admit()
@@ -208,7 +208,7 @@ async def test_the_claim_precedes_the_task_and_an_unsent_start_releases_it(runti
         row=row,
         owner=experiment_owner(row["experiment_id"]),
         priority=EXPERIMENT_PRIORITY,
-        connections=(wf,),
+        connections=(wf.agent_pool.primary,),
         dispatch=never_sent,
     )
     assert len(wf.agent_pool.proposals) == 1  # nothing is claimed before the selection runs

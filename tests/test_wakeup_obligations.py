@@ -70,7 +70,7 @@ async def test_queueing_the_saved_action_satisfies_its_timer_in_that_transaction
     monkeypatch.setattr(wf.controller, "diagnostic_jobs", lambda _: [{"intent_id": "synthetic-job"}])
     monkeypatch.setattr(wf.gate, "decide", lambda: SimpleNamespace(admitted=True))
 
-    async def no_dispatch(_action):
+    async def no_dispatch(_action, _slot):
         return None
 
     monkeypatch.setattr(wf, "dispatch", no_dispatch)

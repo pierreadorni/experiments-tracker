@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-from experimenttracker.agent_pool import experiment_owner
+from experimenttracker.agent_pool import AgentSlot, experiment_owner
 from experimenttracker.codex_client import TerminalTurnError
 from experimenttracker.legacy_archive_actions import settle_actions
 
@@ -54,13 +54,13 @@ async def test_settles_exact_raw_legacy_turn_outcomes_and_replays(runtime, monke
     discussion = action(store, eid, "discuss:1")
     live = action(store, eid, "publish")
     workflow.agent_task = asyncio.create_task(asyncio.Event().wait())
-    # The reservation, not a lane field, is what marks this saved turn as live.
+    # The reservation, not a slot field, is what marks this saved turn as live.
     workflow.agent_pool.claim(
         role="stage",
         source_table="agent_actions",
         row=store.one("SELECT * FROM agent_actions WHERE id=?", (live,)),
         owner=experiment_owner(eid),
-        workflow=workflow,
+        slot=workflow.agent_pool.primary,
     )
     workflow.agent_ready = True
     calls = []
@@ -167,9 +167,9 @@ async def test_readback_uses_a_configured_connection_without_starting_a_turn(run
         calls.append((thread, turn))
         return {"title": "saved"}
 
-    lane = SimpleNamespace(agent_ready=True, agent=SimpleNamespace(read_turn=read))
+    slot = AgentSlot(index=1, agent=SimpleNamespace(read_turn=read), workflow=workflow, agent_ready=True)
     workflow.agent_ready = False
-    workflow.slots.append(lane)
+    workflow.agent_pool.slots.append(slot)
     await settle_actions(workflow)
     assert calls == [("thread", "turn")]
     assert store.one("SELECT state FROM agent_actions WHERE id=?", (identity,))["state"] == "completed"
@@ -177,6 +177,6 @@ async def test_readback_uses_a_configured_connection_without_starting_a_turn(run
     # Without a configured connection the saved turn stays uncertain.
     second = archived(store, 1)
     pending = action(store, second, "monitor:ready")
-    lane.agent_ready = False
+    slot.agent_ready = False
     await settle_actions(workflow)
     assert store.one("SELECT state FROM agent_actions WHERE id=?", (pending,))["state"] == "uncertain"

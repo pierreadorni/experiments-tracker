@@ -72,13 +72,13 @@ def insert_project_turn(store, *, thread, turn):
     return store.one("SELECT * FROM project_turns WHERE id=?", (turn_id,))
 
 
-def claim(wf, lane, row, role="stage", source_table="agent_actions", owner=None):
+def claim(wf, slot, row, role="stage", source_table="agent_actions", owner=None):
     return wf.agent_pool.claim(
         role=role,
         source_table=source_table,
         row=row,
         owner=owner or experiment_owner(row["experiment_id"]),
-        workflow=lane,
+        slot=slot,
     )
 
 
@@ -98,7 +98,7 @@ def save_dispatch_intent(store, action, prompt_sha256="synthetic-prompt"):
 
 
 async def pooled(runtime):
-    """One pool over two lanes; each lane has its own started agent process."""
+    """One pool over two slots; each slot has its own started agent process."""
     store, scheduler, _, old = runtime
     old.config.codex.max_sessions = 2
     wf = Workflow(old.config, store, scheduler, LaneAgent())
@@ -111,7 +111,7 @@ async def test_quota_interrupt_reaches_each_live_reservation_once_through_its_ow
     runtime, monkeypatch
 ):
     wf = await pooled(runtime)
-    store, first, second = wf.store, wf.slots[0], wf.slots[1]
+    store, first, second = wf.store, wf.agent_pool.slots[0], wf.agent_pool.slots[1]
     left_eid, right_eid, saved_eid = create(store), create(store), create(store)
     left = insert_action(store, left_eid, "running", thread="left", turn="left-turn")
     right = insert_action(store, right_eid, "running", thread="right", turn="right-turn")
@@ -135,7 +135,7 @@ async def test_quota_interrupt_reaches_each_live_reservation_once_through_its_ow
     # Each turn is interrupted exactly once, on the process that holds it.
     assert first.agent.interrupts == [("left", "left-turn")]
     assert sorted(second.agent.interrupts) == [("project-thread", "project-turn"), ("right", "right-turn")]
-    assert sum(len(lane.agent.interrupts) for lane in wf.slots) == 3
+    assert sum(len(slot.agent.interrupts) for slot in wf.agent_pool.slots) == 3
     for row in (left, right):
         action = store.one("SELECT * FROM agent_actions WHERE id=?", (row["id"],))
         assert (action["state"], action["interrupt_reason"]) == ("running", "quota_hold")
@@ -150,7 +150,7 @@ async def test_quota_interrupt_reaches_each_live_reservation_once_through_its_ow
 
 async def test_shutdown_stops_admissions_before_roles_and_closes_each_transport_once(runtime, monkeypatch):
     wf = await pooled(runtime)
-    store, lane = wf.store, wf.slots[1]
+    store, slot = wf.store, wf.agent_pool.slots[1]
     held = insert_action(store, create(store), "uncertain", thread="held", turn="held-turn")
     wf.agent_pool.reconstruct()
     waiting = asyncio.Event()
@@ -159,8 +159,8 @@ async def test_shutdown_stops_admissions_before_roles_and_closes_each_transport_
         await waiting.wait()
 
     live = insert_action(store, create(store), "running", thread="live", turn="live-turn")
-    claim(wf, lane, live)
-    lane.agent_task = asyncio.create_task(unfinished())
+    claim(wf, slot, live)
+    slot.agent_task = asyncio.create_task(unfinished())
     await asyncio.sleep(0)
     observed = []
 
@@ -180,8 +180,8 @@ async def test_shutdown_stops_admissions_before_roles_and_closes_each_transport_
 
     # Admissions stopped before the first role and before any transport closed.
     assert observed == [("research", True, True), ("supervisor", True, True), ("controller", True, True)]
-    assert [lane.agent.closes for lane in wf.slots] == [1, 1]
-    assert lane.agent_task.cancelled()
+    assert [entry.agent.closes for entry in wf.agent_pool.slots] == [1, 1]
+    assert slot.agent_task.cancelled()
     # A withdrawn turn keeps its saved uncertainty and its saved identities.
     kept = store.one("SELECT * FROM agent_actions WHERE id=?", (held["id"],))
     assert (kept["state"], kept["thread_id"], kept["turn_id"]) == ("uncertain", "held", "held-turn")
@@ -207,7 +207,7 @@ async def test_restart_and_session_shrink_keep_logical_ownership_without_duplica
     await resumed.start()
 
     # A shrunken pool keeps every logical reservation and its exact saved IDs.
-    assert len(resumed.slots) == 1
+    assert len(resumed.agent_pool.slots) == 1
     assert {(r.key, r.thread_id, r.turn_id) for r in resumed.agent_pool.occupied()} == {
         (("agent_actions", accepted["id"]), "accepted", "turn-a"),
         (("agent_actions", unreadable["id"]), "unreadable", "turn-b"),
@@ -272,7 +272,7 @@ async def test_dispatch_callback_after_store_close_does_not_raise(runtime):
         source_table="agent_actions",
         row=action,
         owner=experiment_owner(action["experiment_id"]),
-        workflow=wf,
+        slot=wf.agent_pool.primary,
     )
     task = asyncio.create_task(unfinished())
     task.add_done_callback(lambda _task: wf.agent_pool.settle(reservation))

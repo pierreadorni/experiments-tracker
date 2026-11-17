@@ -17,7 +17,8 @@ class StubTick:
         self.store = workflow.store
         self.scheduler = workflow.scheduler
         self.agent = workflow.agent
-        self.slots = [self]
+        # The driver only reads the pool's slots, so this stub is its own one slot.
+        self.agent_pool = SimpleNamespace(slots=[self])
         self.agent_task = self.quota_task = self.backup_task = None
         # Each role publishes its dispatch task on its own controller.
         self.research = SimpleNamespace(task=None)

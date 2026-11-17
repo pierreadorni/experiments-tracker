@@ -25,8 +25,8 @@ from experimenttracker.workflow import Workflow
 class GatedAgent(DemoAgent):
     """Demo turn that holds after begin until the test releases the shared gate.
 
-    Every configured connection gets its own instance, as ``start_agent_pool`` clones
-    the primary agent; the gate and the recorded turns are shared so a test can prove
+    Every configured connection gets its own instance, as ``start_agent_pool`` starts
+    one agent per slot; the gate and the recorded turns are shared so a test can prove
     two saved turns are live at the same time on two processes.
     """
 
@@ -126,7 +126,7 @@ async def test_two_connections_overlap_an_experiment_and_a_project_decision(runt
     wf = await pooled(runtime)
     store, eid = wf.store, create(wf.store)
     # One central quota decision and one registry serve both configured connections.
-    assert wf.slots[1].gate is wf.gate and wf.slots[1].agent_pool is wf.agent_pool
+    assert {id(slot.workflow) for slot in wf.agent_pool.slots} == {id(wf)}
     with store.tx() as db:
         service.wake(db, run["id"], "synthetic-input", "experiment_change", {"synthetic": True})
     # The research step prepares its turn; the next control pass selects both roles.
@@ -142,8 +142,8 @@ async def test_two_connections_overlap_an_experiment_and_a_project_decision(runt
     assert (left.connection.slot, right.connection.slot) == (0, 1)
     assert (plan["thread_id"], plan["turn_id"]) == ("demo-thread-" + eid, "demo-turn-1")
     assert (decision["thread_id"], decision["turn_id"]) == ("demo-thread-work", "decision-1")
-    # Each connection sent exactly its own turn: the primary never spoke for lane two.
-    assert (wf.agent.calls, wf.slots[1].agent.calls) == (1, 1)
+    # Each connection sent exactly its own turn: the primary never spoke for slot two.
+    assert (wf.agent.calls, wf.agent_pool.slots[1].agent.calls) == (1, 1)
     tasks = (wf.agent_task, wf.research.task)
     await settle(wf, tasks)
     assert store.one("SELECT state FROM agent_actions WHERE id=?", (plan["id"],))["state"] == "completed"
@@ -163,18 +163,18 @@ async def test_two_connections_overlap_an_experiment_and_an_owner_project_turn(r
         "test-project", {"request_id": str(uuid4()), "kind": "chat", "text": "Summarize the measurement."}
     )["request_id"]
     # An experiment turn stays live on the primary connection; the owner's project
-    # turn is admitted on the free one instead of waiting behind a global lane guard.
+    # turn is admitted on the free one instead of waiting behind a global slot guard.
     reservation = await wait_until(
         lambda: reserved(wf, "project_turns", identity), ticks=lambda: wf.tick(force_observe=True)
     )
     assert reserved(wf, "agent_actions", plan["id"]).connection.slot == 0
     assert reservation.connection.slot == 1
     turn = store.one("SELECT * FROM project_turns WHERE id=?", (identity,))
-    second = id(wf.slots[1].agent)
+    second = id(wf.agent_pool.slots[1].agent)
     sent = [entry for entry in GatedAgent.begun if entry[0] == second]
     assert turn["state"] == "running" and len(sent) == 1
     assert (turn["thread_id"], turn["turn_id"]) == sent[0][2:]
-    assert (wf.agent.calls, wf.slots[1].agent.calls) == (1, 1)
+    assert (wf.agent.calls, wf.agent_pool.slots[1].agent.calls) == (1, 1)
     tasks = (wf.agent_task, wf.supervisor.task)
     await settle(wf, tasks)
     assert store.one("SELECT state FROM project_turns WHERE id=?", (identity,))["state"] in (
@@ -233,7 +233,7 @@ async def test_unknown_saved_turns_count_once_and_readback_needs_no_capacity(run
         source_table="agent_actions",
         row=title,
         owner=experiment_owner(title["experiment_id"]),
-        workflow=wf,
+        slot=wf.agent_pool.primary,
     )
     # The same turn claimed by a live task is still one unit, not two.
     assert wf.agent_pool.turn_capacity() == 0
@@ -295,7 +295,7 @@ async def test_priority_orders_research_before_a_weekly_project_turn(runtime, mo
 def offer(wf, row, started, *, role="stage", connections=None):
     """Offer one saved row as a proposal whose dispatch reports its start."""
 
-    async def dispatch(_lane):
+    async def dispatch(_slot):
         started.append(row["id"])
 
     wf.agent_pool.propose(
@@ -304,7 +304,7 @@ def offer(wf, row, started, *, role="stage", connections=None):
         row=row,
         owner=experiment_owner(row["experiment_id"]),
         priority=EXPERIMENT_PRIORITY,
-        connections=(wf,) if connections is None else connections,
+        connections=(wf.agent_pool.primary,) if connections is None else connections,
         dispatch=dispatch,
     )
 
@@ -359,7 +359,7 @@ async def test_a_live_claim_counts_one_turn_until_its_row_settles(runtime):
         source_table="agent_actions",
         row=action,
         owner=experiment_owner(action["experiment_id"]),
-        workflow=wf,
+        slot=wf.agent_pool.primary,
     )
     # The claim and its saved row are the same turn: one unit, not two.
     assert wf.agent_pool.turn_capacity() == 1
@@ -382,7 +382,7 @@ async def test_a_live_claim_counts_one_turn_until_its_row_settles(runtime):
 )
 async def test_role_heads_merge_by_priority_and_saved_identity(runtime, offers):
     wf = await pooled(runtime, sessions=3)
-    store, lanes = wf.store, tuple(wf.slots)
+    store, slots = wf.store, tuple(wf.agent_pool.slots)
     # The stage scan ranks a newer turn first while the monitor turn's saved identity
     # sits between the two: scan rank and creation time conflict on purpose.
     rows = {
@@ -393,9 +393,9 @@ async def test_role_heads_merge_by_priority_and_saved_identity(runtime, offers):
     roles = {"head": "stage", "later": "stage", "watch": "monitor"}
     started = []
     for name in offers:
-        offer(wf, rows[name], started, role=roles[name], connections=lanes)
+        offer(wf, rows[name], started, role=roles[name], connections=slots)
     wf.agent_pool.admit()
-    await asyncio.gather(*[lane.agent_task for lane in wf.slots if lane.agent_task is not None])
+    await asyncio.gather(*[slot.agent_task for slot in wf.agent_pool.slots if slot.agent_task is not None])
     # Only role heads compete: the monitor head wins on saved identity, then the stage
     # queue keeps its own scan order, independent of the order the roles offered.
     assert started == [rows["watch"]["id"], rows["head"]["id"], rows["later"]["id"]]
@@ -404,18 +404,18 @@ async def test_role_heads_merge_by_priority_and_saved_identity(runtime, offers):
 
 async def test_an_ineligible_role_head_does_not_hide_its_next_offer(runtime):
     wf = await pooled(runtime)
-    store, lanes = wf.store, tuple(wf.slots)
+    store, slots = wf.store, tuple(wf.agent_pool.slots)
     head = insert_action(store, create(store), "pending", phase="plan", created_at=5)
     later = insert_action(store, create(store), "pending", phase="plan", created_at=0)
     watch = insert_action(store, create(store), "pending", phase="monitor", created_at=3)
     started = []
     for role, row in (("stage", head), ("stage", later), ("monitor", watch)):
-        offer(wf, row, started, role=role, connections=lanes)
+        offer(wf, row, started, role=role, connections=slots)
     # The stage head settled outside this selection: its role's next offer still runs
     # on the second free connection instead of being hidden behind the stale head.
     store.db.execute("UPDATE agent_actions SET state='completed' WHERE id=?", (head["id"],))
     wf.agent_pool.admit()
-    await asyncio.gather(*[lane.agent_task for lane in wf.slots if lane.agent_task is not None])
+    await asyncio.gather(*[slot.agent_task for slot in wf.agent_pool.slots if slot.agent_task is not None])
     assert started == [watch["id"], later["id"]]
     assert wf.agent_pool.lookup("agent_actions", head["id"]) is None
     await wf.close()
@@ -428,29 +428,31 @@ async def test_a_live_project_role_keeps_its_process_from_reconnecting(runtime):
     # either one its process before that turn settles.
     first = insert_project_turn(store, thread="first-thread", turn="first-turn")
     second = insert_project_turn(store, thread="second-thread", turn="second-turn", project="other-project")
-    for lane, row in ((wf, first), (wf.slots[1], second)):
+    for slot, row in ((wf.agent_pool.primary, first), (wf.agent_pool.slots[1], second)):
         wf.agent_pool.claim(
             role="supervisor",
             source_table="project_turns",
             row=row,
             owner=project_owner(row["project_id"]),
-            workflow=lane,
+            slot=slot,
         )
-    assert wf.agent_pool.process_busy(wf) and wf.agent_pool.process_busy(wf.slots[1])
+    assert wf.agent_pool.process_busy(wf.agent_pool.primary)
+    assert wf.agent_pool.process_busy(wf.agent_pool.slots[1])
     wf.agent_ready = False
-    wf.slots[1].agent_ready = False
+    wf.agent_pool.slots[1].agent_ready = False
     closed_at = wf.last_agent_start + 120
     await wf.step_runtime(closed_at)
     await wf.step_control_after_observe(closed_at)
-    assert [lane.agent.closes for lane in wf.slots] == [0, 0]
-    assert [lane.agent.start_count for lane in wf.slots] == [1, 1]
+    assert [slot.agent.closes for slot in wf.agent_pool.slots] == [0, 0]
+    assert [slot.agent.start_count for slot in wf.agent_pool.slots] == [1, 1]
     # Once both turns settle, the closed processes reconnect once each.
     store.db.execute("UPDATE project_turns SET state='failed'")
     wf.agent_pool.settle_row("project_turns", first["id"])
     wf.agent_pool.settle_row("project_turns", second["id"])
-    assert not wf.agent_pool.process_busy(wf) and not wf.agent_pool.process_busy(wf.slots[1])
+    assert not wf.agent_pool.process_busy(wf.agent_pool.primary)
+    assert not wf.agent_pool.process_busy(wf.agent_pool.slots[1])
     await wf.step_runtime(closed_at)
     await wf.step_control_after_observe(closed_at)
-    assert [lane.agent.closes for lane in wf.slots] == [1, 1]
-    assert [lane.agent.start_count for lane in wf.slots] == [2, 2]
+    assert [slot.agent.closes for slot in wf.agent_pool.slots] == [1, 1]
+    assert [slot.agent.start_count for slot in wf.agent_pool.slots] == [2, 2]
     await wf.close()

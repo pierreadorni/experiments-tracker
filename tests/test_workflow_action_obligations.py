@@ -24,7 +24,7 @@ async def make_title_action(store, workflow, monkeypatch, eid):
         "experimenttracker.workflow.luna_title_model", lambda models: ("deterministic-demo", "low")
     )
 
-    async def waiting(_action):
+    async def waiting(_action, _slot):
         await asyncio.Event().wait()
 
     monkeypatch.setattr(workflow, "dispatch_title", waiting)
@@ -81,7 +81,7 @@ async def test_title_dispatch_records_handoffs_terminal_result_and_replay(runtim
     monkeypatch.setattr(
         workflow,
         "refresh_quota",
-        lambda: asyncio.sleep(0, result=SimpleNamespace(admitted=True)),
+        lambda _slot=None: asyncio.sleep(0, result=SimpleNamespace(admitted=True)),
     )
     turns = []
 
@@ -94,7 +94,7 @@ async def test_title_dispatch_records_handoffs_terminal_result_and_replay(runtim
 
     monkeypatch.setattr(agent, "begin", begin)
     monkeypatch.setattr(agent, "finish", finish)
-    await Workflow.dispatch_title(workflow, action)
+    await Workflow.dispatch_title(workflow, action, workflow.agent_pool.primary)
     rows = obligations_for(store, action["id"])
     assert [(row["owner"], row["kind"], row["state"]) for row in rows] == [
         ("backend", "agent_turn", "abandoned"),
@@ -128,7 +128,7 @@ async def test_completion_after_await_cannot_settle_replaced_saved_turn(runtime,
     monkeypatch.setattr(
         workflow,
         "refresh_quota",
-        lambda: asyncio.sleep(0, result=SimpleNamespace(admitted=True)),
+        lambda _slot=None: asyncio.sleep(0, result=SimpleNamespace(admitted=True)),
     )
 
     async def begin(*args, **kwargs):
@@ -145,7 +145,7 @@ async def test_completion_after_await_cannot_settle_replaced_saved_turn(runtime,
     monkeypatch.setattr(agent, "begin", begin)
     monkeypatch.setattr(agent, "finish", finish)
     with pytest.raises(NeedsAttention, match="saved action changed during reconciliation"):
-        await Workflow.dispatch_title(workflow, action)
+        await Workflow.dispatch_title(workflow, action, workflow.agent_pool.primary)
 
     saved = store.one("SELECT state,turn_id FROM agent_actions WHERE id=?", (action["id"],))
     assert (saved["state"], saved["turn_id"]) == ("running", "replacement-turn")

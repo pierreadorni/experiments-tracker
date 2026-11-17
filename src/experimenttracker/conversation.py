@@ -498,7 +498,7 @@ class Conversation:
         agent, eid = slot.agent, message["experiment_id"]
         expected = dict(action)
         try:
-            await slot.refresh_quota()
+            await self.workflow.refresh_quota(slot)
             decision = self.workflow.agent_pool.quota(eid=eid)
             if not decision.admitted:
                 self.hold(message["id"], "quota_hold", decision.reason)
