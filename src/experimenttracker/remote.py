@@ -11,6 +11,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from . import artifacts, clock
+from .core import obligation_sources, transfer_obligations
 from .execution_settings import ExecutionSettings
 from .slurm import ResourceUnavailable, SlurmScheduler, command
 from .store import encode
@@ -266,12 +267,41 @@ class RemoteSlurmScheduler(SlurmScheduler):
         payload = {"settings": self.settings.model_dump(), "layout": layout}
         identity = identity or str(uuid4())
         with self.store.tx() as db:
-            prior = db.execute("SELECT payload FROM execution_transfers WHERE id=?", (identity,)).fetchone()
-            if prior and prior["payload"] != encode(payload):
+            before_row = db.execute("SELECT * FROM execution_transfers WHERE id=?", (identity,)).fetchone()
+            before = dict(before_row) if before_row else None
+            if before and (
+                before["experiment_id"] != self.exp["id"]
+                or before["direction"] != direction
+                or before["payload"] != encode(payload)
+            ):
                 raise ValueError("transfer identity changed")
-            db.execute(
-                "INSERT OR IGNORE INTO execution_transfers(id,experiment_id,direction,payload,state,updated_at) VALUES(?,?,?,?,'pending',?)",
-                (identity, self.exp["id"], direction, encode(payload), clock.now()),
+            parent = db.execute("SELECT phase FROM experiments WHERE id=?", (self.exp["id"],)).fetchone()
+            if parent is None:
+                raise ValueError(f"transfer experiment does not exist: {self.exp['id']}")
+            if parent["phase"] == "cancelled":
+                raise TransferCancelled("Experiment cancelled")
+            if before and before["state"] == "cancelled":
+                raise TransferCancelled("Transfer cancelled")
+            now = clock.now()
+            if before is None:
+                db.execute(
+                    "INSERT INTO execution_transfers"
+                    "(id,experiment_id,direction,payload,state,result,updated_at) "
+                    "VALUES(?,?,?,?,'pending',NULL,?)",
+                    (identity, self.exp["id"], direction, encode(payload), now),
+                )
+            elif before["state"] == "complete":
+                db.execute(
+                    "UPDATE execution_transfers SET state='pending',result=NULL,updated_at=? "
+                    "WHERE id=? AND state='complete'",
+                    (now, identity),
+                )
+            elif before["state"] != "pending":
+                raise ValueError(f"transfer cannot be retried from saved state {before['state']}")
+            obligation = transfer_obligations.sync_transfer(db, identity, before=before)
+            admitted_episode = obligation["id"]
+            self.store.emit(
+                db, self.exp["id"], "state_changed", {"transfer_id": identity, "transfer_state": "pending"}
             )
         try:
             task = asyncio.create_task(operation())
@@ -291,18 +321,44 @@ class RemoteSlurmScheduler(SlurmScheduler):
         except TransferCancelled:
             raise
         except Exception as exc:
-            with self.store.tx() as db:
-                db.execute(
-                    "UPDATE execution_transfers SET state='pending',result=?,updated_at=? WHERE id=? AND state!='cancelled'",
-                    (str(exc)[:2000], clock.now(), identity),
-                )
+            self._save_transfer_outcome(identity, admitted_episode, "pending", str(exc)[:2000])
             raise TransferPending(f"Jean Zay {direction} transfer pending: {exc}") from exc
-        with self.store.tx() as db:
-            db.execute(
-                "UPDATE execution_transfers SET state='complete',result=NULL,updated_at=? WHERE id=? AND state!='cancelled'",
-                (clock.now(), identity),
-            )
+        self._save_transfer_outcome(identity, admitted_episode, "complete")
+        if self.store.experiment(self.exp["id"])["phase"] == "cancelled":
+            raise TransferCancelled("Experiment cancelled")
         return result
+
+    def _save_transfer_outcome(self, identity, episode, state, result=None):
+        """Save one exact outcome for the admitted transfer episode.
+
+        Refuses a stale callback: the saved row must still be the pending row this
+        call admitted, and its open episode must still be the latest one. A failure
+        keeps the row pending and that episode open, so a retry keeps its age.
+        """
+        with self.store.tx() as db:
+            saved = db.execute("SELECT * FROM execution_transfers WHERE id=?", (identity,)).fetchone()
+            if saved is None:
+                raise RuntimeError(f"saved transfer disappeared before its outcome: {identity}")
+            if saved["state"] == "cancelled":
+                raise TransferCancelled("Transfer cancelled")
+            latest = obligation_sources.latest_episode(db, "transfer", identity)
+            if (
+                saved["state"] != "pending"
+                or latest is None
+                or latest["id"] != episode
+                or latest["state"] != "open"
+            ):
+                raise RuntimeError(f"transfer {identity} responsibility changed before its outcome was saved")
+            before = dict(saved)
+            db.execute(
+                "UPDATE execution_transfers SET state=?,result=?,updated_at=? WHERE id=? AND state='pending'",
+                (state, result, clock.now(), identity),
+            )
+            transfer_obligations.sync_transfer(db, identity, before=before)
+            if state != "pending":
+                self.store.emit(
+                    db, self.exp["id"], "state_changed", {"transfer_id": identity, "transfer_state": state}
+                )
 
     async def rsync(self, *args):
         # Credentials and their local directories never enter a project transfer.
