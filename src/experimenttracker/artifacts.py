@@ -9,6 +9,7 @@ from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
 
 from . import clock
+from .core import report_obligations
 from .models import Analysis, ExperimentResult, ExperimentValidation, Implementation
 from .store import encode
 
@@ -324,6 +325,7 @@ def register(
                     "UPDATE report_versions SET state='publishing',artifact_ids=?,report_artifact_id=?,updated_at=? WHERE experiment_id=? AND version=?",
                     (identities, report_id, clock.now(), eid, report_version),
                 )
+                report_obligations.sync_report(db, eid, report_version)
                 changed = True
         if changed:
             store.emit(db, eid, "artifacts_registered", {"names": names})

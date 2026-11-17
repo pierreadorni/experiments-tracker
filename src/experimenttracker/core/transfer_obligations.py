@@ -5,6 +5,9 @@ import json
 from . import obligation_sources
 
 _SOURCE = "transfer"
+_LIVE_STATES = frozenset({"pending"})
+_SATISFIED_STATES = frozenset({"complete"})
+_ABANDONED_STATES = frozenset({"failed", "cancelled"})
 
 
 def sync_transfer(db, identity, *, before=None):
@@ -42,36 +45,28 @@ def sync_transfer(db, identity, *, before=None):
     _check_history(db, identity, transfer, project_id, detail)
 
     state = transfer["state"]
-    if state == "pending":
-        source_transition = bool(previous is not None and previous["state"] == "complete")
-        obligation = obligation_sources.open_episode(
-            db,
-            _SOURCE,
-            identity,
-            source_transition=source_transition,
-            experiment_id=transfer["experiment_id"],
-            project_id=project_id,
-            kind="transfer",
-            target=identity,
-            owner="backend",
-            wait=f"transfer:{identity}",
-            detail=detail,
-        )
-        if obligation["state"] != "open":
-            raise ValueError("pending saved transfer conflicts with terminal obligation history")
-        return obligation
-
-    if state not in {"complete", "failed", "cancelled"}:
+    if state not in _LIVE_STATES | _SATISFIED_STATES | _ABANDONED_STATES:
         raise ValueError(f"unsupported saved transfer state: {state}")
-    if previous is not None and previous["state"] != "pending":
+    if state != "pending" and previous is not None and previous["state"] != "pending":
         return latest
-    if latest is None or latest["state"] != "open":
-        return latest
-    episode = int(latest["id"].rsplit(":", 1)[1])
-    terminalize = (
-        obligation_sources.satisfy_episode if state == "complete" else obligation_sources.abandon_episode
+    return obligation_sources.sync_episode(
+        db,
+        _SOURCE,
+        identity,
+        state=state,
+        live_states=_LIVE_STATES,
+        satisfied_states=_SATISFIED_STATES,
+        abandoned_states=_ABANDONED_STATES,
+        source_transition=bool(
+            state == "pending" and previous is not None and previous["state"] == "complete"
+        ),
+        experiment_id=transfer["experiment_id"],
+        project_id=project_id,
+        kind="transfer",
+        owner="backend",
+        wait=f"transfer:{identity}",
+        detail=detail,
     )
-    return terminalize(db, _SOURCE, identity, episode)
 
 
 def _check_history(db, identity, transfer, project_id, detail):

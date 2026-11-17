@@ -98,6 +98,60 @@ def open_episode(
     )
 
 
+def sync_episode(
+    db,
+    source_type,
+    saved_id,
+    *,
+    state,
+    live_states,
+    satisfied_states=frozenset(),
+    abandoned_states=frozenset(),
+    source_transition=False,
+    experiment_id=None,
+    project_id=None,
+    kind,
+    owner,
+    wait=None,
+    detail=None,
+):
+    """Synchronize a saved source's responsibility with its exact saved state.
+
+    Any live state opens or replays the one episode covering that progress. A
+    satisfied or abandoned state settles only an already-open episode, and a
+    terminal state with no history stays without history.
+    """
+    _require_transaction(db)
+    _source_parts(source_type, saved_id)
+    if state in live_states:
+        row = open_episode(
+            db,
+            source_type,
+            saved_id,
+            source_transition=source_transition,
+            experiment_id=experiment_id,
+            project_id=project_id,
+            kind=kind,
+            target=saved_id,
+            owner=owner,
+            wait=wait,
+            detail=detail,
+        )
+        if row["state"] != "open":
+            raise ValueError(f"live {source_type} state conflicts with terminal obligation history")
+        return row
+    if state in satisfied_states:
+        settle = satisfy_episode
+    elif state in abandoned_states:
+        settle = abandon_episode
+    else:
+        raise ValueError(f"unsupported saved {source_type} state: {state}")
+    latest = latest_episode(db, source_type, saved_id)
+    if latest is None or latest["state"] != "open":
+        return latest
+    return settle(db, source_type, saved_id, int(latest["id"].rsplit(":", 1)[1]))
+
+
 def satisfy_episode(db, source_type, saved_id, episode):
     _require_transaction(db)
     return obligations.satisfy(db, episode_id(source_type, saved_id, episode))

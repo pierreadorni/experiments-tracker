@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from . import clock
 from .config import ProjectConfig
-from .core import action_obligations
+from .core import action_obligations, report_obligations
 from .legacy_archive import archive_active, execution_frozen
 from .models import STAGES, request_answer
 from .title import title_prompt
@@ -920,11 +920,18 @@ class Store:
             "UPDATE steering SET state='cancelled',applied_at=? WHERE experiment_id=? AND state IN ('pending','cancelling')",
             (now, eid),
         )
+        cancelled_reports = db.execute(
+            "SELECT version FROM report_versions WHERE experiment_id=? "
+            "AND state IN ('queued','building','publishing')",
+            (eid,),
+        ).fetchall()
         db.execute(
             "UPDATE report_versions SET state='failed',error='Experiment cancelled',updated_at=? "
             "WHERE experiment_id=? AND state IN ('queued','building','publishing')",
             (now, eid),
         )
+        for report in cancelled_reports:
+            report_obligations.sync_report(db, eid, report["version"])
         self.emit(db, eid, "experiment_cancel_requested")
 
     def command(self, request_id, kind, payload, *, eid=None, origin="local", experiment_id=None, _db=None):
@@ -1639,6 +1646,7 @@ class Store:
             "INSERT INTO report_versions(experiment_id,version,state,document,request_id,created_at,updated_at) VALUES(?,?,'queued',?,?,?,?)",
             (eid, version, encode(document), request_id, now, now),
         )
+        report_obligations.sync_report(db, eid, version)
 
     def working_report(self, eid, document, request_id, *, _db=None):
         """Idempotent report intent independent of requested compute completion."""
@@ -1674,10 +1682,12 @@ class Store:
         if self.experiment(eid)["phase"] == "cancelled":
             return
         with self.tx() as db:
-            db.execute(
+            changed = db.execute(
                 "UPDATE report_versions SET state=?,error=?,updated_at=? WHERE experiment_id=? AND version=?",
                 (state, error, clock.now(), eid, version),
             )
+            if changed.rowcount:
+                report_obligations.sync_report(db, eid, version)
             if state == "ready" and version > 1:
                 db.execute(
                     "INSERT OR IGNORE INTO inbox VALUES(?,?,?,?,?)",
