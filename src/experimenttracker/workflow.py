@@ -17,7 +17,7 @@ from .codex_client import CodexAgent, NeedsAttention, RpcRejected, SessionUnavai
 from .config import JobResources
 from .controller import Controller, ControllerDecision
 from .conversation import Conversation
-from .core import action_obligations
+from .core import action_obligations, job_obligations
 from .errors import ExperimentFailure
 from .knowledge import ProjectSupervisor
 from .maintenance import Maintenance, blocked
@@ -1556,6 +1556,7 @@ class Workflow:
                     encode(execution_manifest),
                 ),
             )
+            job_obligations.sync_job(db, intent_id)
             self.research.service.admission(db, current, stage, resources, intent_id)
             for ref in refs:
                 db.execute(
@@ -1577,7 +1578,18 @@ class Workflow:
             self.store.update(eid, hold_reason="submission_uncertain", error=str(exc))
             return {"state": "uncertain", "reason": "submission_uncertain"}
         with self.store.tx() as db:
+            before = db.execute("SELECT * FROM jobs WHERE intent_id=?", (intent_id,)).fetchone()
+            if before is None:
+                raise RuntimeError("saved submission intent disappeared before scheduler ID save")
+            before = dict(before)
+            if before["job_id"] == job_id:
+                return {"intent_id": intent_id, "job_id": job_id, "state": before["state"]}
+            if before["state"] != "submitting" or before["job_id"] is not None:
+                raise RuntimeError(
+                    f"saved submission changed before scheduler ID {job_id} was saved; no overwrite was made"
+                )
             db.execute("UPDATE jobs SET job_id=?,state='submitted' WHERE intent_id=?", (job_id, intent_id))
+            job_obligations.sync_job(db, intent_id, before=before)
             self.store.emit(db, eid, "job_submitted", {"intent_id": intent_id, "job_id": job_id})
         return {"intent_id": intent_id, "job_id": job_id, "state": "submitted"}
 
@@ -1670,12 +1682,16 @@ class Workflow:
         now = clock.now()
         with self.store.tx() as db:
             iteration.complete(self, exp, job, job_manifest, job_root, db)
+            before = job_obligations.locked_job(db, job)
+            if before is None:
+                raise ValueError("saved job identity changed during output reconciliation")
             db.execute(
                 "UPDATE jobs SET state='complete',scheduler_state='COMPLETED',exit_code='0:0',error=NULL,"
                 "observed_at=?,started_at=COALESCE(?,started_at),ended_at=COALESCE(?,ended_at),"
                 "estimated_start_at=NULL,pending_reason=NULL WHERE intent_id=?",
                 (now, observed.started_at, observed.ended_at, job["intent_id"]),
             )
+            job_obligations.sync_job(db, job["intent_id"], before=before)
             db.execute(
                 "UPDATE stages SET state='complete',error=NULL,output_manifest=?,updated_at=? WHERE experiment_id=? AND id=?",
                 (encode(names), now, eid, job["stage_id"]),
@@ -1744,12 +1760,16 @@ class Workflow:
                         )
                         continue
                     with self.store.tx() as db:
+                        before = job_obligations.locked_job(db, job, "state")
+                        if before is None:
+                            raise RuntimeError("saved job changed before reconciliation ID save")
                         db.execute(
                             "UPDATE jobs SET job_id=?,state='submitted' WHERE intent_id=?",
                             (job_id, job["intent_id"]),
                         )
+                        job_obligations.sync_backend(db, job["intent_id"], before=before)
                         self.store.emit(db, eid, "job_reconciled", {"job_id": job_id})
-                    job["job_id"] = job_id
+                    job = self.store.one("SELECT * FROM jobs WHERE intent_id=?", (job["intent_id"],))
                     self.store.update(eid, hold_reason=None, error=None)
                 observed = check[1] if check else await scheduler.observe(job["job_id"])
                 if self.store.experiment(eid)["phase"] == "cancelled":

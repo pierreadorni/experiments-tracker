@@ -150,6 +150,13 @@ async def test_recovery_adopts_failed_attempt_outputs_once(failed_evaluate, monk
     case = failed_evaluate
     store, workflow, eid, job = case.store, case.workflow, case.eid, case.job
     before = persisted(store, eid)
+    external = store.one("SELECT * FROM obligations WHERE id=?", (f"job:{job['intent_id']}:1",))
+    assert (external["owner"], external["kind"], external["wait"], external["state"]) == (
+        "external",
+        "job",
+        f"job:{job['job_id']}",
+        "open",
+    )
     with monkeypatch.context() as patch:
         forbid_experiment_root_traversal(patch)
         assert await workflow.reconcile_outputs(eid) == case.result()
@@ -165,6 +172,8 @@ async def test_recovery_adopts_failed_attempt_outputs_once(failed_evaluate, monk
     saved = evaluate_job(store, eid)
     assert (saved["job_id"], saved["error"]) == (job["job_id"], None)
     assert (saved["state"], saved["scheduler_state"], saved["exit_code"]) == ("complete", "COMPLETED", "0:0")
+    settled = store.one("SELECT * FROM obligations WHERE id=?", (external["id"],))
+    assert settled["state"] == "satisfied"
     assert store.one(
         "SELECT state,error,output_manifest FROM stages WHERE experiment_id=? AND id='evaluate'", (eid,)
     ) == {"state": "complete", "error": None, "output_manifest": encode(["metrics.json"])}
@@ -259,6 +268,7 @@ async def test_recovery_rolls_back_attempt_adoption_on_transaction_failure(faile
     case = failed_evaluate
     store, workflow, eid, job = case.store, case.workflow, case.eid, case.job
     before = persisted(store, eid)
+    obligations_before = store.rows("SELECT * FROM obligations WHERE experiment_id=? AND kind='job'", (eid,))
     published = workflow.root(eid) / "metrics.json"
     assert not published.exists()
     emit, failing = store.emit, {"on": True}
@@ -272,6 +282,10 @@ async def test_recovery_rolls_back_attempt_adoption_on_transaction_failure(faile
     with pytest.raises(RuntimeError, match="transaction failure"):
         await workflow.reconcile_outputs(eid)
     assert persisted(store, eid) == before
+    assert (
+        store.rows("SELECT * FROM obligations WHERE experiment_id=? AND kind='job'", (eid,))
+        == obligations_before
+    )
     assert not store.rows("PRAGMA foreign_key_check")
     # The small published copy may survive the rolled-back attempt; it is
     # unregistered and a retry with the same bytes is a no-op, not cleanup.

@@ -14,6 +14,22 @@ _IDENTITY_FIELDS = ("intent_id", "experiment_id", "stage_id", "attempt")
 _ALLOWED_RESPONSIBILITIES = {("backend", "reconcile"), ("external", "job")}
 
 
+def locked_job(db, job, *fields):
+    """Re-read ``job`` in the caller's write transaction; None if its identity or ``fields`` changed."""
+    row = db.execute("SELECT * FROM jobs WHERE intent_id=?", (job["intent_id"],)).fetchone()
+    if row is None or any(row[field] != job[field] for field in (*_IDENTITY_FIELDS, "job_id", *fields)):
+        return None
+    return dict(row)
+
+
+def sync_backend(db, intent_id, *, before):
+    """Run ``sync_job`` so ledger conflicts stay off scientific ``ValueError`` paths."""
+    try:
+        sync_job(db, intent_id, before=before)
+    except ValueError as exc:
+        raise RuntimeError(f"job obligation mapping failed: {exc}") from exc
+
+
 def sync_job(db, intent_id, *, before=None):
     """Synchronize a saved Slurm intent in its caller's transaction.
 
