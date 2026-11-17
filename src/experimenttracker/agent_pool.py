@@ -74,6 +74,8 @@ def project_owner(pid):
 def role_for_phase(phase):
     if phase.startswith("discuss:"):
         return "conversation"
+    if phase.startswith("integration:"):
+        return "integration"
     return TITLED_PHASES.get(phase, "stage")
 
 

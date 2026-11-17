@@ -213,6 +213,9 @@ class TurnResolver:
             if action["id"] in owned:
                 continue
             try:
+                if action["phase"].startswith("integration:"):
+                    await self.workflow.integration_resolver.resolve_uncertain(action)
+                    continue
                 await self.resolve_action(action)
             except Exception:
                 # A resolver failure keeps this action for the operator; the tick continues.

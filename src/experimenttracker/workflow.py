@@ -38,6 +38,7 @@ from .core import (
     request_obligations,
     review_obligations,
 )
+from .engine.integration_resolver import IntegrationResolver
 from .errors import ExperimentFailure
 from .knowledge import ProjectSupervisor
 from .maintenance import Maintenance, blocked
@@ -157,6 +158,7 @@ class Workflow:
         self.discussion_activity = DiscussionActivity()
         self._attach_handlers(self.agent_pool.primary)
         self.conversation = Conversation(self)
+        self.integration_resolver = IntegrationResolver(self)
         self.supervisor = ProjectSupervisor(self)
         self.controller = Controller(self)
         self.research = ResearchController(self)
@@ -758,6 +760,7 @@ class Workflow:
         self.discard_failed_implementation()
         queue_late_reports(self)
         await self.conversation.advance()
+        await self.integration_resolver.advance()
         await self.advance_title()
         await self.controller.advance()
 

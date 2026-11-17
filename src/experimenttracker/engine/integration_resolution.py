@@ -13,9 +13,9 @@ candidate, its conflicted paths, redacted and bounded logs for both sides and th
 experiment summary, built without changing Git state. ``accept_resolution`` finalizes
 the resolver's edits and moves the saved request back to ``claimed``, never to
 ``ready``, so the integration driver reruns the project check and any owner approval.
-The accepted next dispatch seam is one integrator action dispatched through the
-existing periodic integration path with this input; it must return edits only inside
-the saved worktree and must record them through ``accept_resolution``.
+``integration_resolver`` dispatches the accepted integrator action through the existing
+durable agent action, admission and restart machinery; its turn returns edits only
+inside the saved worktree and records them through ``accept_resolution``.
 
 Every refusal leaves the conflict directory and the base branch untouched. A merge
 commit that was created but could not be verified or pinned stays unbound in the
