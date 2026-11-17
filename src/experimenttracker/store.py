@@ -18,6 +18,7 @@ from .core import (
     review_obligations,
     transfer_obligations,
 )
+from .engine import integration_queue
 from .legacy_archive import archive_active, execution_frozen
 from .models import STAGES, request_answer
 from .title import title_prompt
@@ -25,6 +26,27 @@ from .title import title_prompt
 
 def encode(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+# Named experiment branches start from the project's single main base branch.
+_INTEGRATION_BASE = "main"
+_INTEGRATION_VERSION = 1
+
+
+def _integration_request(exp, branch, kind, *, merge_commit=None, reason=None):
+    """Build the bounded queue request from the saved branch, never from client input."""
+    request = {
+        "schema_version": _INTEGRATION_VERSION,
+        "kind": kind,
+        "experiment_id": exp["id"],
+        "branch": branch,
+        "base": _INTEGRATION_BASE,
+    }
+    if reason:
+        request["reason"] = reason
+    if merge_commit is not None:
+        request["merge_commit"] = merge_commit
+    return request
 
 
 def public_projection(value):
@@ -996,6 +1018,43 @@ class Store:
             return False
         return branch_eligible(project.checkout)
 
+    def _integration_branch(self, exp):
+        """Return this experiment's exact saved named branch, or refuse.
+
+        Integration is a contract-3 Git feature: a frozen legacy record and a run
+        without a saved branch have no scope the queue could bind safely.
+        """
+        if execution_frozen(exp):
+            raise Conflict("integration requires a live contract-3 experiment")
+        branch = self.one("SELECT * FROM experiment_branches WHERE experiment_id=?", (exp["id"],))
+        if not branch:
+            raise Conflict("integration requires a named experiment branch")
+        return branch
+
+    def _refuse_queued_integration(self, db, exp, repo, kind):
+        """Refuse a duplicate request while this experiment's own request is live."""
+        views = integration_queue.pending(db, repo)
+        active = integration_queue.active(db, repo)
+        if active is not None:
+            views.append(active)
+        if any(view["experiment_id"] == exp["id"] and view["request"].get("kind") == kind for view in views):
+            raise Conflict("this experiment's integration is already queued")
+
+    def _enqueue_integration(self, db, exp, branch, request_id, request):
+        """Queue one saved request in this command's transaction; no Git work here."""
+        project_id = exp["contract"].get("project", {}).get("id", "test-project")
+        try:
+            return integration_queue.enqueue(
+                db,
+                branch["repo"],
+                request_id,
+                request,
+                experiment_id=exp["id"],
+                project_id=project_id,
+            )
+        except ValueError as exc:
+            raise Conflict(str(exc)) from None
+
     def command(self, request_id, kind, payload, *, eid=None, origin="local", experiment_id=None, _db=None):
         """Apply a validated user command atomically. Stable request IDs include a payload conflict check."""
         request_id = str(request_id)
@@ -1633,6 +1692,57 @@ class Store:
                             "UPDATE experiments SET pause_compute=1,hold_reason='steering_restart' WHERE id=?",
                             (eid,),
                         )
+                elif kind == "integrate":
+                    if exp["contract"].get("dont_merge"):
+                        raise Conflict("this experiment is marked Don't merge")
+                    branch = self._integration_branch(exp)
+                    if branch["state"] != "active":
+                        raise Conflict("only an active experiment branch can be integrated")
+                    reason = payload.get("reason")
+                    if reason is not None and (
+                        not isinstance(reason, str) or not reason.strip() or len(reason) > 2000
+                    ):
+                        raise Conflict("integration reason must be bounded text")
+                    self._refuse_queued_integration(db, exp, branch["repo"], "merge")
+                    request = _integration_request(exp, branch["branch"], "merge", reason=reason)
+                    self._enqueue_integration(db, exp, branch, request_id, request)
+                elif kind == "revert_integration":
+                    branch = self._integration_branch(exp)
+                    merged = branch["merged_commit"]
+                    if branch["state"] != "merged" or not merged:
+                        raise Conflict("only an applied integration can be reverted")
+                    if len(merged) not in (40, 64) or any(char not in "0123456789abcdef" for char in merged):
+                        raise Conflict("the saved integration merge commit is not exact")
+                    self._refuse_queued_integration(db, exp, branch["repo"], "revert")
+                    request = _integration_request(exp, branch["branch"], "revert", merge_commit=merged)
+                    self._enqueue_integration(db, exp, branch, request_id, request)
+                elif kind == "dont_merge":
+                    value = payload.get("value")
+                    if not isinstance(value, bool):
+                        raise Conflict("the Don't merge flag requires a boolean value")
+                    if execution_frozen(exp):
+                        raise Conflict("integration requires a live contract-3 experiment")
+                    branch = self.one("SELECT * FROM experiment_branches WHERE experiment_id=?", (eid,))
+                    if value and branch:
+                        active = integration_queue.active(db, branch["repo"])
+                        if (
+                            active is not None
+                            and active["experiment_id"] == eid
+                            and active["request"].get("kind") == "merge"
+                        ):
+                            raise Conflict(
+                                "this experiment's integration is already being applied; "
+                                "revert it after it lands"
+                            )
+                        for view in integration_queue.pending(db, branch["repo"]):
+                            if view["experiment_id"] == eid and view["request"].get("kind") == "merge":
+                                integration_queue.finish(db, view["request_id"], "abandoned")
+                    contract = exp["contract"]
+                    if value:
+                        contract["dont_merge"] = True
+                    else:
+                        contract.pop("dont_merge", None)
+                    db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(contract), eid))
                 else:
                     raise ValueError("unknown command")
                 phase = db.execute("SELECT phase FROM experiments WHERE id=?", (eid,)).fetchone()[0]

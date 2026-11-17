@@ -143,6 +143,33 @@ class AnswerCommand(StrictModel):
     answer: str = Field(min_length=1, max_length=4000)
 
 
+class IntegrateCommand(StrictModel):
+    """A request to queue this experiment's saved branch; no path, SHA or check argv."""
+
+    schema_version: Literal[1] = 1
+    request_id: UUID
+    reason: str | None = Field(default=None, max_length=2000)
+
+    @model_validator(mode="after")
+    def nonempty_reason(self):
+        if self.reason is not None and not self.reason.strip():
+            raise ValueError("integration reason must contain text")
+        return self
+
+
+class RevertIntegrationCommand(StrictModel):
+    """Revert this experiment's exact saved integration merge commit."""
+
+    schema_version: Literal[1] = 1
+    request_id: UUID
+
+
+class DontMergeCommand(StrictModel):
+    schema_version: Literal[1] = 1
+    request_id: UUID
+    value: bool = Field(strict=True)
+
+
 def request_answer(pending, answer):
     method = pending["method"]
     if method == "item/tool/requestUserInput":

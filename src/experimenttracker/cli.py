@@ -204,6 +204,12 @@ def main():
     present.add_argument("experiment_id", type=UUID)
     present.add_argument("--document", type=Path, required=True)
     present.add_argument("--request-id", type=UUID)
+    integrate = sub.add_parser(
+        "integrate", help="queue this experiment's saved branch for integration; no Git or check runs here"
+    )
+    integrate.add_argument("experiment_id", type=UUID)
+    integrate.add_argument("--request-id", type=UUID)
+    integrate.add_argument("--reason")
     sub.add_parser("status")
     sub.add_parser("doctor", help="read-only startup preflight; no jobs, inference or state mutation")
     inspect = sub.add_parser("inspect", help="read a detailed saved experiment without mutation")
@@ -348,6 +354,21 @@ def main():
             f"http://{config.host}:{config.port}/api/experiments/{args.experiment_id}/reports",
             headers={"Authorization": "Bearer " + config.api_token_file.read_text().strip()},
             json=payload.model_dump(mode="json"),
+            timeout=30,
+        )
+        response.raise_for_status()
+        print(json.dumps(response.json(), indent=2))
+    elif args.command == "integrate":
+        import httpx
+
+        from .models import IntegrateCommand
+
+        payload = IntegrateCommand(request_id=args.request_id or uuid4(), reason=args.reason)
+        # The running single owner applies the command; the CLI never opens a second writer.
+        response = httpx.post(
+            f"http://{config.host}:{config.port}/api/experiments/{args.experiment_id}/integrate",
+            headers={"Authorization": "Bearer " + config.api_token_file.read_text().strip()},
+            json=payload.model_dump(mode="json", exclude_none=True),
             timeout=30,
         )
         response.raise_for_status()

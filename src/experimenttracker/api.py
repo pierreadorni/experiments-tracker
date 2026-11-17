@@ -21,10 +21,13 @@ from .models import (
     CreateProject,
     DeleteCommand,
     DiscussCommand,
+    DontMergeCommand,
+    IntegrateCommand,
     NoteCommand,
     PlanReviewCommand,
     PresentCommand,
     ReserveCommand,
+    RevertIntegrationCommand,
     SteerCommand,
     UpdateProjectSettings,
 )
@@ -436,6 +439,18 @@ def create_app(config, *, components=None, config_path=None, current_release=Non
     @app.post("/api/experiments/{eid}/steering", dependencies=[Depends(authorize)])
     async def steer(eid: UUID, body: SteerCommand):
         return apply(body, eid, "steer")
+
+    @app.post("/api/experiments/{eid}/integrate", dependencies=[Depends(authorize)])
+    async def integrate(eid: UUID, body: IntegrateCommand):
+        return apply(body, eid, "integrate")
+
+    @app.post("/api/experiments/{eid}/integrations/revert", dependencies=[Depends(authorize)])
+    async def revert_integration(eid: UUID, body: RevertIntegrationCommand):
+        return apply(body, eid, "revert_integration")
+
+    @app.post("/api/experiments/{eid}/dont-merge", dependencies=[Depends(authorize)])
+    async def dont_merge(eid: UUID, body: DontMergeCommand):
+        return apply(body, eid, "dont_merge")
 
     @app.post("/api/quota/reserve", dependencies=[Depends(authorize)])
     async def reserve(body: ReserveCommand):
