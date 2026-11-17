@@ -479,7 +479,7 @@ role busy flags it still writes. All retire with the contract-3 engine in T4.8.
   backend commit intents, pinned job commits, and shared runtime selection; an
   unproven external Git outcome requires inspection rather than replay.
 
-### [ ] T3.4 Integration queue (backend) · S · M
+### [x] T3.4 Integration queue (backend) · S · M per subcard
 - `engine/integration.py` implementing design.md C6 steps 1–7. Merging is automatic:
   no approval unless the project sets `integration.require_approval: true`. Conflicts
   → owner obligation for now (agent resolution in T3.5). A failed check never merges.
@@ -492,15 +492,19 @@ role busy flags it still writes. All retire with the contract-3 engine in T4.8.
 - **Tests:** clean merge; conflict; dirty main checkout refusing the fast-forward;
   base branch moved meanwhile.
 - **T3.4a–c landed:** exact Git transactions, durable runner, project checks, local owner
-  approval, and Store/API/CLI commands. T3.4d completion opt-in is under validation.
+  approval, and Store/API/CLI commands. T3.4d queues a saved explicit agent opt-in
+  without blocking completion when the integration queue is full.
   A failed check or uncertain Git outcome holds the candidate for inspection.
 
 ### [ ] T3.5 Agent conflict resolution · F+R · M
-- **T3.5a landed:** verify and pin the resolved candidate; the agent dispatch is not wired yet.
+- **T3.5a/b landed:** verify and pin the resolved candidate, then return it through
+  project check and approval. T3.5c durable agent dispatch is under validation.
 - Add an integrator agent turn in `_integration` with the conflicted files and both
   logs; the backend checks markers and the diff before continuing.
 
 ### [ ] T3.6 UI: branch, commits, Integrate · F · M
+- Branch/head/job commits and confirmed integration/revert are in main. Exact
+  approval from the browser and gateway is in final validation.
 - The experiment view shows the branch, head commit, the commit for each job, and
   integration state. Add an **Integrate…** confirmation and a gateway command
   passthrough (append-only migration if needed).
@@ -556,6 +560,8 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 ---
 
 ## Log
+
+- **T3.4d, T3.5b and T3.6 UI:** Completion opt-in, resolved-candidate check handoff, and branch/commit display with confirmed integration controls. Isolated `make check` passed **1013 Python, 34 web, 47 gateway**, with one Python dependency warning. Source publication only. Remaining T3.5c and T3.6c are saved on `t3/next-validation` (`ded7712`); see that checkout's `check-results/t3-agent-approval-make-check.log` before accepting either.
 
 - **T3.1, 2026-11-17:** Named Git worktrees and exact exports/pins are available as primitives; T3.3a handles intent persistence and begins replacing existing checkout creation only for new eligible runs. Additive SQLite schema 25 preserves existing rows. Real Git tests cover bounded staging, exact archives and pins surviving pruning. Production +315/−2; tests +178/−4. Ruff check and format, 42 targeted tests, and **872 isolated Python tests passed** (one dependency warning). No live activation.
 - **T3.2, 2026-11-17:** Shared environments and the fixed-interpreter option landed without changing runtime selection yet. T3.3b replaces per-experiment venv creation for eligible named worktrees; old and uncovered cases retain their existing runtime. The builder excludes its cache from Git and publishes readiness only after the exact dependencies finish building. Production +231/−3; tests +252/−0; example config +6/−0. Isolated Node 24 locked setup, Ruff check and format, 39 targeted tests, **878 Python tests passed** (one dependency warning), and contract-3 synthetic demo completed. No live activation.
