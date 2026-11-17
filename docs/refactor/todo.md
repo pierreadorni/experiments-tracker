@@ -312,9 +312,11 @@ and archived fixtures still render their report via the API.
   one-slot and same-owner work serialize; uncertain outcomes prevent duplicate
   turns while independent owners can progress.
 
-### [ ] T1.6c Mixed-role recovery scenarios (C4, C12) · S · M
+### [~] T1.6c Mixed-role recovery scenarios (C4, C12) · S · M
 - [Approved matrix](notes/t1.6c-recovery-scenarios-design.md): c-1 overlap/owner
   exclusion, c-2 restart/debt/routing, c-3 binding quota/shutdown; bounded cards.
+- Status: [x] c-1 shared-backend overlap, one-slot and typed-owner scenarios;
+  [ ] c-2 restart/debt/routing; [ ] c-3 binding quota/interruption/shutdown.
 - Depends on T1.6b and the T1.2b harness. Cover experiment plus research, experiment
   plus supervisor, discussion plus unrelated experiment, single-slot and same-owner
   exclusion, lost outcome/restart, callback/reply routing, quota interrupts and
@@ -597,3 +599,5 @@ Record completed tasks here: `date · task · commit · notes`.
 
 2026-11-17 · T1.6b-3 · 04f0878 · DeepSeek Flash implementation after timeout recovery; coordinator found and required the negative-capacity regression before acceptance. All roles dispatch on assigned lanes; conservative capacity counts live claims plus unclaimed dispatching/running/uncertain identities across all three action tables once, and rejects zero/negative capacity after shrink. Received results retain owner exclusion without turn debt; unsent live claims reserve capacity, unlike unclaimed pending rows. Removed supervisor experiment-wide suppression, research lane/global discussion waits, global stage/title/monitor/conversation unresolved blockers and lane-local admission checks; retained per-experiment exclusion and binding authority/quota checks. One control selection merges proposals from all role steps. Source +125/−110; tests +421/−11 (667 changed lines, reviewed overrun; required safety follow-up below landed in the same batch). Synthetic overlap/debt tests do not complete the T1.6c recovery matrix. No live activation.
 2026-11-17 · T1.6b-3 safety · 243ea59 · Coordinator review required two blockers fixed before activation: reconnect eligibility now checks live reservations on the exact process across all source tables (not just lane.agent_task); selection uses a deterministic head-of-role merge instead of a non-transitive comparator, skipping ineligible heads without hiding successors. Source +47/−24; tests +87/−26 (184 changed lines). Both commits pass Ruff and the full isolated 848-test Python suite (460.20s), XML/log at check-results/t1-6b3-full.* in the validation checkout. T1.6b complete; T1.6c scenarios remain. No live activation.
+
+2026-11-17 · T1.6c-1 · 35c4499 · DeepSeek Flash implementation, coordinator review. Separate multi_scenario fixture clones no-argument synthetic connections against one explicit FakeCodexBackend; one-slot fixture assertion preserved. Added finish gates, quota knobs and call logs by slot/instance/start count; driver awaits deduplicated lane/research/supervisor tasks. Six real-engine scenarios prove experiment+research, experiment+weekly synthesis and discussion+unrelated experiment overlap with independent result application, one-slot serialization, title→approved implementation same-owner exclusion with spare-slot progress, and research+weekly typed-project exclusion (weekly started before research activation because simultaneous weekly enqueue under active research is prohibited). Production source 0; tests +591/−15 (606 changed lines, reviewed overrun for shared fixture plus six scenarios). Ruff and all 854 Python tests pass (451.78s). c-2/c-3 remain; fake process counters alone are not managed-runtime acceptance. No live activation.
