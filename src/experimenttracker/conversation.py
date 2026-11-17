@@ -468,13 +468,8 @@ class Conversation:
             )
             return
         with self.store.tx() as db:
-            before = dict(db.execute("SELECT * FROM agent_actions WHERE id=?", (action["id"],)).fetchone())
-            self.workflow._check_reconciled_action(before, action, compare_result=True)
-            db.execute(
-                "UPDATE agent_actions SET state='failed',error=?,updated_at=? WHERE id=?",
-                (error, clock.now(), action["id"]),
-            )
-            action_obligations.sync_action(db, action["id"], before=before)
+            changes = {"state": "failed", "error": error}
+            action_obligations.transition(db, action["id"], changes, expected=action, compare_result=True)
             failed = dict(action, state="failed", error=error)
             continuation = self.store.continue_action(failed, feedback=error, _db=db)
             instruction, payload = action["input"].split("\nPAYLOAD:\n", 1)
@@ -524,22 +519,13 @@ class Conversation:
             )
             wire, saved_input = self.turn_prompt(action, thread_id)
             with self.store.tx() as db:
-                before = dict(
-                    db.execute("SELECT * FROM agent_actions WHERE id=?", (action["id"],)).fetchone()
-                )
-                self.workflow._check_reconciled_action(before, expected)
                 db.execute("UPDATE agent_actions SET input=? WHERE id=?", (saved_input, action["id"]))
                 db.execute(
                     "INSERT INTO discussion_threads VALUES(?,?) ON CONFLICT(experiment_id) DO UPDATE SET thread_id=excluded.thread_id",
                     (eid, thread_id),
                 )
-                db.execute(
-                    "UPDATE agent_actions SET thread_id=?,state='dispatching',attempts=attempts+1,updated_at=? WHERE id=?",
-                    (thread_id, clock.now(), action["id"]),
-                )
-                action_obligations.sync_action(db, action["id"], before=before)
-                expected = dict(
-                    db.execute("SELECT * FROM agent_actions WHERE id=?", (action["id"],)).fetchone()
+                expected = action_obligations.transition(
+                    db, action["id"], action_obligations.dispatch_changes(thread_id), expected=expected
                 )
                 db.execute(
                     "UPDATE discussions SET state='running',model=?,reasoning_effort=?,hold_reason=NULL,error=NULL,updated_at=? WHERE id=?",
@@ -560,17 +546,8 @@ class Conversation:
                 **({"project_workspace": project_workspace} if project_workspace else {}),
             )
             with self.store.tx() as db:
-                before = dict(
-                    db.execute("SELECT * FROM agent_actions WHERE id=?", (action["id"],)).fetchone()
-                )
-                self.workflow._check_reconciled_action(before, expected)
-                db.execute(
-                    "UPDATE agent_actions SET turn_id=?,state='running',updated_at=? WHERE id=?",
-                    (turn_id, clock.now(), action["id"]),
-                )
-                action_obligations.sync_action(db, action["id"], before=before)
-                expected = dict(
-                    db.execute("SELECT * FROM agent_actions WHERE id=?", (action["id"],)).fetchone()
+                expected = action_obligations.transition(
+                    db, action["id"], action_obligations.turn_changes(turn_id), expected=expected
                 )
                 self.store.emit(db, eid, "discussion_turn_started", {"discussion_id": message["id"]})
             result = await agent.finish(thread_id, turn_id)

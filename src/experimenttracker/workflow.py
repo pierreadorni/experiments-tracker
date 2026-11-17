@@ -821,17 +821,8 @@ class Workflow:
             if legacy_archive.execution_frozen(self.store.experiment(eid)):
                 return
             with self.store.tx() as db:
-                before = dict(
-                    db.execute("SELECT * FROM agent_actions WHERE id=?", (action["id"],)).fetchone()
-                )
-                self._check_reconciled_action(before, expected)
-                db.execute(
-                    "UPDATE agent_actions SET thread_id=?,state='dispatching',attempts=attempts+1,updated_at=? WHERE id=?",
-                    (thread_id, clock.now(), action["id"]),
-                )
-                action_obligations.sync_action(db, action["id"], before=before)
-                expected = dict(
-                    db.execute("SELECT * FROM agent_actions WHERE id=?", (action["id"],)).fetchone()
+                expected = action_obligations.transition(
+                    db, action["id"], action_obligations.dispatch_changes(thread_id), expected=expected
                 )
                 self.store.emit(
                     db, eid, "agent_dispatch_intent", {"action_id": action["id"], "thread_id": thread_id}
@@ -840,17 +831,8 @@ class Workflow:
                 thread_id, saved["prompt"], TitleSummary.model_json_schema(), effort=saved["effort"]
             )
             with self.store.tx() as db:
-                before = dict(
-                    db.execute("SELECT * FROM agent_actions WHERE id=?", (action["id"],)).fetchone()
-                )
-                self._check_reconciled_action(before, expected)
-                db.execute(
-                    "UPDATE agent_actions SET turn_id=?,state='running',updated_at=? WHERE id=?",
-                    (turn_id, clock.now(), action["id"]),
-                )
-                action_obligations.sync_action(db, action["id"], before=before)
-                expected = dict(
-                    db.execute("SELECT * FROM agent_actions WHERE id=?", (action["id"],)).fetchone()
+                expected = action_obligations.transition(
+                    db, action["id"], action_obligations.turn_changes(turn_id), expected=expected
                 )
                 self.store.emit(
                     db, eid, "agent_turn_started", {"action_id": action["id"], "turn_id": turn_id}
@@ -2970,45 +2952,15 @@ class Workflow:
         with self.store.tx() as db:
             before = dict(db.execute("SELECT * FROM agent_actions WHERE id=?", (action_id,)).fetchone())
             if expected is not None:
-                self._check_reconciled_action(before, expected, compare_state=False)
+                action_obligations.check_expected(before, expected, compare_state=False)
             saved_result = encode(result) if result is not None else before["result"]
             if (before["state"], before["error"], before["result"]) == (state, error, saved_result):
                 return
-            if expected is not None:
-                self._check_reconciled_action(before, expected)
-            db.execute(
-                "UPDATE agent_actions SET state=?,error=?,result=?,updated_at=? WHERE id=?",
-                (
-                    state,
-                    error,
-                    saved_result,
-                    clock.now(),
-                    action_id,
-                ),
-            )
-            action_obligations.sync_action(db, action_id, before=before)
+            changes = {"state": state, "error": error, "result": saved_result}
+            action_obligations.transition(db, action_id, changes, before=before, expected=expected)
             self.store.emit(
                 db, before["experiment_id"], "agent_action_changed", {"action_id": action_id, "state": state}
             )
-
-    @staticmethod
-    def _check_reconciled_action(current, expected, *, compare_result=False, compare_state=True):
-        fields = ["id", "experiment_id", "phase", "evidence_revision", "thread_id", "turn_id"]
-        if compare_state:
-            fields.append("state")
-        if compare_result:
-            fields.extend(("result", "error"))
-        if any(current[field] != expected[field] for field in fields):
-            raise NeedsAttention("saved action changed during reconciliation; no adoption was made")
-
-    @classmethod
-    def _reconciled_action_before(cls, db, expected, *, compare_result=False):
-        row = db.execute("SELECT * FROM agent_actions WHERE id=?", (expected["id"],)).fetchone()
-        if row is None:
-            raise NeedsAttention("saved action disappeared during reconciliation")
-        current = dict(row)
-        cls._check_reconciled_action(current, expected, compare_result=compare_result)
-        return current
 
     async def reconcile_agent_output(self, eid):
         """Revalidate an exact completed result after correcting an output validator."""
@@ -3054,7 +3006,7 @@ class Workflow:
         # Adoption, phase and outbox are one transaction. Attempts and identities
         # remain untouched; the normal owner performs full freezing/validation.
         with self.store.tx() as db:
-            before = self._reconciled_action_before(db, action, compare_result=True)
+            before = action_obligations.expected_saved(db, action, compare_result=True)
             cursor = db.execute(
                 "UPDATE agent_actions SET state='completed',error=NULL,updated_at=? "
                 "WHERE id=? AND state='failed' AND thread_id=? AND turn_id=?",
@@ -3163,7 +3115,7 @@ class Workflow:
         elif legacy_archive.execution_frozen(exp):
             if recovering_identity:
                 with self.store.tx() as db:
-                    before = self._reconciled_action_before(db, action)
+                    before = action_obligations.expected_saved(db, action)
                     cursor = db.execute(
                         "UPDATE agent_actions SET turn_id=?,state='completed',result=?,error=NULL,updated_at=? WHERE id=? AND turn_id IS NULL",
                         (turn_id, encode(result), clock.now(), action_id),
@@ -3213,7 +3165,7 @@ class Workflow:
             artifacts.validate_analysis(result, [record["id"] for record in records])
         if recovering_identity:
             with self.store.tx() as db:
-                before = self._reconciled_action_before(db, action)
+                before = action_obligations.expected_saved(db, action)
                 cursor = db.execute(
                     "UPDATE agent_actions SET turn_id=?,state='completed',result=?,error=NULL,updated_at=? WHERE id=? AND turn_id IS NULL",
                     (turn_id, encode(result), clock.now(), action_id),
@@ -3442,10 +3394,6 @@ class Workflow:
                 ):
                     db.execute("UPDATE experiments SET hold_reason='quota_hold' WHERE id=?", (eid,))
                     return
-                before = dict(
-                    db.execute("SELECT * FROM agent_actions WHERE id=?", (action["id"],)).fetchone()
-                )
-                self._check_reconciled_action(before, expected)
                 db.execute(
                     "UPDATE agent_actions SET autopilot_control_revision=? WHERE id=?",
                     (self.research.service.control_revision(eid), action["id"]),
@@ -3455,13 +3403,8 @@ class Workflow:
                         "UPDATE experiments SET thread_id=?,model=?,hold_reason=NULL,error=NULL WHERE id=?",
                         (thread_id, model, eid),
                     )
-                db.execute(
-                    "UPDATE agent_actions SET thread_id=?,state='dispatching',attempts=attempts+1,updated_at=? WHERE id=?",
-                    (thread_id, clock.now(), action["id"]),
-                )
-                action_obligations.sync_action(db, action["id"], before=before)
-                expected = dict(
-                    db.execute("SELECT * FROM agent_actions WHERE id=?", (action["id"],)).fetchone()
+                expected = action_obligations.transition(
+                    db, action["id"], action_obligations.dispatch_changes(thread_id), expected=expected
                 )
                 self.store.emit(
                     db,
@@ -3509,17 +3452,8 @@ class Workflow:
                 turn_options.pop("project_workspace", None)
                 turn_id = await self.agent.begin(thread_id, prompt, schema, **turn_options)
             with self.store.tx() as db:
-                before = dict(
-                    db.execute("SELECT * FROM agent_actions WHERE id=?", (action["id"],)).fetchone()
-                )
-                self._check_reconciled_action(before, expected)
-                db.execute(
-                    "UPDATE agent_actions SET turn_id=?,state='running',updated_at=? WHERE id=?",
-                    (turn_id, clock.now(), action["id"]),
-                )
-                action_obligations.sync_action(db, action["id"], before=before)
-                expected = dict(
-                    db.execute("SELECT * FROM agent_actions WHERE id=?", (action["id"],)).fetchone()
+                expected = action_obligations.transition(
+                    db, action["id"], action_obligations.turn_changes(turn_id), expected=expected
                 )
                 self.store.emit(
                     db, eid, "agent_turn_started", {"action_id": action["id"], "turn_id": turn_id}
@@ -3612,7 +3546,7 @@ class Workflow:
                     )
                     if action and action["state"] == "completed" and action["turn_id"]:
                         with self.store.tx() as db:
-                            before = self._reconciled_action_before(db, action)
+                            before = action_obligations.expected_saved(db, action)
                             feedback = "agent output validation: report rendering: " + report_version["error"]
                             cursor = db.execute(
                                 "UPDATE agent_actions SET state='failed',error=?,updated_at=? WHERE id=? AND state='completed'",

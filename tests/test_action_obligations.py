@@ -5,6 +5,7 @@ from uuid import uuid4
 import pytest
 
 from experimenttracker import clock
+from experimenttracker.codex_client import NeedsAttention
 from experimenttracker.core import action_obligations, obligation_sources
 from experimenttracker.store import encode
 
@@ -84,6 +85,51 @@ def test_pending_admission_metadata_replay_preserves_episode_and_timestamps(runt
         assert action_row(db, action_id)["error"] == "metadata"
     assert replay == first
     assert obligation_rows(store, action_id) == [first]
+
+
+def test_transition_refuses_stale_expected_snapshot(runtime):
+    store = runtime[0]
+    eid, action_id = seed_action(store)
+    stale = action_row(store.db, action_id)
+    sync_transition(store, eid, action_id, state="dispatching")
+    with pytest.raises(NeedsAttention, match="saved action changed during reconciliation"):
+        with store.tx() as db:
+            action_obligations.transition(db, action_id, {"state": "running"}, expected=stale)
+    assert action_row(store.db, action_id)["state"] == "dispatching"
+
+
+def test_transition_and_its_obligation_roll_back_together(runtime):
+    store = runtime[0]
+    eid, action_id = seed_action(store)
+    before = action_row(store.db, action_id)
+    events = store.rows("SELECT * FROM events WHERE experiment_id=?", (eid,))
+    with pytest.raises(RuntimeError, match="injected rollback"):
+        with store.tx() as db:
+            action_obligations.transition(db, action_id, action_obligations.dispatch_changes("thread"))
+            raise RuntimeError("injected rollback")
+    assert action_row(store.db, action_id) == before
+    assert obligation_rows(store, action_id) == []
+    assert store.rows("SELECT * FROM events WHERE experiment_id=?", (eid,)) == events
+
+
+def test_transition_records_dispatch_attempt_then_running_turn(runtime):
+    store = runtime[0]
+    _, action_id = seed_action(store)
+    with store.tx() as db:
+        saved = action_obligations.transition(
+            db, action_id, action_obligations.dispatch_changes("thread"), before=action_row(db, action_id)
+        )
+    assert (saved["state"], saved["thread_id"], saved["attempts"]) == ("dispatching", "thread", 1)
+    assert saved == action_row(store.db, action_id)
+    with store.tx() as db:
+        saved = action_obligations.transition(
+            db, action_id, action_obligations.turn_changes("turn"), expected=saved
+        )
+    assert (saved["state"], saved["turn_id"]) == ("running", "turn")
+    assert [(row["owner"], row["wait"], row["state"]) for row in obligation_rows(store, action_id)] == [
+        ("backend", f"reconcile:{action_id}", "abandoned"),
+        ("agent", "turn:turn", "open"),
+    ]
 
 
 def test_workflow_action_state_closes_obligation_with_existing_event(runtime):
