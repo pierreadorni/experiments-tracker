@@ -1,6 +1,5 @@
 import asyncio
 import contextlib
-import logging
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -13,6 +12,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import artifacts, clock
 from .cli import runtime
+from .engine.runner import Runner
 from .knowledge import KnowledgeCommand
 from .models import (
     ActionCommand,
@@ -30,8 +30,6 @@ from .models import (
 )
 from .store import Conflict
 
-log = logging.getLogger(__name__)
-
 
 def create_app(config, *, components=None, config_path=None, current_release=None):
     token = config.api_token_file.read_text().strip()
@@ -46,32 +44,21 @@ def create_app(config, *, components=None, config_path=None, current_release=Non
         workflow.maintenance = Maintenance(config, store, config_path=config_path, current=current_release)
         app.state.store = store
         app.state.workflow = workflow
-        app.state.last_tick = None
         app.state.started_at = clock.now()
-        app.state.last_tick_error = None
-        worker = bridge = bridge_task = None
+        runner = Runner(workflow)
+        app.state.runner = runner
+        app.state.health = runner.health
+        bridge = bridge_task = None
 
         async def workflow_status():
+            last_tick, executor_error = app.state.health()
             projects = await asyncio.to_thread(workflow.projects.catalog)
-            return workflow.status(app.state.last_tick, app.state.last_tick_error, projects=projects)
+            return workflow.status(last_tick, executor_error, projects=projects)
 
         app.state.workflow_status = workflow_status
 
-        async def loop():
-            while True:
-                try:
-                    await workflow.tick()
-                    app.state.last_tick = clock.now()
-                    app.state.last_tick_error = None
-                    workflow.maintenance.launch()
-                except Exception:
-                    app.state.last_tick_error = "executor loop failed; inspect daemon logs"
-                    log.exception("executor loop failed")
-                await asyncio.sleep(min(config.scheduler_seconds, 1))
-
         try:
-            await workflow.start()
-            worker = asyncio.create_task(loop())
+            await runner.start()
             if config.gateway.url:
                 from .gateway_client import GatewayClient
 
@@ -86,11 +73,13 @@ def create_app(config, *, components=None, config_path=None, current_release=Non
             yield
         finally:
             try:
-                for task in (worker, bridge_task):
-                    if task:
-                        task.cancel()
-                        with contextlib.suppress(asyncio.CancelledError):
-                            await task
+                # Stop scheduling and finish owned passes, then close the bridge, the
+                # workflow and the store: no task may write after the store closes.
+                await runner.stop()
+                if bridge_task:
+                    bridge_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await bridge_task
                 if bridge:
                     await bridge.close()
             finally:
@@ -154,13 +143,13 @@ def create_app(config, *, components=None, config_path=None, current_release=Non
 
     @app.get("/healthz")
     async def health(response: Response):
-        tick = app.state.last_tick
+        tick, executor_error = app.state.health()
         fresh = (
             tick is None
             and clock.now() - app.state.started_at < 60
             or (tick is not None and clock.now() - tick < max(60, config.scheduler_seconds * 4))
         )
-        ok = fresh and app.state.last_tick_error is None
+        ok = fresh and executor_error is None
         response.status_code = 200 if ok else 503
         return {"ok": ok}
 
@@ -211,14 +200,15 @@ def create_app(config, *, components=None, config_path=None, current_release=Non
 
     @app.get("/api/maintenance/internal", dependencies=[Depends(authorize)])
     async def maintenance_internal():
+        last_tick, executor_error = app.state.health()
         return {
             "schema_version": 1,
             "maintenance": app.state.workflow.maintenance.status(app.state.workflow),
             "boot_id": app.state.workflow.maintenance.boot_id,
             "config_identity": app.state.workflow.maintenance.config_identity,
-            "last_tick": app.state.last_tick,
+            "last_tick": last_tick,
             "started_at": app.state.started_at,
-            "executor_error": app.state.last_tick_error,
+            "executor_error": executor_error,
             "agent_ready": app.state.workflow.agent_ready,
             "identities": identities(store()),
         }

@@ -86,6 +86,9 @@ HEALTH_COUNTED_STEPS = (
     "resolver",
 )
 
+RETENTION_SECONDS = 5  # Between bounded outbox-pruning batches
+BACKUP_SECONDS = 60  # Between background state backups
+
 
 class Workflow:
     def __init__(self, config, store, scheduler, agent):
@@ -545,6 +548,28 @@ class Workflow:
         await self.step_retention(now)
         await self.step_backup(now)
 
+    async def step_control(self):
+        """Run the control fragments around the omitted observation, gated as in ``tick``.
+
+        The production runner calls this under its primary-agent lock, so the
+        check-then-act regions that the sequential pass kept exclusive stay exclusive
+        across their awaits. Observation runs as its own task, the resolver keeps its
+        place after agent draining and before advancement, and everything from
+        advancement on stays behind the maintenance gate. A gated pass is still a
+        complete, successful control pass.
+        """
+        await self.step_control_before_observe()
+        now = clock.now()
+        # Runtime upkeep keeps this place and this exclusion: it reconnects the owned
+        # agent and refreshes quota, which the control fragments below act on.
+        await self.step_runtime(now)
+        await self.step_control_after_observe(now)
+        await self.step_resolver()
+        if blocked(self.store):
+            return
+        await self.step_control_advance()
+        await self.step_control_finish()
+
     async def step_control_before_observe(self):
         """Intake: legacy archive, input replies, cancellations, projects and reserve."""
         self.store.archive_legacy_experiments()
@@ -705,7 +730,7 @@ class Workflow:
 
     async def step_retention(self, now):
         """Prune outbox payloads in bounded batches when the retention window is due."""
-        if now - self.last_retention >= 5:
+        if now - self.last_retention >= RETENTION_SECONDS:
             from .retention import prune_batch
 
             try:
@@ -719,7 +744,7 @@ class Workflow:
 
     async def step_backup(self, now):
         """Start a background state backup when the backup window is due."""
-        if now - self.last_backup >= 60 and (not self.backup_task or self.backup_task.done()):
+        if now - self.last_backup >= BACKUP_SECONDS and (not self.backup_task or self.backup_task.done()):
             self.backup_task = asyncio.create_task(self.backup_state())
             self.last_backup = now
 

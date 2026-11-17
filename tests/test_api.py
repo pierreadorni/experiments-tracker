@@ -126,10 +126,10 @@ def test_project_settings_api_has_durable_receipt(config, runtime):
 def test_executor_loop_failure_has_unhealthy_status(config, runtime):
     store, _, _, workflow = runtime
 
-    async def fail(**kwargs):
+    async def fail(*args, **kwargs):
         raise RuntimeError("simulated local loop failure")
 
-    workflow.tick = fail
+    workflow.step_control = fail
     app = create_app(config, components=(None, store, workflow))
     with TestClient(app) as client:
         response = client.get("/healthz")
