@@ -1055,6 +1055,44 @@ class Store:
         except ValueError as exc:
             raise Conflict(str(exc)) from None
 
+    def _approve_integration(self, db, exp, payload):
+        """Move this experiment's exact awaiting-approval candidate to ready; no Git here.
+
+        The command binds the saved experiment, request and candidate commit, so a
+        stale or foreign approval cannot become ``ready``. The runner still applies
+        only through ``integration.apply``, which revalidates the exact checkout.
+        """
+        if payload.get("action") != "approve":
+            raise Conflict("only the owner approval action is supported")
+        candidate_commit = payload.get("candidate_commit")
+        if (
+            not isinstance(candidate_commit, str)
+            or len(candidate_commit) not in (40, 64)
+            or any(char not in "0123456789abcdef" for char in candidate_commit)
+        ):
+            raise Conflict("the integration candidate commit is not exact")
+        branch = self._integration_branch(exp)
+        try:
+            view = integration_queue.saved(db, payload.get("integration_request_id"))
+        except ValueError as exc:
+            raise Conflict(str(exc)) from None
+        candidate = view["candidate"] if view else None
+        if (
+            view is None
+            or view["experiment_id"] != exp["id"]
+            or view["repo"] != branch["repo"]
+            or view["state"] != "open"
+            or view["stage"] != "awaiting_approval"
+            or not isinstance(candidate, dict)
+            or candidate.get("state") != "ready"
+            or candidate.get("candidate_commit") != candidate_commit
+        ):
+            raise Conflict("only this experiment's exact awaiting approval candidate can be approved")
+        try:
+            return integration_queue.checkpoint(db, view["request_id"], "ready", status="owner approved")
+        except ValueError as exc:
+            raise Conflict(str(exc)) from None
+
     def command(self, request_id, kind, payload, *, eid=None, origin="local", experiment_id=None, _db=None):
         """Apply a validated user command atomically. Stable request IDs include a payload conflict check."""
         request_id = str(request_id)
@@ -1716,6 +1754,8 @@ class Store:
                     self._refuse_queued_integration(db, exp, branch["repo"], "revert")
                     request = _integration_request(exp, branch["branch"], "revert", merge_commit=merged)
                     self._enqueue_integration(db, exp, branch, request_id, request)
+                elif kind == "approve_integration":
+                    self._approve_integration(db, exp, payload)
                 elif kind == "dont_merge":
                     value = payload.get("value")
                     if not isinstance(value, bool):

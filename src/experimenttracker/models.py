@@ -164,6 +164,16 @@ class RevertIntegrationCommand(StrictModel):
     request_id: UUID
 
 
+class ApproveIntegrationCommand(StrictModel):
+    """Approve one saved awaiting-approval candidate; no path, branch or Git argv."""
+
+    schema_version: Literal[1] = 1
+    request_id: UUID
+    integration_request_id: str = Field(min_length=1, max_length=200, pattern=r"^[^:\s]+$")
+    candidate_commit: str = Field(pattern=r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+    action: Literal["approve"]
+
+
 class DontMergeCommand(StrictModel):
     schema_version: Literal[1] = 1
     request_id: UUID

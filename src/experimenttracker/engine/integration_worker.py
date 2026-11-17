@@ -3,12 +3,15 @@
 ``integration_queue`` owns the saved stages and ``integration`` the Git transactions.
 ``check(cwd, argv, timeout)`` runs the argv list in the candidate worktree and returns
 ``(passed, summary)`` or raises ``TimeoutError``; ``approval(view, candidate)`` returns
-``True`` only for a saved owner approval. T3.4c wires commands, settings and the runner;
-T3.5 wires conflict resolution. A returned prepare must match every captured identity
-field, and an apply ``WorkspaceUnavailable`` is an unknown outcome: both wait and keep
-the exact candidate ref/worktree for inspection, never re-preparing or re-applying.
-Re-preparing a checked or conflicted candidate is left to T3.4c, which can discard and
-re-queue it.
+``True`` only for a saved owner approval. The owner command also moves exactly one
+saved awaiting-approval candidate to ``ready``, and a ``ready`` request is applied only
+through ``integration.apply``, which revalidates the exact base branch, checkout, ref
+and candidate commit, so a stale approval refuses instead of fast-forwarding. A
+returned prepare must match every captured identity field, and an apply
+``WorkspaceUnavailable`` is an unknown outcome: both wait and keep the exact candidate
+ref/worktree for inspection, never re-preparing or re-applying. T3.4c wires commands,
+settings and the runner; T3.5 wires conflict resolution. Re-preparing a checked or
+conflicted candidate is left to T3.4c, which can discard and re-queue it.
 """
 
 import hashlib

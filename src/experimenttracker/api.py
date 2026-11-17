@@ -17,6 +17,7 @@ from .knowledge import KnowledgeCommand
 from .models import (
     ActionCommand,
     AnswerCommand,
+    ApproveIntegrationCommand,
     CreateExperiment,
     CreateProject,
     DeleteCommand,
@@ -447,6 +448,10 @@ def create_app(config, *, components=None, config_path=None, current_release=Non
     @app.post("/api/experiments/{eid}/integrations/revert", dependencies=[Depends(authorize)])
     async def revert_integration(eid: UUID, body: RevertIntegrationCommand):
         return apply(body, eid, "revert_integration")
+
+    @app.post("/api/experiments/{eid}/integrations/approve", dependencies=[Depends(authorize)])
+    async def approve_integration(eid: UUID, body: ApproveIntegrationCommand):
+        return apply(body, eid, "approve_integration")
 
     @app.post("/api/experiments/{eid}/dont-merge", dependencies=[Depends(authorize)])
     async def dont_merge(eid: UUID, body: DontMergeCommand):

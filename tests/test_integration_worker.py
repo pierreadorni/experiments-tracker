@@ -63,6 +63,12 @@ def ok(*_):
     return True, "ok"
 
 
+def owner_approved(store, request_id="r1"):
+    """Save the transition the authenticated owner approval command performs."""
+    with store.tx() as db:
+        return queue.checkpoint(db, request_id, "ready", status="owner approved")
+
+
 def requested(store, tmp_path, **kwargs):
     repo = make_repo(tmp_path)
     sha = experiment(repo)
@@ -160,6 +166,50 @@ def test_approval_waits_then_applies(store, tmp_path):
     assert waiting["outcome"] == "awaiting_approval"
     applied = worker.drive(store, "r1", head=sha, project=project, check=ok, approval=lambda *_: True)
     assert applied["outcome"] == "applied"
+
+
+def test_saved_owner_approval_applies_without_another_check_or_approval(store, tmp_path):
+    repo, sha = requested(store, tmp_path)
+    project = {**PROJECT, "require_approval": True}
+    waiting = worker.drive(store, "r1", head=sha, project=project, check=ok, approval=lambda *_: None)
+    assert waiting["outcome"] == "awaiting_approval"
+    candidate = saved(store)["candidate"]
+    owner_approved(store)
+
+    def never(*_):
+        raise AssertionError("an external owner approval applies without a fresh check or approval")
+
+    result = worker.drive(store, "r1", project=project, check=never, approval=never)
+
+    assert result["outcome"] == "applied"
+    assert head(repo) == candidate["candidate_commit"]
+    assert not ref_exists(repo, candidate["ref"])
+
+
+@pytest.mark.parametrize("drift", ["dirty", "moved"])
+def test_saved_owner_approval_still_revalidates_the_exact_checkout(store, tmp_path, drift):
+    repo, sha = requested(store, tmp_path)
+    project = {**PROJECT, "require_approval": True}
+    worker.drive(store, "r1", head=sha, project=project, check=ok, approval=lambda *_: None)
+    candidate = saved(store)["candidate"]
+    owner_approved(store)
+    if drift == "dirty":
+        (repo / "tracked.txt").write_text("owner edit\n")
+        reason = "uncommitted changes"
+    else:
+        (repo / "other.txt").write_text("moved\n")
+        git(repo, "add", "--", "other.txt")
+        git(repo, "commit", "-m", "Move main")
+        reason = "base branch moved"
+    current = head(repo)
+
+    result = worker.drive(store, "r1", project=project, check=ok)
+
+    view = saved(store)
+    assert (result["outcome"], view["stage"]) == ("waiting", "ready")
+    assert reason in view["status"]
+    assert head(repo) == current
+    assert head(repo, candidate["ref"]) == candidate["candidate_commit"]
 
 
 @pytest.mark.parametrize("drift", [False, True])

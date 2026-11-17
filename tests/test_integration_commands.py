@@ -1,9 +1,9 @@
-"""Integration commands queue saved branch scope without running Git (T3.4c).
+"""Integration commands queue and approve saved branch scope without running Git (T3.4c).
 
 The store owns the exact experiment/repository/branch identity; the local API and
-CLI only carry a request ID and an optional reason. These tests prove the queue
-entry, its idempotent replay and the live/archive/branch boundaries. Queued-to-run
-Git work, project checks and approval decisions belong to later cards.
+CLI only carry command identity and saved scope. These tests prove the queue entry,
+owner approval, idempotent replays and the live/archive/branch boundaries. The
+queued-to-run Git work and project checks belong to the integration worker.
 """
 
 import json
@@ -24,6 +24,11 @@ from experimenttracker.workspaces import git
 def queued(store):
     rows = store.rows("SELECT * FROM obligations WHERE kind='integration' ORDER BY id")
     return [(row, json.loads(row["detail"])) for row in rows]
+
+
+def saved(store, request_id):
+    with store.tx() as db:
+        return integration_queue.saved(db, request_id)
 
 
 def branch_row(eid, repo, *, state="active", merged_commit=None):
@@ -59,6 +64,123 @@ def make_experiment(store):
             "recipe_id": "agent_experiment_v1",
         },
     )["experiment_id"]
+
+
+def awaiting(store, eid, repo, candidate_commit="c" * 40):
+    """Seed this experiment's saved merge request at the owner approval wait."""
+    request_id = uuid4()
+    store.command(request_id, "integrate", {}, eid=eid)
+    candidate = {
+        "repo": str(repo.resolve()),
+        "key": f"req-{request_id.hex}",
+        "kind": "merge",
+        "base": "main",
+        "base_commit": "a" * 40,
+        "head_commit": "b" * 40,
+        "worktree": str(repo.resolve() / ".worktrees" / "_integration"),
+        "ref": f"refs/et/candidates/req-{request_id.hex}",
+        "candidate_commit": candidate_commit,
+        "state": "ready",
+        "conflicts": [],
+    }
+    with store.tx() as db:
+        assert integration_queue.claim(db, str(repo))["stage"] == "claimed"
+        view = integration_queue.checkpoint(
+            db,
+            str(request_id),
+            "awaiting_approval",
+            candidate=candidate,
+            status="awaiting owner approval",
+        )
+    assert view["stage"] == "awaiting_approval"
+    return str(request_id), candidate
+
+
+def test_approve_integration_moves_only_the_exact_awaiting_candidate_to_ready(runtime, tmp_path):
+    store, _, _, _ = runtime
+    eid = make_experiment(store)
+    repo = tmp_path / "repo"
+    seed_branch(store, eid, repo)
+    pending, candidate = awaiting(store, eid, repo)
+    payload = {
+        "integration_request_id": pending,
+        "candidate_commit": candidate["candidate_commit"],
+        "action": "approve",
+    }
+    command_id = uuid4()
+
+    result = store.command(command_id, "approve_integration", payload, eid=eid)
+
+    assert result == {
+        "schema_version": 1,
+        "experiment_id": eid,
+        "request_id": str(command_id),
+        "state": "applied",
+    }
+    view = saved(store, pending)
+    assert (view["stage"], view["status"], view["candidate"]) == (
+        "ready",
+        "owner approved",
+        candidate,
+    )
+    # The command records the decision only: no Git worktree or base move happens here.
+    assert not repo.exists()
+
+    # A replay of the stable command ID returns its saved receipt and adds nothing.
+    assert store.command(command_id, "approve_integration", payload, eid=eid) == result
+    assert saved(store, pending)["obligation_id"] == view["obligation_id"]
+    with pytest.raises(Conflict, match="different command"):
+        store.command(command_id, "approve_integration", {**payload, "candidate_commit": "d" * 40}, eid=eid)
+
+
+def test_approve_integration_refuses_any_inexact_binding(runtime, tmp_path):
+    store, _, _, _ = runtime
+    eid = make_experiment(store)
+    repo = tmp_path / "repo"
+    seed_branch(store, eid, repo)
+    pending, candidate = awaiting(store, eid, repo)
+    exact = {
+        "integration_request_id": pending,
+        "candidate_commit": candidate["candidate_commit"],
+        "action": "approve",
+    }
+
+    def approve(experiment_id=None, **overrides):
+        return store.command(uuid4(), "approve_integration", {**exact, **overrides}, eid=experiment_id or eid)
+
+    with pytest.raises(Conflict, match="candidate commit is not exact"):
+        approve(candidate_commit="not-a-sha")
+    with pytest.raises(Conflict, match="caller identity"):
+        approve(integration_request_id="bad:id")
+    with pytest.raises(Conflict, match="owner approval action"):
+        approve(action="reject")
+    with pytest.raises(Conflict, match="exact awaiting approval"):
+        approve(integration_request_id="missing")
+    with pytest.raises(Conflict, match="exact awaiting approval"):
+        approve(candidate_commit="d" * 40)
+
+    other = make_experiment(store)
+    seed_branch(store, other, tmp_path / "other")
+    with pytest.raises(Conflict, match="exact awaiting approval"):
+        approve(experiment_id=other)
+
+    exp = store.experiment(eid)
+    with store.tx() as db:
+        db.execute(
+            "UPDATE experiments SET contract=? WHERE id=?",
+            (encode({**exp["contract"], "execution_contract": 2}), eid),
+        )
+    with pytest.raises(Conflict, match="live contract-3"):
+        approve()
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(exp["contract"]), eid))
+
+    assert saved(store, pending)["stage"] == "awaiting_approval"
+    approve()
+    assert saved(store, pending)["stage"] == "ready"
+    # Only one exact awaiting-approval candidate can become ready; a new command stays refused.
+    with pytest.raises(Conflict, match="exact awaiting approval"):
+        approve()
 
 
 async def branch_experiment(runtime, tmp_path, monkeypatch):
@@ -331,6 +453,39 @@ def test_local_api_commands_carry_only_identity_and_saved_scope(config, runtime,
             detail["request"]["kind"] == "revert" and detail["request"]["merge_commit"] == "c" * 40
             for _, detail in queued(store)
         )
+
+
+def test_local_api_approve_binds_the_saved_candidate_behind_the_owner_token(
+    config, runtime, tmp_path, monkeypatch
+):
+    store, _, _, workflow = runtime
+    monkeypatch.setattr("experimenttracker.api.Runner", IdleRunner)
+    eid = make_experiment(store)
+    repo = tmp_path / "repo"
+    seed_branch(store, eid, repo)
+    pending, candidate = awaiting(store, eid, repo)
+    app = create_app(config, components=(None, store, workflow))
+    headers = {"Authorization": "Bearer " + "t" * 40}
+    path = f"/api/experiments/{eid}/integrations/approve"
+    body = {
+        "request_id": str(uuid4()),
+        "integration_request_id": pending,
+        "candidate_commit": candidate["candidate_commit"],
+        "action": "approve",
+    }
+    with TestClient(app) as client:
+        assert client.post(path, json=body).status_code == 401
+        assert client.post(path, headers=headers, json={**body, "repo": "/elsewhere"}).status_code == 422
+        assert client.post(path, headers=headers, json={**body, "action": "reject"}).status_code == 422
+        missing = {key: value for key, value in body.items() if key != "candidate_commit"}
+        assert client.post(path, headers=headers, json=missing).status_code == 422
+        stale = client.post(path, headers=headers, json={**body, "candidate_commit": "d" * 40})
+        assert stale.status_code == 409
+        response = client.post(path, headers=headers, json=body)
+        assert response.status_code == 200
+        assert response.json()["state"] == "applied"
+        assert client.get(f"/api/commands/{body['request_id']}", headers=headers).json()["state"] == "applied"
+        assert saved(store, pending)["stage"] == "ready"
 
 
 def test_cli_integrate_posts_to_the_running_owner(config, monkeypatch, capsys):
