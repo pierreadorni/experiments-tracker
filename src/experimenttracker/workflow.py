@@ -17,7 +17,7 @@ from .codex_client import CodexAgent, NeedsAttention, RpcRejected, SessionUnavai
 from .config import JobResources
 from .controller import Controller, ControllerDecision
 from .conversation import Conversation
-from .core import action_obligations, job_obligations
+from .core import action_obligations, job_obligations, request_obligations, review_obligations
 from .errors import ExperimentFailure
 from .knowledge import ProjectSupervisor
 from .maintenance import Maintenance, blocked
@@ -1086,12 +1086,14 @@ class Workflow:
                         "stages": self.store.rows("SELECT * FROM stages WHERE experiment_id=?", (eid,)),
                     },
                 )
+                before_review = review_obligations.saved_review(db, eid)
                 db.execute(
                     "UPDATE experiments SET contract=?,evidence_revision=?,snapshot=NULL,analysis=NULL,"
                     "scientific_outcome=NULL,phase='preparing',hold_reason='automatic_repair',error=NULL,"
                     "plan_review=? WHERE id=?",
                     (encode(contract), revision, encode(review) if review else None, eid),
                 )
+                review_obligations.sync_review(db, eid, before=before_review)
                 db.execute(
                     "UPDATE stages SET state='pending',attempt=?,output_manifest=NULL,error=NULL,updated_at=? "
                     "WHERE experiment_id=? AND id!='plan'",
@@ -1165,6 +1167,7 @@ class Workflow:
             with self.store.tx() as db:
                 current = db.execute("SELECT plan_review FROM experiments WHERE id=?", (eid,)).fetchone()
                 review = json.loads(current["plan_review"])
+                before_review = dict(review)
                 if review["state"] != "drafting":
                     review["revision"] += 1
                     review["state"] = "drafting"
@@ -1174,6 +1177,7 @@ class Workflow:
                     "UPDATE experiments SET plan_review=?,pause_compute=0,hold_reason=NULL WHERE id=?",
                     (encode(review), eid),
                 )
+                review_obligations.sync_review(db, eid, before=before_review)
                 db.execute(
                     "UPDATE stages SET state='pending',updated_at=? WHERE experiment_id=? AND id='plan'",
                     (clock.now(), eid),
@@ -3173,10 +3177,13 @@ class Workflow:
                 if not cursor.rowcount:
                     raise NeedsAttention("saved action changed during reconciliation; no adoption was made")
                 action_obligations.sync_action(db, action_id, before=before)
+                before_request = request_obligations.saved_pending(db, exp["id"])
                 db.execute(
                     "UPDATE experiments SET hold_reason=NULL,error=NULL,pending_request=NULL WHERE id=?",
                     (exp["id"],),
                 )
+                if before_request is not None:
+                    request_obligations.sync_request(db, exp["id"], before=before_request)
                 self.store.emit(
                     db,
                     exp["id"],

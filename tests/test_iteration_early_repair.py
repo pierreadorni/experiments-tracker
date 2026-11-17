@@ -382,7 +382,7 @@ async def test_resource_hold_repair_requires_one_exact_settled_gate(runtime, cas
     elif case == "pending_request":
         store.update(
             eid,
-            pending_request={"request_id": str(uuid4()), "text": "Synthetic question?", "expired": False},
+            pending_request={"id": str(uuid4()), "text": "Synthetic question?", "expired": False},
         )
     before = saved_repair_state(store, scheduler, agent, eid)
     assert before["phase"] in ("failed", "preparing", "training", "evaluating")

@@ -10,7 +10,13 @@ from uuid import uuid4
 
 from . import clock
 from .config import ProjectConfig
-from .core import action_obligations, report_obligations, transfer_obligations
+from .core import (
+    action_obligations,
+    report_obligations,
+    request_obligations,
+    review_obligations,
+    transfer_obligations,
+)
 from .legacy_archive import archive_active, execution_frozen
 from .models import STAGES, request_answer
 from .title import title_prompt
@@ -553,6 +559,8 @@ class Store:
             "UPDATE experiments SET phase=?,hold_reason=NULL,error=NULL,pending_request=NULL WHERE id=?",
             ("preparing" if implementation else "training", eid),
         )
+        if exp["pending_request"]:
+            request_obligations.sync_request(db, eid, before=exp["pending_request"])
         db.execute(
             "UPDATE stages SET state=?,error=NULL,updated_at=? WHERE experiment_id=? AND id=?",
             (
@@ -823,10 +831,16 @@ class Store:
         if all(previous[k] == v for k, v in fields.items()):
             return
         with self.tx() as db:
+            before = request_obligations.saved_pending(db, eid) if "pending_request" in fields else None
+            before_review = review_obligations.saved_review(db, eid) if "plan_review" in fields else None
             db.execute(
                 f"UPDATE experiments SET {','.join(k + '=?' for k in fields)} WHERE id=?",
                 (*fields.values(), eid),
             )
+            if "pending_request" in fields:
+                request_obligations.sync_request(db, eid, before=before)
+            if "plan_review" in fields:
+                review_obligations.sync_review(db, eid, before=before_review)
             self.emit(db, eid, kind, fields)
 
     def resolve_implementation(self, eid, manifest):
@@ -890,6 +904,7 @@ class Store:
         if exp["phase"] == "cancelled":
             return
         review = exp["plan_review"]
+        before_review = dict(review) if review else None
         if review:
             review["state"] = "cancelled"
         db.execute(
@@ -897,6 +912,9 @@ class Store:
             "pending_request=NULL,plan_review=?,hold_reason='cancellation_pending',error=NULL WHERE id=?",
             (encode(review) if review else None, eid),
         )
+        if exp["pending_request"]:
+            request_obligations.sync_request(db, eid, before=exp["pending_request"])
+        review_obligations.sync_review(db, eid, before=before_review)
         transfers = db.execute(
             "SELECT * FROM execution_transfers "
             "WHERE experiment_id=? AND state NOT IN ('complete','failed','cancelled')",
@@ -1179,6 +1197,8 @@ class Store:
                         "UPDATE experiments SET deleted_at=COALESCE(deleted_at,?),pending_request=NULL WHERE id=?",
                         (now, eid),
                     )
+                    if exp["pending_request"]:
+                        request_obligations.sync_request(db, eid, before=exp["pending_request"])
                     db.execute(
                         "UPDATE discussions SET state='failed',hold_reason=NULL,error='Experiment deleted',updated_at=? WHERE experiment_id=? AND state IN ('queued','waiting')",
                         (now, eid),
@@ -1435,6 +1455,8 @@ class Store:
                         "agent_stage_failed",
                     ):
                         # A settled turn has no live RPC to answer, even if its request survived restart.
+                        # Resuming clears the request, so record the answer that fulfills it.
+                        pending["answer"] = payload["answer"]
                         db.execute(
                             "INSERT INTO steering(request_id,experiment_id,text,created_at,mode) VALUES(?,?,?,?,'later')",
                             (request_id, eid, payload["answer"], now),
@@ -1458,10 +1480,12 @@ class Store:
                             },
                         )
                     else:
+                        before = dict(pending)
                         pending["answer"] = payload["answer"]
                         db.execute(
                             "UPDATE experiments SET pending_request=? WHERE id=?", (encode(pending), eid)
                         )
+                        request_obligations.sync_request(db, eid, before=before)
                 elif kind == "plan_review":
                     review = exp["plan_review"]
                     if not review or review.get("state") != "awaiting_review":
@@ -1473,6 +1497,7 @@ class Store:
                         (eid, exp["evidence_revision"]),
                     ).fetchone():
                         raise Conflict("a submitted experiment plan cannot be changed by plan review")
+                    before_review = dict(review)
                     decision = payload["decision"]
                     if decision == "approve":
                         if review.get("questions"):
@@ -1507,6 +1532,7 @@ class Store:
                             eid,
                         ),
                     )
+                    review_obligations.sync_review(db, eid, before=before_review)
                 elif kind == "steer":
                     text = payload["text"].strip()
                     if not text:

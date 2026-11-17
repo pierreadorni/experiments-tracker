@@ -7,6 +7,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from . import clock
 from .autopilot_budget import WEEK, Budget
 from .autopilot_models import AutopilotCommand, AutopilotPolicy
+from .core import review_obligations
 from .store import Conflict, encode
 
 PHASES = ("foundation", "main_argument", "ablations", "writing")
@@ -867,7 +868,9 @@ class Autopilot:
                     "scope_rationale": args.scope_rationale,
                     "comparable_protocol": args.comparable_protocol,
                 }
+                before_review = review_obligations.saved_review(db, eid)
                 db.execute("UPDATE experiments SET plan_review=? WHERE id=?", (encode(review), eid))
+                review_obligations.sync_review(db, eid, before=before_review)
                 self.store.emit(db, eid, "autopilot_plan_approved", review["approved_by"])
             elif name == "control_experiment":
                 eid = str(args.experiment_id)

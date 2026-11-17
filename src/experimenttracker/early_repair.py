@@ -6,6 +6,7 @@ from pathlib import Path
 from uuid import UUID
 
 from . import artifacts, clock, iteration
+from .core import review_obligations
 from .store import encode
 
 TERMINAL = {
@@ -137,10 +138,12 @@ async def queue(wf, exp):
             "preparation_revision": max(revision, review.get("preparation_revision", review["revision"]) + 1),
         }
     with wf.store.tx() as db:
+        before_review = review_obligations.saved_review(db, eid)
         db.execute(
             "UPDATE experiments SET contract=?,evidence_revision=?,phase='preparing',hold_reason='automatic_repair',plan_review=? WHERE id=?",
             (encode(contract), revision, encode(review) if review else None, eid),
         )
+        review_obligations.sync_review(db, eid, before=before_review)
         db.execute(
             "UPDATE stages SET state='pending',attempt=?,updated_at=? WHERE experiment_id=? AND id IN ('prepare','interpret','publish')",
             (revision, clock.now(), eid),
