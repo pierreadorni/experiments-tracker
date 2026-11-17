@@ -223,6 +223,12 @@ def main():
     recover.add_argument(
         "--turn-id", help="recover a lost response using an exact completed turn with matching input"
     )
+    workspaces = sub.add_parser("workspaces", help="inspect saved experiment checkouts without changing them")
+    workspace_commands = workspaces.add_subparsers(dest="workspaces_command", required=True)
+    workspace_commands.add_parser(
+        "adopt-legacy",
+        help="dry run: plan exp/legacy branches for exact tracker-locked detached worktrees",
+    )
     backup = sub.add_parser("backup")
     backup.add_argument("--destination", type=Path)
     args = parser.parse_args()
@@ -251,6 +257,16 @@ def main():
         raise SystemExit(0 if result["ok"] else 1)
     if args.command == "demo":
         raise SystemExit(asyncio.run(demo(config, args.brief, args.max_seconds)))
+    if args.command == "workspaces":
+        from .engine import legacy_workspaces
+
+        reader = Store.read_only(config.state_dir / "workflow.sqlite")
+        try:
+            report = legacy_workspaces.plan(reader)
+        finally:
+            reader.close()
+        print(json.dumps(report, indent=2))
+        raise SystemExit(0 if report["ok"] else 1)
     if args.command == "serve":
         from .api import create_app
 
