@@ -155,10 +155,20 @@ class FakeCodex:
     def models_observed_at(self):
         return self.backend.models_observed_at
 
-    def script(self, phase, *, turn=None, begin_error=None, turns=1):
-        """Program one phase: ``turn(payload, workspace)`` runs at begin; ``turns`` bounds dispatches."""
+    def script(self, phase, *, turn=None, begin_error=None, turns=1, started=True):
+        """Program one phase: ``turn(payload, workspace)`` runs at begin; ``turns`` bounds dispatches.
+
+        ``started=False`` scripts a dispatch the runtime refused before it created the
+        turn, so no thread read can find it.
+        """
         scripts = self.backend.scripts
-        scripts[phase] = {"turn": turn, "begin_error": begin_error, "expected": turns, "seen": 0}
+        scripts[phase] = {
+            "turn": turn,
+            "begin_error": begin_error,
+            "expected": turns,
+            "seen": 0,
+            "started": started,
+        }
         return self
 
     def complete(self, thread_id, turn_id, result):
@@ -226,6 +236,8 @@ class FakeCodex:
             "writable_roots": [str(root) for root in additional_writable_roots],
         }
         backend.starts.append(record)
+        if scripted["begin_error"] and not scripted["started"]:
+            raise scripted["begin_error"]
         saved = backend.turns[(thread_id, turn_id)] = {"record": record, "result": None, "state": "accepted"}
         if scripted["begin_error"]:
             # The runtime accepted the turn before its response was lost.
@@ -245,6 +257,20 @@ class FakeCodex:
         if saved["result"] is None:
             raise TerminalTurnError("agent output validation: completed turn has no structured result")
         return saved["result"]
+
+    async def read_thread(self, thread_id):
+        """Turns one thread retains, oldest first; an unreadable thread raises."""
+        if thread_id in self.backend.unreadable:
+            raise self.backend.unreadable[thread_id]
+        return [
+            {
+                "id": saved["record"]["turn_id"],
+                "status": "inProgress" if saved["state"] == "accepted" else saved["state"],
+                "prompt_sha256": saved["record"]["prompt_sha256"],
+            }
+            for (thread, _), saved in self.backend.turns.items()
+            if thread == thread_id
+        ]
 
     async def read_turn(self, thread_id, turn_id, *, expected_prompt_hash=None):
         if thread_id in self.backend.unreadable:

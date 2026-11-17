@@ -53,6 +53,15 @@ def strict_output_schema(schema):
     return schema
 
 
+def turn_prompt_sha256(turn):
+    """Exact hash of one saved turn's single text input, or None when it is not provable."""
+    messages = [item for item in turn.get("items", []) if item.get("type") == "userMessage"]
+    content = messages[0].get("content", []) if len(messages) == 1 else []
+    if len(content) != 1 or content[0].get("type") != "text":
+        return None
+    return hashlib.sha256(content[0].get("text", "").encode()).hexdigest()
+
+
 class AppServer:
     """Pinned JSONL transport. Read notifications independently of outstanding RPC responses."""
 
@@ -442,22 +451,24 @@ class CodexAgent:
         finally:
             self.active = None
 
-    async def read_turn(self, thread_id, turn_id, *, expected_prompt_hash=None):
+    async def read_thread(self, thread_id):
+        """Saved turns of one thread; an unreadable thread raises instead of proving absence."""
+        return [
+            {"id": turn["id"], "status": turn["status"], "prompt_sha256": turn_prompt_sha256(turn)}
+            for turn in await self._read_thread(thread_id)
+        ]
+
+    async def _read_thread(self, thread_id):
         result = await self.server.rpc("thread/read", {"threadId": thread_id, "includeTurns": True})
-        if expected_prompt_hash is not None and result["thread"].get("id") != thread_id:
+        if result["thread"].get("id") != thread_id:
             raise NeedsAttention("saved thread identity does not match")
-        for turn in result["thread"].get("turns", []):
+        return result["thread"].get("turns", [])
+
+    async def read_turn(self, thread_id, turn_id, *, expected_prompt_hash=None):
+        for turn in await self._read_thread(thread_id):
             if turn["id"] == turn_id:
-                if expected_prompt_hash is not None:
-                    messages = [item for item in turn.get("items", []) if item.get("type") == "userMessage"]
-                    content = messages[0].get("content", []) if len(messages) == 1 else []
-                    if (
-                        len(content) != 1
-                        or content[0].get("type") != "text"
-                        or hashlib.sha256(content[0].get("text", "").encode()).hexdigest()
-                        != expected_prompt_hash
-                    ):
-                        raise NeedsAttention("saved turn input does not match the exact dispatched prompt")
+                if expected_prompt_hash is not None and turn_prompt_sha256(turn) != expected_prompt_hash:
+                    raise NeedsAttention("saved turn input does not match the exact dispatched prompt")
                 if turn["status"] == "completed":
                     items = [item for item in turn.get("items", []) if item.get("type") == "agentMessage"]
                     if items:
@@ -988,6 +999,10 @@ class DemoAgent:
 
     async def finish(self, thread_id, turn_id):
         return self.results[(thread_id, turn_id)]
+
+    async def read_thread(self, thread_id):
+        """The deterministic demo keeps no turn inputs, so it can never prove absence."""
+        raise NeedsAttention("demo threads retain no turn inputs")
 
     async def read_turn(self, thread_id, turn_id):
         if (thread_id, turn_id) not in self.results:

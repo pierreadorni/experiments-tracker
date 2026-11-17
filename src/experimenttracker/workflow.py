@@ -42,6 +42,7 @@ from .progress import DiscussionActivity, describe_item, read_job_progress
 from .projects import Projects, ProjectUnavailable
 from .quota import QuotaGate
 from .remote import AdmissionPending, RemoteSlurmScheduler, TransferPending
+from .resolver import TurnResolver
 from .slurm import ResourceUnavailable, SubmissionUncertain, command, wrapper
 from .steering import process_restarts, queue_late_reports
 from .store import encode
@@ -121,6 +122,7 @@ class Workflow:
         self.supervisor = ProjectSupervisor(self)
         self.controller = Controller(self)
         self.research = ResearchController(self)
+        self.resolver = TurnResolver(self)
         self.submission_lock = asyncio.Lock()
         self.pool_owner = self
         self.lanes = [self]
@@ -565,6 +567,9 @@ class Workflow:
                 await lane.agent.close()
                 await lane.connect_agent()
         await legacy_archive_actions.settle_actions(self)
+        # Resolve saved uncertain turns before any experiment advances: no live task
+        # owns these rows, and a continuation queued here is admitted in this same tick.
+        await self.resolver.resolve()
         if blocked(self.store):
             return
         self.apply_planning_steering()
@@ -3033,6 +3038,49 @@ class Workflow:
         """Adopt only a completed, already recorded turn; never dispatch a replacement."""
         if self.agent_task:
             raise ValueError("stop the owning daemon before operator reconciliation")
+        return await self.adopt_turn(action_id, turn_id=turn_id)
+
+    def dispatch_prompt_hash(self, action):
+        """Return the exact prompt hash recorded for this action's saved dispatch intent.
+
+        Historical continuations prepended their predecessor's saved terminal error.
+        Do not guess from the timeout error that a later readback overwrote.
+        """
+        intents = [
+            json.loads(event["payload"])
+            for event in self.store.rows(
+                "SELECT payload FROM events WHERE experiment_id=? AND kind='agent_dispatch_intent' ORDER BY seq",
+                (action["experiment_id"],),
+            )
+        ]
+        intents = [event for event in intents if event.get("action_id") == action["id"]]
+        if len(intents) != 1 or intents[0].get("thread_id") != action["thread_id"]:
+            raise NeedsAttention("exact dispatch intent is missing or ambiguous")
+        prompt_hash = intents[0].get("prompt_sha256")
+        if prompt_hash:
+            return prompt_hash
+        previous = self.store.one(
+            "SELECT * FROM agent_actions WHERE id=?", (action.get("previous_action_id"),)
+        )
+        if (
+            not previous
+            or previous["state"] != "failed"
+            or not previous["error"]
+            or previous["experiment_id"] != action["experiment_id"]
+            or previous["phase"] != action["phase"]
+            or previous["thread_id"] != action["thread_id"]
+        ):
+            raise NeedsAttention("historical dispatch prompt cannot be established")
+        prompt = (
+            "Previous agent action failed; correct the reported error: "
+            + previous["error"]
+            + "\n"
+            + action["input"]
+        )
+        return hashlib.sha256(prompt.encode()).hexdigest()
+
+    async def adopt_turn(self, action_id, *, turn_id=None):
+        """Read and adopt one exact saved turn; operator reconciliation and the tick share it."""
         action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (action_id,))
         if action and action["state"] == "completed" and turn_id is not None and action["turn_id"] == turn_id:
             return {
@@ -3060,39 +3108,7 @@ class Workflow:
                 "SELECT id FROM agent_actions WHERE thread_id=? AND turn_id=?", (action["thread_id"], turn_id)
             ):
                 raise NeedsAttention("turn already belongs to a saved action")
-            intents = [
-                json.loads(event["payload"])
-                for event in self.store.rows(
-                    "SELECT payload FROM events WHERE experiment_id=? AND kind='agent_dispatch_intent' ORDER BY seq",
-                    (action["experiment_id"],),
-                )
-            ]
-            intents = [event for event in intents if event.get("action_id") == action_id]
-            if len(intents) != 1 or intents[0].get("thread_id") != action["thread_id"]:
-                raise NeedsAttention("exact dispatch intent is missing or ambiguous")
-            prompt_hash = intents[0].get("prompt_sha256")
-            if not prompt_hash:
-                # Historical continuations prepended their predecessor's saved
-                # terminal error. Do not guess from the overwritten timeout.
-                previous = self.store.one(
-                    "SELECT * FROM agent_actions WHERE id=?", (action.get("previous_action_id"),)
-                )
-                if (
-                    not previous
-                    or previous["state"] != "failed"
-                    or not previous["error"]
-                    or previous["experiment_id"] != action["experiment_id"]
-                    or previous["phase"] != action["phase"]
-                    or previous["thread_id"] != action["thread_id"]
-                ):
-                    raise NeedsAttention("historical dispatch prompt cannot be established")
-                prompt = (
-                    "Previous agent action failed; correct the reported error: "
-                    + previous["error"]
-                    + "\n"
-                    + action["input"]
-                )
-                prompt_hash = hashlib.sha256(prompt.encode()).hexdigest()
+            prompt_hash = self.dispatch_prompt_hash(action)
             result = await self.agent.read_turn(
                 action["thread_id"], turn_id, expected_prompt_hash=prompt_hash
             )
