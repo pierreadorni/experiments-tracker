@@ -49,7 +49,7 @@ def test_replay_and_expired_flag_keep_the_episode(runtime):
     opened = episode(store, eid)
     store.update(eid, pending_request=request(expired=True), hold_reason="expired_agent_request")
     assert episode(store, eid) == opened
-    assert store.rows("SELECT id FROM obligations") == [{"id": opened["id"]}]
+    assert store.rows("SELECT id FROM obligations WHERE id LIKE 'request:%'") == [{"id": opened["id"]}]
 
 
 def test_recorded_answer_satisfies_and_clearing_it_keeps_that(runtime):

@@ -26,7 +26,13 @@ from .codex_client import CodexAgent, NeedsAttention, RpcRejected, SessionUnavai
 from .config import JobResources
 from .controller import Controller, ControllerDecision
 from .conversation import Conversation
-from .core import action_obligations, job_obligations, request_obligations, review_obligations
+from .core import (
+    action_obligations,
+    advancement_decisions,
+    job_obligations,
+    request_obligations,
+    review_obligations,
+)
 from .errors import ExperimentFailure
 from .knowledge import ProjectSupervisor
 from .maintenance import Maintenance, blocked
@@ -3022,6 +3028,7 @@ class Workflow:
             db.execute(
                 "UPDATE experiments SET phase='preparing',hold_reason=NULL,error=NULL WHERE id=?", (eid,)
             )
+            advancement_decisions.sync_lifetime(db, eid, exp["phase"], "preparing")
             db.execute(
                 "UPDATE stages SET state='pending',error=NULL,updated_at=? WHERE experiment_id=? AND id=?",
                 (clock.now(), eid, action["phase"]),
@@ -3627,9 +3634,11 @@ class Workflow:
                 "UPDATE stages SET state='complete',updated_at=? WHERE experiment_id=? AND id='publish'",
                 (clock.now(), eid),
             )
+            previous_phase = db.execute("SELECT phase FROM experiments WHERE id=?", (eid,)).fetchone()[0]
             db.execute(
                 "UPDATE experiments SET phase='complete',hold_reason=NULL,error=NULL WHERE id=?", (eid,)
             )
+            advancement_decisions.sync_lifetime(db, eid, previous_phase, "complete")
             db.execute(
                 "INSERT OR IGNORE INTO inbox VALUES(?,?,?,?,?)",
                 (str(uuid4()), eid, "result_ready", "Interpreted experiment result is ready.", clock.now()),

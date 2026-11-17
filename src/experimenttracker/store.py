@@ -12,6 +12,7 @@ from . import clock
 from .config import ProjectConfig
 from .core import (
     action_obligations,
+    advancement_decisions,
     report_obligations,
     request_obligations,
     review_obligations,
@@ -841,6 +842,13 @@ class Store:
                 request_obligations.sync_request(db, eid, before=before)
             if "plan_review" in fields:
                 review_obligations.sync_review(db, eid, before=before_review)
+            if "phase" in fields:
+                advancement_decisions.sync_lifetime(db, eid, previous["phase"], fields["phase"])
+            if kind == "cancellation_status" and previous["phase"] == "cancelled" and "hold_reason" in fields:
+                if fields["hold_reason"] is None:
+                    advancement_decisions.settle_cancellation(db, eid)
+                else:
+                    advancement_decisions.open_cancellation(db, eid, unconfirmed=True)
             self.emit(db, eid, kind, fields)
 
     def resolve_implementation(self, eid, manifest):
@@ -912,6 +920,8 @@ class Store:
             "pending_request=NULL,plan_review=?,hold_reason='cancellation_pending',error=NULL WHERE id=?",
             (encode(review) if review else None, eid),
         )
+        advancement_decisions.close_lifetime(db, eid, "cancelled")
+        advancement_decisions.open_cancellation(db, eid)
         if exp["pending_request"]:
             request_obligations.sync_request(db, eid, before=exp["pending_request"])
         review_obligations.sync_review(db, eid, before=before_review)
@@ -1074,6 +1084,7 @@ class Store:
                     "INSERT INTO experiments(id,brief,recipe_id,contract,created_at,updated_at,reference_experiment_id) VALUES(?,?,?,?,?,?,?)",
                     (eid, payload["brief"], payload["recipe_id"], encode(contract), now, now, reference_id),
                 )
+                advancement_decisions.open_lifetime(db, eid)
                 if project.checkout and project.writable:
                     folder = project.checkout.resolve(strict=True)
                     info = folder.stat()
@@ -1592,6 +1603,8 @@ class Store:
                         )
                 else:
                     raise ValueError("unknown command")
+                phase = db.execute("SELECT phase FROM experiments WHERE id=?", (eid,)).fetchone()[0]
+                advancement_decisions.sync_lifetime(db, eid, exp["phase"], phase)
             result = {"schema_version": 1, "experiment_id": eid, "request_id": request_id, "state": "applied"}
             db.execute(
                 "INSERT INTO commands VALUES(?,?,?,?,?,?,?,?)",

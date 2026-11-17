@@ -6,7 +6,7 @@ from pathlib import Path
 from uuid import UUID
 
 from . import artifacts, clock, iteration
-from .core import job_obligations, review_obligations
+from .core import advancement_decisions, job_obligations, review_obligations
 from .store import encode
 
 TERMINAL = {
@@ -147,6 +147,7 @@ async def queue(wf, exp):
             "UPDATE experiments SET contract=?,evidence_revision=?,phase='preparing',hold_reason='automatic_repair',plan_review=? WHERE id=?",
             (encode(contract), revision, encode(review) if review else None, eid),
         )
+        advancement_decisions.sync_lifetime(db, eid, exp["phase"], "preparing")
         review_obligations.sync_review(db, eid, before=before_review)
         db.execute(
             "UPDATE stages SET state='pending',attempt=?,updated_at=? WHERE experiment_id=? AND id IN ('prepare','interpret','publish')",

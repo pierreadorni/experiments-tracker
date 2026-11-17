@@ -165,7 +165,9 @@ def test_creation_rollback_keeps_row_event_and_obligation_together(runtime, monk
             store.working_report(eid, document(), "synthetic-report")
     assert not store.one("SELECT 1 FROM report_versions WHERE experiment_id=?", (eid,))
     assert counts(store, eid) == (events, outbox)
-    assert not store.one("SELECT 1 FROM obligations WHERE experiment_id=?", (eid,))
+    assert not store.one(
+        "SELECT 1 FROM obligations WHERE experiment_id=? AND id LIKE 'report-version:%'", (eid,)
+    )
 
 
 def test_state_and_cancellation_rollback_keep_rows_and_events_together(runtime, monkeypatch):

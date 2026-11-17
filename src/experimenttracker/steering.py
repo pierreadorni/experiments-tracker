@@ -4,7 +4,7 @@ import json
 from uuid import NAMESPACE_URL, uuid5
 
 from . import clock
-from .core import job_obligations
+from .core import advancement_decisions, job_obligations
 from .legacy_archive import execution_frozen
 from .store import encode
 
@@ -187,6 +187,8 @@ def _create_replacement(store, exp, item):
             "UPDATE experiments SET phase='cancelled',hold_reason=NULL,error=NULL WHERE id=?",
             (eid,),
         )
+        advancement_decisions.close_lifetime(db, eid, "cancelled")
+        advancement_decisions.open_cancellation(db, eid)
         db.execute(
             "UPDATE steering SET state='transferred',applied_at=? WHERE experiment_id=? AND mode='later' AND state='pending'",
             (clock.now(), eid),

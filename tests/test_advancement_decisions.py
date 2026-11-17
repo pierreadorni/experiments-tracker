@@ -124,9 +124,8 @@ def test_absent_row_read_deleted_and_terminal_guards(runtime):
     exp2 = store.experiment(eid2)
     with store.tx() as db:
         db.execute("UPDATE experiments SET phase='complete' WHERE id=?", (eid2,))
-        with pytest.raises(ValueError, match="terminal advancement"):
-            advancement_decisions.read(db, eid2)
-        with pytest.raises(ValueError, match="terminal advancement"):
+        assert advancement_decisions.read(db, eid2) is None
+        with pytest.raises(ValueError, match="terminal experiments"):
             save(db, eid2, exp2)
 
 
@@ -138,10 +137,13 @@ def test_write_rolls_back_and_terminal_history_is_not_reopened(runtime):
         with store.tx() as db:
             save(db, eid, exp, "quota_hold", "admission:quota")
             raise RuntimeError("rollback")
-    assert store.rows("SELECT * FROM obligations WHERE id LIKE ?", (f"advancement:{eid}:%",)) == []
+    lifetime = store.rows("SELECT * FROM obligations WHERE id LIKE ?", (f"advancement:{eid}:%",))
+    assert [(row["id"], row["state"], row["detail"]) for row in lifetime] == [
+        (f"advancement:{eid}:0", "open", None)
+    ]
 
     with store.tx() as db:
         row = save(db, eid, exp)
         db.execute("UPDATE obligations SET state='satisfied' WHERE id=?", (row["id"],))
-        with pytest.raises(ValueError, match="terminal advancement history"):
+        with pytest.raises(ValueError, match="terminal advancement lifetime"):
             save(db, eid, exp, "agent_busy", "admission:agent_busy")

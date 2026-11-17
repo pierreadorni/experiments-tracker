@@ -42,7 +42,7 @@ def test_replay_keeps_the_episode(runtime):
     opened = episode(store, eid)
     store.update(eid, plan_review=review(summary="edited summary"))
     assert episode(store, eid) == opened
-    assert store.rows("SELECT id FROM obligations") == [{"id": opened["id"]}]
+    assert store.rows("SELECT id FROM obligations WHERE id LIKE 'review:%'") == [{"id": opened["id"]}]
 
 
 def test_owner_approval_satisfies_the_generation(runtime):

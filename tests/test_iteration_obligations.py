@@ -17,6 +17,13 @@ def saved_rows(store):
     return {name: store.rows(f"SELECT * FROM {name}") for name in SAVED_TABLES}
 
 
+def own_open(store, **scope):
+    """Open rows this test opened; creation's lifetime episode is not one of them."""
+    return [
+        row for row in obligations.open_for(store.db, **scope) if not row["id"].startswith("advancement:")
+    ]
+
+
 class Injected(RuntimeError):
     """Failure a test injects inside an open transaction."""
 
@@ -52,8 +59,11 @@ def test_upgrade_preserves_saved_rows_and_backfills_no_obligations(runtime):
     view = store.projection(eid)
     hold = store.experiment(eid)["hold_reason"]
     assert store.one("SELECT MAX(version) AS version FROM schema_version")["version"] == 24
-    assert store.rows("SELECT * FROM obligations") == []
+    assert store.rows("SELECT * FROM obligations WHERE id NOT LIKE 'advancement:%'") == []
     before = saved_rows(store)
+    # The dropped table is a schema-23 store, so its saved rows cannot survive; the
+    # migration must add none of them back.
+    before["obligations"] = []
     # No historical schema-23 database is checked in, so this fixture is a fresh
     # store downgraded in place by dropping the newest migration, not a real
     # schema-23 snapshot with legacy rows.
@@ -183,7 +193,7 @@ def test_mutations_require_the_callers_transaction_and_roll_back_with_it(runtime
         obligations.open(store.db, f"{eid}/job", experiment_id=eid, kind="job", owner="external")
     with pytest.raises(RuntimeError):
         obligations.satisfy(store.db, f"{eid}/job")
-    assert store.rows("SELECT * FROM obligations") == []
+    assert store.rows("SELECT * FROM obligations WHERE id NOT LIKE 'advancement:%'") == []
     with store.tx() as db:
         obligations.open(db, f"{eid}/job", experiment_id=eid, kind="job", owner="external")
     before = saved_rows(store)
@@ -196,7 +206,7 @@ def test_mutations_require_the_callers_transaction_and_roll_back_with_it(runtime
             store.emit(db, eid, "job_failed")
             raise Injected()
     assert saved_rows(store) == before
-    assert [row["id"] for row in obligations.open_for(store.db, experiment_id=eid)] == [f"{eid}/job"]
+    assert [row["id"] for row in own_open(store, experiment_id=eid)] == [f"{eid}/job"]
 
 
 def test_open_for_scopes_and_derived_priority(runtime, monkeypatch):
@@ -211,11 +221,11 @@ def test_open_for_scopes_and_derived_priority(runtime, monkeypatch):
         obligations.open(db, "d", experiment_id=second, project_id="p1", kind="job", owner="external")
     with store.tx() as db:
         obligations.satisfy(db, "d")
-    assert [row["id"] for row in obligations.open_for(store.db)] == ["b", "a", "c"]
-    assert [row["id"] for row in obligations.open_for(store.db, experiment_id=first)] == ["b", "a"]
+    assert [row["id"] for row in own_open(store)] == ["b", "a", "c"]
+    assert [row["id"] for row in own_open(store, experiment_id=first)] == ["b", "a"]
     assert [row["id"] for row in obligations.open_for(store.db, project_id="p1")] == ["b", "c"]
     assert obligations.open_for(store.db, experiment_id=second, project_id="p2") == []
-    assert obligations.derived_status(obligations.open_for(store.db, experiment_id=first))["id"] == "a"
+    assert obligations.derived_status(own_open(store, experiment_id=first))["id"] == "a"
 
 
 def test_derived_status_ranks_owners_then_due_created_and_id():

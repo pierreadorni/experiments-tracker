@@ -13,6 +13,7 @@ from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
 
 from . import artifacts, clock
+from .core import advancement_decisions
 from .models import ExperimentResult
 from .store import encode
 
@@ -293,7 +294,9 @@ def finish_agent(wf, exp, phase, value):
     if job["state"] == "complete":
         return
     if result.outcome != "completed":
+        outcome_phase = "training" if result.outcome == "blocked" else "failed"
         with wf.store.tx() as db:
+            previous = db.execute("SELECT phase FROM experiments WHERE id=?", (exp["id"],)).fetchone()[0]
             db.execute(
                 "UPDATE stages SET state=?,error=?,updated_at=? WHERE experiment_id=? AND id=?",
                 (
@@ -307,12 +310,13 @@ def finish_agent(wf, exp, phase, value):
             db.execute(
                 "UPDATE experiments SET phase=?,hold_reason=?,error=? WHERE id=?",
                 (
-                    "training" if result.outcome == "blocked" else "failed",
+                    outcome_phase,
                     "agent_stage_blocked" if result.outcome == "blocked" else "agent_stage_failed",
                     result.summary,
                     exp["id"],
                 ),
             )
+            advancement_decisions.sync_lifetime(db, exp["id"], previous, outcome_phase)
             wf.store.emit(
                 db,
                 exp["id"],
