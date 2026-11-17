@@ -45,6 +45,32 @@ def test_sweep_freezes_legacy_and_store_guards_late_mutations(runtime):
     assert store.experiment(eid)["phase"] == "cancelled"
 
 
+def test_frozen_terminal_commands_have_no_effect_but_pause_and_readers_remain(runtime):
+    store, _, _, _ = runtime
+    eid = legacy_experiment(store)
+    store.update(eid, phase="failed", hold_reason="agent_recovery_exhausted")
+    before = {
+        table: store.one(f"SELECT COUNT(*) AS n FROM {table} WHERE experiment_id=?", (eid,))["n"]
+        for table in ("commands", "events", "agent_actions")
+    }
+    for kind, payload in (
+        ("action", {"action": "retry_agent"}),
+        ("action", {"action": "summarize_title"}),
+        ("steer", {"text": "change the plan", "mode": "later"}),
+        ("plan_review", {"decision": "approve", "plan_revision": 1}),
+        ("answer", {"pending_request_id": "unbound", "answer": "decline"}),
+    ):
+        with pytest.raises(Conflict, match="legacy execution is archived"):
+            store.command(uuid4(), kind, payload, eid=eid)
+    after = {
+        table: store.one(f"SELECT COUNT(*) AS n FROM {table} WHERE experiment_id=?", (eid,))["n"]
+        for table in before
+    }
+    assert after == before
+    store.command(uuid4(), "action", {"action": "pause_agent"}, eid=eid)
+    assert store.experiment(eid)["pause_agent"] is True
+
+
 def test_watchdog_excludes_archived_owner_hold(runtime):
     store, _, _, _ = runtime
     eid = legacy_experiment(store)
@@ -234,3 +260,94 @@ async def test_archived_controller_turn_allows_status_and_rejects_effects(runtim
     assert await workflow.controller.call(eid, "job_status", {"summary_only": True}) == []
     with pytest.raises(ValueError, match="only status reads"):
         await workflow.controller.call(eid, "schedule_wakeup", {})
+
+
+@pytest.mark.parametrize(
+    ("kind", "payload"),
+    [
+        ("action", {"action": "retry_agent"}),
+        ("action", {"action": "summarize_title"}),
+        ("steer", {"text": "continue", "mode": "later"}),
+        ("plan_review", {"decision": "approve", "plan_revision": 1}),
+        ("plan_review", {"decision": "revise", "plan_revision": 1, "feedback": "change"}),
+    ],
+)
+def test_terminal_frozen_commands_reject_legacy_execution_mutations(runtime, kind, payload):
+    store, _, _, _ = runtime
+    eid = legacy_experiment(store)
+    contract = {**store.experiment(eid)["contract"], "execution_contract": 2}
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET contract=?,phase='complete' WHERE id=?", (encode(contract), eid))
+    with pytest.raises(Conflict, match="legacy execution is archived"):
+        store.command(uuid4(), kind, payload, eid=eid)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "binding", ["valid", "wrong_action", "wrong_phase", "wrong_state", "expired", "not_ready"]
+)
+async def test_frozen_reader_reply_requires_live_owned_discussion(runtime, monkeypatch, binding):
+    store, _, agent, workflow = runtime
+    eid = legacy_experiment(store)
+    action_id = str(uuid4())
+    phase = "prepare" if binding == "wrong_phase" else "discuss:1"
+    state = "completed" if binding == "wrong_state" else "running"
+    contract = {**store.experiment(eid)["contract"], "execution_contract": 2}
+    pending = {
+        "id": "rpc",
+        "action_id": str(uuid4()) if binding == "wrong_action" else action_id,
+        "answer": "continue discussion",
+        "expired": binding == "expired",
+    }
+    with store.tx() as db:
+        db.execute(
+            "INSERT INTO agent_actions(id,experiment_id,phase,evidence_revision,state,thread_id,turn_id,input,created_at,updated_at) "
+            "VALUES(?,?,?,1,?,'thread','turn','prompt',1,1)",
+            (action_id, eid, phase, state),
+        )
+        db.execute(
+            "UPDATE experiments SET contract=?,phase='complete',pending_request=? WHERE id=?",
+            (encode(contract), encode(pending), eid),
+        )
+    workflow.started = True
+    workflow.agent_ready = binding != "not_ready"
+    workflow.active_action = action_id
+    workflow.agent_task = asyncio.create_task(asyncio.Event().wait())
+    calls = []
+    turns = []
+    jobs_before = store.rows("SELECT intent_id FROM jobs WHERE experiment_id=?", (eid,))
+
+    async def noop(*args, **kwargs):
+        return None
+
+    async def reply(value):
+        calls.append(value)
+
+    async def begin(*args, **kwargs):
+        turns.append("begin")
+        return "unexpected-turn"
+
+    monkeypatch.setattr(agent, "reply", reply, raising=False)
+    monkeypatch.setattr(agent, "begin", begin, raising=False)
+    monkeypatch.setattr(workflow.research.service, "tick", lambda: None)
+    monkeypatch.setattr(workflow.research, "reply_inputs", noop)
+    monkeypatch.setattr(workflow.research, "interrupt_holds", noop)
+    monkeypatch.setattr("experimenttracker.workflow.process_cancellations", noop)
+    monkeypatch.setattr("experimenttracker.workflow.early_repair.reconcile_cancellations", noop)
+    monkeypatch.setattr(workflow.projects, "tick", lambda: None)
+    monkeypatch.setattr(workflow.projects, "settings_tick", lambda: None)
+    monkeypatch.setattr(workflow.supervisor.memory, "refresh", lambda: None)
+    monkeypatch.setattr("experimenttracker.workflow.blocked", lambda store: True)
+    try:
+        await workflow.tick()
+    finally:
+        workflow.agent_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await workflow.agent_task
+    assert len(calls) == (1 if binding == "valid" else 0)
+    assert turns == []
+    assert store.rows("SELECT intent_id FROM jobs WHERE experiment_id=?", (eid,)) == jobs_before
+    assert store.experiment(eid)["phase"] == "complete"
+    if binding == "valid":
+        assert calls[0]["action_id"] == action_id
+        assert store.experiment(eid)["pending_request"] is None

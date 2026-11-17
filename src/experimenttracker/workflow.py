@@ -454,6 +454,7 @@ class Workflow:
             raise NeedsAttention("request has no active action")
         pending = {
             "id": str(uuid4()),
+            "action_id": action["id"],
             "rpc_id": message["id"],
             "method": message["method"],
             "params": message.get("params", {}),
@@ -511,10 +512,28 @@ class Workflow:
         for row in self.store.rows("SELECT id FROM experiments WHERE pending_request IS NOT NULL"):
             exp = self.store.experiment(row["id"])
             pending = exp["pending_request"]
+            action = (
+                self.store.one("SELECT * FROM agent_actions WHERE id=?", (pending.get("action_id"),))
+                if pending.get("action_id")
+                else None
+            )
+            frozen_reader_reply = bool(
+                legacy_archive.execution_frozen(exp)
+                and exp["phase"] == "complete"
+                and exp["deleted_at"] is None
+                and pending.get("action_id") == self.active_action
+                and action
+                and action["experiment_id"] == exp["id"]
+                and action["phase"].startswith("discuss:")
+                and action["state"] in ("dispatching", "running")
+                and self.agent_task
+                and not self.agent_task.done()
+                and self.agent_ready
+            )
             if (
                 pending.get("answer")
                 and not pending.get("expired")
-                and not legacy_archive.execution_frozen(exp)
+                and (not legacy_archive.execution_frozen(exp) or frozen_reader_reply)
             ):
                 try:
                     await self.agent.reply(pending)

@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from . import clock
 from .config import ProjectConfig
-from .legacy_archive import archive_active
+from .legacy_archive import archive_active, execution_frozen
 from .models import STAGES, request_answer
 from .title import title_prompt
 
@@ -1063,6 +1063,33 @@ class Store:
                     or (kind == "action" and payload["action"] != "cancel")
                 ):
                     raise Conflict("legacy execution is archived; only cancellation is available")
+                if execution_frozen(exp) and (
+                    (kind == "action" and payload.get("action") in ("retry_agent", "summarize_title"))
+                    or kind == "steer"
+                    or (kind == "plan_review" and payload.get("decision") in ("approve", "revise"))
+                ):
+                    raise Conflict("legacy execution is archived; this mutation is unavailable")
+                if execution_frozen(exp) and kind == "answer":
+                    pending = exp["pending_request"]
+                    saved = (
+                        db.execute(
+                            "SELECT * FROM agent_actions WHERE id=?", (pending.get("action_id"),)
+                        ).fetchone()
+                        if pending and pending.get("action_id")
+                        else None
+                    )
+                    if not (
+                        pending
+                        and exp["phase"] == "complete"
+                        and not pending.get("expired")
+                        and saved
+                        and saved["experiment_id"] == eid
+                        and saved["phase"].startswith("discuss:")
+                        and saved["state"] in ("dispatching", "running")
+                    ):
+                        raise Conflict(
+                            "legacy execution is archived; only a live discussion reply is available"
+                        )
                 if (
                     exp["phase"] == "cancelled"
                     and kind not in ("note", "delete")

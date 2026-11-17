@@ -834,6 +834,7 @@ function App() {
                       className="text-button"
                       disabled={
                         busy ||
+                        exp.contract?.execution_contract !== 3 ||
                         exp.pending_commands?.some((c) => c.action === 'summarize_title') ||
                         exp.agent_actions.some(
                           (a) =>
@@ -1084,6 +1085,7 @@ function App() {
                           exp={exp}
                           busy={
                             busy ||
+                            exp.contract?.execution_contract !== 3 ||
                             Boolean(exp.pending_commands?.some((c) => c.kind === 'plan_review'))
                           }
                           onDecision={(decision, feedback) =>
@@ -1116,7 +1118,9 @@ function App() {
                           key={exp.id}
                           exp={exp}
                           busy={
-                            busy || Boolean(exp.pending_commands?.some((c) => c.kind === 'steer'))
+                            busy ||
+                            exp.contract?.execution_contract !== 3 ||
+                            Boolean(exp.pending_commands?.some((c) => c.kind === 'steer'))
                           }
                           onSend={(text, mode) =>
                             act(async () => {
@@ -1149,6 +1153,7 @@ function App() {
                               <button
                                 disabled={
                                   busy ||
+                                  exp.contract?.execution_contract !== 3 ||
                                   Boolean(
                                     exp.pending_commands?.some((c) => c.action === 'retry_agent'),
                                   )
@@ -1194,7 +1199,11 @@ function App() {
                             {!terminal.includes(exp.phase) && (
                               <>
                                 <button
-                                  disabled={busy}
+                                  disabled={
+                                    busy ||
+                                    (exp.contract?.execution_contract !== 3 &&
+                                      !terminal.includes(exp.phase))
+                                  }
                                   onClick={() =>
                                     void act(async () => {
                                       await command(`/api/experiments/${exp.id}/actions`, {
@@ -1207,7 +1216,11 @@ function App() {
                                   {exp.pause_agent ? 'Resume agent work' : 'Pause agent work'}
                                 </button>
                                 <button
-                                  disabled={busy}
+                                  disabled={
+                                    busy ||
+                                    (exp.contract?.execution_contract !== 3 &&
+                                      !terminal.includes(exp.phase))
+                                  }
                                   onClick={() =>
                                     void act(async () => {
                                       await command(`/api/experiments/${exp.id}/actions`, {

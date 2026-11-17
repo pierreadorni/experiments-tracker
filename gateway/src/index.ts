@@ -729,6 +729,23 @@ async function enqueue(env: Env, kind: string, payload: Record<string, unknown>,
   else {
     const row = await requiredProjection(env, id);
     const exp = JSON.parse(String(row.payload));
+    const archiveActive =
+      exp.contract?.execution_contract !== 3 &&
+      !exp.deleted_at &&
+      !['complete', 'failed', 'cancelled'].includes(exp.phase);
+    if (
+      archiveActive &&
+      ((kind === 'action' && payload.action !== 'cancel') ||
+        ['answer', 'plan_review', 'steer'].includes(kind))
+    )
+      throw new HttpError(409, 'Legacy execution is archived; only cancellation is available');
+    if (
+      exp.contract?.execution_contract !== 3 &&
+      ((kind === 'action' && ['retry_agent', 'summarize_title'].includes(String(payload.action))) ||
+        kind === 'steer' ||
+        (kind === 'plan_review' && ['approve', 'revise'].includes(String(payload.decision))))
+    )
+      throw new HttpError(409, 'Legacy execution is archived; this mutation is unavailable');
     if (
       kind === 'action' &&
       payload.action === 'retry_agent' &&
@@ -2229,14 +2246,30 @@ async function route(request: Request, env: Env): Promise<Response> {
                     : answerSchema
       ).parse(await body(request));
       if (kind === 'answer') {
-        const row = await requiredProjection(env, id),
-          pending = JSON.parse(String(row.payload)).pending_request;
+        const row = await requiredProjection(env, id);
+        const projected = JSON.parse(String(row.payload));
+        const pending = projected.pending_request;
         if (
           !pending ||
           pending.id !== (payload as z.infer<typeof answerSchema>).pending_request_id ||
           pending.expired
         )
           throw new HttpError(409, 'Stale or mismatched pending request');
+        const savedAction = pending.action_id
+          ? (projected.agent_actions || []).find((action: any) => action.id === pending.action_id)
+          : null;
+        if (
+          projected.contract?.execution_contract !== 3 &&
+          !(
+            projected.phase === 'complete' &&
+            savedAction?.phase?.startsWith('discuss:') &&
+            ['dispatching', 'running'].includes(savedAction.state)
+          )
+        )
+          throw new HttpError(
+            409,
+            'Legacy execution is archived; only a live discussion reply is available',
+          );
         const answer = (payload as z.infer<typeof answerSchema>).answer;
         if (
           ['item/commandExecution/requestApproval', 'item/fileChange/requestApproval'].includes(

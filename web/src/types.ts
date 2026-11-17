@@ -197,6 +197,7 @@ export type Experiment = {
   }[];
   pending_request: {
     id: string;
+    action_id?: string;
     method: string;
     params: unknown;
     expired: boolean;
@@ -209,7 +210,7 @@ export type Experiment = {
     limitations: string[];
     next_ideas: string[];
   } | null;
-  contract: Record<string, unknown>;
+  contract: Record<string, unknown> & { execution_contract?: number };
   snapshot: Record<string, unknown> | null;
 };
 export type Discussion = {

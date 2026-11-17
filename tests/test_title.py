@@ -86,7 +86,7 @@ async def test_saved_luna_turn_is_reconciled_after_plan_approval(runtime):
     await restored.close()
 
 
-async def test_manual_summary_updates_a_failed_legacy_run_without_restarting_it(runtime):
+async def test_current3_manual_summary_updates_failed_run_without_restarting_it(runtime):
     store, scheduler, _, old = runtime
 
     class SummaryAgent(ImplementationAgent):

@@ -1492,6 +1492,184 @@ test('manual agent retry is durable, deduplicated and restricted to failed compu
   );
 });
 
+test('frozen terminal records reject execution mutations but keep plan-review cancel', async () => {
+  const { result } = await create({ brief: 'Historical frozen record' });
+  const eid = result.experiment_id;
+  const db = await mf.getD1Database('DB');
+  const exp = await (await req(`/api/experiments/${eid}`)).json();
+  Object.assign(exp, {
+    phase: 'failed',
+    hold_reason: 'agent_recovery_exhausted',
+    contract: { ...exp.contract, execution_contract: 2 },
+    plan_review: { state: 'awaiting_review', revision: 1 },
+  });
+  await db
+    .prepare('UPDATE projections SET payload=? WHERE id=?')
+    .bind(JSON.stringify(exp), eid)
+    .run();
+
+  for (const [path, payload] of [
+    [`/api/experiments/${eid}/actions`, { action: 'retry_agent' }],
+    [`/api/experiments/${eid}/actions`, { action: 'summarize_title' }],
+    [`/api/experiments/${eid}/steering`, { text: 'continue', mode: 'later' }],
+    [`/api/experiments/${eid}/plan-review`, { decision: 'approve', plan_revision: 1 }],
+    [
+      `/api/experiments/${eid}/plan-review`,
+      { decision: 'revise', plan_revision: 1, feedback: 'change' },
+    ],
+  ])
+    assert.equal(
+      (
+        await req(path, {
+          method: 'POST',
+          body: JSON.stringify({ ...payload, schema_version: 1, request_id: randomUUID() }),
+        })
+      ).status,
+      409,
+    );
+
+  assert.equal(
+    await db
+      .prepare("SELECT COUNT(*) AS n FROM commands WHERE experiment_id=? AND kind!='create'")
+      .bind(eid)
+      .first('n'),
+    0,
+  );
+  const cancel = await req(`/api/experiments/${eid}/plan-review`, {
+    method: 'POST',
+    body: JSON.stringify({
+      schema_version: 1,
+      request_id: randomUUID(),
+      decision: 'cancel',
+      plan_revision: 1,
+    }),
+  });
+  assert.equal(cancel.status, 202);
+  assert.equal(
+    await db
+      .prepare("SELECT kind FROM commands WHERE experiment_id=? AND kind!='create'")
+      .bind(eid)
+      .first('kind'),
+    'plan_review',
+  );
+});
+
+test('active archived commands stay cancel-only', async () => {
+  const { result } = await create({ brief: 'Active historical record' });
+  const eid = result.experiment_id;
+  const db = await mf.getD1Database('DB');
+  const exp = await (await req(`/api/experiments/${eid}`)).json();
+  Object.assign(exp, {
+    phase: 'training',
+    contract: { ...exp.contract, execution_contract: 2 },
+    plan_review: { state: 'awaiting_review', revision: 1 },
+    pending_request: {
+      id: 'pending',
+      method: 'item/commandExecution/requestApproval',
+      params: {},
+      expired: false,
+    },
+  });
+  await db
+    .prepare('UPDATE projections SET payload=? WHERE id=?')
+    .bind(JSON.stringify(exp), eid)
+    .run();
+  for (const [path, payload] of [
+    [`/api/experiments/${eid}/actions`, { action: 'pause_agent' }],
+    [`/api/experiments/${eid}/actions`, { action: 'pause_new_compute' }],
+    [`/api/experiments/${eid}/plan-review`, { decision: 'cancel', plan_revision: 1 }],
+    [`/api/experiments/${eid}/answers`, { pending_request_id: 'pending', answer: 'decline' }],
+  ])
+    assert.equal(
+      (
+        await req(path, {
+          method: 'POST',
+          body: JSON.stringify({ ...payload, schema_version: 1, request_id: randomUUID() }),
+        })
+      ).status,
+      409,
+    );
+  assert.equal(
+    await db
+      .prepare("SELECT COUNT(*) AS n FROM commands WHERE experiment_id=? AND kind!='create'")
+      .bind(eid)
+      .first('n'),
+    0,
+  );
+
+  const owner = await db
+    .prepare('SELECT payload,received_at FROM executor_status WHERE id=?')
+    .bind('acacia')
+    .first();
+  await db
+    .prepare(
+      'INSERT INTO executor_status(id,payload,received_at) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,received_at=excluded.received_at',
+    )
+    .bind('acacia', JSON.stringify({ experiment_cancellation: true }), Date.now() / 1000)
+    .run();
+  const cancelled = await req(`/api/experiments/${eid}/actions`, {
+    method: 'POST',
+    body: JSON.stringify({ schema_version: 1, request_id: randomUUID(), action: 'cancel' }),
+  });
+  assert.equal(cancelled.status, 202);
+  assert.equal(
+    await db
+      .prepare("SELECT kind FROM commands WHERE experiment_id=? AND kind!='create'")
+      .bind(eid)
+      .first('kind'),
+    'action',
+  );
+  if (owner)
+    await db
+      .prepare('UPDATE executor_status SET payload=?,received_at=? WHERE id=?')
+      .bind(owner.payload, owner.received_at, 'acacia')
+      .run();
+  else await db.prepare('DELETE FROM executor_status WHERE id=?').bind('acacia').run();
+});
+
+test('frozen completed replies require an exact saved discussion action', async () => {
+  const db = await mf.getD1Database('DB');
+  for (const binding of ['valid', 'unbound', 'expired']) {
+    const { result } = await create({ brief: `Historical reader ${binding}` });
+    const eid = result.experiment_id;
+    const exp = await (await req(`/api/experiments/${eid}`)).json();
+    const actionId = randomUUID();
+    Object.assign(exp, {
+      phase: 'complete',
+      contract: { ...exp.contract, execution_contract: 2 },
+      pending_request: {
+        id: 'pending',
+        ...(binding === 'unbound' ? {} : { action_id: actionId }),
+        method: 'item/commandExecution/requestApproval',
+        params: {},
+        expired: binding === 'expired',
+      },
+      agent_actions: [{ id: actionId, phase: 'discuss:discussion-id', state: 'running' }],
+    });
+    await db
+      .prepare('UPDATE projections SET payload=? WHERE id=?')
+      .bind(JSON.stringify(exp), eid)
+      .run();
+    const response = await req(`/api/experiments/${eid}/answers`, {
+      method: 'POST',
+      body: JSON.stringify({
+        schema_version: 1,
+        request_id: randomUUID(),
+        pending_request_id: 'pending',
+        answer: 'decline',
+      }),
+    });
+    assert.equal(response.status, binding === 'valid' ? 202 : 409);
+    assert.equal(
+      await db
+        .prepare("SELECT COUNT(*) AS n FROM commands WHERE experiment_id=? AND kind!='create'")
+        .bind(eid)
+        .first('n'),
+      binding === 'valid' ? 1 : 0,
+    );
+  }
+});
+
 test('implementation repair requires executor capability', async () => {
   const { result } = await create({ recipe_id: 'agent_experiment_v1', brief: 'Repair graph' });
   const endpoint = `/api/experiments/${result.experiment_id}/actions`;
