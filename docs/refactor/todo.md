@@ -139,6 +139,11 @@ Briefing rules and the brief template are in [README.md](README.md).
 
 ## Phase 2 — Tier 1: consolidation
 
+**Complete under the owner-approved scope cut.** Final Node 24 `make check`:
+866 Python, 29 web and 45 gateway tests pass; see
+[acceptance and remaining boundaries](notes/t1-acceptance.md). Deferred T1.3c
+writer migration and T1.7 engine splits remain deferred, not implemented.
+
 The owner approved [rollout decisions 1–6](notes/t1-owner-decisions.md) on
 2026-11-13. Ship T1.1c and bounded fixture-migration cards before T1.1b activation;
 then delete legacy execution by area. Independent clock, harness and obligations
@@ -312,7 +317,7 @@ and archived fixtures still render their report via the API.
   one-slot and same-owner work serialize; uncertain outcomes prevent duplicate
   turns while independent owners can progress.
 
-### [ ] T1.6a-4 Retire cloned Workflow lanes (C4) · S · M per bounded subcard
+### [x] T1.6a-4 Retire cloned Workflow lanes (C4) · S · M per bounded subcard
 - Final acceptance audit found the named retirement in
   [owner decision §7](notes/t1-owner-decisions.md#7-net-negative-waiver-2026-11-17)
   still pending: `Workflow.start_agent_pool` constructs another `Workflow` per
@@ -323,17 +328,18 @@ and archived fixtures still render their report via the API.
   generations, saved identities, binding admission and exact reconciliation.
   Delete the clone construction and manual field-sharing path in the same rollout.
   No new schema/config/reasons or changed scientific execution semantics.
-- Before implementation, inspect and split the dispatch/readback callback seams
-  into bounded cards; keep the mixed-role matrix and full suite green. T1 remains
-  incomplete until this retirement passes. The research binding-denial repair
-  passed the full suite and is recorded below.
+- Completed as a-4a vocabulary/owner-alias consolidation and a-4b explicit
+  `AgentSlot` ownership with clone deletion. All role callbacks, dispatch and
+  lifecycle operations use explicit slots; primary compatibility properties
+  delegate to canonical slot-zero state. Both acceptance repairs are complete;
+  see the [final acceptance record](notes/t1-acceptance.md).
 
-### [~] T1.6c Mixed-role recovery scenarios (C4, C12) · S · M
+### [x] T1.6c Mixed-role recovery scenarios (C4, C12) · S · M
 - [Approved matrix](notes/t1.6c-recovery-scenarios-design.md): c-1 overlap/owner
   exclusion, c-2 restart/debt/routing, c-3 binding quota/shutdown; bounded cards.
 - Status: [x] c-1 shared-backend overlap, one-slot and typed-owner scenarios;
   [x] c-2 restart/debt/routing; [x] c-3 binding quota/interruption/shutdown.
-  Final acceptance awaits a-4 retirement; research binding-denial repair is complete.
+  Final acceptance passed after a-4 retirement and research binding-denial repair.
 - Depends on T1.6b and the T1.2b harness. Cover experiment plus research, experiment
   plus supervisor, discussion plus unrelated experiment, single-slot and same-owner
   exclusion, lost outcome/restart, callback/reply routing, quota interrupts and
@@ -624,3 +630,6 @@ Record completed tasks here: `date · task · commit · notes`.
 2026-11-17 · T1.6c-3 · 46206f6 · DeepSeek Flash implementation, coordinator review. Test-only shared-backend scenarios cover post-session fresh quota denial on experiment/project dispatch, exact per-process interrupts across two occupied role slots, unreadable outcomes surviving fresh quota and client shutdown, and full-slot shutdown with experiment+weekly/research occupants (closing before role shutdown, each transport closed once, saved identities unchanged after store close). Production source 0; tests +407/−0. Ruff and all 864 Python tests pass (459.13s). Audit found two open acceptance issues: research quota-only binding denial supersedes instead of retaining the pending action (repair in progress), and cloned Workflow transport lanes remain despite owner §7 retirement requirement (new explicit a-4 card). Do not claim T1 complete. No live activation.
 
 2026-11-17 · T1.6b-2 acceptance repair · b880ac6 · DeepSeek Flash implementation, coordinator review. Research dispatch separates post-session authority supersession from quota denial: quota alone preserves the same pending decision and records the existing inference_hold transaction via a shared hold helper; fresh quota later begins that exact decision once. Authority/control-revision changes still supersede. New shared-backend gated-session regression fails on the old source, asserts released claim/busy flags, zero begin on denial and exact later progress. Source +15/−7; tests +80/−1 (103 changed lines). Ruff and all 865 Python tests pass (505.25s). Only explicit cloned-Workflow retirement a-4 remains before final T1 acceptance. No live activation.
+
+2026-11-17 · T1.6a-4a · 349a0c2 · DeepSeek Flash implementation, supervisor-approved green split and coordinator review. Mechanical vocabulary/owner-alias consolidation removes pool_owner throughout production/tests; temporary cloned slots remain only until immediately following a-4b. Source +136/−137; tests +62/−63 (398 changed lines). Worker targeted suites green on this intermediate commit. No live activation.
+2026-11-17 · T1.6a-4b · cefa44e · DeepSeek Flash implementation, coordinator review. AgentPool owns explicit AgentSlot transport/task state; one Workflow owns execution services/registries. Deleted cloned Workflow construction and manual field patching, slot identity scans and cluster-snapshot copies; slot-pinned callbacks and explicit dispatch context preserve process generations and saved identities. Fixed primary compatibility properties share canonical slot-zero state. Source +179/−133; tests +229/−170 (711 changed lines, approved mechanical wiring band). Final isolated Node24 make check passes: Ruff, 866 Python, 29 web, 45 gateway tests, web format, gateway build/types. Final phase production delta +2683, previously notified threshold exceeded. T1 complete under owner §8 scope cut; final evidence/boundaries in notes/t1-acceptance.md. No live activation.
