@@ -126,7 +126,7 @@ async def test_two_connections_overlap_an_experiment_and_a_project_decision(runt
     wf = await pooled(runtime)
     store, eid = wf.store, create(wf.store)
     # One central quota decision and one registry serve both configured connections.
-    assert wf.lanes[1].gate is wf.gate and wf.lanes[1].agent_pool is wf.agent_pool
+    assert wf.slots[1].gate is wf.gate and wf.slots[1].agent_pool is wf.agent_pool
     with store.tx() as db:
         service.wake(db, run["id"], "synthetic-input", "experiment_change", {"synthetic": True})
     # The research step prepares its turn; the next control pass selects both roles.
@@ -143,7 +143,7 @@ async def test_two_connections_overlap_an_experiment_and_a_project_decision(runt
     assert (plan["thread_id"], plan["turn_id"]) == ("demo-thread-" + eid, "demo-turn-1")
     assert (decision["thread_id"], decision["turn_id"]) == ("demo-thread-work", "decision-1")
     # Each connection sent exactly its own turn: the primary never spoke for lane two.
-    assert (wf.agent.calls, wf.lanes[1].agent.calls) == (1, 1)
+    assert (wf.agent.calls, wf.slots[1].agent.calls) == (1, 1)
     tasks = (wf.agent_task, wf.research.task)
     await settle(wf, tasks)
     assert store.one("SELECT state FROM agent_actions WHERE id=?", (plan["id"],))["state"] == "completed"
@@ -170,11 +170,11 @@ async def test_two_connections_overlap_an_experiment_and_an_owner_project_turn(r
     assert reserved(wf, "agent_actions", plan["id"]).connection.slot == 0
     assert reservation.connection.slot == 1
     turn = store.one("SELECT * FROM project_turns WHERE id=?", (identity,))
-    second = id(wf.lanes[1].agent)
+    second = id(wf.slots[1].agent)
     sent = [entry for entry in GatedAgent.begun if entry[0] == second]
     assert turn["state"] == "running" and len(sent) == 1
     assert (turn["thread_id"], turn["turn_id"]) == sent[0][2:]
-    assert (wf.agent.calls, wf.lanes[1].agent.calls) == (1, 1)
+    assert (wf.agent.calls, wf.slots[1].agent.calls) == (1, 1)
     tasks = (wf.agent_task, wf.supervisor.task)
     await settle(wf, tasks)
     assert store.one("SELECT state FROM project_turns WHERE id=?", (identity,))["state"] in (
@@ -382,7 +382,7 @@ async def test_a_live_claim_counts_one_turn_until_its_row_settles(runtime):
 )
 async def test_role_heads_merge_by_priority_and_saved_identity(runtime, offers):
     wf = await pooled(runtime, sessions=3)
-    store, lanes = wf.store, tuple(wf.lanes)
+    store, lanes = wf.store, tuple(wf.slots)
     # The stage scan ranks a newer turn first while the monitor turn's saved identity
     # sits between the two: scan rank and creation time conflict on purpose.
     rows = {
@@ -395,7 +395,7 @@ async def test_role_heads_merge_by_priority_and_saved_identity(runtime, offers):
     for name in offers:
         offer(wf, rows[name], started, role=roles[name], connections=lanes)
     wf.agent_pool.admit()
-    await asyncio.gather(*[lane.agent_task for lane in wf.lanes if lane.agent_task is not None])
+    await asyncio.gather(*[lane.agent_task for lane in wf.slots if lane.agent_task is not None])
     # Only role heads compete: the monitor head wins on saved identity, then the stage
     # queue keeps its own scan order, independent of the order the roles offered.
     assert started == [rows["watch"]["id"], rows["head"]["id"], rows["later"]["id"]]
@@ -404,7 +404,7 @@ async def test_role_heads_merge_by_priority_and_saved_identity(runtime, offers):
 
 async def test_an_ineligible_role_head_does_not_hide_its_next_offer(runtime):
     wf = await pooled(runtime)
-    store, lanes = wf.store, tuple(wf.lanes)
+    store, lanes = wf.store, tuple(wf.slots)
     head = insert_action(store, create(store), "pending", phase="plan", created_at=5)
     later = insert_action(store, create(store), "pending", phase="plan", created_at=0)
     watch = insert_action(store, create(store), "pending", phase="monitor", created_at=3)
@@ -415,7 +415,7 @@ async def test_an_ineligible_role_head_does_not_hide_its_next_offer(runtime):
     # on the second free connection instead of being hidden behind the stale head.
     store.db.execute("UPDATE agent_actions SET state='completed' WHERE id=?", (head["id"],))
     wf.agent_pool.admit()
-    await asyncio.gather(*[lane.agent_task for lane in wf.lanes if lane.agent_task is not None])
+    await asyncio.gather(*[lane.agent_task for lane in wf.slots if lane.agent_task is not None])
     assert started == [watch["id"], later["id"]]
     assert wf.agent_pool.lookup("agent_actions", head["id"]) is None
     await wf.close()
@@ -428,7 +428,7 @@ async def test_a_live_project_role_keeps_its_process_from_reconnecting(runtime):
     # either one its process before that turn settles.
     first = insert_project_turn(store, thread="first-thread", turn="first-turn")
     second = insert_project_turn(store, thread="second-thread", turn="second-turn", project="other-project")
-    for lane, row in ((wf, first), (wf.lanes[1], second)):
+    for lane, row in ((wf, first), (wf.slots[1], second)):
         wf.agent_pool.claim(
             role="supervisor",
             source_table="project_turns",
@@ -436,21 +436,21 @@ async def test_a_live_project_role_keeps_its_process_from_reconnecting(runtime):
             owner=project_owner(row["project_id"]),
             workflow=lane,
         )
-    assert wf.agent_pool.process_busy(wf) and wf.agent_pool.process_busy(wf.lanes[1])
+    assert wf.agent_pool.process_busy(wf) and wf.agent_pool.process_busy(wf.slots[1])
     wf.agent_ready = False
-    wf.lanes[1].agent_ready = False
+    wf.slots[1].agent_ready = False
     closed_at = wf.last_agent_start + 120
     await wf.step_runtime(closed_at)
     await wf.step_control_after_observe(closed_at)
-    assert [lane.agent.closes for lane in wf.lanes] == [0, 0]
-    assert [lane.agent.start_count for lane in wf.lanes] == [1, 1]
+    assert [lane.agent.closes for lane in wf.slots] == [0, 0]
+    assert [lane.agent.start_count for lane in wf.slots] == [1, 1]
     # Once both turns settle, the closed processes reconnect once each.
     store.db.execute("UPDATE project_turns SET state='failed'")
     wf.agent_pool.settle_row("project_turns", first["id"])
     wf.agent_pool.settle_row("project_turns", second["id"])
-    assert not wf.agent_pool.process_busy(wf) and not wf.agent_pool.process_busy(wf.lanes[1])
+    assert not wf.agent_pool.process_busy(wf) and not wf.agent_pool.process_busy(wf.slots[1])
     await wf.step_runtime(closed_at)
     await wf.step_control_after_observe(closed_at)
-    assert [lane.agent.closes for lane in wf.lanes] == [1, 1]
-    assert [lane.agent.start_count for lane in wf.lanes] == [2, 2]
+    assert [lane.agent.closes for lane in wf.slots] == [1, 1]
+    assert [lane.agent.start_count for lane in wf.slots] == [2, 2]
     await wf.close()

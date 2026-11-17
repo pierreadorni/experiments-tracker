@@ -111,7 +111,7 @@ async def test_quota_interrupt_reaches_each_live_reservation_once_through_its_ow
     runtime, monkeypatch
 ):
     wf = await pooled(runtime)
-    store, first, second = wf.store, wf.lanes[0], wf.lanes[1]
+    store, first, second = wf.store, wf.slots[0], wf.slots[1]
     left_eid, right_eid, saved_eid = create(store), create(store), create(store)
     left = insert_action(store, left_eid, "running", thread="left", turn="left-turn")
     right = insert_action(store, right_eid, "running", thread="right", turn="right-turn")
@@ -135,7 +135,7 @@ async def test_quota_interrupt_reaches_each_live_reservation_once_through_its_ow
     # Each turn is interrupted exactly once, on the process that holds it.
     assert first.agent.interrupts == [("left", "left-turn")]
     assert sorted(second.agent.interrupts) == [("project-thread", "project-turn"), ("right", "right-turn")]
-    assert sum(len(lane.agent.interrupts) for lane in wf.lanes) == 3
+    assert sum(len(lane.agent.interrupts) for lane in wf.slots) == 3
     for row in (left, right):
         action = store.one("SELECT * FROM agent_actions WHERE id=?", (row["id"],))
         assert (action["state"], action["interrupt_reason"]) == ("running", "quota_hold")
@@ -150,7 +150,7 @@ async def test_quota_interrupt_reaches_each_live_reservation_once_through_its_ow
 
 async def test_shutdown_stops_admissions_before_roles_and_closes_each_transport_once(runtime, monkeypatch):
     wf = await pooled(runtime)
-    store, lane = wf.store, wf.lanes[1]
+    store, lane = wf.store, wf.slots[1]
     held = insert_action(store, create(store), "uncertain", thread="held", turn="held-turn")
     wf.agent_pool.reconstruct()
     waiting = asyncio.Event()
@@ -180,7 +180,7 @@ async def test_shutdown_stops_admissions_before_roles_and_closes_each_transport_
 
     # Admissions stopped before the first role and before any transport closed.
     assert observed == [("research", True, True), ("supervisor", True, True), ("controller", True, True)]
-    assert [lane.agent.closes for lane in wf.lanes] == [1, 1]
+    assert [lane.agent.closes for lane in wf.slots] == [1, 1]
     assert lane.agent_task.cancelled()
     # A withdrawn turn keeps its saved uncertainty and its saved identities.
     kept = store.one("SELECT * FROM agent_actions WHERE id=?", (held["id"],))
@@ -207,7 +207,7 @@ async def test_restart_and_session_shrink_keep_logical_ownership_without_duplica
     await resumed.start()
 
     # A shrunken pool keeps every logical reservation and its exact saved IDs.
-    assert len(resumed.lanes) == 1
+    assert len(resumed.slots) == 1
     assert {(r.key, r.thread_id, r.turn_id) for r in resumed.agent_pool.occupied()} == {
         (("agent_actions", accepted["id"]), "accepted", "turn-a"),
         (("agent_actions", unreadable["id"]), "unreadable", "turn-b"),

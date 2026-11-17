@@ -707,13 +707,13 @@ class ProjectSupervisor:
                     return
                 self.last_reconcile[row["id"]] = clock.now()
                 reservation = wf.agent_pool.lookup("project_turns", row["id"])
-                lane = wf.agent_pool.read_lane(reservation)
-                if lane is None:
+                slot = wf.agent_pool.read_slot(reservation)
+                if slot is None:
                     return
                 try:
                     if not row["thread_id"] or not row["turn_id"]:
                         raise ValueError("dispatch response lost; exact turn identity is required")
-                    result = await lane.agent.read_turn(row["thread_id"], row["turn_id"])
+                    result = await slot.agent.read_turn(row["thread_id"], row["turn_id"])
                     memory.state(row["id"], "received", result=encode(result))
                 except TerminalTurnError as exc:
                     memory.state(row["id"], "failed", error=str(exc)[:2000], hold_reason=None)
@@ -738,7 +738,7 @@ class ProjectSupervisor:
                 memory.state(row["id"], "failed", error="No completed experiments to incorporate")
                 continue
             wf.propose_agent(
-                lambda lane, row=row: self.dispatch(lane, row),
+                lambda slot, row=row: self.dispatch(slot, row),
                 role="supervisor",
                 source_table="project_turns",
                 row=row,
@@ -748,10 +748,10 @@ class ProjectSupervisor:
             )
             return
 
-    async def dispatch(self, lane, row):
-        wf, memory, agent = self.workflow, self.memory, lane.agent
+    async def dispatch(self, slot, row):
+        wf, memory, agent = self.workflow, self.memory, slot.agent
         try:
-            await lane.refresh_quota()
+            await slot.refresh_quota()
             if blocked(wf.store):
                 return
             if not wf.agent_pool.quota(origin=row["origin"]).admitted:

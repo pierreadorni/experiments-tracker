@@ -17,8 +17,7 @@ class StubTick:
         self.store = workflow.store
         self.scheduler = workflow.scheduler
         self.agent = workflow.agent
-        self.pool_owner = self
-        self.lanes = [self]
+        self.slots = [self]
         self.agent_task = self.quota_task = self.backup_task = None
         # Each role publishes its dispatch task on its own controller.
         self.research = SimpleNamespace(task=None)

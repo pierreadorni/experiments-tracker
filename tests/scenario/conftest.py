@@ -44,7 +44,7 @@ class Scenario:
         slurm = FakeSlurm(self.slurm_backend)
         slurm.saved_intent = self.intent_committed
         self.workflow = Workflow(self.config, self.store, slurm, FakeCodex(self.agent_backend))
-        assert self.workflow.pool_owner is self.workflow
+        assert self.workflow.agent_pool.workflow is self.workflow
         assert self.workflow.config.codex.max_sessions == 1
         return self.workflow
 
@@ -93,10 +93,10 @@ class Scenario:
         return gate
 
     def one_session(self):
-        """The pool never grows a second lane under the one-session contract."""
-        owner = self.workflow.pool_owner
+        """The pool never grows a second slot under the one-session contract."""
+        owner = self.workflow
         assert owner.config.codex.max_sessions == 1
-        assert owner.lanes == [owner]
+        assert owner.slots == [owner]
 
     async def close(self):
         """Close the current workflow once; the engine's own flag marks it closed."""
@@ -137,15 +137,15 @@ class MultiScenario(Scenario):
         slurm = FakeSlurm(self.slurm_backend)
         slurm.saved_intent = self.intent_committed
         self.workflow = Workflow(self.config, self.store, slurm, self.slots.agent())
-        assert self.workflow.pool_owner is self.workflow
+        assert self.workflow.agent_pool.workflow is self.workflow
         assert self.workflow.config.codex.max_sessions == self.sessions
         return self.workflow
 
     async def started(self):
         """Start the engine's pool and label every synthetic clone with its slot."""
         await self.workflow.start()
-        assert len(self.workflow.lanes) == self.sessions
-        for index, lane in enumerate(self.workflow.lanes):
+        assert len(self.workflow.slots) == self.sessions
+        for index, lane in enumerate(self.workflow.slots):
             lane.agent.slot = index
             # Every clone is this per-test synthetic class, never a managed client.
             assert type(lane.agent) is self.slots.agent and not isinstance(lane.agent, CodexAgent)

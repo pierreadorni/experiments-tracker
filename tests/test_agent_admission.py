@@ -45,7 +45,7 @@ def offer(wf, *, role, priority, row, started, connections=None):
     """Offer one proposal whose dispatch reports the connection it was given."""
 
     async def dispatch(connection):
-        started.append((role, wf.agent_pool.slot(connection)))
+        started.append((role, wf.agent_pool.slot_index(connection)))
 
     wf.agent_pool.propose(
         role=role,
@@ -118,7 +118,7 @@ async def test_a_busy_owner_never_holds_up_another_eligible_proposal(runtime):
     store = wf.store
     shared, other = create(store), create(store)
     started = []
-    connections = tuple(wf.lanes)
+    connections = tuple(wf.slots)
     offer(
         wf,
         role="conversation",
@@ -144,7 +144,7 @@ async def test_a_busy_owner_never_holds_up_another_eligible_proposal(runtime):
         connections=connections,
     )
     wf.agent_pool.admit()
-    await asyncio.gather(*[wf.agent_task] + [lane.agent_task for lane in wf.lanes[1:]])
+    await asyncio.gather(*[wf.agent_task] + [lane.agent_task for lane in wf.slots[1:]])
     # The shared owner claims one connection; the unrelated owner still gets the other.
     assert sorted(started) == [("conversation", 0), ("title", 1)]
     await wf.close()
@@ -170,7 +170,7 @@ async def test_a_live_claim_keeps_its_owner_off_a_second_connection(runtime):
     started, release_turn = [], asyncio.Event()
 
     async def waiting(connection):
-        started.append(wf.agent_pool.slot(connection))
+        started.append(wf.agent_pool.slot_index(connection))
         await release_turn.wait()
 
     for row in (saved_action(wf.store, eid), saved_action(wf.store, eid)):
@@ -180,7 +180,7 @@ async def test_a_live_claim_keeps_its_owner_off_a_second_connection(runtime):
             row=row,
             owner=experiment_owner(eid),
             priority=EXPERIMENT_PRIORITY,
-            connections=tuple(wf.lanes),
+            connections=tuple(wf.slots),
             dispatch=waiting,
         )
     wf.agent_pool.admit()

@@ -227,15 +227,15 @@ class TurnResolver:
         if now < self.failures.get(action["id"], (0, 0))[1]:
             return
         reservation = self.workflow.agent_pool.lookup("agent_actions", action["id"])
-        lane = self.workflow.agent_pool.read_lane(reservation)
-        if lane is None:
+        slot = self.workflow.agent_pool.read_slot(reservation)
+        if slot is None:
             # No configured connection can read the saved thread: it stays uncertain.
             return
         try:
             if not action["thread_id"]:
                 raise NeedsAttention("saved dispatch has no saved thread identity")
             prompt_hash = self.workflow.dispatch_prompt_hash(action)
-            turns = await lane.agent.read_thread(action["thread_id"])
+            turns = await slot.agent.read_thread(action["thread_id"])
         except Exception as exc:
             self.retry_unreadable(action, exp, exc)
             return

@@ -179,7 +179,7 @@ class RemoteSlurmScheduler(SlurmScheduler):
             position = args.index("--user")
             del args[position : position + 2]
         cache_key = None
-        cache = self.workflow.pool_owner.remote_reads
+        cache = self.workflow.remote_reads
         if args[0] == "squeue" and "--me" in args:
             cache_key = (self.settings.ssh_host, "reconcile_queue")
         if args[0] == "sacct" and "--starttime" in args:
@@ -553,7 +553,7 @@ class RemoteSlurmScheduler(SlurmScheduler):
 
     async def submit(self, intent_id, script, root, *, resources=None):
         layout = await self.resolve()
-        self.workflow.pool_owner.remote_reads.clear()
+        self.workflow.remote_reads.clear()
         return await super().submit(
             intent_id,
             Path(layout["remote_run"]) / script.name,
@@ -585,7 +585,7 @@ class RemoteSlurmScheduler(SlurmScheduler):
         }
 
         async def download():
-            downloads = self.workflow.pool_owner.remote_downloads
+            downloads = self.workflow.remote_downloads
             key = (self.exp["id"], self.exp["evidence_revision"], self.settings.rsync_down)
             if terminal or clock.now() - downloads.get(key, 0) >= self.settings.poll_seconds:
                 downloads[key] = clock.now()

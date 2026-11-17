@@ -517,7 +517,7 @@ async def test_configured_sessions_let_another_plan_progress_while_one_turn_wait
         claims = {a["id"]: wf.agent_pool.lookup("agent_actions", a["id"]) for a in running}
         assert {claim.slot for claim in claims.values()} == {0, 1}
         assert {claim.role for claim in claims.values()} == {"stage"}
-        assert wf.lanes[0].gate is wf.lanes[1].gate
+        assert wf.slots[0].gate is wf.slots[1].gate
         release_turns.set()
         await wait_until(
             both_awaiting_review,

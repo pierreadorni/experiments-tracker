@@ -221,11 +221,11 @@ class ResearchController:
                 )
                 return
             reservation = wf.agent_pool.lookup("autopilot_actions", row["id"])
-            lane = wf.agent_pool.read_lane(reservation)
-            if lane is None:
+            slot = wf.agent_pool.read_slot(reservation)
+            if slot is None:
                 return
             try:
-                result = await lane.agent.read_turn(row["thread_id"], row["turn_id"])
+                result = await slot.agent.read_turn(row["thread_id"], row["turn_id"])
                 self.state(row["id"], "received", result=encode(result))
             except TerminalTurnError as exc:
                 self.state(row["id"], "failed", error=str(exc)[:2000])
@@ -286,7 +286,7 @@ class ResearchController:
                     )
                 row = wf.store.one("SELECT * FROM autopilot_actions WHERE id=?", (identity,))
             wf.propose_agent(
-                lambda lane, row=row: self.dispatch(lane, row),
+                lambda slot, row=row: self.dispatch(slot, row),
                 role="research",
                 source_table="autopilot_actions",
                 row=row,
@@ -391,10 +391,10 @@ class ResearchController:
                 (clock.now(), row["id"]),
             )
 
-    async def dispatch(self, lane, row):
-        wf, agent = self.workflow, lane.agent
+    async def dispatch(self, slot, row):
+        wf, agent = self.workflow, slot.agent
         try:
-            await lane.refresh_quota()
+            await slot.refresh_quota()
             run = self.service.run(run_id=row["run_id"])
             if (
                 blocked(wf.store)

@@ -169,7 +169,7 @@ async def test_readback_uses_a_configured_connection_without_starting_a_turn(run
 
     lane = SimpleNamespace(agent_ready=True, agent=SimpleNamespace(read_turn=read))
     workflow.agent_ready = False
-    workflow.lanes.append(lane)
+    workflow.slots.append(lane)
     await settle_actions(workflow)
     assert calls == [("thread", "turn")]
     assert store.one("SELECT state FROM agent_actions WHERE id=?", (identity,))["state"] == "completed"

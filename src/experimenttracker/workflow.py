@@ -162,8 +162,7 @@ class Workflow:
         # Intent IDs whose external submission is crossing the scheduler boundary right
         # now. A submission token, not saved state: no observer may decide such an intent.
         self.submissions_in_flight = set()
-        self.pool_owner = self
-        self.lanes = [self]
+        self.slots = [self]
         self.agent_pool = AgentPool(self)
         self.output_checks = {}
         self.evidence_checks = {}
@@ -189,7 +188,7 @@ class Workflow:
             else exp.get("_attempt_id", job["attempt"] if job else exp["evidence_revision"]),
             encode(settings),
         )
-        cache = self.pool_owner.remote_schedulers
+        cache = self.remote_schedulers
         if key not in cache:
             cache[key] = RemoteSlurmScheduler(self, exp, settings, saved=metadata)
         if not job:
@@ -200,7 +199,7 @@ class Workflow:
         if not self.is_remote(exp):
             return self.cluster_snapshot
         settings = exp["contract"]["execution"]
-        cache = self.pool_owner.remote_clusters
+        cache = self.remote_clusters
         host = settings.get("ssh_host", "jz")
         previous = cache.get(host, {})
         if clock.now() - previous.get("checked_at", 0) >= settings.get("poll_seconds", 600):
@@ -214,9 +213,9 @@ class Workflow:
     def cluster_for(self, exp):
         if not self.is_remote(exp):
             return self.cluster_snapshot
-        return self.pool_owner.remote_clusters.get(
-            exp["contract"]["execution"].get("ssh_host", "jz"), {}
-        ).get("snapshot")
+        return self.remote_clusters.get(exp["contract"]["execution"].get("ssh_host", "jz"), {}).get(
+            "snapshot"
+        )
 
     def execution_instruction(self, exp, phase):
         if not iteration.enabled(exp):
@@ -267,7 +266,7 @@ class Workflow:
         """Offer a prepared turn to the pool; only its selector claims and starts it.
 
         ``dispatch`` is a factory called with the claimed connection, so a stage turn
-        can run on whichever lane the selector picks and every other role keeps the
+        can run on whichever slot the selector picks and every other role keeps the
         connection that prepared it.
         """
         self.agent_pool.propose(
@@ -276,7 +275,7 @@ class Workflow:
             row=row,
             owner=owner,
             priority=priority,
-            connections=self.pool_owner.lanes if any_lane else (self,),
+            connections=self.slots if any_lane else (self,),
             dispatch=dispatch,
         )
 
@@ -286,17 +285,16 @@ class Workflow:
                 agent = type(self.agent)()
             else:
                 agent = CodexAgent(self.config.codex, self.config.state_dir / f"agent-slot-{index}")
-            lane = Workflow(self.config, self.store, self.scheduler, agent)
-            lane.pool_owner = self
-            lane.agent_pool = self.agent_pool
-            lane.gate = self.gate
-            lane.controller = self.controller
-            lane.research = self.research
-            lane.submission_lock = self.submission_lock
-            lane.submissions_in_flight = self.submissions_in_flight
-            await lane.connect_agent()
-            lane.started = True
-            self.lanes.append(lane)
+            slot = Workflow(self.config, self.store, self.scheduler, agent)
+            slot.agent_pool = self.agent_pool
+            slot.gate = self.gate
+            slot.controller = self.controller
+            slot.research = self.research
+            slot.submission_lock = self.submission_lock
+            slot.submissions_in_flight = self.submissions_in_flight
+            await slot.connect_agent()
+            slot.started = True
+            self.slots.append(slot)
 
     def working_directory(self, exp):
         saved = exp["contract"].get("working_directory")
@@ -465,16 +463,16 @@ class Workflow:
                     (clock.now(), encode(payload), decision.admitted, decision.reason),
                 )
             self.last_quota_refresh = clock.now()
-            await self.pool_owner.research.interrupt_holds()
+            await self.research.interrupt_holds()
             if not decision.admitted:
-                await self.pool_owner.supervisor.interrupt()
+                await self.supervisor.interrupt()
                 await self.agent_pool.interrupt_occupied("quota_hold")
             return decision
         except Exception as exc:
             log.warning("quota refresh failed: %s", exc)
             decision = self.gate.decide()
             if not decision.admitted:
-                await self.pool_owner.supervisor.interrupt()
+                await self.supervisor.interrupt()
                 await self.agent_pool.interrupt_occupied("quota_hold")
             return decision
 
@@ -491,7 +489,7 @@ class Workflow:
         connection = self.agent_pool.connection(self, start_count)
         owner = self.agent_pool.live_owner(connection, params.get("threadId"), params.get("turnId"))
         if owner and owner.source_table == "autopilot_actions":
-            pending = await self.pool_owner.research.request(message, owner)
+            pending = await self.research.request(message, owner)
         elif owner and owner.source_table == "agent_actions":
             action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (owner.action_id,))
             if not action:
@@ -671,18 +669,18 @@ class Workflow:
             self.agent_task = None
             self.active_action = None
         self.recover_terminal_actions()
-        for lane in self.lanes[1:]:
-            if lane.agent_task and lane.agent_task.done():
-                lane.agent_task.result()
-                lane.agent_task = None
-                lane.active_action = None
+        for slot in self.slots[1:]:
+            if slot.agent_task and slot.agent_task.done():
+                slot.agent_task.result()
+                slot.agent_task = None
+                slot.active_action = None
             if (
-                not lane.agent_ready
-                and not self.agent_pool.process_busy(lane)
-                and now - lane.last_agent_start >= 60
+                not slot.agent_ready
+                and not self.agent_pool.process_busy(slot)
+                and now - slot.last_agent_start >= 60
             ):
-                await lane.agent.close()
-                await lane.connect_agent()
+                await slot.agent.close()
+                await slot.connect_agent()
         await legacy_archive_actions.settle_actions(self)
 
     async def step_resolver(self):
@@ -817,10 +815,10 @@ class Workflow:
                 if self.agent_task or not self.agent_ready:
                     return
                 reservation = self.agent_pool.lookup("agent_actions", action["id"])
-                lane = self.agent_pool.read_lane(reservation)
+                slot = self.agent_pool.read_slot(reservation)
                 if action["thread_id"] and action["turn_id"]:
                     try:
-                        result = await lane.agent.read_turn(action["thread_id"], action["turn_id"])
+                        result = await slot.agent.read_turn(action["thread_id"], action["turn_id"])
                         if legacy_archive.execution_frozen(self.store.experiment(exp["id"])):
                             self._action_state(action["id"], "completed", result=result, expected=action)
                             self.agent_pool.settle_row("agent_actions", action["id"])
@@ -876,7 +874,7 @@ class Workflow:
                     )
                 action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (action["id"],))
             self.propose_agent(
-                lambda lane, action=action: lane.dispatch_title(action),
+                lambda slot, action=action: slot.dispatch_title(action),
                 role="title",
                 source_table="agent_actions",
                 row=action,
@@ -929,7 +927,7 @@ class Workflow:
                     )
                 action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (action_id,))
             self.propose_agent(
-                lambda lane, action=action: lane.dispatch_title(action),
+                lambda slot, action=action: slot.dispatch_title(action),
                 role="title",
                 source_table="agent_actions",
                 row=action,
@@ -2493,18 +2491,18 @@ class Workflow:
                 action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (action["id"],))
         if action["state"] in ("running", "dispatching"):
             reservation = self.agent_pool.lookup("agent_actions", action["id"])
-            lane = self.agent_pool.live_lane(reservation)
-            if lane is not None:
+            slot = self.agent_pool.live_slot(reservation)
+            if slot is not None:
                 if exp["pause_agent"] and action["turn_id"]:
                     self.agent_pool.hold(action, "agent_paused")
                     await self.agent_pool.interrupt(reservation)
                 return
             # No live task owns this saved turn: read it back on a configured
             # connection without starting another one, and settle what it proves.
-            lane = self.agent_pool.read_lane(reservation)
-            if action["thread_id"] and action["turn_id"] and lane is not None:
+            slot = self.agent_pool.read_slot(reservation)
+            if action["thread_id"] and action["turn_id"] and slot is not None:
                 try:
-                    result = await lane.agent.read_turn(action["thread_id"], action["turn_id"])
+                    result = await slot.agent.read_turn(action["thread_id"], action["turn_id"])
                     self._action_state(action["id"], "completed", result=result, expected=action)
                     self.agent_pool.settle_row("agent_actions", action["id"])
                     return
@@ -2604,7 +2602,7 @@ class Workflow:
             self.store.update(eid, hold_reason="quota_hold", error=decision.reason)
             return
         self.propose_agent(
-            lambda lane, action=action: lane.dispatch(action),
+            lambda slot, action=action: slot.dispatch(action),
             role="stage",
             source_table="agent_actions",
             row=action,
@@ -3900,19 +3898,20 @@ class Workflow:
             await asyncio.gather(*checks, return_exceptions=True)
         self.output_checks.clear()
         self.evidence_checks.clear()
-        # Withdraw every lane task first, then close each transport exactly once. A cancelled
-        # turn keeps its saved uncertainty; nothing here declares a remote turn absent.
-        for lane in self.lanes:
-            if lane.agent_task and not lane.agent_task.done():
-                lane.agent_task.cancel()
+        # Withdraw every slot's tasks first, then close each transport exactly once. A
+        # cancelled turn keeps its saved uncertainty; nothing here declares a remote turn
+        # absent.
+        for slot in self.slots:
+            if slot.agent_task and not slot.agent_task.done():
+                slot.agent_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
-                    await lane.agent_task
-            if lane.quota_task and not lane.quota_task.done():
-                lane.quota_task.cancel()
+                    await slot.agent_task
+            if slot.quota_task and not slot.quota_task.done():
+                slot.quota_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
-                    await lane.quota_task
-        for lane in self.lanes:
-            await lane.agent.close()
+                    await slot.quota_task
+        for slot in self.slots:
+            await slot.agent.close()
         if self.backup_task:
             await self.backup_task
         await self.backup_state()

@@ -87,7 +87,7 @@ def project_pending(service, action_id):
 
 async def test_each_lane_receives_only_its_own_turn_s_callbacks(runtime):
     wf = await pooled(runtime)
-    store, first, second = wf.store, wf.lanes[0], wf.lanes[1]
+    store, first, second = wf.store, wf.slots[0], wf.slots[1]
     left, right = create(store), create(store)
     left_reservation = claim(wf, first, live_action(store, left, thread="left", turn="left-turn"), "stage")
     right_action = live_action(store, right, thread="right", turn="right-turn")
@@ -126,7 +126,7 @@ async def test_each_lane_receives_only_its_own_turn_s_callbacks(runtime):
 )
 async def test_every_saved_role_routes_its_request_to_the_owning_experiment(runtime, phase, role):
     wf = await pooled(runtime)
-    lane = wf.lanes[1]
+    lane = wf.slots[1]
     eid = create(wf.store)
     action = live_action(wf.store, eid, phase=phase, thread="own", turn="own-turn")
     claim(wf, lane, action, role)
@@ -141,7 +141,7 @@ async def test_every_saved_role_routes_its_request_to_the_owning_experiment(runt
 async def test_managed_project_request_routes_to_its_saved_run_turn(runtime, monkeypatch):
     service, run = activated(runtime, monkeypatch)
     wf = await pooled(runtime)
-    lane, store = wf.lanes[1], wf.store
+    lane, store = wf.slots[1], wf.store
     action_id = str(uuid4())
     with store.tx() as db:
         db.execute(
@@ -163,7 +163,7 @@ async def test_managed_project_request_routes_to_its_saved_run_turn(runtime, mon
 
 async def test_unmatched_old_and_supervisor_requests_fail_closed(runtime, monkeypatch):
     wf = await pooled(runtime)
-    lane, store, asked = wf.lanes[0], wf.store, []
+    lane, store, asked = wf.slots[0], wf.store, []
 
     async def research_request(*args):
         asked.append(args)
@@ -197,7 +197,7 @@ async def test_unmatched_old_and_supervisor_requests_fail_closed(runtime, monkey
 
 async def test_answer_after_a_restart_expires_instead_of_replaying(runtime):
     wf = await pooled(runtime)
-    lane, store = wf.lanes[1], wf.store
+    lane, store = wf.slots[1], wf.store
     eid = create(store)
     claim(wf, lane, live_action(store, eid, thread="asked", turn="asked-turn"), "stage")
     await lane._request(request("asked", "asked-turn"), lane.agent.start_count)
@@ -215,7 +215,7 @@ async def test_answer_after_a_restart_expires_instead_of_replaying(runtime):
 
 async def test_late_activity_after_settlement_cannot_attach_to_a_successor(runtime):
     wf = await pooled(runtime)
-    lane, store = wf.lanes[1], wf.store
+    lane, store = wf.slots[1], wf.store
     eid = create(store)
     action = live_action(store, eid, thread="settled", turn="settled-turn")
     reservation = claim(wf, lane, action, "stage")

@@ -454,12 +454,12 @@ def engine_tasks(workflow):
     """The engine's own unfinished task handles, read from the real workflow seams.
 
     Each role publishes its dispatch task in the flag that role reads: stage, title,
-    monitor, conversation and analysis turns on their lane's ``agent_task``, research
+    monitor, conversation and analysis turns on their slot's ``agent_task``, research
     and the project supervisor on their controllers. Handles are deduplicated by task
     identity, so a turn both the pool and a role recorded is awaited once.
     """
-    owner = workflow.pool_owner
-    handles = [task for lane in owner.lanes for task in (lane.agent_task, lane.quota_task)]
+    owner = workflow
+    handles = [task for slot in owner.slots for task in (slot.agent_task, slot.quota_task)]
     handles += [owner.backup_task, owner.research.task, owner.supervisor.task]
     handles.extend(task for task, _ in owner.output_checks.values())
     handles.extend(owner.evidence_checks.values())

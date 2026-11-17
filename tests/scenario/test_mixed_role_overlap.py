@@ -91,7 +91,7 @@ def connection_evidence(scenario, wf, source_table, row):
     reservation = wf.agent_pool.lookup(source_table, row["id"])
     assert reservation is not None and reservation.connection is not None, f"{row['id']} is not live"
     connection = reservation.connection
-    lane = wf.lanes[connection.slot]
+    lane = wf.slots[connection.slot]
     call = scenario.slots.begin(row["turn_id"])  # exactly one begin for this saved turn
     assert (call["slot"], call["instance"], call["generation"]) == (
         connection.slot,
@@ -113,7 +113,7 @@ def live_both(scenario, wf, left, right):
 
 def turn_task(wf, source_table, row):
     """The dispatch task that holds this saved turn's live connection."""
-    lane = wf.lanes[wf.agent_pool.lookup(source_table, row["id"]).connection.slot]
+    lane = wf.slots[wf.agent_pool.lookup(source_table, row["id"]).connection.slot]
     if source_table == "autopilot_actions":
         return wf.research.task
     if source_table == "project_turns":

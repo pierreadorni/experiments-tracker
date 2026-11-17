@@ -360,19 +360,19 @@ class Conversation:
             if action and action["state"] in ("dispatching", "running", "uncertain"):
                 pool = self.workflow.agent_pool
                 reservation = pool.lookup("agent_actions", action["id"])
-                if pool.live_lane(reservation) is not None:
+                if pool.live_slot(reservation) is not None:
                     if self.store.experiment(eid)["pause_agent"] and action["turn_id"]:
                         await pool.interrupt(reservation)
                     continue
                 if action["state"] != "uncertain":
-                    lane = pool.read_lane(reservation)
-                    if lane is None:
+                    slot = pool.read_slot(reservation)
+                    if slot is None:
                         self.hold(message["id"], "agent_unavailable", self.workflow.agent_error)
                         continue
                     try:
                         if not action["thread_id"] or not action["turn_id"]:
                             raise NeedsAttention("dispatch response lost; saved turn identity is required")
-                        result = await lane.agent.read_turn(action["thread_id"], action["turn_id"])
+                        result = await slot.agent.read_turn(action["thread_id"], action["turn_id"])
                         self.workflow._action_state(action["id"], "completed", result=result, expected=action)
                         pool.settle_row("agent_actions", action["id"])
                         continue
@@ -442,7 +442,7 @@ class Conversation:
                     )
                 action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (identity,))
             self.workflow.propose_agent(
-                lambda lane, message=message, action=action: self.dispatch(lane, message, action),
+                lambda slot, message=message, action=action: self.dispatch(slot, message, action),
                 role="conversation",
                 source_table="agent_actions",
                 row=action,
@@ -494,11 +494,11 @@ class Conversation:
                 {"discussion_id": message["id"], "action_id": continuation["id"]},
             )
 
-    async def dispatch(self, lane, message, action):
-        agent, eid = lane.agent, message["experiment_id"]
+    async def dispatch(self, slot, message, action):
+        agent, eid = slot.agent, message["experiment_id"]
         expected = dict(action)
         try:
-            await lane.refresh_quota()
+            await slot.refresh_quota()
             decision = self.workflow.agent_pool.quota(eid=eid)
             if not decision.admitted:
                 self.hold(message["id"], "quota_hold", decision.reason)

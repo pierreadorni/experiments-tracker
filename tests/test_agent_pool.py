@@ -309,7 +309,7 @@ async def test_start_reconstructs_saved_turns_before_connecting_the_agent(runtim
     assert connecting["keys"] == sorted(
         [("agent_actions", action_id), ("project_turns", turn_id), ("autopilot_actions", research_id)]
     )
-    assert len(resume.lanes) == sessions
+    assert len(resume.slots) == sessions
     # Reconstructed ownership has no live connection and keeps the exact saved turn.
     assert {r.key: (r.role, r.slot, r.thread_id, r.turn_id) for r in resume.agent_pool.occupied()} == {
         ("agent_actions", action_id): ("conversation", None, "action-thread", "action-turn"),

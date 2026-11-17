@@ -157,36 +157,36 @@ class AgentPool:
             return Decision(False, WEEKLY_PLENTY_REASON, decision.remaining, decision.observed_at)
         return decision
 
-    def slot(self, workflow):
-        """Physical lane index for a dispatch, or None for an unlisted workflow."""
-        for index, lane in enumerate(self.workflow.lanes):
-            if lane is workflow:
+    def slot_index(self, workflow):
+        """Physical slot index for a dispatch, or None for an unlisted workflow."""
+        for index, slot in enumerate(self.workflow.slots):
+            if slot is workflow:
                 return index
         return None
 
-    def lane(self, index):
-        """The workflow that owns a physical slot, or None outside the pool."""
-        if index is None or index >= len(self.workflow.lanes):
+    def slot(self, index):
+        """The connection that owns a physical slot, or None outside the pool."""
+        if index is None or index >= len(self.workflow.slots):
             return None
-        return self.workflow.lanes[index]
+        return self.workflow.slots[index]
 
     def connection(self, workflow, start_count):
         """The App Server process a callback arrived on, read at receipt."""
-        return Connection(slot=self.slot(workflow), start=start_count)
+        return Connection(slot=self.slot_index(workflow), start=start_count)
 
-    def live_lane(self, reservation):
-        """The lane whose current process still is this reservation's connection.
+    def live_slot(self, reservation):
+        """The connection whose current process still is this reservation's own.
 
         A reconstructed or settled reservation names no process, and a restarted
-        lane holds a later start count; neither can speak for the saved turn.
+        connection holds a later start count; neither can speak for the saved turn.
         """
         connection = getattr(reservation, "connection", None)
         if connection is None:
             return None
-        lane = self.lane(connection.slot)
-        if lane is None or self.connection(lane, lane.agent.start_count) != connection:
+        slot = self.slot(connection.slot)
+        if slot is None or self.connection(slot, slot.agent.start_count) != connection:
             return None
-        return lane
+        return slot
 
     def live_owner(self, connection, thread_id, turn_id):
         """The reservation whose saved turn matches a callback on this exact process.
@@ -261,7 +261,7 @@ class AgentPool:
         """Whether a live claim of any role still runs on this workflow's process.
 
         Every role keeps its turn on the connection it was dispatched through, so a
-        lane may reconnect only when no claim of any source table survives on its
+        connection may reconnect only when no claim of any source table survives on its
         current process. A reconstructed or restarted reservation names another
         process and never blocks this one.
         """
@@ -308,11 +308,11 @@ class AgentPool:
     def free_connection(self, proposal):
         """The proposal's first connection that no live claim or task occupies."""
         for workflow in proposal.connections:
-            slot = self.slot(workflow)
+            index = self.slot_index(workflow)
             if not workflow.agent_ready or workflow.agent_task is not None:
                 continue
             claimed = any(
-                reservation.slot == slot and reservation.connection is not None
+                reservation.slot == index and reservation.connection is not None
                 for reservation in self.reservations.values()
             )
             if not claimed:
@@ -351,7 +351,7 @@ class AgentPool:
     def start(self, proposal, workflow):
         """Claim owner and connection, then create the dispatch task for that claim."""
         if workflow is not self.workflow:
-            # A lane prepares with the primary's current cluster snapshot, as before.
+            # Another connection prepares with the primary's cluster snapshot, as before.
             for name in ("cluster_snapshot", "cluster_error", "last_cluster_refresh"):
                 setattr(workflow, name, getattr(self.workflow, name))
         reservation = self.claim(
@@ -382,7 +382,7 @@ class AgentPool:
             action_id=row["id"],
             role=role,
             owner=owner,
-            slot=self.slot(workflow),
+            slot=self.slot_index(workflow),
             thread_id=row.get("thread_id"),
             turn_id=row.get("turn_id"),
             connection=self.connection(workflow, workflow.agent.start_count),
@@ -426,9 +426,9 @@ class AgentPool:
             if owner.task is task:
                 owner.task, owner.active_id = None, None
             return
-        lane = self.lane(reservation.connection.slot) if reservation.connection else None
-        if lane is not None and lane.agent_task is task:
-            lane.agent_task, lane.active_action = None, None
+        slot = self.slot(reservation.connection.slot) if reservation.connection else None
+        if slot is not None and slot.agent_task is task:
+            slot.agent_task, slot.active_action = None, None
 
     def remember_answer(self, pending_id, connection, reservation):
         """Bind a saved answer to the process and reservation that asked for it."""
@@ -449,14 +449,14 @@ class AgentPool:
         if saved is None:
             return False
         connection, reservation = saved
-        lane = self.lane(connection.slot)
+        slot = self.slot(connection.slot)
         if (
-            lane is None
+            slot is None
             or reservation.connection != connection
-            or self.connection(lane, lane.agent.start_count) != connection
+            or self.connection(slot, slot.agent.start_count) != connection
         ):
             return False
-        await lane.agent.reply(pending)
+        await slot.agent.reply(pending)
         return True
 
     def settle_row(self, source_table, action_id):
@@ -471,8 +471,8 @@ class AgentPool:
         Returns whether a request was sent. A reservation without a live process
         keeps its saved uncertainty: another process is never asked to stop it.
         """
-        lane = self.live_lane(reservation)
-        if lane is None:
+        slot = self.live_slot(reservation)
+        if slot is None:
             return False
         saved = self.store.one(
             f"SELECT thread_id,turn_id FROM {reservation.source_table} WHERE id=?",
@@ -480,7 +480,7 @@ class AgentPool:
         )
         if not saved or not saved["thread_id"] or not saved["turn_id"]:
             return False
-        await lane.agent.interrupt(saved["thread_id"], saved["turn_id"])
+        await slot.agent.interrupt(saved["thread_id"], saved["turn_id"])
         return True
 
     def hold(self, action, reason):
@@ -505,18 +505,18 @@ class AgentPool:
 
     def live(self):
         """Occupied reservations whose own process is still the one that holds them."""
-        return [reservation for reservation in self.occupied() if self.live_lane(reservation) is not None]
+        return [reservation for reservation in self.occupied() if self.live_slot(reservation) is not None]
 
-    def read_lane(self, reservation):
+    def read_slot(self, reservation):
         """A configured connection that may read a saved thread without a new turn.
 
         Readback prefers the reservation's own live process and falls back to any
         configured connection; it never starts a turn and never proves absence.
         """
-        lane = self.live_lane(reservation)
-        if lane is not None and lane.agent_ready:
-            return lane
-        return next((lane for lane in self.workflow.lanes if lane.agent_ready), None)
+        slot = self.live_slot(reservation)
+        if slot is not None and slot.agent_ready:
+            return slot
+        return next((slot for slot in self.workflow.slots if slot.agent_ready), None)
 
     def lookup(self, source_table, action_id):
         return self.reservations.get((source_table, action_id))

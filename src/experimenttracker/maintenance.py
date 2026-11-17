@@ -134,16 +134,16 @@ def blockers(workflow):
     ):
         if store.one(query):
             reasons.append(label)
-    if workflow.pool_owner.agent_pool.live():
+    if workflow.agent_pool.live():
         reasons.append("an agent task is settling")
-    supervisor = workflow.pool_owner.supervisor
+    supervisor = workflow.supervisor
     if workflow.submission_lock.locked():
         reasons.append("a scheduler admission is settling")
     if any(not task.done() for task, _ in workflow.output_checks.values()) or any(
         not task.done() for task in workflow.evidence_checks.values()
     ):
         reasons.append("filesystem work is settling")
-    if workflow.pool_owner.research.busy:
+    if workflow.research.busy:
         reasons.append("Autopilot work is active, settling or uncertain")
     if store.one("SELECT 1 FROM autopilot_requests WHERE state='compiling'"):
         reasons.append("an Autopilot document operation is unfinished")

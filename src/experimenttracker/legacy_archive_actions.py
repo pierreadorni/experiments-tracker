@@ -8,14 +8,14 @@ from .legacy_archive import execution_frozen
 
 def _live_action(workflow, action_id):
     """A saved action whose own dispatch task still holds a physical slot."""
-    reservation = workflow.pool_owner.agent_pool.lookup("agent_actions", action_id)
+    reservation = workflow.agent_pool.lookup("agent_actions", action_id)
     return reservation is not None and reservation.slot is not None
 
 
 async def settle_actions(workflow):
     """Settle only exact saved legacy turns and drain completed archived checks."""
     store = workflow.store
-    pool = workflow.pool_owner.agent_pool
+    pool = workflow.agent_pool
     rows = store.rows(
         "SELECT a.* FROM agent_actions a JOIN experiments e ON e.id=a.experiment_id "
         "WHERE a.state IN ('dispatching','running','uncertain') AND a.phase NOT LIKE 'discuss:%' "
@@ -28,11 +28,11 @@ async def settle_actions(workflow):
         if not action["thread_id"] or not action["turn_id"]:
             continue
         reservation = pool.lookup("agent_actions", action["id"])
-        lane = pool.read_lane(reservation)
-        if lane is None:
+        slot = pool.read_slot(reservation)
+        if slot is None:
             continue
         try:
-            result = await lane.agent.read_turn(action["thread_id"], action["turn_id"])
+            result = await slot.agent.read_turn(action["thread_id"], action["turn_id"])
         except TerminalTurnError as exc:
             workflow._action_state(action["id"], "failed", error=str(exc), expected=action)
         except Exception as exc:

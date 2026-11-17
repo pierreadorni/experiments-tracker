@@ -620,14 +620,14 @@ class Controller:
                     reservation = pool.lookup("agent_actions", action["id"])
                     if reservation is not None and reservation.slot is not None:
                         continue
-                    lane = pool.read_lane(reservation)
-                    if lane is None or not action["thread_id"] or not action["turn_id"]:
+                    slot = pool.read_slot(reservation)
+                    if slot is None or not action["thread_id"] or not action["turn_id"]:
                         continue
                     try:
                         wf._action_state(
                             action["id"],
                             "completed",
-                            result=await lane.agent.read_turn(action["thread_id"], action["turn_id"]),
+                            result=await slot.agent.read_turn(action["thread_id"], action["turn_id"]),
                             expected=action,
                         )
                     except TerminalTurnError as exc:
@@ -695,7 +695,7 @@ class Controller:
                 action = wf.store.one("SELECT * FROM agent_actions WHERE id=?", (identity,))
             if action["state"] == "pending":
                 wf.propose_agent(
-                    lambda lane, action=action: lane.dispatch(action),
+                    lambda slot, action=action: slot.dispatch(action),
                     role="monitor",
                     source_table="agent_actions",
                     row=action,

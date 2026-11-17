@@ -125,8 +125,8 @@ async def test_lost_begin_survives_a_restart_of_the_same_pool_size(multi_scenari
     assert (lost["state"], lost["turn_id"], lost["attempts"]) == ("uncertain", None, 1)
     assert lost["thread_id"] == sent["thread_id"]
     assert len(slots.named("begin", thread=sent["thread_id"])) == 1
-    assert (len(wf.lanes), backend.turns_started) == (2, 1)
-    assert [lane.agent.instance for lane in wf.lanes] == ["synthetic-agent-1", "synthetic-agent-2"]
+    assert (len(wf.slots), backend.turns_started) == (2, 1)
+    assert [lane.agent.instance for lane in wf.slots] == ["synthetic-agent-1", "synthetic-agent-2"]
     # One of two configured turns is owed to the unknown action, and its owner is excluded.
     assert wf.agent_pool.turn_capacity() == 1
     assert not wf.agent_pool.owner_free(experiment_owner(eid))
@@ -134,8 +134,8 @@ async def test_lost_begin_survives_a_restart_of_the_same_pool_size(multi_scenari
     # A restart reuses the saved database and the same external backend, never the process.
     await scenario.restart()
     wf = await scenario.started()
-    assert (len(wf.lanes), backend.turns_started) == (2, 1)
-    assert [lane.agent.instance for lane in wf.lanes] == ["synthetic-agent-3", "synthetic-agent-4"]
+    assert (len(wf.slots), backend.turns_started) == (2, 1)
+    assert [lane.agent.instance for lane in wf.slots] == ["synthetic-agent-3", "synthetic-agent-4"]
     kept = wf.agent_pool.lookup("agent_actions", lost["id"])
     assert (kept.connection, kept.thread_id, kept.turn_id) == (None, sent["thread_id"], None)
     assert wf.agent_pool.turn_capacity() == 1
@@ -207,7 +207,7 @@ async def test_two_unknown_begins_survive_a_shrunken_pool_without_a_duplicate(mu
     # more possibly-live turns than it can host, and no configured server is hidden.
     await scenario.restart(sessions=1)
     wf = await scenario.started()
-    assert [lane.agent.instance for lane in wf.lanes] == ["synthetic-agent-3"]
+    assert [lane.agent.instance for lane in wf.slots] == ["synthetic-agent-3"]
     assert wf.agent_pool.turn_capacity() == -1
     third = create(store, "Synthetic third experiment after shrink.")
     gate = scenario.gate("plan")
@@ -320,7 +320,7 @@ async def test_unreadable_outcomes_keep_debt_while_another_owner_progresses(mult
     # A shrunken pool owes more possibly-live turns than it can host; no server hides.
     await scenario.restart(sessions=1)
     wf = await scenario.started()
-    assert [lane.agent.instance for lane in wf.lanes] == ["synthetic-agent-3"]
+    assert [lane.agent.instance for lane in wf.slots] == ["synthetic-agent-3"]
     assert wf.agent_pool.turn_capacity() == -1
     assert (backend.turns_started, len(slots.named("begin"))) == (1, 1)
     # Role readback at negative capacity settles exactly the saved ready turn.
@@ -453,8 +453,8 @@ async def test_production_generation_routes_callbacks_to_the_exact_live_process(
     wf = Workflow(config, store, FakeSlurm(), StubCodexAgent(config.codex, config.state_dir))
     await wf.start()
     try:
-        first, second = wf.lanes
-        assert [(lane.agent.start_count, lane.agent.server.starts) for lane in wf.lanes] == [(1, 1), (1, 1)]
+        first, second = wf.slots
+        assert [(lane.agent.start_count, lane.agent.server.starts) for lane in wf.slots] == [(1, 1), (1, 1)]
         eid, other = create(store, "Synthetic callback owner."), create(store, "Synthetic other owner.")
         # Direct-SQL saved rows: routing and generation are what this case proves.
         left = await routed_turn(store, first, eid, "prepare")
@@ -526,7 +526,7 @@ async def test_production_generation_routes_callbacks_to_the_exact_live_process(
         assert waiting["rpc_id"] == 8
         await first.connect_agent()
         assert (first.agent.start_count, first.agent.server.starts) == (2, 2)
-        assert first.agent_pool.live_lane(first.agent_pool.lookup("agent_actions", left["id"])) is None
+        assert first.agent_pool.live_slot(first.agent_pool.lookup("agent_actions", left["id"])) is None
         with pytest.raises(NeedsAttention):
             await first.agent.server.deliver({**request, "id": 8})
         await first.agent.server.deliver(
