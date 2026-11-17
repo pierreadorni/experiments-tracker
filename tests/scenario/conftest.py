@@ -11,9 +11,19 @@ from uuid import uuid4
 
 import pytest
 
+from experimenttracker.codex_client import CodexAgent
 from experimenttracker.store import Store
 from experimenttracker.workflow import Workflow
-from scenario import FakeClock, FakeCodex, FakeCodexBackend, FakeSlurm, FakeSlurmBackend, run_until
+from scenario import (
+    FakeClock,
+    FakeCodex,
+    FakeCodexBackend,
+    FakeGate,
+    FakeSlurm,
+    FakeSlurmBackend,
+    run_until,
+    shared_fake_slots,
+)
 
 
 class Scenario:
@@ -76,6 +86,12 @@ class Scenario:
         await self.close()
         return self.build()
 
+    def gate(self, phase):
+        """Park the fake turn of this phase after begin, as an explicit event gate."""
+        gate = FakeGate()
+        self.agent_backend.gates[phase] = gate
+        return gate
+
     def one_session(self):
         """The pool never grows a second lane under the one-session contract."""
         owner = self.workflow.pool_owner
@@ -94,6 +110,54 @@ async def scenario(config, monkeypatch):
     clock.install(monkeypatch)
     store = Store(config.state_dir / "workflow.sqlite")
     state = Scenario(config, store, clock, FakeSlurmBackend(), FakeCodexBackend())
+    try:
+        yield state
+    finally:
+        try:
+            await state.close()
+        finally:
+            store.close()
+
+
+class MultiScenario(Scenario):
+    """The same saved engine state behind several distinct synthetic connections.
+
+    ``Scenario`` keeps its one-slot assertion; this fixture reaches the engine's own
+    pool through a per-test no-argument fake class whose clones share one explicit
+    backend, so two roles can be live at once without a second queue simulation.
+    """
+
+    def __init__(self, config, store, clock, slurm_backend, sessions=2):
+        self.sessions = sessions
+        self.slots = shared_fake_slots()
+        config.codex.max_sessions = sessions
+        super().__init__(config, store, clock, slurm_backend, self.slots.backend)
+
+    def build(self):
+        slurm = FakeSlurm(self.slurm_backend)
+        slurm.saved_intent = self.intent_committed
+        self.workflow = Workflow(self.config, self.store, slurm, self.slots.agent())
+        assert self.workflow.pool_owner is self.workflow
+        assert self.workflow.config.codex.max_sessions == self.sessions
+        return self.workflow
+
+    async def started(self):
+        """Start the engine's pool and label every synthetic clone with its slot."""
+        await self.workflow.start()
+        assert len(self.workflow.lanes) == self.sessions
+        for index, lane in enumerate(self.workflow.lanes):
+            lane.agent.slot = index
+            # Every clone is this per-test synthetic class, never a managed client.
+            assert type(lane.agent) is self.slots.agent and not isinstance(lane.agent, CodexAgent)
+        return self.workflow
+
+
+@pytest.fixture
+async def multi_scenario(config, monkeypatch):
+    clock = FakeClock()
+    clock.install(monkeypatch)
+    store = Store(config.state_dir / "workflow.sqlite")
+    state = MultiScenario(config, store, clock, FakeSlurmBackend())
     try:
         yield state
     finally:

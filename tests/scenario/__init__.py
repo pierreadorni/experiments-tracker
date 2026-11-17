@@ -133,6 +133,9 @@ class FakeCodexBackend:
         self.starts = []  # exact dispatched prompts, threads and turn IDs
         self.turns = {}  # (thread_id, turn_id) -> {"record", "result", "state"}
         self.unreadable = {}  # thread_id -> raw error raised by any thread read
+        self.gates = {}  # phase -> FakeGate a turn parks in after begin
+        self.used_percent = 0  # synthetic five-hour window usage
+        self.weekly_used_percent = 0  # synthetic weekly window usage
         self.models_observed_at = None
         self.threads = self.turns_started = 0
 
@@ -192,8 +195,8 @@ class FakeCodex:
 
     async def quota(self):
         """Synthetic admitted quota: no purchased allowance and no model usage."""
-        window = {"usedPercent": 0, "windowDurationMins": 300}
-        weekly = {"usedPercent": 0, "windowDurationMins": 10080}
+        window = {"usedPercent": self.backend.used_percent, "windowDurationMins": 300}
+        weekly = {"usedPercent": self.backend.weekly_used_percent, "windowDurationMins": 10080}
         return {
             "rateLimitsByLimitId": {"codex": {"primary": window, "secondary": weekly}},
             "ordinaryUsageAllowed": True,
@@ -226,16 +229,16 @@ class FakeCodex:
         additional_writable_roots=(),
     ):
         backend = self.backend
-        # The engine appends one payload; rsplit keeps an earlier "PAYLOAD:" in prose intact.
-        payload = json.loads(prompt.rsplit("\nPAYLOAD:\n", 1)[1])
-        scripted = backend.scripts.get(payload["phase"])
-        assert scripted is not None, f"unexpected agent phase {payload['phase']}"
-        assert scripted["seen"] < scripted["expected"], f"unexpected repeat of agent phase {payload['phase']}"
+        payload = self.payload(prompt)
+        phase = payload["phase"]
+        scripted = backend.scripts.get(phase)
+        assert scripted is not None, f"unexpected agent phase {phase}"
+        assert scripted["seen"] < scripted["expected"], f"unexpected repeat of agent phase {phase}"
         scripted["seen"] += 1
         backend.turns_started += 1
         turn_id = f"fake-turn-{backend.turns_started}"
         record = {
-            "phase": payload["phase"],
+            "phase": phase,
             "prompt": prompt,
             "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
             "thread_id": thread_id,
@@ -253,10 +256,20 @@ class FakeCodex:
         saved.update(result=result, state="completed")
         return turn_id
 
+    def payload(self, prompt):
+        """The structured input the engine appended; a role may carry its own marker."""
+        # rsplit keeps an earlier "PAYLOAD:" in prose intact.
+        return json.loads(prompt.rsplit("\nPAYLOAD:\n", 1)[1])
+
     async def finish(self, thread_id, turn_id):
         saved = self.backend.turns.get((thread_id, turn_id))
         if saved is None:
             raise NeedsAttention("saved turn not found; operator reconciliation required")
+        gate = self.backend.gates.get(saved["record"]["phase"])
+        if gate is not None:
+            # The saved turn is accepted; only the scripted answer waits for the test.
+            await gate.wait()
+            saved = self.backend.turns[(thread_id, turn_id)]
         if saved["state"] in ("failed", "interrupted"):
             raise TerminalTurnError(f"turn {saved['state']}")
         if saved["state"] != "completed":
@@ -317,6 +330,69 @@ class FakeGate:
         await self.release.wait()
 
 
+@dataclass(frozen=True)
+class SyntheticSlots:
+    """One shared external backend, the fake class its slots clone, and their call log."""
+
+    backend: FakeCodexBackend
+    agent: type
+    calls: list
+
+    def begin(self, turn_id):
+        """The one external begin that sent this exact saved turn."""
+        found = [call for call in self.calls if call["call"] == "begin" and call["turn"] == turn_id]
+        assert len(found) == 1, f"expected one begin for {turn_id}, found {len(found)}"
+        return found[0]
+
+
+def shared_fake_slots():
+    """A per-test no-argument fake class whose clones share one explicit backend.
+
+    ``start_agent_pool`` clones a demo agent with no arguments, so the class itself
+    carries the shared backend and call log: every slot gets its own instance and
+    process generation while the saved external turns stay in one place. No clone
+    can become a managed-account client, because it is this synthetic class.
+    """
+    backend, clones, calls = FakeCodexBackend(), [], []
+
+    class SharedFakeCodex(FakeCodex):
+        def __init__(self):
+            super().__init__(backend)
+            self.instance = f"synthetic-agent-{len(clones) + 1}"
+            self.slot = None
+            clones.append(self)
+
+        def called(self, call, **identity):
+            """One external call as the synthetic transport itself recorded it."""
+            return {
+                "call": call,
+                "instance": self.instance,
+                "slot": self.slot,
+                "generation": self.start_count,
+                **identity,
+            }
+
+        def payload(self, prompt):
+            """The engine's own prompt markers: a research context or a plan-title request."""
+            if "\nPROJECT:\n" in prompt:
+                return {"phase": "research"}
+            if "Plan title:" in prompt:
+                return {"phase": "title"}
+            return super().payload(prompt)
+
+        async def start(self):
+            await super().start()
+            calls.append(self.called("start"))
+
+        async def begin(self, thread_id, prompt, schema, **kwargs):
+            turn = await super().begin(thread_id, prompt, schema, **kwargs)
+            record = backend.starts[-1]
+            calls.append(self.called("begin", thread=thread_id, turn=turn, phase=record["phase"]))
+            return turn
+
+    return SyntheticSlots(backend=backend, agent=SharedFakeCodex, calls=calls)
+
+
 DEFAULT_STEP_SECONDS = 5.0
 DEFAULT_TIMEOUT_SECONDS = 20.0
 
@@ -333,12 +409,19 @@ class SettleReport:
 
 
 def engine_tasks(workflow):
-    """The engine's own unfinished task handles, read from the real workflow seams."""
-    handles = [task for lane in workflow.lanes for task in (lane.agent_task, lane.quota_task)]
-    handles.append(workflow.backup_task)
-    handles.extend(task for task, _ in workflow.output_checks.values())
-    handles.extend(workflow.evidence_checks.values())
-    return [task for task in handles if task is not None and not task.done()]
+    """The engine's own unfinished task handles, read from the real workflow seams.
+
+    Each role publishes its dispatch task in the flag that role reads: stage, title,
+    monitor, conversation and analysis turns on their lane's ``agent_task``, research
+    and the project supervisor on their controllers. Handles are deduplicated by task
+    identity, so a turn both the pool and a role recorded is awaited once.
+    """
+    owner = workflow.pool_owner
+    handles = [task for lane in owner.lanes for task in (lane.agent_task, lane.quota_task)]
+    handles += [owner.backup_task, owner.research.task, owner.supervisor.task]
+    handles.extend(task for task, _ in owner.output_checks.values())
+    handles.extend(owner.evidence_checks.values())
+    return list(dict.fromkeys(task for task in handles if task is not None and not task.done()))
 
 
 async def settle(workflow, *, gates=()):
