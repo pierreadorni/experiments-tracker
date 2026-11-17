@@ -466,7 +466,7 @@ role busy flags it still writes. All retire with the contract-3 engine in T4.8.
 - **Tests:** two worktrees with the same lock share one env; a changed lock builds a
   second.
 
-### [ ] T3.3 Contract 3 uses named branches for new experiments · F+R · M
+### [x] T3.3 Contract 3 uses named branches for new experiments · F+R · M per subcard
 - For projects with Git, new experiments get `exp/<date>-<slug>` worktrees instead
   of shared-mode editing or detached worktrees. This removes the `project_busy` hold
   for Git projects.
@@ -475,8 +475,9 @@ role busy flags it still writes. All retire with the contract-3 engine in T4.8.
 - Per-attempt source copies stay, because they are contract 3 semantics.
 - Use the shared env (T3.2) instead of a per-experiment `work/.venv` when the project
   has a lock.
-- **T3.3a landed:** new eligible runs save their named-worktree mode and reconcile exact
-  checkout creation. **T3.3b remains:** commit provenance, job pins and runtime wiring.
+- T3.3a saves the named-worktree mode and exact checkout identity. T3.3b adds
+  backend commit intents, pinned job commits, and shared runtime selection; an
+  unproven external Git outcome requires inspection rather than replay.
 
 ### [ ] T3.4 Integration queue (backend) · S · M
 - `engine/integration.py` implementing design.md C6 steps 1–7. Merging is automatic:
@@ -560,6 +561,7 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 Record completed tasks here: `date · task · commit · notes`.
 
 - **T3.3a, 2026-11-17:** Production +212/−37, tests +284/−1. Named worktrees for new eligible runs leave historical shared and detached workspaces untouched. A once-ready worktree is never recreated on a missing ref or path.
+- **T3.3b, 2026-11-17:** Named-branch implementation and job commits preserve bounded attempt copies, verify project source bytes against the exact commit, and pin new job identities before dispatch. A lost backend commit is adopted only against the saved intent; later edits are not swept into it. Eligible local runs replace per-experiment venv creation with the shared runtime; remote and historical runtimes are unchanged. Ruff and 21 coordinator targeted tests pass; combined `make check` passed **972 Python, 29 web, 45 gateway tests** (one Python dependency warning). No live activation.
 - **T3.4a/b-1, 2026-11-17:** Candidate merge/revert/ref lifecycle (+266 production; +230 tests) and durable per-repo queue (+337 production; +157 tests). These are not wired to execution. Both intentionally add required capability rather than replace existing paths.
 - **T3.4c-1 and T3.7a, 2026-11-17:** Owner configuration supplies fixed check argv and an opt-in approval flag without dispatching integration. The legacy dry run verifies saved worktree identities and reports blocked checkouts without writing. Production +99/−3, tests +99/−2, example config +4/−0 across both. Combined locked Ruff and **917 Python tests passed** (one dependency warning). No live activation.
 - **T3.7b, 2026-11-17:** Offline adoption commits only exact settled tracker-locked detached worktrees, preserving their existing paths and not editing main. Production +119/−23; tests +84/−1. Combined isolated suite: **944 Python tests passed**. An interrupted adoption requires inspection; no automatic replay. No live adoption performed.
