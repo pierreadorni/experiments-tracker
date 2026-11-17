@@ -29,6 +29,7 @@ async def make_title_action(store, workflow, monkeypatch, eid):
 
     monkeypatch.setattr(workflow, "dispatch_title", waiting)
     await workflow.advance_title()
+    workflow.agent_pool.admit()
     task = workflow.agent_task
     action = store.one("SELECT * FROM agent_actions WHERE experiment_id=? AND phase='title'", (eid,))
     task.cancel()

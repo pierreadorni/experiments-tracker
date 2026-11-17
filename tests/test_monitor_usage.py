@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
+from helpers import role_step
 from test_controller import create
 
 from experimenttracker.agent_pool import experiment_owner
@@ -63,7 +64,7 @@ async def test_monitor_tool_and_completion_create_only_one_followup(runtime):
     second = wf.controller.schedule(eid, next_request, 300, "Updated follow-up", action)
     wf.controller.server = object()
     try:
-        await wf.controller.advance()
+        await role_step(wf.controller)
         pending = store.rows("SELECT * FROM agent_wakeups WHERE experiment_id=? AND state='pending'", (eid,))
         assert [w["id"] for w in pending] == [second["id"]]
         assert (
@@ -89,7 +90,7 @@ async def test_healthy_and_uninstrumented_jobs_make_zero_monitor_calls(runtime):
             for _ in range(4):
                 wake = wf.controller.schedule(eid, uuid4(), 60, "Backend check")
                 due(store, wake)
-                await wf.controller.advance()
+                await role_step(wf.controller)
             assert not store.rows("SELECT * FROM agent_actions WHERE experiment_id=?", (eid,))
         wf.dispatch.assert_not_called()
     finally:
@@ -109,7 +110,7 @@ async def test_old_wakeup_backlog_coalesces_without_discarding_queued_turn(runti
             )
     wf.controller.server = object()
     try:
-        await wf.controller.advance()
+        await role_step(wf.controller)
         assert len(store.rows("SELECT * FROM agent_wakeups WHERE state='pending'")) == 1
         assert len(store.rows("SELECT * FROM agent_wakeups WHERE state='superseded'")) == 7
         assert not store.rows("SELECT * FROM agent_actions")
@@ -171,14 +172,14 @@ async def test_sustained_stall_dispatches_one_small_diagnostic(runtime):
     wake = wf.controller.schedule(eid, uuid4(), 60, "Inspect stale progress")
     due(store, wake)
     try:
-        await wf.controller.advance()
+        await role_step(wf.controller)
         await asyncio.sleep(0)
         wf.dispatch.assert_awaited_once()
         action = wf.dispatch.call_args.args[0]
         payload = json.loads(action["input"].split("\nPAYLOAD:\n", 1)[1])
         assert [j["intent_id"] for j in payload["jobs"]] == [identity]
         assert "brief" not in payload and len(action["input"]) < 2000
-        await wf.controller.advance()
+        await role_step(wf.controller)
         wf.dispatch.assert_awaited_once()
     finally:
         wf.controller.server = None

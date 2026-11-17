@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from helpers import wait_until
+from helpers import role_step, wait_until
 from legacy_fixture import load_legacy_completed
 
 from experimenttracker.agent_pool import experiment_owner
@@ -367,7 +367,7 @@ async def test_restart_readback_rejects_changed_saved_turn_without_side_effects(
     obligations_before = store.rows("SELECT * FROM obligations WHERE target=? ORDER BY id", (action_id,))
 
     with pytest.raises(NeedsAttention, match="saved action changed during reconciliation"):
-        await asyncio.wait_for(workflow.conversation.advance(), timeout=3)
+        await asyncio.wait_for(role_step(workflow.conversation), timeout=3)
 
     current = store.one("SELECT state,turn_id FROM agent_actions WHERE id=?", (action_id,))
     assert current == {"state": "running", "turn_id": "changed-turn"}
@@ -391,7 +391,7 @@ async def test_completed_legacy_discussion_queues_an_admission_obligation(runtim
     monkeypatch.setattr(workflow.conversation, "dispatch", dispatch)
     monkeypatch.setattr(workflow.conversation, "prompt", lambda exp, message: "saved reader prompt")
     identity = send(store, eid, "Explain the reported uncertainty")
-    await workflow.conversation.advance()
+    await role_step(workflow.conversation)
     assert workflow.agent_task is not None
     await workflow.agent_task
     message = store.one("SELECT * FROM discussions WHERE id=?", (identity,))

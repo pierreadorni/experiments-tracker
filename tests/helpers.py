@@ -87,6 +87,16 @@ async def until(workflow, store, eid, predicate):
     await wait_for_experiment(workflow, store, eid, predicate)
 
 
+async def role_step(controller):
+    """Advance one role as its engine step does, then run the pool's selection.
+
+    A role prepares proposals and the pool claims and starts the eligible ones; the
+    engine calls both halves, so a test that drives one role directly does too.
+    """
+    await controller.advance()
+    controller.workflow.agent_pool.admit()
+
+
 async def approve_plan(workflow, store, eid):
     await wait_until(
         lambda: (store.experiment(eid)["plan_review"] or {}).get("state") == "awaiting_review",

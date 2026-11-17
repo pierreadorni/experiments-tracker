@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from helpers import IterationAgent, approve_plan, wait_until
+from helpers import IterationAgent, approve_plan, role_step, wait_until
 from test_iteration_autopilot import activated
 
 from experimenttracker.agent_pool import experiment_owner, project_owner
@@ -194,7 +194,7 @@ async def test_monitor_and_conversation_admissions_claim_then_release_unsent_tur
     monkeypatch.setattr(wf.conversation, "prompt", lambda exp, message: "Discuss\nPAYLOAD:\n{}")
     monkeypatch.setattr(wf.conversation, "dispatch", AsyncMock())
     try:
-        await wf.controller.advance()
+        await role_step(wf.controller)
         watched = store.one("SELECT * FROM agent_actions WHERE experiment_id=?", (monitored,))
         claimed(wf, "agent_actions", watched["id"], "monitor", experiment_owner(monitored))
         await wf.agent_task
@@ -202,7 +202,7 @@ async def test_monitor_and_conversation_admissions_claim_then_release_unsent_tur
         await until_released(wf, "agent_actions", watched["id"])
         wf.agent_task = wf.active_action = None
         store.command(uuid4(), "discuss", {"text": "Explain the result"}, eid=discussed)
-        await wf.conversation.advance()
+        await role_step(wf.conversation)
         spoken = store.one(
             "SELECT * FROM agent_actions WHERE experiment_id=? AND phase LIKE 'discuss:%'", (discussed,)
         )
@@ -234,7 +234,7 @@ async def test_research_admission_claims_the_project_run_and_retains_received(ru
     monkeypatch.setattr(agent, "begin", begin)
     with store.tx() as db:
         service.wake(db, run["id"], "synthetic-input", "experiment_change", {"synthetic": True})
-    await wf.research.advance()
+    await role_step(wf.research)
     (row,) = store.rows("SELECT * FROM autopilot_actions WHERE run_id=?", (run["id"],))
     claimed(wf, "autopilot_actions", row["id"], "research", project_owner("test-project"))
     await wf.research.task
@@ -259,7 +259,7 @@ async def test_supervisor_admission_claims_the_project_turn(runtime):
     wf.supervisor.memory.enqueue(
         "test-project", {"request_id": identity, "kind": "chat", "text": "Summarize the measurement."}
     )
-    await wf.supervisor.advance()
+    await role_step(wf.supervisor)
     claimed(wf, "project_turns", identity, "supervisor", project_owner("test-project"))
     await wf.supervisor.task
     await wait_until(

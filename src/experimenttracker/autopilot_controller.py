@@ -9,7 +9,7 @@ import sys
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from . import clock
-from .agent_pool import project_owner
+from .agent_pool import RESEARCH_PRIORITY, project_owner
 from .autopilot import Autopilot
 from .autopilot_models import ProjectDecision
 from .autopilot_tools import MODELS, Compile
@@ -293,13 +293,13 @@ class ResearchController:
                         ),
                     )
                 row = wf.store.one("SELECT * FROM autopilot_actions WHERE id=?", (identity,))
-            self.active_id = row["id"]
-            self.task = wf.spawn_agent(
-                self.dispatch(row),
+            wf.propose_agent(
+                lambda _lane, row=row: self.dispatch(row),
                 role="research",
                 source_table="autopilot_actions",
                 row=row,
                 owner=project_owner(run["project_id"]),
+                priority=RESEARCH_PRIORITY,
             )
             return
 

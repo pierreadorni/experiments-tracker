@@ -1,18 +1,33 @@
-"""Derived agent reservations: which saved source row owns which agent process.
+"""One agent selector over derived reservations: which saved row owns which process.
 
-Lane allocation, busy sets and global role guards keep deciding admission. A
-callback (request, activity, pending answer) is routed through a reservation, so
-it reaches only the owner its saved turn proves; a reservation is reconstructed
-from the authoritative source row and never becomes a second execution database.
-Interrupts, readback and shutdown also leave through the reservation's own live
-connection; a reservation without one keeps its saved uncertainty.
+Every admission site keeps its own authority checks and deterministic preparation,
+then offers a prepared proposal instead of creating a dispatch task. One selector
+sorts those proposals by priority class and each role's own scan order, re-checks
+eligibility and claims the owner and a free connection in a single synchronous
+section before the task exists. A callback (request, activity, pending answer) is
+routed through the reservation, so it reaches only the owner its saved turn proves;
+a reservation is reconstructed from the authoritative source row and never becomes a
+second execution database. Interrupts, readback and shutdown also leave through the
+reservation's own live connection; a reservation without one keeps its uncertainty.
 """
 
+import asyncio
 from dataclasses import dataclass
+
+# Priority classes: the next free connection serves the lowest class first.
+# Conversation, experiment (stage and monitor), research, supervisor, title. A
+# non-weekly owner-requested project turn ranks as conversation, weekly synthesis
+# as supervision; the owner key does not change with the priority class.
+CONVERSATION_PRIORITY = 0
+EXPERIMENT_PRIORITY = 1
+RESEARCH_PRIORITY = 2
+SUPERVISOR_PRIORITY = 3
+TITLE_PRIORITY = 4
 
 # A saved row in one of these states may still be an outstanding remote turn, so
 # its owner stays exclusive while no live task holds a physical slot.
 UNSETTLED_STATES = frozenset({"dispatching", "running", "uncertain", "received"})
+UNSETTLED_STATES_SQL = "('dispatching','running','uncertain','received')"
 
 # Turns whose identity can outlive the process that sent them.
 SAVED_OWNED_STATES = "('dispatching','running','uncertain')"
@@ -35,6 +50,34 @@ def role_for_phase(phase):
     if phase.startswith("discuss:"):
         return "conversation"
     return TITLED_PHASES.get(phase, "stage")
+
+
+@dataclass(frozen=True)
+class Proposal:
+    """One prepared turn offered to the next selection; nothing is claimed yet.
+
+    ``order`` is the whole selection key: priority class, the proposal's rank in
+    its role's current scan, then creation time, source table and row ID. A role's
+    proposals therefore keep the scan order they always had, and proposals of two
+    roles sharing a priority class fall back to their saved identity.
+    """
+
+    role: str
+    source_table: str
+    row: dict
+    owner: tuple
+    priority: int
+    rank: int
+    connections: tuple
+    dispatch: object
+
+    @property
+    def key(self):
+        return (self.source_table, self.row["id"])
+
+    @property
+    def order(self):
+        return (self.priority, self.rank, self.row.get("created_at") or 0, *self.key)
 
 
 @dataclass(frozen=True)
@@ -67,6 +110,8 @@ class AgentPool:
         self.store = workflow.store
         self.reservations = {}
         self.answers = {}
+        # Prepared turns of the current selection round; never a persistent queue.
+        self.proposals = []
         # Shutdown closes the transports and later the store; a task that ends then
         # must not read or rewrite the rows its withdrawal already left uncertain.
         self.closing = False
@@ -122,6 +167,111 @@ class AgentPool:
             if row and (row["thread_id"], row["turn_id"]) == (thread_id, turn_id):
                 return reservation
         return None
+
+    def propose(self, *, role, source_table, row, owner, priority, connections, dispatch):
+        """Offer one prepared turn; nothing is claimed or created until ``admit``."""
+        rank = sum(1 for proposal in self.proposals if proposal.role == role)
+        proposal = Proposal(
+            role=role,
+            source_table=source_table,
+            row=row,
+            owner=owner,
+            priority=priority,
+            rank=rank,
+            connections=tuple(connections),
+            dispatch=dispatch,
+        )
+        self.proposals = [offered for offered in self.proposals if offered.key != proposal.key]
+        self.proposals.append(proposal)
+
+    def admit(self):
+        """Claim and start the best eligible proposals; one synchronous section.
+
+        The sorted proposals are tried in order, so a busy owner or an occupied
+        connection skips only the work it cannot host and unrelated eligible work
+        still starts. A proposal no free connection can host is dropped with its
+        source row still pending; a turn whose outcome is unknown never returns
+        here as a replacement.
+        """
+        pending = sorted(self.proposals, key=lambda proposal: proposal.order)
+        self.proposals = []
+        for proposal in pending:
+            if self.closing:
+                return
+            workflow = self.free_connection(proposal)
+            if workflow is None or not self.owner_free(proposal.owner):
+                continue
+            self.start(proposal, workflow)
+
+    def free_connection(self, proposal):
+        """The proposal's first connection that no live claim or task occupies."""
+        for workflow in proposal.connections:
+            slot = self.slot(workflow)
+            if not workflow.agent_ready or workflow.agent_task is not None:
+                continue
+            claimed = any(
+                reservation.slot == slot and reservation.connection is not None
+                for reservation in self.reservations.values()
+            )
+            if not claimed:
+                return workflow
+        return None
+
+    def owner_free(self, owner):
+        """A live claim or a saved unsettled row keeps its owner's next turn out.
+
+        The claim covers the moment before a dispatch saves its intent; the source
+        rows cover an owner whose task ended while its turn stayed unsettled.
+        """
+        if any(
+            reservation.owner == owner and reservation.connection is not None
+            for reservation in self.reservations.values()
+        ):
+            return False
+        kind, identity = owner
+        if kind == "experiment":
+            return not self.store.one(
+                f"SELECT 1 FROM agent_actions WHERE experiment_id=? AND state IN {UNSETTLED_STATES_SQL}",
+                (identity,),
+            )
+        return not (
+            self.store.one(
+                f"SELECT 1 FROM project_turns WHERE project_id=? AND state IN {UNSETTLED_STATES_SQL}",
+                (identity,),
+            )
+            or self.store.one(
+                "SELECT 1 FROM autopilot_actions a JOIN autopilot_runs r ON r.id=a.run_id "
+                f"WHERE r.project_id=? AND a.state IN {UNSETTLED_STATES_SQL}",
+                (identity,),
+            )
+        )
+
+    def start(self, proposal, workflow):
+        """Claim owner and connection, then create the dispatch task for that claim."""
+        if workflow is not self.workflow:
+            # A lane prepares with the primary's current cluster snapshot, as before.
+            for name in ("cluster_snapshot", "cluster_error", "last_cluster_refresh"):
+                setattr(workflow, name, getattr(self.workflow, name))
+        reservation = self.claim(
+            role=proposal.role,
+            source_table=proposal.source_table,
+            row=proposal.row,
+            owner=proposal.owner,
+            workflow=workflow,
+        )
+        task = asyncio.create_task(proposal.dispatch(workflow))
+        task.add_done_callback(lambda _task: self.settle(reservation))
+        self.occupy(proposal, workflow, task)
+        return reservation
+
+    def occupy(self, proposal, workflow, task):
+        """Publish the claimed task in the busy flag its own role still reads."""
+        if proposal.source_table == "autopilot_actions":
+            self.workflow.research.task, self.workflow.research.active_id = task, proposal.row["id"]
+        elif proposal.source_table == "project_turns":
+            self.workflow.supervisor.task, self.workflow.supervisor.active_id = task, proposal.row["id"]
+        else:
+            workflow.agent_task, workflow.active_action = task, proposal.row["id"]
 
     def claim(self, *, role, source_table, row, owner, workflow):
         """Reserve an owner's agent before its dispatch task exists."""

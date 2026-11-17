@@ -11,7 +11,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from pydantic import Field, model_validator
 
 from . import artifacts, clock
-from .agent_pool import project_owner
+from .agent_pool import CONVERSATION_PRIORITY, SUPERVISOR_PRIORITY, project_owner
 from .codex_client import RpcRejected, TerminalTurnError
 from .config import StrictModel
 from .maintenance import blocked
@@ -761,13 +761,13 @@ class ProjectSupervisor:
             if json.loads(row["payload"])["kind"] == "synthesize" and not memory.summaries(row["project_id"]):
                 memory.state(row["id"], "failed", error="No completed experiments to incorporate")
                 continue
-            self.active_id = row["id"]
-            self.task = wf.spawn_agent(
-                self.dispatch(row),
+            wf.propose_agent(
+                lambda _lane, row=row: self.dispatch(row),
                 role="supervisor",
                 source_table="project_turns",
                 row=row,
                 owner=project_owner(row["project_id"]),
+                priority=CONVERSATION_PRIORITY if row["origin"] != "weekly" else SUPERVISOR_PRIORITY,
             )
             return
 

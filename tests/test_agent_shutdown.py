@@ -266,13 +266,16 @@ async def test_dispatch_callback_after_store_close_does_not_raise(runtime):
     async def unfinished():
         await gate.wait()
 
-    task = wf.spawn_agent(
-        unfinished(),
+    # The pool's own claim-and-settle pair, without the slot flag close() withdraws.
+    reservation = wf.agent_pool.claim(
         role="stage",
         source_table="agent_actions",
         row=action,
         owner=experiment_owner(action["experiment_id"]),
+        workflow=wf,
     )
+    task = asyncio.create_task(unfinished())
+    task.add_done_callback(lambda _task: wf.agent_pool.settle(reservation))
     loop = asyncio.get_running_loop()
     failures = []
     previous = loop.get_exception_handler()

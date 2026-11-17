@@ -20,7 +20,7 @@ from . import (
     reporting,
     resolver,
 )
-from .agent_pool import AgentPool, experiment_owner
+from .agent_pool import EXPERIMENT_PRIORITY, TITLE_PRIORITY, AgentPool, experiment_owner
 from .autopilot_controller import ResearchController
 from .cancellation import process_cancellations
 from .codex_client import CodexAgent, NeedsAttention, RpcRejected, SessionUnavailable, TerminalTurnError
@@ -165,7 +165,6 @@ class Workflow:
         self.pool_owner = self
         self.lanes = [self]
         self.agent_pool = AgentPool(self)
-        self.agent_assignments = {}
         self.output_checks = {}
         self.evidence_checks = {}
         self.error_backoff = {}
@@ -264,26 +263,22 @@ class Workflow:
     def root(self, eid):
         return self.projects.root(eid)
 
-    def agent_lane(self, eid):
-        owner = self.pool_owner
-        assigned = owner.agent_assignments.get(eid)
-        if assigned and assigned.active_action:
-            return assigned
-        lane = next((lane for lane in owner.lanes if not lane.agent_task), assigned or self)
-        owner.agent_assignments[eid] = lane
-        lane.cluster_snapshot = owner.cluster_snapshot
-        lane.cluster_error = owner.cluster_error
-        lane.last_cluster_refresh = owner.last_cluster_refresh
-        return lane
+    def propose_agent(self, dispatch, *, role, source_table, row, owner, priority, any_lane=False):
+        """Offer a prepared turn to the pool; only its selector claims and starts it.
 
-    def spawn_agent(self, coroutine, *, role, source_table, row, owner):
-        """Claim this workflow's agent before the turn exists, then settle its source row."""
-        reservation = self.agent_pool.claim(
-            role=role, source_table=source_table, row=row, owner=owner, workflow=self
+        ``dispatch`` is a factory called with the claimed connection, so a stage turn
+        can run on whichever lane the selector picks and every other role keeps the
+        connection that prepared it.
+        """
+        self.agent_pool.propose(
+            role=role,
+            source_table=source_table,
+            row=row,
+            owner=owner,
+            priority=priority,
+            connections=self.pool_owner.lanes if any_lane else (self,),
+            dispatch=dispatch,
         )
-        task = asyncio.create_task(coroutine)
-        task.add_done_callback(lambda _task: self.agent_pool.settle(reservation))
-        return task
 
     async def start_agent_pool(self):
         for index in range(1, self.config.codex.max_sessions):
@@ -543,6 +538,9 @@ class Workflow:
         self.record_service(CONTROL_SERVICE)
         await self.step_watchdog(now)
         await self.step_control_finish()
+        # One selection after the control roles have prepared their proposals, so a
+        # whole pass competes by priority class instead of by call order.
+        self.agent_pool.admit()
         await self.step_supervisor()
         await self.step_research()
         await self.step_retention(now)
@@ -569,6 +567,9 @@ class Workflow:
             return
         await self.step_control_advance()
         await self.step_control_finish()
+        # The manual adapter and the production runner both select here, once the
+        # control roles have prepared every proposal of this pass.
+        self.agent_pool.admit()
 
     async def step_control_before_observe(self):
         """Intake: legacy archive, input replies, cancellations, projects and reserve."""
@@ -741,12 +742,14 @@ class Workflow:
             await self.controller.advance()
 
     async def step_supervisor(self):
-        """Advance the project supervisor."""
+        """Advance the project supervisor, then select from what the step prepared."""
         await self.supervisor.advance()
+        self.agent_pool.admit()
 
     async def step_research(self):
-        """Advance the research controller."""
+        """Advance the research controller, then select from what the step prepared."""
         await self.research.advance()
+        self.agent_pool.admit()
 
     async def step_retention(self, now):
         """Prune outbox payloads in bounded batches when the retention window is due."""
@@ -874,13 +877,13 @@ class Workflow:
                         (encode(saved), clock.now(), action["id"]),
                     )
                 action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (action["id"],))
-            self.active_action = action["id"]
-            self.agent_task = self.spawn_agent(
-                self.dispatch_title(action),
+            self.propose_agent(
+                lambda lane, action=action: lane.dispatch_title(action),
                 role="title",
                 source_table="agent_actions",
                 row=action,
                 owner=experiment_owner(exp["id"]),
+                priority=TITLE_PRIORITY,
             )
             return
         for row in self.store.rows(
@@ -930,13 +933,13 @@ class Workflow:
                         db, exp["id"], "agent_action_queued", {"phase": "title", "action_id": action_id}
                     )
                 action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (action_id,))
-            self.active_action = action["id"]
-            self.agent_task = self.spawn_agent(
-                self.dispatch_title(action),
+            self.propose_agent(
+                lambda lane, action=action: lane.dispatch_title(action),
                 role="title",
                 source_table="agent_actions",
                 row=action,
                 owner=experiment_owner(exp["id"]),
+                priority=TITLE_PRIORITY,
             )
             return
 
@@ -2175,10 +2178,6 @@ class Workflow:
         exp = self.store.experiment(eid)
         if legacy_archive.execution_frozen(exp) or exp["phase"] in ("complete", "failed", "cancelled"):
             return
-        if self.pool_owner is self and exp["recipe_id"] == "agent_experiment_v1" and len(self.lanes) > 1:
-            lane = self.agent_lane(eid)
-            if lane is not self:
-                return await lane.agent_stage(exp, phase)
         self.store.update(
             eid,
             phase="training"
@@ -2614,13 +2613,14 @@ class Workflow:
         if not decision.admitted:
             self.store.update(eid, hold_reason="quota_hold", error=decision.reason)
             return
-        self.active_action = action["id"]
-        self.agent_task = self.spawn_agent(
-            self.dispatch(action),
+        self.propose_agent(
+            lambda lane, action=action: lane.dispatch(action),
             role="stage",
             source_table="agent_actions",
             row=action,
             owner=experiment_owner(eid),
+            priority=EXPERIMENT_PRIORITY,
+            any_lane=True,
         )
 
     async def prepare_workspace(self, exp):

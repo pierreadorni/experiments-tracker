@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from helpers import role_step
 from test_controller import create
 
 from experimenttracker.core import wakeup_obligations
@@ -81,7 +82,7 @@ async def test_queueing_the_saved_action_satisfies_its_timer_in_that_transaction
     monkeypatch.setattr(wakeup_obligations, "sync_wakeup", fail)
     try:
         with pytest.raises(RuntimeError, match="injected wakeup obligation failure"):
-            await wf.controller.advance()
+            await role_step(wf.controller)
         monkeypatch.setattr(wakeup_obligations, "sync_wakeup", sync)
         # The timer and the action it queues commit or roll back together.
         assert store.one("SELECT state FROM agent_wakeups WHERE id=?", (wake["id"],))["state"] == "pending"
@@ -90,7 +91,7 @@ async def test_queueing_the_saved_action_satisfies_its_timer_in_that_transaction
         assert not store.rows("SELECT * FROM obligations WHERE id LIKE 'agent-action:%'")
         assert not store.rows("SELECT * FROM events WHERE kind='agent_wakeup_queued'")
 
-        await wf.controller.advance()
+        await role_step(wf.controller)
         action = store.one("SELECT * FROM agent_actions WHERE experiment_id=?", (eid,))
         assert store.one("SELECT state FROM agent_wakeups WHERE id=?", (wake["id"],))["state"] == "queued"
         assert timer(store, wake["id"])["state"] == "satisfied"
@@ -119,7 +120,7 @@ async def test_failed_monitor_action_abandons_its_timer(runtime):
         db.execute("UPDATE agent_wakeups SET state='queued',action_id=? WHERE id=?", (action_id, wake["id"]))
     wf.controller.server = object()
     try:
-        await wf.controller.advance()
+        await role_step(wf.controller)
         assert store.one("SELECT state FROM agent_wakeups WHERE id=?", (wake["id"],))["state"] == "failed"
         assert timer(store, wake["id"])["state"] == "abandoned"
         assert store.one("SELECT 1 FROM events WHERE kind='agent_wakeup_failed'")

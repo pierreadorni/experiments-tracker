@@ -3,7 +3,7 @@ import time
 from uuid import uuid4
 
 import pytest
-from helpers import wait_until
+from helpers import role_step, wait_until
 from legacy_fixture import load_legacy_completed
 
 from experimenttracker.config import ProjectConfig
@@ -70,7 +70,7 @@ def project_turn(supervisor, identity):
 async def finish(supervisor, identity):
     return await wait_until(
         lambda: project_turn(supervisor, identity),
-        ticks=supervisor.advance,
+        ticks=lambda: role_step(supervisor),
         describe=lambda: supervisor.memory.store.one("SELECT * FROM project_turns WHERE id=?", (identity,)),
     )
 
@@ -99,7 +99,7 @@ async def test_synthesis_versions_tldrs_chat_and_replay(runtime):
     calls = agent.calls
     memory.complete(result)
     memory.enqueue("test-project", json.loads(result["payload"]))
-    await wf.supervisor.advance()
+    await role_step(wf.supervisor)
     assert agent.calls == calls
     chat = enqueue(memory, "chat", text="What should we test next?")
     result = await finish(wf.supervisor, chat)
@@ -149,16 +149,16 @@ async def test_weekly_requires_fresh_plentiful_quota_and_pending_sources(runtime
     quota = await agent.quota()
     quota["rateLimitsByLimitId"]["codex"]["secondary"]["usedPercent"] = 60
     wf.gate.update(quota)
-    await wf.supervisor.advance()
+    await role_step(wf.supervisor)
     assert not store.rows("SELECT * FROM project_turns")
     wf.gate.update(await agent.quota())
-    await wf.supervisor.advance()
+    await role_step(wf.supervisor)
     row = store.one("SELECT * FROM project_turns")
     assert row["origin"] == "weekly"
     assert (await finish(wf.supervisor, row["id"]))["state"] == "completed"
     with store.tx() as db:
         db.execute("UPDATE project_knowledge SET next_due=?", (time.time() - WEEK,))
-    await wf.supervisor.advance()
+    await role_step(wf.supervisor)
     assert len(store.rows("SELECT * FROM project_turns")) == 1
     await wf.close()
 
@@ -181,12 +181,12 @@ async def test_lost_begin_never_redispatched_and_saved_result_recovers(runtime):
     assert result["state"] == "uncertain"
     assert result["thread_id"] and result["turn_id"] is None
     for _ in range(3):
-        await wf.supervisor.advance()
+        await role_step(wf.supervisor)
     assert agent.calls == 1
     assert wf.supervisor.blocks_dispatch
     # A second independent project command is held behind uncertain inference.
     enqueue(memory, "chat", text="What next?")
-    await wf.supervisor.advance()
+    await role_step(wf.supervisor)
     assert agent.calls == 1
     await wf.close()
 
@@ -198,7 +198,7 @@ async def test_saved_exact_turn_reconciles_without_new_inference(runtime):
     memory = wf.supervisor.memory
     memory.refresh()
     identity = enqueue(memory)
-    await wf.supervisor.advance()
+    await role_step(wf.supervisor)
     await wf.supervisor.task
     row = store.one("SELECT * FROM project_turns WHERE id=?", (identity,))
     assert row["state"] == "received"
@@ -219,7 +219,7 @@ async def test_changed_source_and_foreign_citations_rejected_atomically(runtime)
     memory = wf.supervisor.memory
     memory.refresh()
     identity = enqueue(memory)
-    await wf.supervisor.advance()
+    await role_step(wf.supervisor)
     await wf.supervisor.task
     row = store.one("SELECT * FROM project_turns WHERE id=?", (identity,))
     result = json.loads(row["result"])
@@ -228,7 +228,7 @@ async def test_changed_source_and_foreign_citations_rejected_atomically(runtime)
     assert (await finish(wf.supervisor, identity))["state"] == "failed"
     assert memory.report("test-project") is None
     identity = enqueue(memory)
-    await wf.supervisor.advance()
+    await role_step(wf.supervisor)
     await wf.supervisor.task
     store.update(
         eid, analysis={"title": "Changed", "summary": "Changed", "limitations": [], "next_ideas": []}
@@ -246,7 +246,7 @@ async def test_unregistered_figure_and_unknown_table_metric_rejected(runtime):
     memory = wf.supervisor.memory
     memory.refresh()
     identity = enqueue(memory)
-    await wf.supervisor.advance()
+    await role_step(wf.supervisor)
     await wf.supervisor.task
     row = store.one("SELECT * FROM project_turns WHERE id=?", (identity,))
     result = json.loads(row["result"])
@@ -264,7 +264,7 @@ async def test_unregistered_figure_and_unknown_table_metric_rejected(runtime):
     assert memory.report("test-project") is None
 
     identity = enqueue(memory)
-    await wf.supervisor.advance()
+    await role_step(wf.supervisor)
     await wf.supervisor.task
     row = store.one("SELECT * FROM project_turns WHERE id=?", (identity,))
     result = json.loads(row["result"])
@@ -314,7 +314,7 @@ async def test_terminal_failure_releases_slot_and_quota_hold_does_not_dispatch(r
     memory.refresh()
     identity = enqueue(memory)
     wf.gate.ordinary_allowed = False
-    await wf.supervisor.advance()
+    await role_step(wf.supervisor)
     assert agent.calls == 0
     assert (
         store.one("SELECT hold_reason FROM project_turns WHERE id=?", (identity,))["hold_reason"]
@@ -327,7 +327,7 @@ async def test_terminal_failure_releases_slot_and_quota_hold_does_not_dispatch(r
 
     agent.finish = failed
     assert (await finish(wf.supervisor, identity))["state"] == "failed"
-    await wf.supervisor.advance()
+    await role_step(wf.supervisor)
     assert not wf.supervisor.blocks_dispatch
     assert agent.calls == 1
     await wf.close()
@@ -390,7 +390,7 @@ async def test_remove_saved_idea_is_exact_durable_and_does_not_dispatch(runtime)
         memory.enqueue("other", {**payload, "request_id": str(uuid4())})
     with pytest.raises(Conflict):
         memory.enqueue("test-project", {**payload, "text": "Changed identity"})
-    await wf.supervisor.advance()
+    await role_step(wf.supervisor)
     assert agent.calls == 0
     assert scheduler.submissions == 0
     await wf.close()

@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from helpers import IterationAgent, wait_until
+from helpers import IterationAgent, role_step, wait_until
 from helpers import approve_plan as approve_current_plan
 from helpers import until as until_current
 
@@ -173,7 +173,7 @@ async def test_saved_monitor_turn_is_adopted_after_restart_without_duplicate_dis
     wf.agent_ready = True
     wf.controller.server = object()
     try:
-        await wf.controller.advance()
+        await role_step(wf.controller)
         action = store.one("SELECT * FROM agent_actions WHERE id=?", (action_id,))
         assert reads == [("saved-thread", "saved-monitor")]
         assert action["state"] == ("uncertain" if lost_response else "completed")
@@ -181,7 +181,7 @@ async def test_saved_monitor_turn_is_adopted_after_restart_without_duplicate_dis
         if lost_response:
             agent.read_turn = lambda *_: asyncio.sleep(0, result=result)
             await wf.reconcile_action(action_id)
-        await wf.controller.advance()
+        await role_step(wf.controller)
         assert store.one("SELECT state FROM agent_wakeups WHERE id=?", (wake_id,))["state"] == "complete"
         assert len(store.rows("SELECT * FROM agent_actions WHERE experiment_id=?", (eid,))) == 1
         assert scheduler.submissions == 0 and agent.calls == 0
@@ -211,7 +211,7 @@ async def test_monitor_action_obligation_tracks_creation_and_pending_supersessio
 
     monkeypatch.setattr(wf, "dispatch", no_dispatch)
     try:
-        await wf.controller.advance()
+        await role_step(wf.controller)
         action = store.one("SELECT * FROM agent_actions WHERE experiment_id=?", (eid,))
         assert action["phase"] == "monitor" and action["state"] == "pending"
         obligation_id = f"agent-action:{action['id']}:0"
@@ -222,7 +222,7 @@ async def test_monitor_action_obligation_tracks_creation_and_pending_supersessio
         wf.agent_task = wf.active_action = None
         with store.tx() as db:
             db.execute("UPDATE experiments SET phase='complete' WHERE id=?", (eid,))
-        await wf.controller.advance()
+        await role_step(wf.controller)
         assert (
             store.one("SELECT state FROM agent_actions WHERE id=?", (action["id"],))["state"] == "superseded"
         )

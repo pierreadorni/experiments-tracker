@@ -2,6 +2,7 @@ import json
 from uuid import uuid4
 
 import pytest
+from helpers import role_step
 
 from experimenttracker.agent_pool import project_owner
 from experimenttracker.autopilot import Autopilot, calendar
@@ -640,14 +641,14 @@ async def test_controller_coalesces_late_inputs_and_quarantines_unknown_turn(run
         return identity
 
     monkeypatch.setattr(agent, "begin", begin)
-    await wf.research.advance()
+    await role_step(wf.research)
     await wf.research.task
-    await wf.research.advance()
+    await role_step(wf.research)
     saved = service.run("test-project")
     assert saved["consumed_cursor"] < saved["input_cursor"]
     if wf.research.task:
         await wf.research.task
-        await wf.research.advance()
+        await role_step(wf.research)
     await wf.research.close()
     # A turn-start reply loss has no saved identity; restart must not issue another begin.
     with store.tx() as db:
@@ -658,7 +659,7 @@ async def test_controller_coalesces_late_inputs_and_quarantines_unknown_turn(run
         )
     wf.research.task = None
     calls = agent.calls
-    await wf.research.advance()
+    await role_step(wf.research)
     assert store.one("SELECT state FROM autopilot_actions WHERE state='uncertain'")
     assert agent.calls == calls
     monkeypatch.setattr(agent, "begin", original_begin)
@@ -952,9 +953,9 @@ async def test_rejected_question_becomes_durable_visible_wait_and_answer_resumes
         return "synthetic-continuation"
 
     monkeypatch.setattr(agent, "begin", begin)
-    await wf.research.advance()
+    await role_step(wf.research)
     await wf.research.task
-    await wf.research.advance()
+    await role_step(wf.research)
     assert agent.calls == 1
     assert service.run("test-project")["hold_reason"] is None
     assert store.one("SELECT state FROM autopilot_actions WHERE id=?", (identity,))["state"] == "completed"
