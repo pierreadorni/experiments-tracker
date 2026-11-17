@@ -1,6 +1,84 @@
 # T1 handoff
 
-## Latest working state (2026-11-15, after h3)
+**Superseded working log. Start with [t1-next-agent.md](t1-next-agent.md).**
+The current owner-requested handoff records committed b2b and frozen follow-on
+candidates. The older active-process and WIP descriptions below are historical.
+
+## Latest working state — 2026-11-17
+
+The owner resumed the full T1 goal unattended. Reoriented from Git and notes;
+no other live agents were present in this coordinator tree. Preserve untracked
+`.impeccable/`, `.worktrees/` and the local concurrent-coordination note.
+No live resources, configuration, managed research turns or hosting were used.
+
+### Committed and checked
+
+Main `620f91b` closes T1.1. Recent cards: h6 `686cc6b`; h7a `f9b8628`; inert
+job mapper `ce497a4`; inert admission decisions `e6447a6`; plotting-test timing
+`4f7c874`; h7b command/reply boundary `2f55068`; h7c final dead fallbacks `620f91b`.
+Last confirmed push is `e6447a6`; push subsequent checked commits next.
+
+H7b is406 source/test changed lines (source+101/-8, tests+296/-1); final UI uses
+minimal disabled props instead of large JSX wrappers. H7c is194 changed lines
+(source+62/-92, renderer test40). Legacy audit/conversation/queued-report readers
+remain; unsupported execution and commands refuse. Full Python658 passed; final
+Node24 formatting/build/types,29 web and45 gateway tests passed. Evidence:
+`check-results/t1-h7bc-timing-full.xml`, `t1-h7bc-timing-check.log`, and
+`t1-h7bc-final-gateway.log` in the isolated validation checkout. The initial
+full run timed out in the unchanged three-plot correction fixture; the reviewed
+two-line timing card gives only that wait60 seconds, preserving all assertions.
+
+### Active root/validation candidate
+
+**b2b Workflow action hooks only**: applied with the saved scoped script, retaining
+all C10 deletions. Source+139/-41, tracked tests+14, new test245 =439 changed lines.
+Ruff passes.94 outside-NSS targets pass; full suite is running in session92273,
+log/XML `check-results/t1-b2b-full.log` / `.xml`. Do not replace validation source
+until this process completes. No Store/conversation/controller hooks landed yet.
+
+The script `.worktrees/t1-action-source-wiring/apply-b2b-scoped.py` already ran.
+Do not run it again. Its frozen candidate has exact action ID/phase/evidence/
+thread/turn checks, unchanged terminal callback replay, transaction-local source
+before rows, source+obligation+event rollback, and stale callback regressions.
+
+### Prepared Luna source cards (not applied)
+
+- **b3** `.worktrees/t1-action-store-conversation`: Store/conversation action
+  hooks,160 changed lines against `b3-store.py.baseline` and
+  `b3-conversation.py.baseline`;3 focused tests pass. Workflow is a copied b2b
+  prerequisite, not part of this card. Apply only baseline-relative method hunks
+  and tests so C10 and later source changes survive.
+- **b4** `.worktrees/t1-controller-action-obligations`: Controller monitoring,
+  Store pending-action cancellation, cancellation/archive action callbacks.
+ 137 changed lines against b4 baselines,24 focused tests pass. No Workflow
+  edits. Some process-sensitive checks were inconclusive under NSS sandbox;
+  coordinator must run them outside it. Do not overwrite b3 Store methods.
+- **b5b** `.worktrees/t1-job-source-wiring`: four Workflow job hooks (intent,
+  accepted ID, missing-ID adoption, failed-output recovery).232 added lines
+  against `b5b-workflow.py.baseline`;4 focused tests pass. Normal observation
+  settlement and other job writers remain b6. Preserve current Workflow hooks.
+- **b6** `.worktrees/t1-job-observation-wiring`: partial normal observation,
+  cancellation, legacy job and steering hooks; Luna `finish_b6` is finishing
+  against b6 baselines. Copied b5b Workflow is prerequisite; action callbacks
+  in other cards must survive integration. Do not claim source coverage complete.
+
+New read-only notes: `t1.3c-reason-matrix.md` and
+`t1.3b-transfer-publication-map.md`. Their proposed splits need review before
+implementation. Transfer complete-row replay semantics are an explicit open
+design issue; do not blindly treat rerun operations as already terminal.
+
+### Completion constraints
+
+T1.1, T1.2 and inert C2 prerequisites are done. Runtime b2b onward, complete
+source/backfill coverage, derived holds/direct-write removal/watchdog, resolvers,
+runner, AgentPool and mechanical splits remain required. No goal completion yet.
+Production source since T1.1a through620f91b is+2030/-1837 (net+193), counting
+src/gateway/src/web/src/scripts/recipes. Intermediate growth is authorized; the
+final Phase2 net-negative constraint remains binding. One focused Astra review
+`phase2_reduction_design` is documenting concrete reduction seams and feasibility
+gates; no permission to weaken safety or redefine the goal.
+
+## Historical working state after h3
 
 Main `a93c600` includes h2 `ba018d7` and h3; last pushed `3cc9fcc`.
 h2 Ruff/47 targets/full620 pass; h3 Ruff/45 targets/full621 pass (418.68s,
