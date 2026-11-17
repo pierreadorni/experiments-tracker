@@ -134,10 +134,13 @@ Stop and ask if: acceptance conflicts with existing tests in a way the card does
 
 ## Order
 
-**T1 is complete under the owner-approved scope cut**, with final source/test
-acceptance in [notes/t1-acceptance.md](notes/t1-acceptance.md). No live activation
-follows; Phase 3 is next. Historical handoff notes describe earlier states and
-are not the current task status.
+**Phase 3 (T3) is complete at the source/test level.** The final results are in
+[the task log](todo.md#log). Phase 4 (execution contract 4) is next; source
+publication does not authorize live activation.
+
+T1 is complete under the owner-approved scope cut; see
+[notes/t1-acceptance.md](notes/t1-acceptance.md). Historical handoff notes describe
+prior states, not the current task status.
 
 The phase order in todo.md is the intended sequence. Within Phase 1, T0.1, T0.3,
 T0.6 and T0.7 are independent (first batch); T0.2 and T0.4 touch `store.py`, so

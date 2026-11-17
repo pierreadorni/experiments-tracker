@@ -496,18 +496,16 @@ role busy flags it still writes. All retire with the contract-3 engine in T4.8.
   without blocking completion when the integration queue is full.
   A failed check or uncertain Git outcome holds the candidate for inspection.
 
-### [ ] T3.5 Agent conflict resolution · F+R · M
-- **T3.5a/b landed:** verify and pin the resolved candidate, then return it through
-  project check and approval. T3.5c durable agent dispatch is under validation.
-- Add an integrator agent turn in `_integration` with the conflicted files and both
-  logs; the backend checks markers and the diff before continuing.
+### [x] T3.5 Agent conflict resolution · F+R · M per subcard
+- Dispatch one durable integrator turn per exact saved merge conflict, subject to
+  the existing pause and quota gates. The backend verifies and pins the result,
+  then sends it through project check and any required owner approval. Failed or
+  unresolved outcomes remain held for inspection rather than replayed.
 
-### [ ] T3.6 UI: branch, commits, Integrate · F · M
-- Branch/head/job commits and confirmed integration/revert are in main. Exact
-  approval from the browser and gateway is in final validation.
-- The experiment view shows the branch, head commit, the commit for each job, and
-  integration state. Add an **Integrate…** confirmation and a gateway command
-  passthrough (append-only migration if needed).
+### [x] T3.6 UI: branch, commits, Integrate · F · M per subcard
+- Show branch, head, job commits and integration state. Queue confirmed integration,
+  revert and exact candidate approval through local or capability-gated gateway
+  commands. No gateway migration was needed.
 
 ### [x] T3.7 `workspaces adopt-legacy` CLI · F · S per subcard
 - Dry run by default. Per locked detached worktree: create `exp/legacy-<short>`,
@@ -561,7 +559,9 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 
 ## Log
 
-- **T3.4d, T3.5b and T3.6 UI:** Completion opt-in, resolved-candidate check handoff, and branch/commit display with confirmed integration controls. Isolated `make check` passed **1013 Python, 34 web, 47 gateway**, with one Python dependency warning. Source publication only. Remaining T3.5c and T3.6c are saved on `t3/next-validation` (`ded7712`); see that checkout's `check-results/t3-agent-approval-make-check.log` before accepting either.
+- **T3 closeout, 2026-11-18:** T3.5c durable integrator and T3.6c exact approval landed. Final delta from `080a3e1`: production +597/−27, tests +609/−3. Exact-source locked Node 24 `make check` at `f003147`: **1021 Python, 36 web, 48 gateway tests passed**, with one existing dependency warning. Isolated contract-3 demo completed and produced a report and figure. Conflict dispatch and browser approval were tested against scripted boundaries, not a managed account or a hosted installation. Failed and uncertain outcomes still require operator inspection. No live activation. Phase 4 is next.
+
+- **T3.4d, T3.5b and T3.6 UI:** Completion opt-in, resolved-candidate check handoff, and branch/commit display with confirmed integration controls. Isolated `make check` passed **1013 Python, 34 web, 47 gateway**, with one Python dependency warning. Source publication only.
 
 - **T3.1, 2026-11-17:** Named Git worktrees and exact exports/pins are available as primitives; T3.3a handles intent persistence and begins replacing existing checkout creation only for new eligible runs. Additive SQLite schema 25 preserves existing rows. Real Git tests cover bounded staging, exact archives and pins surviving pruning. Production +315/−2; tests +178/−4. Ruff check and format, 42 targeted tests, and **872 isolated Python tests passed** (one dependency warning). No live activation.
 - **T3.2, 2026-11-17:** Shared environments and the fixed-interpreter option landed without changing runtime selection yet. T3.3b replaces per-experiment venv creation for eligible named worktrees; old and uncovered cases retain their existing runtime. The builder excludes its cache from Git and publishes readiness only after the exact dependencies finish building. Production +231/−3; tests +252/−0; example config +6/−0. Isolated Node 24 locked setup, Ruff check and format, 39 targeted tests, **878 Python tests passed** (one dependency warning), and contract-3 synthetic demo completed. No live activation.
