@@ -1154,7 +1154,12 @@ class Store:
             exp = self.experiment(eid)
             analysis = exp["analysis"] or {}
             reason = analysis.get("integrate_reason")
-            if not analysis.get("integrate") or exp["contract"].get("dont_merge"):
+            if (
+                exp["phase"] != "complete"
+                or execution_frozen(exp)
+                or not analysis.get("integrate")
+                or exp["contract"].get("dont_merge")
+            ):
                 return None
             branch = self.one("SELECT * FROM experiment_branches WHERE experiment_id=?", (eid,))
             if branch is None or branch["state"] != "active":
@@ -1167,6 +1172,9 @@ class Store:
             if action is None:
                 return None
             views = integration_queue.pending(db, branch["repo"])
+            if len(views) >= integration_queue.MAX_QUEUED:
+                self.emit(db, eid, "integration_not_queued", {"reason": "repository queue full"})
+                return None
             active = integration_queue.active(db, branch["repo"])
             if any(
                 view["experiment_id"] == eid and view["request"].get("kind") == "merge"
