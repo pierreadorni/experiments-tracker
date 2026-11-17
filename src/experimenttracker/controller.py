@@ -414,23 +414,14 @@ class Controller:
         if name == "register_result":
             stage = args["stage_id"]
             job = wf.store.one(
-                "SELECT j.* FROM jobs j JOIN stage_producers p ON p.intent_id=j.intent_id WHERE p.experiment_id=? AND p.stage_id=?"
-                if iteration.enabled(exp)
-                else "SELECT * FROM jobs WHERE experiment_id=? AND stage_id=? ORDER BY rowid DESC LIMIT 1",
+                "SELECT j.* FROM jobs j JOIN stage_producers p ON p.intent_id=j.intent_id WHERE p.experiment_id=? AND p.stage_id=?",
                 (eid, stage),
             )
             if not job or job["state"] != "complete":
                 raise ValueError("result registration requires a validated terminal successful job")
-            if iteration.enabled(exp):
-                return wf.store.rows(
-                    "SELECT id,name,intent_id,context,host,path,kind FROM output_refs WHERE intent_id=?",
-                    (job["intent_id"],),
-                )
-            names = artifacts.validate_stage(wf.root(eid), stage, exp["snapshot"])
-            artifacts.register(wf.store, eid, stage, wf.root(eid), names)
             return wf.store.rows(
-                "SELECT id,name,sha256 FROM artifacts WHERE experiment_id=? AND stage_id=? AND evidence_revision=?",
-                (eid, stage, exp["evidence_revision"]),
+                "SELECT id,name,intent_id,context,host,path,kind FROM output_refs WHERE intent_id=?",
+                (job["intent_id"],),
             )
         if name == "register_analysis_file":
             return wf.register_analysis_file(exp, args["filename"])

@@ -201,14 +201,14 @@ subcards remain individually within their size bands; no live activation follows
 - **Tests:** explicit archived fixture, idempotent startup/ticks, no new dispatch,
   late outcome settlement and cancellation. Split before exceeding the S budget.
 
-### [~] T1.1d–h Delete legacy execution code (C10) · F+R · M each
+### [x] T1.1d–h Delete legacy execution code (C10) · F+R · M each
 One commit per area, removing only branches that T1.1a marked not needed for reading:
 - [x] d: `advance()`;
 - [x] e: `agent_stage` legacy `prepare` / `Preparation`;
 - [x] f: the validate stage and `strict_reproducibility`;
 - [x] g: contract ≤2 repair (`repair_failed_experiments` legacy parts, `repairs/` roots);
-- [~] h: `artifacts.py` execution writers and shipped recipe; archived readers stay.
-  Status: [x] h.1ab · [x] h.4 · [x] h.5 · [x] h.1c · [x] h.2 · [x] h.3 · [x] h.6 · [x] h.7a execution tail · [x] h.7b command/reply tail · [ ] h.7c final execution fallbacks.
+- [x] h: `artifacts.py` execution writers and shipped recipe; archived readers stay.
+  Status: [x] h.1ab · [x] h.4 · [x] h.5 · [x] h.1c · [x] h.2 · [x] h.3 · [x] h.6 · [x] h.7a execution tail · [x] h.7b command/reply tail · [x] h.7c final execution fallbacks.
 
 Delete or replace the matching tests. Acceptance for each: the remaining suite passes,
 and archived fixtures still render their report via the API.
@@ -544,3 +544,5 @@ Record completed tasks here: `date · task · commit · notes`.
 2026-11-15 · T1.1-timing · Luna test-only change, coordinator review. Missing-manifest correction fixture runs up to three real Matplotlib plotting subprocesses; its default30-second total bound timed out once (657 other cases passed). Both variants passed isolated in44.32s combined. Give just this multi-turn wait an explicit60-second bound; preserve every result/error/action-count/distinct-turn/no-submission assertion. Tests+2/source0. Ruff,2 targeted variants and the full658 Python suite pass. No production or live-state change.
 
 2026-11-17 · T1.1h.7b · Luna implementation and coordinator policy, identity and size review. Frozen retry/title/steering/review mutations reject consistently; active archives stay cancel-only across gateway/UI. Completed legacy replies require their saved live discussion action and owning ready task. UI uses minimal disabled props to preserve markup and stay within budget. Source+101/−8; tests+296/−1 (406 changed lines). Ruff,63 focused shared checks and full658 Python pass; final Node24 format/build/types,29 web and45 gateway tests pass. No live activation.
+
+2026-11-17 · T1.1h.7c · Luna call-graph audit and implementation, coordinator review. Removed the dead Controller legacy registration arm, schema1 sequential recovery fallback and toy publication/renderer paths. Current graph validation, metrics/figure escaping and archived audit/conversation/queued-report readers remain. Source+62/−92 (net−30); renderer test+40;194 changed lines. Ruff,63 shared focused cases,658 full Python,29 web and45 gateway tests with Node24 build/types/format pass. T1.1 d–h complete; runtime obligation source integration follows. No live activation.

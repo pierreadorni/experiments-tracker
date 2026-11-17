@@ -1601,26 +1601,20 @@ class Workflow:
             or stages.get(job["stage_id"]) != "failed"
         ):
             raise ValueError("saved job must match the failed stage of a frozen implementation")
-        if (
-            exp["recipe_id"] == "agent_experiment_v1"
-            and exp["snapshot"]["plan"].get("schema_version", 1) >= 2
-        ):
-            graph = stage_dependencies(
-                Implementation.model_validate(exp["snapshot"]["plan"]).stages,
-                exp["snapshot"]["plan"]["schema_version"],
-            )
-            required = set()
+        graph = stage_dependencies(
+            Implementation.model_validate(exp["snapshot"]["plan"]).stages,
+            exp["snapshot"]["plan"]["schema_version"],
+        )
+        required = set()
 
-            def visit(stage):
-                for dependency in graph[stage]:
-                    if dependency not in required:
-                        required.add(dependency)
-                        visit(dependency)
+        def visit(stage):
+            for dependency in graph[stage]:
+                if dependency not in required:
+                    required.add(dependency)
+                    visit(dependency)
 
-            visit(job["stage_id"])
-            preceding = [stage for stage in compute_stages if stage in required]
-        else:
-            preceding = compute_stages[: compute_stages.index(job["stage_id"])]
+        visit(job["stage_id"])
+        preceding = [stage for stage in compute_stages if stage in required]
         if any(stages[stage] != "complete" for stage in preceding):
             raise ValueError("preceding compute stages must be complete before output recovery")
         if (
@@ -1635,50 +1629,48 @@ class Workflow:
         )
         if observed.state != "COMPLETED" or observed.exit_code != "0:0":
             raise ValueError("saved job does not have confirmed successful terminal accounting")
-        if iteration.enabled(exp):
-            # A contract-3 attempt writes into its own saved folder under its own saved
-            # manifest; the observer reads that same pair instead of the experiment root.
-            job_root = Path(job["execution_root"]) if job.get("execution_root") else self.root(eid)
-            job_manifest = (
-                json.loads(job["execution_manifest"])
-                if job.get("execution_manifest")
-                else self.store.experiment(eid)["snapshot"]
+        # A contract-3 attempt writes into its own saved folder under its own saved
+        # manifest; the observer reads that same pair instead of the experiment root.
+        job_root = Path(job["execution_root"]) if job.get("execution_root") else self.root(eid)
+        job_manifest = (
+            json.loads(job["execution_manifest"])
+            if job.get("execution_manifest")
+            else self.store.experiment(eid)["snapshot"]
+        )
+        names = list(
+            await asyncio.to_thread(artifacts.validate_stage, job_root, job["stage_id"], job_manifest)
+        )
+        now = clock.now()
+        with self.store.tx() as db:
+            iteration.complete(self, exp, job, job_manifest, job_root, db)
+            db.execute(
+                "UPDATE jobs SET state='complete',scheduler_state='COMPLETED',exit_code='0:0',error=NULL,"
+                "observed_at=?,started_at=COALESCE(?,started_at),ended_at=COALESCE(?,ended_at),"
+                "estimated_start_at=NULL,pending_reason=NULL WHERE intent_id=?",
+                (now, observed.started_at, observed.ended_at, job["intent_id"]),
             )
-            names = list(
-                await asyncio.to_thread(artifacts.validate_stage, job_root, job["stage_id"], job_manifest)
+            db.execute(
+                "UPDATE stages SET state='complete',error=NULL,output_manifest=?,updated_at=? WHERE experiment_id=? AND id=?",
+                (encode(names), now, eid, job["stage_id"]),
             )
-            now = clock.now()
-            with self.store.tx() as db:
-                iteration.complete(self, exp, job, job_manifest, job_root, db)
-                db.execute(
-                    "UPDATE jobs SET state='complete',scheduler_state='COMPLETED',exit_code='0:0',error=NULL,"
-                    "observed_at=?,started_at=COALESCE(?,started_at),ended_at=COALESCE(?,ended_at),"
-                    "estimated_start_at=NULL,pending_reason=NULL WHERE intent_id=?",
-                    (now, observed.started_at, observed.ended_at, job["intent_id"]),
-                )
-                db.execute(
-                    "UPDATE stages SET state='complete',error=NULL,output_manifest=?,updated_at=? WHERE experiment_id=? AND id=?",
-                    (encode(names), now, eid, job["stage_id"]),
-                )
-                db.execute(
-                    "UPDATE experiments SET phase='training',hold_reason='new_compute_paused',error=NULL,"
-                    "pause_compute=1,observed_at=?,updated_at=? WHERE id=?",
-                    (now, now, eid),
-                )
-                iteration.queue_working_report(self, exp, job, db)
-                self.store.emit(
-                    db,
-                    eid,
-                    "output_validation_reconciled",
-                    {"intent_id": job["intent_id"], "job_id": job["job_id"], "stage": job["stage_id"]},
-                )
-            return {
-                "experiment_id": eid,
-                "job_id": job["job_id"],
-                "stage": job["stage_id"],
-                "pause_compute": True,
-            }
-        raise ValueError("legacy output reconciliation is unavailable")
+            db.execute(
+                "UPDATE experiments SET phase='training',hold_reason='new_compute_paused',error=NULL,"
+                "pause_compute=1,observed_at=?,updated_at=? WHERE id=?",
+                (now, now, eid),
+            )
+            iteration.queue_working_report(self, exp, job, db)
+            self.store.emit(
+                db,
+                eid,
+                "output_validation_reconciled",
+                {"intent_id": job["intent_id"], "job_id": job["job_id"], "stage": job["stage_id"]},
+            )
+        return {
+            "experiment_id": eid,
+            "job_id": job["job_id"],
+            "stage": job["stage_id"],
+            "pause_compute": True,
+        }
 
     async def observe_jobs(self):
         for job in self.store.rows(
@@ -3526,9 +3518,7 @@ class Workflow:
                     exp,
                     artifacts.read_json(root / "results.json", root),
                     analysis,
-                    [by_name[name]["id"] for name in exp["snapshot"]["plan"]["figures"] if name in by_name]
-                    if exp["recipe_id"] == "agent_experiment_v1"
-                    else by_name["predictions.svg"]["id"],
+                    [by_name[name]["id"] for name in exp["snapshot"]["plan"]["figures"] if name in by_name],
                     {a["id"]: a["name"] for a in records},
                 )
             )

@@ -1,6 +1,6 @@
 # Installation
 
-Start with the local demo, then configure live execution. Hosting is optional. This release is source-installed; there is no published PyPI package or container image. Keep the repository: recipes, machine guidance, frontend assets and the locked Codex runtime are used alongside the Python package.
+Start with the local demo, then configure live execution. Hosting is optional. This release is source-installed; there is no published PyPI package or container image. Keep the repository: machine guidance, frontend assets and the locked Codex runtime are used alongside the Python package.
 
 ## 1. Prepare an isolated checkout
 

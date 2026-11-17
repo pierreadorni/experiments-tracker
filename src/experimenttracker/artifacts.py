@@ -342,22 +342,11 @@ def validate_analysis(value, evidence_ids):
 def render_report(exp, result, analysis: Analysis, figure_id, artifact_ids):
     esc = html.escape
     rows = "".join(
-        f"<tr><th scope='row'>{v.title()}</th><td>{m['mse']:.6g}</td>"
-        f"<td>{m['rmse']:.6g}</td><td>{m['n_parameters']}</td><td>{m['n_test']}</td></tr>"
-        for v, m in (result["metrics"].items() if isinstance(result["metrics"], dict) else [])
+        f"<tr><th scope='row'>{esc(m['variant'])}</th><td>{esc(m['name'])}</td>"
+        f"<td>{m['value']:.6g}</td><td>{esc(m['unit'])}</td></tr>"
+        for m in result["metrics"]
     )
-    generic = exp["recipe_id"] == "agent_experiment_v1"
-    if generic:
-        rows = "".join(
-            f"<tr><th scope='row'>{esc(m['variant'])}</th><td>{esc(m['name'])}</td>"
-            f"<td>{m['value']:.6g}</td><td>{esc(m['unit'])}</td></tr>"
-            for m in result["metrics"]
-        )
-    header = (
-        "<tr><th>Variant</th><th>Metric</th><th>Value</th><th>Unit</th></tr>"
-        if generic
-        else "<tr><th>Variant</th><th>MSE (y²)</th><th>RMSE (y)</th><th>Parameters</th><th>Test cases</th></tr>"
-    )
+    header = "<tr><th>Variant</th><th>Metric</th><th>Value</th><th>Unit</th></tr>"
     figures = figure_id if isinstance(figure_id, list) else [figure_id]
     figure_html = "".join(
         f'<figure><img src="/api/artifacts/{esc(i)}" alt="{esc(artifact_ids.get(i, "Experiment figure"))}"><figcaption>{esc(artifact_ids.get(i, ""))}</figcaption></figure>'
