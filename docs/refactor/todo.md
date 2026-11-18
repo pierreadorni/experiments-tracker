@@ -545,6 +545,7 @@ See [tool rollout and effect boundaries](notes/t4.2-rollout.md).
 - [x] `ask_owner` and `request_integration` through MCP. The manual approval gate is T4.4; answer wakeup is T4.3.
 - [x] `submit_job` for manually approved local CPU jobs. `register_result` advertises a usable JSON example without relaxing exact producer or metric validation. Remote dispatch and GPU admission are not enabled.
 - [x] A submission can declare a bounded `result_file`. The exact saved intent binds registration to that file; older undeclared submissions and replays retain their existing behavior.
+- [x] Inert remote preparation, exact-route intent persistence and bounded pinned-source staging are implemented and tested. Remote send remains disabled.
 `cluster_info`, `submit_job`, `job_status`/`job_logs`, `cancel_job` (reuse),
 `register_result`, `register_figure`, `update_report` (reuse), `save_checkpoint`,
 `ask_owner`, `request_integration`. Each: a Pydantic input schema, immediate
@@ -598,6 +599,7 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 
 ## Log
 
+- **T4.2 remote staging:** `be5beb8`, `b00bd9a`, `2792e81`, `5aed2cc`, `fe6f806` prepare, save and stage a CPU intent against its exact Jean Zay route. The upload is exported from the saved Git pin and retries use fresh pending destinations. Ruff, 48 focused tests and all **1,418 Python tests** passed in isolated shards. No send or live activation.
 - **T4.8 synthetic dispatcher gate:** `1762d7a` exercises exact owner approval, one fake CPU job, debounced research follow-up, result registration and a ready report through completion (source 0; tests +213/−0). Ruff passed. The isolated suite passed 1,414 tests with one maintenance fixture error; that test and both new targets then passed after restoring the expected `recipes/` directory in the validation checkout. The C3 CLI demo and default are unchanged.
 - **T4.3 remote delivery and observation:** `7d06123` delivers only the declared file using the job’s saved route, without replacing conflicting bytes (source +137/−2; tests +96/−0). `4068561` reuses exact observation and terminal wake settlement, keeping successful jobs unresolved until transfer completes (source +177/−42; tests +275/−0). Ruff, 68 focused tests, and all **1,413 Python tests** passed in isolated shards. Remote submission remains disabled; no live activation.
 - **T4.4 policy guard:** `cc51dbb` reuses the existing Autopilot compute authority for C4 submissions before effects and at intent save (source +3/−0; tests +87/−0). It does not replace exact human approval. Ruff, 21 focused tests, and all **1,402 Python tests** passed in isolated shards. No live activation.
