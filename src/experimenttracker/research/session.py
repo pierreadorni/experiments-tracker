@@ -190,6 +190,12 @@ def _job_events(db, experiment, predecessor, due):
         return [], []
     events, bind = [], []
     for item in due:
+        if item["event"] == wakeups.RESEARCH_TIMER:
+            if item["source_id"] != predecessor["id"]:
+                continue
+            events.append(f"Timer due for completed research action {predecessor['id']}")
+            bind.append(item["wakeup_id"])
+            continue
         if item["event"] != wakeups.JOB_TERMINAL:
             continue
         job = db.execute(
@@ -266,6 +272,7 @@ def follow_up_turn(store, eid, *, now=None):
             thread_id=experiment["thread_id"],
         )
         wakeups.consume(store, eid, bind, action["id"], db=db, now=now)
+        wakeups.supersede_timer(db, eid, predecessor["id"])
         if guidance:
             db.execute(
                 "UPDATE steering SET state='applied',applied_at=? WHERE request_id=? AND state='pending'",

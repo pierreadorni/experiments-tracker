@@ -28,7 +28,8 @@ MAX_DUE_WAKEUPS = 32
 MAX_SOURCE_ID = 200
 OWNER_REQUEST_ANSWERED = "owner_request_answered"
 JOB_TERMINAL = "job_terminal"
-SUPPORTED_EVENTS = frozenset({OWNER_REQUEST_ANSWERED, JOB_TERMINAL})
+RESEARCH_TIMER = "research_timer"
+SUPPORTED_EVENTS = frozenset({OWNER_REQUEST_ANSWERED, JOB_TERMINAL, RESEARCH_TIMER})
 _NAMESPACE = UUID("0f4e1a2b-3c5d-4e6f-8a9b-1c2d3e4f5a6b")
 _TERMINAL_PHASES = frozenset({"complete", "failed", "cancelled"})
 # The terminal values saved in jobs.state; stage states are a different vocabulary.
@@ -105,7 +106,7 @@ def _pending_research_action(db, eid, action_id):
         raise Conflict("event wakeups bind only to this experiment's pending research action")
 
 
-def record(store, eid, event, source_id, *, db=None, now=None):
+def record(store, eid, event, source_id, *, delay=None, db=None, now=None):
     """Record one supported event wakeup, or adopt its saved row on an exact replay.
 
     Pass ``db`` to record inside the transaction that saves the source event. A replay
@@ -118,9 +119,15 @@ def record(store, eid, event, source_id, *, db=None, now=None):
         raise ValueError("an event wakeup needs a bounded saved source identity")
     if db is None:
         with store.tx() as transaction:
-            return record(store, eid, event, source_id, db=transaction, now=now)
+            return record(store, eid, event, source_id, delay=delay, db=transaction, now=now)
     now = clock.now() if now is None else now
-    payload = encode({"event": event, "source_id": source_id})
+    if event == RESEARCH_TIMER and (type(delay) is not int or not 60 <= delay <= 86400):
+        raise ValueError("a research timer needs a delay between 60 and 86400 seconds")
+    if event != RESEARCH_TIMER and delay is not None:
+        raise ValueError("only a research timer accepts a delay")
+    payload = encode(
+        {"event": event, "source_id": source_id, **({"delay": delay} if delay is not None else {})}
+    )
     wakeup = wakeup_id(eid, event, source_id)
     experiment = _live_experiment(db, eid)
     prior = db.execute("SELECT * FROM agent_wakeups WHERE id=?", (wakeup,)).fetchone()
@@ -130,25 +137,66 @@ def record(store, eid, event, source_id, *, db=None, now=None):
         return _evidence(prior)
     if event == OWNER_REQUEST_ANSWERED:
         _answered_request(db, experiment, source_id)
-    else:
+    elif event == JOB_TERMINAL:
         job = db.execute(
             "SELECT state FROM jobs WHERE intent_id=? AND experiment_id=?", (source_id, eid)
         ).fetchone()
         if job is None or job["state"] not in _TERMINAL_JOB_STATES:
             raise Conflict("only this experiment's saved terminal job is an event")
-    pending = db.execute(
-        "SELECT * FROM agent_wakeups WHERE experiment_id=? AND state='pending' AND due_at>? "
-        "ORDER BY due_at,created_at,id LIMIT ?",
-        (eid, now, MAX_DUE_WAKEUPS),
-    ).fetchall()
-    window = next((row["due_at"] for row in pending if _evidence(row) is not None), None)
+    else:
+        from .prompt import timer_delay
+
+        predecessor = db.execute(
+            "SELECT experiment_id,phase,state,result FROM agent_actions WHERE id=?", (source_id,)
+        ).fetchone()
+        if (
+            predecessor is None
+            or predecessor["experiment_id"] != eid
+            or predecessor["phase"] != PHASE
+            or predecessor["state"] != "completed"
+        ):
+            raise Conflict("a research timer needs its exact completed predecessor")
+        result = json.loads(predecessor["result"] or "null")
+        if (
+            not isinstance(result, dict)
+            or result.get("status") != "wait"
+            or timer_delay(result.get("next")) != delay
+        ):
+            raise Conflict("a research timer must match its saved wait decision")
+    due_at = now + (delay if event == RESEARCH_TIMER else DEBOUNCE_SECONDS)
+    if event != RESEARCH_TIMER:
+        pending = db.execute(
+            "SELECT * FROM agent_wakeups WHERE experiment_id=? AND state='pending' AND due_at>? "
+            "AND CASE WHEN json_valid(reason) THEN json_extract(reason,'$.event') END IN (?,?) "
+            "ORDER BY due_at,created_at,id LIMIT 1",
+            (eid, now, OWNER_REQUEST_ANSWERED, JOB_TERMINAL),
+        ).fetchone()
+        if pending is not None:
+            due_at = pending["due_at"]
     db.execute(
         "INSERT INTO agent_wakeups(id,experiment_id,reason,due_at,state,action_id,created_at) "
         "VALUES(?,?,?,?,'pending',NULL,?)",
-        (wakeup, eid, payload, now + DEBOUNCE_SECONDS if window is None else window, now),
+        (
+            wakeup,
+            eid,
+            payload,
+            due_at,
+            now,
+        ),
     )
     wakeup_obligations.sync_wakeup(db, wakeup)
     return _evidence(db.execute("SELECT * FROM agent_wakeups WHERE id=?", (wakeup,)).fetchone())
+
+
+def supersede_timer(db, eid, predecessor_id):
+    """A different wake made the predecessor's outstanding timer obsolete."""
+    identity = wakeup_id(eid, RESEARCH_TIMER, predecessor_id)
+    updated = db.execute(
+        "UPDATE agent_wakeups SET state='superseded' WHERE id=? AND experiment_id=? AND state='pending'",
+        (identity, eid),
+    )
+    if updated.rowcount:
+        wakeup_obligations.sync_wakeup(db, identity)
 
 
 def due(store, eid, *, now=None):

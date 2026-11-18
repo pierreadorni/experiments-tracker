@@ -38,7 +38,7 @@ _INSTRUCTIONS = (
     ' "summary": "<nonblank>", "next": "<nonblank>",\n'
     ' "integrate": {"value": true | false, "reason": "<nonblank>"}}\n'
     "integrate is optional, and required only when status is done.\n"
-    "continue starts the next turn; wait needs an active job or pending answer;\n"
+    "continue starts the next turn; wait needs an active job, pending answer, or next exactly timer:<seconds> (60..86400); timer is only valid with wait.\n"
     "needs_owner needs an open ask_owner; done needs a published report.\n"
 )
 
@@ -59,6 +59,19 @@ def _nonblank(value):
     if not value.strip():
         raise ValueError("must not be blank")
     return value
+
+
+def timer_delay(next_value: str) -> int | None:
+    """Parse the one exact bounded timer syntax accepted for a settled wait."""
+    if not isinstance(next_value, str) or not next_value.startswith("timer:"):
+        return None
+    value = next_value.removeprefix("timer:")
+    if not value.isascii() or not value.isdecimal() or value.startswith("0") or len(value) > 5:
+        raise ValueError("timer must use exact syntax timer:<integer seconds>")
+    delay = int(value)
+    if not 60 <= delay <= 86400:
+        raise ValueError("timer seconds must be between 60 and 86400")
+    return delay
 
 
 def _action_marker(action_id):

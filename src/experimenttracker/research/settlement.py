@@ -19,7 +19,8 @@ from pydantic import ValidationError
 from ..codex_client import NeedsAttention
 from ..core import action_obligations
 from ..store import encode
-from .prompt import TurnEnd, TurnEvidence, validate_turn_end
+from . import wakeups
+from .prompt import TurnEnd, TurnEvidence, timer_delay, validate_turn_end
 
 PHASE = "research"
 _COMMIT_PREFIX = "Research turn "
@@ -100,8 +101,8 @@ def _open_question(db, experiment):
     return row is not None
 
 
-def _evidence(db, experiment):
-    """Observe the saved conditions C7 requires; timers stay unvalidated until T4.3."""
+def _evidence(db, experiment, *, timer=False):
+    """Observe the saved conditions C7 requires, including an explicitly parsed timer."""
     eid = experiment["id"]
     active = db.execute(
         "SELECT 1 FROM jobs WHERE experiment_id=? AND state IN (?,?,?) LIMIT 1",
@@ -116,11 +117,15 @@ def _evidence(db, experiment):
         pending_answers=1 if question else 0,
         open_ask_owner=question,
         published_report=report is not None,
+        validated_timer=timer,
     )
 
 
 def _validate_saved_end(db, turn, experiment):
-    evidence = _evidence(db, experiment)
+    delay = timer_delay(turn.next)
+    if delay is not None and turn.status != "wait":
+        raise ValueError("timer is valid only with status wait")
+    evidence = _evidence(db, experiment, timer=delay is not None)
     validate_turn_end(turn, evidence)
     if turn.status == "done" and (
         evidence.active_jobs
@@ -228,6 +233,17 @@ def _settle(store, expected, *, turn_id, state, result, error, turn=None):
                         f"saved research evidence changed during the turn commit: {exc}"
                     ) from None
         action_obligations.transition(db, expected["id"], changes, before=current, expected=expected)
+        if turn is not None and turn.status == "wait":
+            delay = timer_delay(turn.next)
+            if delay is not None and not _terminal(experiment):
+                wakeups.record(
+                    store,
+                    expected["experiment_id"],
+                    wakeups.RESEARCH_TIMER,
+                    expected["id"],
+                    delay=delay,
+                    db=db,
+                )
         if turn is not None and turn.status == "done" and not _terminal(experiment):
             db.execute(
                 "UPDATE experiments SET phase='complete' WHERE id=? AND phase NOT IN ('cancelled','complete','failed') AND deleted_at IS NULL",

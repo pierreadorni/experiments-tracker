@@ -11,6 +11,7 @@ from experimenttracker.research import (
     turn_prompt,
     validate_turn_end,
 )
+from experimenttracker.research.prompt import timer_delay
 
 BRIEF = "Compare two toy optimizers under one fixed compute budget."
 _OLDER_EVENTS = "[older events omitted]"
@@ -92,6 +93,23 @@ def test_done_needs_a_published_report():
     with pytest.raises(ValueError, match="published report"):
         validate_turn_end(turn("done", **fields), TurnEvidence(active_jobs=1, open_ask_owner=True))
     validate_turn_end(turn("done", **fields), TurnEvidence(published_report=True))
+
+
+@pytest.mark.parametrize("value,delay", [("timer:60", 60), ("timer:86400", 86400)])
+def test_timer_syntax_accepts_only_bounded_canonical_seconds(value, delay):
+    assert timer_delay(value) == delay
+
+
+@pytest.mark.parametrize(
+    "value", ["timer:59", "timer:86401", "timer:+60", "timer:60.0", "timer: 60", "timer:60 ", "timer:٦٠"]
+)
+def test_timer_syntax_rejects_noncanonical_or_out_of_bounds_seconds(value):
+    with pytest.raises(ValueError):
+        timer_delay(value)
+
+
+def test_non_timer_next_is_not_a_timer():
+    assert timer_delay("continue comparison") is None
 
 
 def test_continue_is_accepted_without_evidence():
