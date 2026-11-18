@@ -560,9 +560,11 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 - [x] Inert CPU-only admission validation checks the latest exact owner approval, saved action, pause/maintenance and resource limits.
 - [x] Persist exact local submission intents and reconciliation obligations; replay never authorizes another submit.
 - [x] Pinned source preparation and local dispatch helper; synthetic lost response recovers by exact intent without a second submit.
-- Remaining: expose the reviewed submission helper, prove the full research scenario, and add the Autopilot envelope.
+- [x] Manual local submission is exposed through MCP and covered by the approval-to-report scenario.
+- Remaining: the Autopilot envelope.
 ### [ ] T4.5 UI for contract 4 (turns, checkpoint, jobs, approvals, report) · F · M
-### [ ] T4.6 Contract 4 scenario suite (design.md C12 list) · F · M
+### [~] T4.6 Contract 4 scenario suite (design.md C12 list) · F · M per subcard
+- [x] Approval → one submit with lost reply → exact adoption → debounced terminal wake → registered result → ready report → completed experiment. Model turns are scripted; no live scheduler.
 ### [ ] T4.7 Live pilot — owner-authorized, small brief, measure turns, tokens and interventions · owner + S
 - The owner has authorized the pilot; execution waits for the [readiness and isolation checks](notes/t4.7-pilot.md). This does not authorize a rollout or contract-3 retirement.
 ### [ ] T4.8 Make contract 4 the default; archive contract 3 after it drains; delete the old engine · S · L
@@ -580,6 +582,8 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 ---
 
 ## Log
+
+- **T4.2 manual submission and T4.6 first scenario:** `5e88041`, `9fd44e4`, `cdf2ed9`. Production; tests: +24/−0; +96/−0, +19/−4; +14/−0, 0; +138/−0. Manual local submission is bound to a live owned turn. `done` settles atomically with experiment completion only after a ready report and resolution of pending work. Isolated Node 24 locked `make check`: **1,363 Python, 36 web, 48 gateway tests passed** (one existing Python warning). No live pilot.
 
 - **T4.2 source preparation and dispatch:** `dbc3506`, `f1bdb64`. Production; tests respectively: +75/−0; +90/−0 and +77/−0; +87/−0. Preparation pins and exports the exact commit, preserves argv, and refuses occupied attempt directories. Fake scheduler tests prove fresh intent before send, pause refusal, and exact adoption after a lost response without a second submit. Locked Ruff and **1,356 Python tests passed** (one existing dependency warning). The isolated contract-3 synthetic demo completed; contract-4 MCP submission and the authorized live pilot have not started.
 
