@@ -560,6 +560,7 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 ### [ ] T4.5 UI for contract 4 (turns, checkpoint, jobs, approvals, report) · F · M
 ### [ ] T4.6 Contract 4 scenario suite (design.md C12 list) · F · M
 ### [ ] T4.7 Live pilot — owner-authorized, small brief, measure turns, tokens and interventions · owner + S
+- The owner has authorized the pilot; execution waits for the [readiness and isolation checks](notes/t4.7-pilot.md). This does not authorize a rollout or contract-3 retirement.
 ### [ ] T4.8 Make contract 4 the default; archive contract 3 after it drains; delete the old engine · S · L
 
 ---
