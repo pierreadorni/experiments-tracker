@@ -526,7 +526,9 @@ role busy flags it still writes. All retire with the contract-3 engine in T4.8.
 
 ## Phase 4 — Research loop, execution contract 4 (C7)
 
-### [ ] T4.1 Contract 4 skeleton · S · L
+### [~] T4.1 Contract 4 skeleton · S · M per subcard
+- Ordered source rollout: [bounded cards and identity boundaries](notes/t4.1-rollout.md).
+- [x] T4.1a–d: turn protocol, stage isolation, archive boundary and inert first-turn intent.
 - Add a project flag `research_loop`. The create path sets `execution_contract: 4`.
 - One session per experiment, with `cwd` = branch worktree. Add the turn-input
   builder (under 8 KB) and the turn-end schema with the enforcement rules.
@@ -558,6 +560,8 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 ---
 
 ## Log
+
+- **T4.1a–d, 2026-11-18:** `378e4ba`, `17b0f62`, `e1ba734`, `6196f95`. The bounded protocol and saved first-turn intent are inert; archive eligibility is separate from entry to the contract-3 engine. The queue and its admission obligation commit together. Numstat (production; tests): a +267/−0; +203/−0, b +65/−21; +234/−0, c +43/−13; +255/−4, d +96/−1; +167/−0. The prompt/schema add capability not present in the stage manifests; T4.8 retires those old execution paths. Isolated Node 24 locked Ruff and **1,092 Python tests passed** (one existing dependency warning), including 94 focused tests before the full run. No contract-4 create or live activation.
 
 - **T3 closeout, 2026-11-18:** T3.5c durable integrator and T3.6c exact approval landed. Final delta from `080a3e1`: production +597/−27, tests +609/−3. Exact-source locked Node 24 `make check` at `f003147`: **1021 Python, 36 web, 48 gateway tests passed**, with one existing dependency warning. Isolated contract-3 demo completed and produced a report and figure. Conflict dispatch and browser approval were tested against scripted boundaries, not a managed account or a hosted installation. Failed and uncertain outcomes still require operator inspection. No live activation. Phase 4 is next.
 
