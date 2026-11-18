@@ -14,6 +14,38 @@ from .job_source import prepare
 from .tools import require_live_research
 
 
+def record_submission(store, eid, job, job_id):
+    """Persist an exact scheduler identity with its external-obligation transition."""
+    intent = job["intent_id"]
+    if not isinstance(job_id, str) or not job_id.strip():
+        raise SubmissionUncertain("scheduler returned no exact job identity")
+    with store.tx() as db:
+        before = job_obligations.locked_job(db, job, "state", "execution_manifest", "script_hash")
+        if before is None:
+            raise SubmissionUncertain("saved intent changed before scheduler ID was recorded")
+        db.execute("UPDATE jobs SET state='submitted',job_id=? WHERE intent_id=?", (job_id, intent))
+        job_obligations.sync_backend(db, intent, before=before)
+        store.emit(db, eid, "job_submitted", {"intent_id": intent, "job_id": job_id})
+        return dict(db.execute("SELECT * FROM jobs WHERE intent_id=?", (intent,)).fetchone())
+
+
+def record_pre_send_failure(store, eid, job, error):
+    """End an intent when dispatch proves the scheduler send was never attempted."""
+    intent = job["intent_id"]
+    with store.tx() as db:
+        before = job_obligations.locked_job(db, job, "state")
+        if before is None or before["state"] != "submitting" or before["job_id"] is not None:
+            return None
+        message = str(error).strip() or type(error).__name__
+        db.execute(
+            "UPDATE jobs SET state='failed',error=? WHERE intent_id=? AND state='submitting' AND job_id IS NULL",
+            (f"{job_obligations.NOT_SUBMITTED_PREFIX} pre-send failure: {message}", intent),
+        )
+        job_obligations.sync_backend(db, intent, before=before)
+        store.emit(db, eid, "submission_not_sent", {"intent_id": intent, "error": message})
+        return dict(db.execute("SELECT * FROM jobs WHERE intent_id=?", (intent,)).fetchone())
+
+
 def _replay(store, eid, action, request):
     with store.tx() as db:
         saved = action_obligations.expected_saved(db, action)
@@ -63,15 +95,6 @@ async def dispatch(workflow, eid, action, request):
         if not created:
             return job
         job_id = await scheduler.submit(intent, script, source.root, resources=request.resources)
-        if not isinstance(job_id, str) or not job_id.strip():
-            raise SubmissionUncertain("scheduler returned no exact job identity")
-        with store.tx() as db:
-            before = job_obligations.locked_job(db, job, "state", "execution_manifest", "script_hash")
-            if before is None:
-                raise SubmissionUncertain("saved intent changed before scheduler identity was recorded")
-            db.execute("UPDATE jobs SET state='submitted',job_id=? WHERE intent_id=?", (job_id, intent))
-            job_obligations.sync_backend(db, intent, before=before)
-            store.emit(db, eid, "job_submitted", {"intent_id": intent, "job_id": job_id})
-            return dict(db.execute("SELECT * FROM jobs WHERE intent_id=?", (intent,)).fetchone())
+        return record_submission(store, eid, job, job_id)
     finally:
         workflow.submissions_in_flight.discard(intent)
