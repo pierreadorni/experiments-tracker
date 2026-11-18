@@ -17,15 +17,20 @@ from .config import StrictModel
 from .core import action_obligations, wakeup_obligations
 from .legacy_archive import execution_frozen
 from .models import Analysis, Implementation, ReportDocument, ResearchPlan
+from .research.checkpoints import SaveCheckpoint, save_checkpoint
+from .research.report_tool import UpdateReport
+from .research.report_tool import update_report as update_research_report
 from .research.tools import (
     ClusterInfo,
     JobLogs,
     JobStatus,
+    checkpoint_receipt,
     cluster_info,
     job_logs,
     job_status,
     log_tail,
     require_live_research,
+    require_research_write,
 )
 from .store import Conflict, encode
 
@@ -167,6 +172,16 @@ RESEARCH_TOOLS = [
         "job_logs",
         "Read one of this experiment's saved jobs' bounded log tails from the executor's local attempt directory. Remote logs are available only after the existing transfer; repeating a request_id is the same read.",
         JobLogs,
+    ),
+    tool_from_model(
+        "save_checkpoint",
+        "Save one private, versioned research checkpoint for this turn. Returns only the version receipt; the Markdown is never published. Repeating a request_id with identical Markdown adopts the saved checkpoint.",
+        SaveCheckpoint,
+    ),
+    tool_from_model(
+        "update_report",
+        "Queue one new working report version from saved evidence. Returns the version and state; the existing report runner builds and publishes it. Repeating a request_id with the same document adopts the saved version.",
+        UpdateReport,
     ),
 ]
 RESEARCH_TOOL_NAMES = frozenset(item["name"] for item in RESEARCH_TOOLS)
@@ -426,6 +441,14 @@ class Controller:
                 eid, "interpret" if action["phase"] == "interpret" else action["phase"]
             ):
                 raise ValueError("current project authority/hold rejects stale child turn effects")
+        if name == "save_checkpoint":
+            require_research_write(wf, exp, action)
+            request = SaveCheckpoint.model_validate(args)
+            return checkpoint_receipt(save_checkpoint(wf.store, action, request))
+        if name == "update_report" and (exp.get("contract") or {}).get("execution_contract") == 4:
+            require_research_write(wf, exp, action)
+            request = UpdateReport.model_validate(args)
+            return update_research_report(wf.store, exp, action, request)
         if action["phase"].startswith("agent:"):
             if name == "check_agent_stage":
                 job = iteration.agent_job(wf, exp, action["phase"])

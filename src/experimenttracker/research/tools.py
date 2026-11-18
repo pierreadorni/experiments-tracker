@@ -4,6 +4,9 @@
 owner's configured resource caps. ``job_status`` and ``job_logs`` reuse the existing
 experiment-scoped job lookup and local log reader. None refreshes discovery, submits
 work or saves a receipt: repeating the same UUID is the same read.
+
+It also holds the shared pre-dispatch gate for the contract-4 write tools: the exact
+live research turn must own the action and the executor must not be in maintenance.
 """
 
 from pathlib import Path
@@ -13,6 +16,7 @@ from pydantic import Field
 
 from .. import artifacts
 from ..config import StrictModel
+from ..maintenance import blocked
 
 RESEARCH_PHASE = "research"
 MAX_FIELD_CHARS = 4096
@@ -150,6 +154,23 @@ def job_logs(workflow, experiment, request):
         "available": bool(logs),
         "logs": logs,
     }
+
+
+def require_research_write(workflow, experiment, action):
+    """Refuse a contract-4 write outside its exact live turn or during maintenance.
+
+    The write tools repeat their own saved-identity checks inside the transaction;
+    this shared gate runs before either tool can touch the store. A release handover
+    must never start a new durable research write.
+    """
+    require_live_research(experiment, action)
+    if blocked(workflow.store):
+        raise ValueError("maintenance forbids research writes")
+
+
+def checkpoint_receipt(saved):
+    """Return the save_checkpoint receipt; the private Markdown stays in its event."""
+    return {field: saved[field] for field in ("request_id", "experiment_id", "action_id", "version", "bytes")}
 
 
 def require_live_research(experiment, action):

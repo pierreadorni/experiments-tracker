@@ -74,6 +74,8 @@ def test_v4_selects_only_research_tools_and_keeps_contract_three_listing(runtime
         "cluster_info",
         "job_logs",
         "job_status",
+        "save_checkpoint",
+        "update_report",
     }
     assert "cluster_info" not in {item["name"] for item in controller.served_tools()}
     assert "submit_stage" in {item["name"] for item in controller.served_tools()}
