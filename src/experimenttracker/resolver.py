@@ -280,7 +280,11 @@ class TurnResolver:
         return row["created_at"] if row else action["updated_at"]
 
     def absent(self, action, exp, turns):
-        """A readable thread without the turn proves it never started: continue it once."""
+        """A readable thread without the turn proves it never started.
+
+        Contract 3 roles continue once; a research turn fails for inspection instead
+        and is never replayed from a copied prompt.
+        """
         store = self.workflow.store
         integration = action["phase"].startswith("integration:")
         evidence = {
@@ -297,9 +301,11 @@ class TurnResolver:
             )
             store.emit(db, exp["id"], "agent_action_changed", evidence)
             # A diagnostic wake owns its own failure handling; other roles admit a continuation.
+            # A contract 4 research turn is never continued from the failed row: its
+            # replacement would copy an action-marked prompt into a different turn.
             continuation = (
                 None
-                if integration or action["phase"] == "monitor"
+                if integration or action["phase"] in ("monitor", "research")
                 else store.continue_action(failed, feedback=NOT_STARTED, _db=db)
             )
             if continuation and action["phase"].startswith("discuss:"):
@@ -315,6 +321,15 @@ class TurnResolver:
                 )
         if continuation and not action["phase"].startswith("discuss:"):
             store.update(exp["id"], hold_reason="agent_continuation", error=NOT_STARTED)
+        if action["phase"] == "research":
+            # Proven absence keeps the existing evidence above and waits for owner
+            # inspection; a bounded retry policy arrives separately.
+            store.update(exp["id"], hold_reason="agent_dispatch_uncertain", error=NOT_STARTED)
+            store.notify(
+                exp["id"],
+                "required_decision",
+                f"Research turn {action['id']} was never started; inspection required",
+            )
         if integration:
             self.workflow.integration_resolver.failed(action, NOT_STARTED)
         self.workflow.agent_pool.settle_row("agent_actions", action["id"])

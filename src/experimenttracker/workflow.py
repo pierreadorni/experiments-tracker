@@ -54,6 +54,9 @@ from .progress import DiscussionActivity, describe_item, read_job_progress
 from .projects import Projects, ProjectUnavailable
 from .quota import QuotaGate
 from .remote import AdmissionPending, RemoteSlurmScheduler, TransferPending
+from .research import readback as research_readback
+from .research.dispatch import ResearchDispatch
+from .research.settlement import complete as settle_research_turn
 from .resolver import TurnResolver
 from .slurm import ResourceUnavailable, SubmissionUncertain, command, wrapper
 from .steering import process_restarts, queue_late_reports
@@ -162,6 +165,7 @@ class Workflow:
         self.supervisor = ProjectSupervisor(self)
         self.controller = Controller(self)
         self.research = ResearchController(self)
+        self.research_dispatch = ResearchDispatch(self, partial(settle_research_turn, self))
         self.resolver = TurnResolver(self)
         self.submission_lock = asyncio.Lock()
         # Intent IDs whose external submission is crossing the scheduler boundary right
@@ -764,6 +768,7 @@ class Workflow:
         queue_late_reports(self)
         await self.conversation.advance()
         await self.integration_resolver.advance()
+        await self.research_dispatch.advance()
         await self.advance_title()
         await self.controller.advance()
 
@@ -3411,6 +3416,10 @@ class Workflow:
     async def adopt_turn(self, action_id, *, turn_id=None):
         """Read and adopt one exact saved turn; operator reconciliation and the tick share it."""
         action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (action_id,))
+        if action is not None and action["phase"] == research_readback.PHASE:
+            # Contract 4 settles through its own readback; the contract 3 validators
+            # below must never interpret a research turn end.
+            return await research_readback.reconcile(self, action, turn_id=turn_id)
         if action and action["state"] == "completed" and turn_id is not None and action["turn_id"] == turn_id:
             return {
                 "action_id": action_id,
