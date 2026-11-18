@@ -4052,9 +4052,9 @@ class Workflow:
                         if iteration.enabled(exp)
                         else (eid, self.store.experiment(eid)["evidence_revision"]),
                     )
-                    receipts = []
+                    report_options = {}
                     if exp["contract"].get("execution_contract") == 4:
-                        receipts = [
+                        report_options["result_receipts"] = [
                             json.loads(event["payload"])
                             for event in self.store.rows(
                                 "SELECT payload FROM events WHERE experiment_id=? AND kind='research_result_registered' "
@@ -4070,7 +4070,7 @@ class Workflow:
                             "SELECT 1 FROM jobs WHERE intent_id=? AND experiment_id=?",
                             (receipt.get("intent_id"), eid),
                         )
-                        for receipt in receipts
+                        for receipt in report_options.get("result_receipts", ())
                     ):
                         raise ValueError("registered research result has invalid producer scope")
                     name, files = await asyncio.to_thread(
@@ -4080,7 +4080,7 @@ class Workflow:
                         records,
                         json.loads(row["document"]),
                         version,
-                        result_receipts=receipts,
+                        **report_options,
                     )
                     if self.store.experiment(eid)["phase"] == "cancelled":
                         return
