@@ -278,17 +278,17 @@ async def test_prepare_remote_resolves_per_intent_jean_zay_route_without_dispatc
 
     async def scripted_send(*args, **kwargs):
         sends.append((args, kwargs))
-        return "" if len(sends) <= 2 else "4321;cluster\n"
+        return "" if len(sends) < 2 else "4321;cluster\n"
 
     remote_scheduler.remote_command = scripted_send
     remote_scheduler.command = scripted_send
     await remote_scheduler.preflight_research_job(job, receipt)
     assert await remote_scheduler.submit_research_job(job, receipt) == "4321"
-    assert len(sends) == 3
+    assert len(sends) == 2
     assert sends[0][0][0] == "sbatch"
     assert sends[0][0][-1] == prepared.execution["layout"]["remote_run"] + "/c4-source/job.sh"
-    assert sends[2][0][0] == "sbatch"
-    assert sends[2][0][sends[2][0].index("--comment") + 1] == job["intent_id"]
+    assert sends[1][0][0] == "sbatch"
+    assert sends[1][0][sends[1][0].index("--comment") + 1] == job["intent_id"]
 
     original_remote_command = remote_scheduler.command
 
@@ -299,14 +299,14 @@ async def test_prepare_remote_resolves_per_intent_jean_zay_route_without_dispatc
 
     remote_scheduler.command = pause_during_preflight
     with pytest.raises(ValueError, match="paused"):
-        await remote_scheduler.submit_research_job(job, receipt)
-    assert len(sends) == 4  # the awaited scheduler preflight ran; no submission followed it
+        await remote_scheduler.preflight_research_job(job, receipt)
+    assert len(sends) == 3  # the awaited scheduler preflight ran; no submission followed it
     store.update(eid, pause_compute=False)
     remote_scheduler.command = original_remote_command
 
     with pytest.raises(ValueError, match="exact pinned staging receipt"):
         await remote_scheduler.submit_research_job(job, {**receipt, "intent_id": "other"})
-    assert len(sends) == 4
+    assert len(sends) == 3
     remote_scheduler.remote_command = scripted_remote_command
     remote_scheduler.command = scripted_remote_command
 

@@ -62,6 +62,9 @@ def harness(monkeypatch, *, send):
         events.append("stage")
         return receipt
 
+    async def preflight(_job, _receipt):
+        events.append("preflight")
+
     async def submit(_job, _receipt):
         events.append("send")
         assert workflow.submissions_in_flight == {intent}
@@ -82,6 +85,7 @@ def harness(monkeypatch, *, send):
     monkeypatch.setattr(remote_dispatch, "record_submission", record)
     monkeypatch.setattr(remote_dispatch, "record_pre_send_failure", fail)
     scheduler.stage_research_source = stage
+    scheduler.preflight_research_job = preflight
     scheduler.submit_research_job = submit
     workflow = DispatchWorkflow(scheduler)
     return workflow, intent, events, job
@@ -102,13 +106,13 @@ def test_dispatch_uses_saved_job_route_persists_exact_identity_and_rejects_repla
             await remote_dispatch.dispatch(workflow, "experiment", {}, request_for(intent))
 
     asyncio.run(run())
-    assert events == ["prepare", "save", "stage", "send", ("record", "remote-id")]
+    assert events == ["prepare", "save", "stage", "preflight", "send", ("record", "remote-id")]
 
 
-@pytest.mark.parametrize("failure_point", ["stage", "paused_preflight"])
+@pytest.mark.parametrize("failure_point", ["stage", "preflight"])
 def test_proven_pre_send_failure_is_durable_and_not_replayed(monkeypatch, failure_point):
     async def send():
-        raise RuntimeError("agent dispatch paused")
+        return "unexpected"
 
     workflow, intent, events, job = harness(monkeypatch, send=send)
     if failure_point == "stage":
@@ -118,9 +122,16 @@ def test_proven_pre_send_failure_is_durable_and_not_replayed(monkeypatch, failur
             raise ValueError("source staging failed")
 
         workflow.scheduler.stage_research_source = fail_stage
+    else:
+
+        async def fail_preflight(_job, _receipt):
+            events.append("preflight")
+            raise ValueError("compute paused")
+
+        workflow.scheduler.preflight_research_job = fail_preflight
 
     async def run():
-        with pytest.raises((ValueError, RuntimeError)):
+        with pytest.raises(ValueError):
             await remote_dispatch.dispatch(workflow, "experiment", {}, request_for(intent))
         assert job["state"] == "failed" and job["error"].startswith("not_submitted:")
         with pytest.raises(Conflict, match="not permission to send or replay"):
@@ -128,7 +139,7 @@ def test_proven_pre_send_failure_is_durable_and_not_replayed(monkeypatch, failur
         assert intent not in workflow.submissions_in_flight
 
     asyncio.run(run())
-    assert events.count("send") == (0 if failure_point == "stage" else 1)
+    assert events.count("send") == 0
 
 
 def test_saved_exact_identity_and_obligation_survive_restart(runtime):
@@ -173,9 +184,10 @@ def test_pre_send_failure_is_durable_with_no_external_obligation(runtime):
     )
 
 
-def test_uncertain_send_restart_adopts_exact_identity_without_replay(monkeypatch):
+@pytest.mark.parametrize("error", [SubmissionUncertain("send outcome unknown"), RuntimeError("lost reply")])
+def test_uncertain_send_restart_adopts_exact_identity_without_replay(monkeypatch, error):
     async def send():
-        raise SubmissionUncertain("send outcome unknown")
+        raise error
 
     workflow, intent, events, job = harness(monkeypatch, send=send)
 

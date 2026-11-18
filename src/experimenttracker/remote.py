@@ -788,12 +788,11 @@ class RemoteSlurmScheduler(SlurmScheduler):
         await self._preflight_research_send(job, receipt)
 
     async def submit_research_job(self, job, receipt):
-        """Preflight and send; this adapter does not claim or deduplicate submissions.
+        """Send one preflighted exact intent; every error from this call is uncertain.
 
-        Callers must gate retries through the saved job intent's current outcome before
-        invoking this effect; repeating a direct call can submit more than once.
+        Callers must not retry this effect without reconciling the saved intent.
         """
-        intent, request, layout, script = await self._preflight_research_send(job, receipt)
+        intent, request, layout, script = self._saved_research_send(job, receipt)
         self.workflow.remote_reads.clear()
         return await super().submit(intent, script, Path(layout["remote_run"]), resources=request.resources)
 

@@ -30,18 +30,22 @@ async def dispatch(workflow, experiment_id, action, request):
         )
         if not created:
             raise Conflict("saved remote job intent is not permission to send or replay")
+        scheduler = workflow.scheduler_for(store.experiment(experiment_id), job)
         try:
-            scheduler = workflow.scheduler_for(store.experiment(experiment_id), job)
             receipt = await scheduler.stage_research_source(job)
-            # submit_research_job performs the single gated preflight immediately
-            # before its scheduler call. SubmissionUncertain means send outcome unknown.
-            identity = await scheduler.submit_research_job(job, receipt)
-        except SubmissionUncertain:
-            # The send may have succeeded; only exact reconciliation can settle it.
-            raise
+            await scheduler.preflight_research_job(job, receipt)
         except Exception as exc:
+            # Staging and the explicit read-only preflight precede the send boundary.
             record_pre_send_failure(store, experiment_id, job, exc)
             raise
+        try:
+            # Once the send operation starts, every exception is uncertain: transport
+            # errors cannot establish whether Slurm accepted the exact intent.
+            identity = await scheduler.submit_research_job(job, receipt)
+        except Exception as exc:
+            if isinstance(exc, SubmissionUncertain):
+                raise
+            raise SubmissionUncertain(f"remote submission outcome unknown: {exc}") from exc
         saved_job = record_submission(store, experiment_id, job, identity)
         return {"job": saved_job, "receipt": receipt, "identity": identity}
     finally:
