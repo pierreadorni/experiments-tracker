@@ -579,6 +579,7 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 - [x] Quota denial → owner restart → admission dispatches the same pending action once. One branch waiting on an owner question does not block a second branch; the debounced answer only reaches the question's thread.
 - [x] A failed figure call preserves metrics and still allows a metrics-only report and completion. The watchdog reports a C4 experiment with no open obligation after the grace interval without dispatching or changing work.
 - [x] A valid `done` opt-in queues integration through C6 in the completion transaction; opt-out, Don't merge and an already-queued request do not add a merge.
+- [x] A failed job wakes a real C4 dispatcher follow-up with the latest private checkpoint; the earlier successful job stays complete and no compute is replayed.
 - [x] Two actual C4 completion requests edit the same tracked file. The C6 queue merges the first, resolves the second with one scripted integrator turn, checks and applies that candidate, and performs no extra turn or merge on repeat.
 ### [x] T4.7 Live pilot — owner-authorized, small brief, measure turns, tokens and interventions · owner + S
 - The isolated, owner-authorized live pilot completed one CPU/no-GPU Slurm job, registered its results, published a ready report, and reached `complete`. It required a metadata-only normalization of a copy of the original metric file; it was not a zero-intervention run. See the [acceptance summary](notes/t4.7-pilot.md). This does not authorize a rollout or contract-3 retirement.
@@ -599,6 +600,7 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 
 ## Log
 
+- **T4.6 failed-job checkpoint:** `4911f63` proves the latest saved private checkpoint seeds the debounced follow-up, without touching a prior successful job (source 0; tests +90/−2). Ruff and 40 focused tests passed. No live activation.
 - **T4.2 remote submission:** `c391fa0`, `55fc319`, `f7fac62`, `ee77448`, `1d4e5f9`, `aa0bd36` wire bounded preparation, saved staging evidence, one fresh send and exact replay/recovery through the controller. Combined source +209/−24; tests +495/−29. Ruff, 36 focused tests and all **1,428 Python tests** passed in isolation. No live remote dispatch or activation.
 - **T4.2 remote staging:** `be5beb8`, `b00bd9a`, `2792e81`, `5aed2cc`, `fe6f806` prepare, save and stage a CPU intent against its exact Jean Zay route. The upload is exported from the saved Git pin and retries use fresh pending destinations. Ruff, 48 focused tests and all **1,418 Python tests** passed in isolated shards. No send or live activation.
 - **T4.8 synthetic dispatcher gate:** `1762d7a` exercises exact owner approval, one fake CPU job, debounced research follow-up, result registration and a ready report through completion (source 0; tests +213/−0). Ruff passed. The isolated suite passed 1,414 tests with one maintenance fixture error; that test and both new targets then passed after restoring the expected `recipes/` directory in the validation checkout. The C3 CLI demo and default are unchanged.
