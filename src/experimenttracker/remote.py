@@ -712,6 +712,91 @@ class RemoteSlurmScheduler(SlurmScheduler):
             await self.transfer("up", upload, identity=identity)
         return {"state": "staged", "intent_id": job["intent_id"], "remote_path": final}
 
+    def _saved_research_send(self, job, receipt):
+        from .research.admission import SubmitJobRequest, preflight
+        from .research.tools import require_live_research
+
+        intent = job.get("intent_id")
+        saved = self.store.one("SELECT * FROM jobs WHERE intent_id=?", (intent,))
+        if not saved or saved["experiment_id"] != self.exp["id"] or saved["state"] != "submitting":
+            raise ValueError("remote send requires this exact submitting job intent")
+        saved = dict(saved)
+        manifest = json.loads(saved.get("execution_manifest") or "{}")
+        request = SubmitJobRequest.model_validate(manifest.get("research_request"))
+        if (
+            str(request.request_id) != intent
+            or manifest.get("execution", {}).get("context") != "jean-zay"
+            or manifest.get("commit") != saved.get("snapshot_hash")
+            or manifest.get("research_action_id") is None
+        ):
+            raise ValueError("remote send requires the exact saved research intent and route")
+        saved_layout = manifest.get("execution", {}).get("layout")
+        if not isinstance(saved_layout, dict) or not isinstance(saved_layout.get("remote_run"), str):
+            raise ValueError("remote send requires the saved execution layout")
+        expected_receipt = {
+            "state": "staged",
+            "intent_id": intent,
+            "remote_path": saved_layout["remote_run"] + "/c4-source",
+        }
+        if receipt != expected_receipt:
+            raise ValueError("remote send requires the exact pinned staging receipt")
+        transfer_id = hashlib.sha256((self.exp["id"] + ":" + intent + ":c4-source").encode()).hexdigest()
+        upload = self.store.one("SELECT * FROM execution_transfers WHERE id=?", (transfer_id,))
+        expected_payload = {
+            "settings": ExecutionSettings.model_validate(manifest["execution"]["settings"]).model_dump(),
+            "layout": saved_layout,
+        }
+        if (
+            not upload
+            or upload["experiment_id"] != self.exp["id"]
+            or upload["direction"] != "up"
+            or upload["state"] != "complete"
+            or upload["payload"] != encode(expected_payload)
+        ):
+            raise ValueError("remote send requires the exact completed saved source upload")
+        action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (manifest["research_action_id"],))
+        if not action or action["experiment_id"] != self.exp["id"]:
+            raise ValueError("remote send requires the exact approved research action")
+        require_live_research(self.store.experiment(self.exp["id"]), action)
+        preflight(
+            self.workflow,
+            self.exp["id"],
+            action,
+            request,
+            remote_source=True,
+            existing_intent=intent,
+        )
+        from .research.job_observe import validate_remote_route
+
+        settings, layout = validate_remote_route(
+            self.exp, intent, manifest["execution"], saved.get("execution_root")
+        )
+        if settings.model_dump() != self.settings.model_dump() or layout != manifest["execution"]["layout"]:
+            raise ValueError("scheduler settings differ from this job's saved execution route")
+        self.layout = layout
+        remote_script = Path(layout["remote_run"]) / "c4-source" / "job.sh"
+        return intent, request, layout, remote_script
+
+    async def _preflight_research_send(self, job, receipt):
+        intent, request, layout, script = self._saved_research_send(job, receipt)
+        await super().preflight(intent, script, Path(layout["remote_run"]), request.resources)
+        # Preflight awaits cluster reads. Re-read the saved intent, pause and
+        # authority gates immediately before any subsequent submission effect.
+        return self._saved_research_send(job, receipt)
+
+    async def preflight_research_job(self, job, receipt):
+        await self._preflight_research_send(job, receipt)
+
+    async def submit_research_job(self, job, receipt):
+        """Preflight and send; this adapter does not claim or deduplicate submissions.
+
+        Callers must gate retries through the saved job intent's current outcome before
+        invoking this effect; repeating a direct call can submit more than once.
+        """
+        intent, request, layout, script = await self._preflight_research_send(job, receipt)
+        self.workflow.remote_reads.clear()
+        return await super().submit(intent, script, Path(layout["remote_run"]), resources=request.resources)
+
     async def preflight(self, intent_id, script, root, resources):
         stage_id = next(
             stage["id"]
