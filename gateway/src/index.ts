@@ -715,6 +715,24 @@ function projectSettingsReceipt(row: Record<string, unknown>) {
 }
 const experimentProject = (exp: any) =>
   exp.project_id || exp.contract?.project?.id || 'test-project';
+const durableContractFourAnswer = (exp: any, pending: any) => {
+  if (
+    exp.contract?.execution_contract !== 4 ||
+    exp.deleted_at ||
+    ['complete', 'failed', 'cancelled'].includes(exp.phase) ||
+    !pending ||
+    pending.rpc_id != null ||
+    pending.method !==
+      (pending.kind === 'approval'
+        ? 'item/commandExecution/requestApproval'
+        : 'item/tool/requestUserInput') ||
+    !pending.action_id
+  )
+    return false;
+  return (exp.agent_actions || []).some(
+    (action: any) => action.id === pending.action_id && action.phase === 'research',
+  );
+};
 async function executorSupports(env: Env, capability: string) {
   const row = await first(env, 'SELECT payload FROM executor_status WHERE id=?', env.EXECUTOR_ID);
   return Boolean(row && JSON.parse(String(row.payload))[capability]);
@@ -774,20 +792,33 @@ async function enqueue(env: Env, kind: string, payload: Record<string, unknown>,
   else {
     const row = await requiredProjection(env, id);
     const exp = JSON.parse(String(row.payload));
+    const contract = exp.contract?.execution_contract;
+    const research = contract === 4;
     const archiveActive =
-      exp.contract?.execution_contract !== 3 &&
-      !exp.deleted_at &&
-      !['complete', 'failed', 'cancelled'].includes(exp.phase);
+      contract !== 3 && !exp.deleted_at && !['complete', 'failed', 'cancelled'].includes(exp.phase);
+    const researchAction =
+      research &&
+      ['pause_agent', 'resume_agent', 'pause_new_compute', 'resume_new_compute'].includes(
+        String(payload.action),
+      );
+    const durableAnswer = kind === 'answer' && durableContractFourAnswer(exp, exp.pending_request);
     if (
       archiveActive &&
-      ((kind === 'action' && payload.action !== 'cancel') ||
-        ['answer', 'plan_review', 'steer'].includes(kind))
+      ((kind === 'action' && payload.action !== 'cancel' && !researchAction) ||
+        (['answer', 'plan_review', 'steer'].includes(kind) &&
+          !durableAnswer &&
+          !(research && kind === 'steer')))
     )
-      throw new HttpError(409, 'Legacy execution is archived; only cancellation is available');
+      throw new HttpError(
+        409,
+        research
+          ? 'This mutation is unavailable for research sessions'
+          : 'Legacy execution is archived; only cancellation is available',
+      );
     if (
-      exp.contract?.execution_contract !== 3 &&
+      contract !== 3 &&
       ((kind === 'action' && ['retry_agent', 'summarize_title'].includes(String(payload.action))) ||
-        kind === 'steer' ||
+        (kind === 'steer' && !research) ||
         (kind === 'plan_review' && ['approve', 'revise'].includes(String(payload.decision))))
     )
       throw new HttpError(409, 'Legacy execution is archived; this mutation is unavailable');
@@ -850,6 +881,12 @@ async function enqueue(env: Env, kind: string, payload: Record<string, unknown>,
         exp.plan_review?.revision !== payload.plan_revision)
     )
       throw new HttpError(409, 'Plan review has changed or is no longer awaiting a decision');
+    if (research && kind === 'steer') {
+      if (payload.mode === 'restart')
+        throw new HttpError(409, 'Restart steering is not supported for research sessions');
+      if (new TextEncoder().encode(String(payload.text).trim()).length > 1000)
+        throw new HttpError(409, 'Research steering must be at most 1000 UTF-8 bytes');
+    }
     if (
       kind === 'steer' &&
       ['complete', 'failed', 'cancelled'].includes(exp.phase) &&
@@ -2269,6 +2306,12 @@ async function route(request: Request, env: Env): Promise<Response> {
       const payload = route.schema.parse(await body(request));
       const kind = route.kind;
       if (kind === 'answer') {
+        const prior = await first(
+          env,
+          'SELECT request_id FROM commands WHERE request_id=?',
+          payload.request_id,
+        );
+        if (prior) return json(await enqueue(env, kind, payload, id), 202);
         const row = await requiredProjection(env, id);
         const projected = JSON.parse(String(row.payload));
         const pending = projected.pending_request;
@@ -2283,6 +2326,7 @@ async function route(request: Request, env: Env): Promise<Response> {
           : null;
         if (
           projected.contract?.execution_contract !== 3 &&
+          !durableContractFourAnswer(projected, pending) &&
           !(
             projected.phase === 'complete' &&
             savedAction?.phase?.startsWith('discuss:') &&
@@ -2294,13 +2338,23 @@ async function route(request: Request, env: Env): Promise<Response> {
             'Legacy execution is archived; only a live discussion reply is available',
           );
         const answer = (payload as z.infer<typeof answerSchema>).answer;
-        if (
+        const approval =
+          pending.kind === 'approval' ||
           ['item/commandExecution/requestApproval', 'item/fileChange/requestApproval'].includes(
             pending.method,
-          ) &&
-          !['accept', 'decline', 'cancel'].includes(answer)
-        )
+          );
+        if (approval && !['accept', 'decline', 'cancel'].includes(answer))
           throw new HttpError(422, 'Decision must be accept, decline, or cancel');
+        if (projected.contract?.execution_contract === 4 && pending.kind === 'approval') {
+          const earlier = await first(
+            env,
+            "SELECT request_id FROM commands WHERE experiment_id=? AND kind='answer' AND state!='rejected' AND json_extract(payload,'$.pending_request_id')=?",
+            id,
+            pending.id,
+          );
+          if (pending.answer || earlier)
+            throw new HttpError(409, 'Research approval already has an owner decision');
+        }
       }
       return json(await enqueue(env, kind, payload, id), 202);
     }

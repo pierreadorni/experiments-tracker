@@ -173,6 +173,136 @@ test('duplicate commands allocate one stable identity; notes survive worker abse
     0,
   );
 });
+test('contract-four saved answers queue, replay exactly, and retain decision controls', async () => {
+  const { payload: created, result } = await create();
+  const eid = result.experiment_id;
+  const db = await mf.getD1Database('DB');
+  await req('/api/executor/ack', {
+    token: executor,
+    method: 'POST',
+    body: JSON.stringify({ schema_version: 1, request_ids: [created.request_id] }),
+  });
+  const exp = await (await req(`/api/experiments/${eid}`)).json();
+  const action_id = randomUUID();
+  exp.contract.execution_contract = 4;
+  exp.agent_actions = [{ id: action_id, phase: 'research', state: 'running' }];
+  exp.pending_request = {
+    id: 'question-1',
+    action_id,
+    method: 'item/tool/requestUserInput',
+    params: { questions: [{ id: 'dataset', question: 'Which dataset?' }] },
+    expired: false,
+  };
+  await db
+    .prepare('UPDATE projections SET payload=? WHERE id=?')
+    .bind(JSON.stringify(exp), eid)
+    .run();
+  const endpoint = `/api/experiments/${eid}/answers`;
+  const answer = {
+    schema_version: 1,
+    request_id: randomUUID(),
+    pending_request_id: 'question-1',
+    answer: 'dataset A',
+  };
+  assert.equal((await req(endpoint, { method: 'POST', body: JSON.stringify(answer) })).status, 202);
+  assert.equal((await req(endpoint, { method: 'POST', body: JSON.stringify(answer) })).status, 202);
+  const delivered = (
+    await (await req('/api/executor/commands', { token: executor })).json()
+  ).commands.find((command) => command.request_id === answer.request_id);
+  assert.equal(delivered.kind, 'answer');
+  assert.deepEqual(delivered.payload, answer);
+  await req('/api/executor/ack', {
+    token: executor,
+    method: 'POST',
+    body: JSON.stringify({ schema_version: 1, request_ids: [answer.request_id] }),
+  });
+  exp.pending_request = null;
+  await db
+    .prepare('UPDATE projections SET payload=? WHERE id=?')
+    .bind(JSON.stringify(exp), eid)
+    .run();
+  assert.equal((await req(endpoint, { method: 'POST', body: JSON.stringify(answer) })).status, 202);
+  assert.equal(
+    (
+      await req(endpoint, {
+        method: 'POST',
+        body: JSON.stringify({ ...answer, answer: 'different' }),
+      })
+    ).status,
+    409,
+  );
+
+  exp.pending_request = {
+    id: 'approval-1',
+    action_id,
+    kind: 'approval',
+    method: 'item/commandExecution/requestApproval',
+    expired: false,
+  };
+  await db
+    .prepare('UPDATE projections SET payload=? WHERE id=?')
+    .bind(JSON.stringify(exp), eid)
+    .run();
+  const approval = {
+    schema_version: 1,
+    request_id: randomUUID(),
+    pending_request_id: 'approval-1',
+    answer: 'grant',
+  };
+  assert.equal(
+    (await req(endpoint, { method: 'POST', body: JSON.stringify(approval) })).status,
+    422,
+  );
+  approval.answer = 'accept';
+  assert.equal(
+    (await req(endpoint, { method: 'POST', body: JSON.stringify(approval) })).status,
+    202,
+  );
+  const second = { ...approval, request_id: randomUUID() };
+  assert.equal((await req(endpoint, { method: 'POST', body: JSON.stringify(second) })).status, 409);
+  await req('/api/executor/ack', {
+    token: executor,
+    method: 'POST',
+    body: JSON.stringify({ schema_version: 1, request_ids: [approval.request_id] }),
+  });
+});
+test('contract-four hosted owner controls queue pauses and bounded next-turn steering', async () => {
+  const { payload, result } = await create();
+  const eid = result.experiment_id;
+  const db = await mf.getD1Database('DB');
+  const exp = await (await req(`/api/experiments/${eid}`)).json();
+  exp.contract.execution_contract = 4;
+  await db
+    .prepare('UPDATE projections SET payload=? WHERE id=?')
+    .bind(JSON.stringify(exp), eid)
+    .run();
+  const request_ids = [payload.request_id];
+  const send = async (path, body) => {
+    const request_id = randomUUID();
+    const response = await req(`/api/experiments/${eid}/${path}`, {
+      method: 'POST',
+      body: JSON.stringify({ schema_version: 1, request_id, ...body }),
+    });
+    if (response.status === 202) request_ids.push(request_id);
+    return response;
+  };
+  for (const action of ['pause_agent', 'resume_agent', 'pause_new_compute', 'resume_new_compute'])
+    assert.equal((await send('actions', { action })).status, 202);
+  assert.equal((await send('steering', { text: 'Use the held-out split' })).status, 202);
+  assert.equal((await send('steering', { text: 'Do not reset', mode: 'restart' })).status, 409);
+  assert.equal((await send('steering', { text: 'é'.repeat(501) })).status, 409);
+  assert.equal((await send('actions', { action: 'repair_implementation' })).status, 409);
+  assert.equal(
+    (
+      await req('/api/executor/ack', {
+        token: executor,
+        method: 'POST',
+        body: JSON.stringify({ schema_version: 1, request_ids }),
+      })
+    ).status,
+    200,
+  );
+});
 test('durable command refusals survive redelivery without poisoning the queue', async () => {
   const { payload, result } = await create();
   const refusal = {
