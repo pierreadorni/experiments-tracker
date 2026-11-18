@@ -7,6 +7,8 @@ import pytest
 from pydantic import ValidationError
 from test_research_tools import add_action, saved_contract4
 
+from experimenttracker.controller import served_tools
+from experimenttracker.models import ExperimentResult
 from experimenttracker.research.result_tool import RegisterResult, register_result
 
 RESULT = {
@@ -41,6 +43,30 @@ def active_turn(store, eid):
         db.execute("UPDATE experiments SET thread_id='thread-1' WHERE id=?", (eid,))
         db.execute("UPDATE agent_actions SET thread_id='thread-1' WHERE id=?", (action_id,))
     return store.one("SELECT * FROM agent_actions WHERE id=?", (action_id,))
+
+
+def test_result_tool_documents_the_exact_generated_data_json_contract():
+    tool = next(item for item in served_tools(research=True) if item["name"] == "register_result")
+    description = tool["description"]
+    example, _ = json.JSONDecoder().raw_decode(
+        description.split("Write the file as JSON before calling: ", 1)[1]
+    )
+    assert example == {
+        "schema_version": 1,
+        "protocol": "Generated 64-point held-out regression comparison",
+        "sample_count": 64,
+        "metrics": [
+            {
+                "name": "mse",
+                "variant": "linear",
+                "value": 0.0123,
+                "unit": "squared target units",
+            }
+        ],
+    }
+    assert ExperimentResult.model_validate(example).metrics[0].value == 0.0123
+    assert "finite numeric value" in description
+    assert "exact successful job" in description
 
 
 def test_result_request_requires_uuid_intent_and_bounded_relative_path():

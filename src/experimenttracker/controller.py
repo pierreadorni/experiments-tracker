@@ -212,7 +212,7 @@ RESEARCH_TOOLS = [
     ),
     tool_from_model(
         "register_result",
-        "Register one validated result file from this experiment's exact successful job as a stable artifact receipt. Repeating a request_id with the same intent and path adopts the saved receipt.",
+        'Register one validated result file from this experiment\'s exact successful job as a stable artifact receipt. Write the file as JSON before calling: {"schema_version":1,"protocol":"Generated 64-point held-out regression comparison","sample_count":64,"metrics":[{"name":"mse","variant":"linear","value":0.0123,"unit":"squared target units"}]}. Replace the example protocol with a nonempty description of the measurement protocol actually used. Give each metric a nonempty name and variant, finite numeric value and unit (use an empty string for dimensionless values). sample_count is optional; if provided, use a positive integer. Keep values numeric, not strings. The backend validates this file and its exact successful job; do not alter producer files or rely on metadata being inferred. Repeating a request_id with the same intent and path adopts the saved receipt.',
         RegisterResult,
     ),
     tool_from_model(
