@@ -8,7 +8,7 @@ import pytest
 from test_research_create import create, git_project
 from test_research_dispatch import ScriptedAgent, run_pass, scripted
 from test_research_follow_up import fake_clock
-from test_research_job_dispatch import FakeScheduler, accept
+from test_research_job_dispatch import FakeScheduler
 from test_research_job_observe import FakeScheduler as ObserveScheduler
 from test_research_job_observe import saved_job
 from test_research_write_tools import add_research_turn, document
@@ -39,7 +39,7 @@ async def test_contract4_synthetic_owner_job_result_report_done(runtime, config,
     request = {
         "request_id": request_id,
         "approval_request_id": approval_id,
-        "objective": "Compare synthetic inputs",
+        "objective": "Compare  synthetic inputs\nwith a fixed split — exactly.",
         "name": "fit",
         "command": ["python", "comparison.py"],
         "resources": {"cpus_per_job": 2},
@@ -82,10 +82,26 @@ async def test_contract4_synthetic_owner_job_result_report_done(runtime, config,
         )
     )["state"] == "completed"
     pool.settle_row("agent_actions", action["id"])
-    accept(store, eid, request)
+    answer_id = str(uuid4())
+    # The loopback API persists the wire envelope, not just the compact store payload.
+    store.command(
+        answer_id,
+        "answer",
+        {"request_id": answer_id, "schema_version": 1, "pending_request_id": approval_id, "answer": "accept"},
+        eid=eid,
+    )
     assert follow_up_turn(store, eid) is None
     now.advance(60)
-    action = activate(follow_up_turn(store, eid), "execution-turn")
+    action = follow_up_turn(store, eid)
+    decision = json.loads(action["input"].split("\nOWNER APPROVAL DECISION\n", 1)[1].splitlines()[0])
+    assert decision == {
+        "approval_request_id": approval_id,
+        "objective": request["objective"],
+        "answer": "accept",
+    }
+    # The scripted follow-up obtains submission inputs from its real prompt.
+    request.update({key: decision[key] for key in ("approval_request_id", "objective")})
+    action = activate(action, "execution-turn")
     scheduler = FakeScheduler(workflow, True)
     monkeypatch.setattr(workflow, "scheduler_for", lambda *_: scheduler)
     with pytest.raises(SubmissionUncertain):

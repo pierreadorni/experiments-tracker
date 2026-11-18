@@ -42,17 +42,19 @@ def approved(store, experiment_id, request_id, objective, *, db=None):
     if len(requests) != 1 or json.loads(requests[0]["payload"]) != expected:
         return None
     answers = db.execute(
-        "SELECT payload,origin,state FROM commands WHERE experiment_id=? AND kind='answer' "
+        "SELECT request_id,payload,origin,state FROM commands WHERE experiment_id=? AND kind='answer' "
         "AND json_extract(payload,'$.pending_request_id')=? LIMIT 2",
         (experiment_id, request_id),
     ).fetchall()
     if len(answers) != 1:
         return None
     answer = answers[0]
+    expected_payload = {"pending_request_id": request_id, "answer": "accept"}
+    wire_payload = {**expected_payload, "request_id": answer["request_id"], "schema_version": 1}
     if (
         answer["origin"] not in ("local", "gateway")
         or answer["state"] != "applied"
-        or json.loads(answer["payload"]) != {"pending_request_id": request_id, "answer": "accept"}
+        or json.loads(answer["payload"]) not in (expected_payload, wire_payload)
     ):
         return None
     key = f"{experiment_id}:{request_id}"

@@ -8,6 +8,7 @@ events, decisions or obligations are named, so a bounded prompt never passes off
 partial view as the whole history.
 """
 
+import json
 from collections.abc import Sequence
 from typing import Literal
 from uuid import UUID
@@ -25,6 +26,8 @@ MAX_CONSTRAINTS_BYTES = 800
 MAX_EVENTS_BYTES = 1600
 MAX_OBLIGATIONS_BYTES = 800
 
+MAX_APPROVAL_CONTEXT_BYTES = 5500
+
 DEFERRED_CHECKPOINT = "[saved notebook text is not copied into a follow-up turn]"
 
 _TRUNCATED = " [truncated]"
@@ -35,7 +38,8 @@ _MORE_OBLIGATIONS = "[more obligations omitted]"
 _INSTRUCTIONS = (
     "Work in this experiment's worktree. Use the turn tools for cluster, job,\n"
     "checkpoint, report, owner and integration actions; this prompt carries no\n"
-    "cluster context. End every turn with one JSON object:\n"
+    "cluster context. If OWNER APPROVAL DECISION says accept, copy its approval_request_id and objective exactly into submit_job; do not rewrite either. The backend verifies approval.\n"
+    "End every turn with one JSON object:\n"
     '{"status": "continue" | "wait" | "needs_owner" | "done",\n'
     ' "summary": "<nonblank>", "next": "<nonblank>",\n'
     ' "integrate": {"value": true | false, "reason": "<nonblank>"}}\n'
@@ -228,6 +232,18 @@ def _bounded_lines(items, limit, *, none_text, omitted_marker, recent):
     return "\n".join(kept)
 
 
+def approval_context(request_id, objective, answer):
+    """Lossless handoff values for the model; this is not admission proof."""
+    return (
+        "\nOWNER APPROVAL DECISION\n"
+        + json.dumps(
+            {"approval_request_id": request_id, "objective": objective, "answer": answer},
+            ensure_ascii=False,
+        )
+        + "\n"
+    )
+
+
 def turn_prompt(
     *,
     brief: str,
@@ -236,6 +252,7 @@ def turn_prompt(
     events: Sequence[str] = (),
     obligations: Sequence[str] = (),
     action_id: str | None = None,
+    owner_approval: tuple[str, str, str] | None = None,
 ) -> str:
     """Build one deterministic, bounded turn prompt from the saved turn inputs.
 
@@ -253,7 +270,16 @@ def turn_prompt(
         checkpoint = _printable(_text(checkpoint, "checkpoint"))
 
     marker = _action_marker(action_id)
-    budget = MAX_PROMPT_BYTES - 1 - _FRAME_BYTES - len(marker.encode())
+    approval = approval_context(*owner_approval) if owner_approval else ""
+    if len(approval.encode()) > MAX_APPROVAL_CONTEXT_BYTES:
+        # Older saved approvals may exceed the newer handoff bound. Do not
+        # present a truncated objective as the exact value for submission.
+        approval = "\nOWNER APPROVAL DECISION\nSaved objective too large; request a shorter approval.\n"
+    budget = MAX_PROMPT_BYTES - 1 - _FRAME_BYTES - len(marker.encode()) - len(approval.encode())
+    # Reserve the short empty-section messages when long approval context
+    # leaves little room for optional narrative. Keep the deferred marker whole.
+    if approval:
+        budget -= 128
     brief_text = _fit(brief, min(budget, MAX_BRIEF_BYTES))
     budget -= len(brief_text.encode())
     constraints_text = _bounded_lines(
@@ -281,12 +307,16 @@ def turn_prompt(
     )
     budget -= len(obligations_text.encode())
     checkpoint_text = (
-        _fit(checkpoint, min(budget, MAX_CHECKPOINT_BYTES)) if checkpoint else "no checkpoint saved yet"
+        checkpoint
+        if checkpoint == DEFERRED_CHECKPOINT
+        else _fit(checkpoint, min(budget, MAX_CHECKPOINT_BYTES))
+        if checkpoint
+        else "no checkpoint saved yet"
     )
 
     return (
         "RESEARCH TURN\n"
-        f"{marker}"
+        f"{marker}{approval}"
         f"\nBRIEF\n{brief_text}\n"
         f"\nOWNER CONSTRAINTS\n{constraints_text}\n"
         f"\nLATEST CHECKPOINT\n{checkpoint_text}\n"

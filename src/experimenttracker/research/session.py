@@ -134,7 +134,9 @@ def first_turn(store, eid):
         return _queue(store, db, experiment, _owner_constraints(db, contract))
 
 
-def _queue(store, db, experiment, owner_constraints, events=(), checkpoint=None, thread_id=None):
+def _queue(
+    store, db, experiment, owner_constraints, events=(), checkpoint=None, thread_id=None, owner_approval=None
+):
     """Save one pending research action for this experiment and return it."""
     eid = experiment["id"]
     action_id = str(uuid4())
@@ -144,6 +146,7 @@ def _queue(store, db, experiment, owner_constraints, events=(), checkpoint=None,
         checkpoint=checkpoint,
         events=events,
         action_id=action_id,
+        owner_approval=owner_approval,
     )
     now = clock.now()
     db.execute(
@@ -228,7 +231,7 @@ def follow_up_turn(store, eid, *, now=None):
         if predecessor is None:
             return None
         events, bind = _job_events(db, experiment, predecessor, due)
-        pending = None
+        pending = owner_approval = None
         if experiment["pending_request"]:
             answered = _saved_answer(experiment, predecessor)
             if answered is None:
@@ -242,7 +245,11 @@ def follow_up_turn(store, eid, *, now=None):
             if not answer_ids:
                 return None
             bind.extend(answer_ids)
-            events.append(_answer_line(pending, answer))
+            objective = (pending.get("params") or {}).get("objective")
+            if pending.get("kind") == "approval" and isinstance(objective, str):
+                owner_approval = (pending["id"], objective, answer)
+            else:
+                events.append(_answer_line(pending, answer))
         guidance = None
         # Reserve the bounded prompt's event budget for already-due wake evidence.
         if (
@@ -268,6 +275,7 @@ def follow_up_turn(store, eid, *, now=None):
             events=events,
             checkpoint=DEFERRED_CHECKPOINT,
             thread_id=experiment["thread_id"],
+            owner_approval=owner_approval,
         )
         wakeups.consume(store, eid, bind, action["id"], db=db, now=now)
         wakeups.supersede_timer(db, eid, predecessor["id"])

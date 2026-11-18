@@ -22,6 +22,7 @@ from ..core import action_obligations, request_obligations
 from ..maintenance import blocked
 from ..store import Conflict, encode
 from .approval import REQUEST_EVENT
+from .prompt import MAX_APPROVAL_CONTEXT_BYTES, approval_context
 
 _RESEARCH_PHASE = "research"
 _LIVE_STATES = frozenset({"running"})
@@ -49,6 +50,11 @@ class AskOwnerQuestion(StrictModel):
         if self.kind == "approval":
             if not self.objective or not self.objective.strip() or self.options:
                 raise ValueError("approval requires an objective and no custom options")
+            if (
+                len(approval_context(str(self.request_id), self.objective, "decline").encode())
+                > MAX_APPROVAL_CONTEXT_BYTES
+            ):
+                raise ValueError("approval objective exceeds the exact handoff byte budget")
         elif self.objective is not None:
             raise ValueError("only approval requests take an objective")
         return self
