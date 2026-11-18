@@ -554,7 +554,8 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 - [x] Settled `continue` queues once on the exact saved thread.
 - [x] Known local scheduler jobs route separately from contract 3. Terminal job wakes can share one follow-up with a due owner answer.
 - [x] Missing local scheduler IDs use the existing exact-intent resolver before observation.
-- [x] Contract-4 steering is saved for the next eligible turn on the exact saved thread; it never restarts the stage engine. Remote observation and explicit timers remain.
+- [x] Contract-4 steering is saved for the next eligible turn on the exact saved thread; it never restarts the stage engine.
+- [x] Explicit `timer:<seconds>` waits settle atomically and survive restart. Terminal job evidence can supersede a timer before its deadline. Remote observation remains.
 ### [~] T4.4 Approval gate (manual review and Autopilot envelope) · F+R · S per subcard
 - [x] Durable manual approval requests through `ask_owner` and exact owner decision verification.
 - [x] Inert CPU-only admission validation checks the latest exact owner approval, saved action, pause/maintenance and resource limits.
@@ -582,6 +583,8 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 ---
 
 ## Log
+
+- **T4.3 explicit research timers:** `a80d518`. Production +101/−17; tests +78/−0. Reuses saved wakeup obligations; scheduler and owner events keep their own debounce window. Fake-clock checks cover reopen, exact single binding, supersession and transaction rollback. Isolated Node 24 `make check`: **1,376 Python, 36 web and 48 gateway tests passed** (one existing Python warning). No live pilot.
 
 - **T4.2 manual submission and T4.6 first scenario:** `5e88041`, `9fd44e4`, `cdf2ed9`. Production; tests: +24/−0; +96/−0, +19/−4; +14/−0, 0; +138/−0. Manual local submission is bound to a live owned turn. `done` settles atomically with experiment completion only after a ready report and resolution of pending work. Isolated Node 24 locked `make check`: **1,363 Python, 36 web, 48 gateway tests passed** (one existing Python warning). No live pilot.
 
