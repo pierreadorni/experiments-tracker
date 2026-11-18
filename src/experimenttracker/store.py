@@ -118,6 +118,7 @@ def public_projection(value):
     for event in result.get("events", []):
         omitted = {
             "automatic_repair_started": {"snapshot"},
+            "owner_question_asked": {"question", "options"},
             "selective_repair_queued": {"original_work", "error"},
             "selective_cancellation_uncertain": {"error"},
             "research_checkpoint_saved": {"markdown"},
