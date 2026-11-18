@@ -17,7 +17,16 @@ from .config import StrictModel
 from .core import action_obligations, wakeup_obligations
 from .legacy_archive import execution_frozen
 from .models import Analysis, Implementation, ReportDocument, ResearchPlan
-from .research.tools import ClusterInfo, cluster_info, require_live_research
+from .research.tools import (
+    ClusterInfo,
+    JobLogs,
+    JobStatus,
+    cluster_info,
+    job_logs,
+    job_status,
+    log_tail,
+    require_live_research,
+)
 from .store import Conflict, encode
 
 
@@ -37,6 +46,11 @@ def tool(name, description, properties, required=()):
             "additionalProperties": False,
         },
     }
+
+
+def tool_from_model(name, description, model):
+    """Advertise exactly the schema the tool validates before dispatch."""
+    return {"name": name, "description": description, "inputSchema": model.model_json_schema()}
 
 
 # Tools that read or write the contract-3 stage graph, its manifests or its execution
@@ -135,8 +149,8 @@ TOOLS = [
     ),
 ]
 
-# The explicit contract-4 MCP selection: one new bounded read and the existing shared
-# job read. Contract-3 stage mutation tools are never part of it.
+# The explicit contract-4 MCP selection: bounded reads only. Contract-3 stage
+# mutation tools and the unfiltered stage job read are never part of it.
 RESEARCH_TOOLS = [
     tool(
         "cluster_info",
@@ -144,7 +158,16 @@ RESEARCH_TOOLS = [
         {"request_id": {"type": "string", "format": "uuid"}},
         ["request_id"],
     ),
-    next(item for item in TOOLS if item["name"] == "job_status"),
+    tool_from_model(
+        "job_status",
+        "Read this experiment's saved jobs. Without intent_ids, return the latest at most 32 jobs in stable order and report any omitted count. Repeating a request_id is the same read.",
+        JobStatus,
+    ),
+    tool_from_model(
+        "job_logs",
+        "Read one of this experiment's saved jobs' bounded log tails from the executor's local attempt directory. Remote logs are available only after the existing transfer; repeating a request_id is the same read.",
+        JobLogs,
+    ),
 ]
 RESEARCH_TOOL_NAMES = frozenset(item["name"] for item in RESEARCH_TOOLS)
 
@@ -263,9 +286,24 @@ class Controller:
                 )
         return {"valid": True, "manifest": parsed.model_dump()}
 
-    def status(self, eid, *, intent_ids=None, summary_only=False):
+    def status(self, eid, *, intent_ids=None, summary_only=False, limit=None):
         wf = self.workflow
-        jobs = wf.store.rows("SELECT * FROM jobs WHERE experiment_id=? ORDER BY created_at", (eid,))
+        if intent_ids is not None and not intent_ids:
+            return []
+        query = "SELECT * FROM jobs WHERE experiment_id=?"
+        params = [eid]
+        if limit is None:
+            query += " ORDER BY created_at"
+        else:
+            if intent_ids is not None:
+                query += f" AND intent_id IN ({','.join('?' for _ in intent_ids)})"
+                params.extend(sorted(intent_ids))
+            query = (
+                f"SELECT * FROM ({query} ORDER BY created_at DESC, intent_id DESC LIMIT ?)"
+                " ORDER BY created_at, intent_id"
+            )
+            params.append(limit)
+        jobs = wf.store.rows(query, tuple(params))
         result = []
         for job in jobs:
             if intent_ids is not None and job["intent_id"] not in intent_ids:
@@ -307,15 +345,7 @@ class Controller:
                     "names": spec["outputs"] + spec.get("local_outputs", []),
                     "note": "Unregistered partial files are diagnostic context; inspect only needed paths on this host.",
                 }
-            item["logs"] = {}
-            if job["job_id"]:
-                for suffix in ("out", "err"):
-                    path = root / f"et-{job['intent_id']}-{job['job_id']}.{suffix}"
-                    if path.is_file() and not path.is_symlink():
-                        path = artifacts.allowed_path(path, root, max_bytes=None)
-                        with path.open("rb") as stream:
-                            stream.seek(max(0, path.stat().st_size - 4000))
-                            item["logs"][suffix] = stream.read(4000).decode(errors="replace")
+            item["logs"] = log_tail(root, job, 4000)
             result.append(item)
         return result
 
@@ -378,6 +408,14 @@ class Controller:
             request = ClusterInfo.model_validate(args)
             require_live_research(exp, action)
             return cluster_info(wf, exp, request)
+        if name == "job_logs":
+            request = JobLogs.model_validate(args)
+            require_live_research(exp, action)
+            return job_logs(wf, exp, request)
+        if name == "job_status" and (exp.get("contract") or {}).get("execution_contract") == 4:
+            require_live_research(exp, action)
+            request = JobStatus.model_validate(args)
+            return job_status(wf, exp, request)
         if (
             name not in ("job_status", "check_manifest", "check_agent_stage")
             and action.get("autopilot_control_revision") is not None

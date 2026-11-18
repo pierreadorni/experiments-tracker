@@ -216,8 +216,9 @@ async def test_stage_tools_refuse_a_saved_contract_four_session(runtime, widened
     for name, arguments in requests.items():
         with pytest.raises(ValueError, match="execution contract 3"):
             await wf.controller.call(eid, name, arguments)
-    # Shared reads stay available to any saved turn.
-    assert await wf.controller.call(eid, "job_status", {}) == []
+    # Contract-4 job reads are scoped to the live research turn, not every saved phase.
+    with pytest.raises(ValueError, match="active research turn"):
+        await wf.controller.call(eid, "job_status", {"request_id": str(uuid4())})
 
 
 async def test_stage_recovery_commands_refuse_a_saved_contract_four(runtime, widened_archive):
