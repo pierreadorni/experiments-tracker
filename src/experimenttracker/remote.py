@@ -593,6 +593,117 @@ class RemoteSlurmScheduler(SlurmScheduler):
                 raise TransferPending(detail) from exc
             raise
 
+    async def stage_research_source(self, job):
+        """Stage one saved C4 pinned export; this does not submit or preflight a job."""
+        from .research.admission import SubmitJobRequest, preflight
+        from .research.job_observe import validate_remote_route
+        from .research.tools import require_live_research
+
+        saved_job = self.store.one("SELECT * FROM jobs WHERE intent_id=?", (job.get("intent_id"),))
+        if not saved_job or saved_job["experiment_id"] != self.exp["id"]:
+            raise ValueError("remote staging requires this experiment's exact saved job intent")
+        job = dict(saved_job)
+        manifest = json.loads(job.get("execution_manifest") or "{}")
+        request = SubmitJobRequest.model_validate(manifest.get("research_request"))
+        if str(request.request_id) != job["intent_id"] or manifest.get("commit") != job.get("snapshot_hash"):
+            raise ValueError("remote staging metadata differs from this exact saved intent")
+        action_id = manifest.get("research_action_id")
+        action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (action_id,))
+        if not action or action["experiment_id"] != self.exp["id"]:
+            raise ValueError("remote staging requires the exact approved research action")
+        require_live_research(self.store.experiment(self.exp["id"]), action)
+        preflight(
+            self.workflow,
+            self.exp["id"],
+            action,
+            request,
+            remote_source=True,
+            existing_intent=job["intent_id"],
+        )
+        execution = manifest.get("execution")
+        settings, layout = validate_remote_route(
+            self.exp, job["intent_id"], execution, job.get("execution_root")
+        )
+        if settings.model_dump() != self.settings.model_dump():
+            raise ValueError("scheduler settings differ from this job's saved execution route")
+        self.layout = layout
+        root = Path(job["execution_root"])
+        source = root / "source"
+        if source.is_symlink() or not source.is_dir():
+            raise ValueError("pinned C4 source must be a regular directory")
+        total = 0
+        for path in source.rglob("*"):
+            if path.is_symlink():
+                raise ValueError("pinned C4 source contains a symbolic link")
+            if path.is_dir():
+                continue
+            if not path.is_file():
+                raise ValueError("pinned C4 source contains a non-regular file")
+            total += path.stat().st_size
+            if total > 16 * 1024 * 1024:
+                raise ValueError("pinned C4 source exceeds the 16 MiB submission budget")
+        commit = manifest.get("commit")
+        if not isinstance(commit, str) or job.get("snapshot_hash") != commit:
+            raise ValueError("remote staging requires the exact pinned commit")
+        bundle = root / "c4-stage"
+        if bundle.is_symlink() or bundle.exists() and not bundle.is_dir():
+            raise ValueError("C4 remote staging bundle is not a regular directory")
+        if bundle.exists():
+            shutil.rmtree(bundle)
+        bundle.mkdir(mode=0o700)
+        shutil.copytree(source, bundle / "source", symlinks=True)
+        marker = json.dumps({"intent_id": job["intent_id"], "commit": commit}, sort_keys=True)
+        (bundle / "intent.json").write_text(marker + "\n")
+        remote_root = layout["remote_run"]
+        final = remote_root + "/c4-source"
+        exports = {
+            "EXPERIMENT_ROOT": remote_root,
+            "EXPERIMENT_SOURCE": final + "/source",
+            "OMP_NUM_THREADS": str(request.resources.cpus_per_job),
+            "OPENBLAS_NUM_THREADS": str(request.resources.cpus_per_job),
+            "MKL_NUM_THREADS": str(request.resources.cpus_per_job),
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONUNBUFFERED": "1",
+        }
+        wrapper = (
+            "#!/bin/sh\nset -eu\n"
+            + "".join(f"export {name}={shlex.quote(value)}\n" for name, value in exports.items())
+            + 'cd "$EXPERIMENT_SOURCE"\nexec '
+            + shlex.join(request.command)
+            + "\n"
+        )
+        (bundle / "job.sh").write_text(wrapper)
+        (bundle / "job.sh").chmod(0o444)
+        identity = hashlib.sha256(
+            (self.exp["id"] + ":" + job["intent_id"] + ":c4-source").encode()
+        ).hexdigest()
+        pending = remote_root + "/.c4-source-" + identity + ".pending"
+
+        async def upload():
+            await self.remote_command("mkdir", "-p", remote_root)
+            existing = await self.remote_command(
+                "bash",
+                "-lc",
+                'if test -e "$1"; then cat "$1/intent.json"; else printf absent; fi',
+                "stage",
+                final,
+            )
+            if existing.strip() != marker:
+                if existing.strip() != "absent":
+                    raise ValueError("conflicting remote C4 source already exists")
+                await self.rsync("-rlt", str(bundle) + "/", layout["host"] + ":" + pending + "/")
+                await self.remote_command(
+                    "bash",
+                    "-lc",
+                    'test ! -e "$1" && mv -T "$2" "$1"',
+                    "stage",
+                    final,
+                    pending,
+                )
+
+        await self.transfer("up", upload, identity=identity)
+        return {"state": "staged", "intent_id": job["intent_id"], "remote_path": final}
+
     async def preflight(self, intent_id, script, root, resources):
         stage_id = next(
             stage["id"]

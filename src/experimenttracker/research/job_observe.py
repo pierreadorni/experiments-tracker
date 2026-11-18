@@ -5,13 +5,12 @@ reads outputs or advances the experiment graph.
 """
 
 import json
-from pathlib import Path
 
 from .. import clock
 from ..core import job_obligations
-from ..execution_settings import ExecutionSettings
 from ..remote import TransferPending
 from . import wakeups
+from .remote_route import validate_remote_route
 
 _TERMINAL_BAD = frozenset(
     {
@@ -97,21 +96,6 @@ async def observe(workflow, experiment, job):
     )
 
 
-def validate_remote_route(experiment, job):
-    route = json.loads(job.get("execution_manifest") or "{}").get("execution") or {}
-    expected = experiment["contract"].get("execution", {}).get("context")
-    settings = ExecutionSettings.model_validate(route.get("settings"))
-    layout = route.get("layout") or {}
-    if (
-        expected != "jean-zay"
-        or route.get("context") != expected
-        or settings.context != expected
-        or layout.get("host") != settings.ssh_host
-        or not Path(layout.get("remote_run") or "").is_absolute()
-    ):
-        raise ValueError("saved remote execution route is missing, invalid, or incompatible")
-
-
 async def observe_remote(workflow, experiment, job):
     """Settle one exact saved remote C4 job after accounting and result delivery."""
     if (
@@ -122,6 +106,11 @@ async def observe_remote(workflow, experiment, job):
     ):
         return None
     store = workflow.store
+    manifest = json.loads(job.get("execution_manifest") or "{}")
+    if experiment["contract"].get("execution", {}).get("context") == "jean-zay":
+        validate_remote_route(
+            experiment, job["intent_id"], manifest.get("execution"), job.get("execution_root")
+        )
     scheduler = workflow.scheduler_for(experiment, job)
 
     async def deliver(saved):

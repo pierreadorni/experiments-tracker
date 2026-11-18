@@ -2063,7 +2063,13 @@ class Workflow:
                             raise RuntimeError(
                                 "saved remote execution route is missing, invalid, or incompatible"
                             )
-                        job_observe.validate_remote_route(exp, job)
+                        manifest = json.loads(job.get("execution_manifest") or "{}")
+                        job_observe.validate_remote_route(
+                            exp,
+                            job["intent_id"],
+                            manifest.get("execution"),
+                            job.get("execution_root"),
+                        )
                         scheduler = self.scheduler_for(exp, job)
                         if not scheduler.due(job, clock.now()):
                             continue

@@ -41,18 +41,36 @@ class SubmitJobRequest(StrictModel):
         return values
 
 
-def preflight(workflow, experiment_id, action, request, *, db=None, remote_source=False):
+def preflight(
+    workflow, experiment_id, action, request, *, db=None, remote_source=False, existing_intent=None
+):
     """Check saved admission facts in a new or caller-owned transaction."""
     request = SubmitJobRequest.model_validate(request)
     if db is not None:
-        _check(workflow, experiment_id, action, request, db, remote_source=remote_source)
+        _check(
+            workflow,
+            experiment_id,
+            action,
+            request,
+            db,
+            remote_source=remote_source,
+            existing_intent=existing_intent,
+        )
         return request
     with workflow.store.tx() as transaction:
-        _check(workflow, experiment_id, action, request, transaction, remote_source=remote_source)
+        _check(
+            workflow,
+            experiment_id,
+            action,
+            request,
+            transaction,
+            remote_source=remote_source,
+            existing_intent=existing_intent,
+        )
     return request
 
 
-def _check(workflow, experiment_id, action, request, db, *, remote_source=False):
+def _check(workflow, experiment_id, action, request, db, *, remote_source=False, existing_intent=None):
     store = workflow.store
     experiment = store.experiment(experiment_id)
     saved = action_obligations.expected_saved(db, action)
@@ -91,7 +109,9 @@ def _check(workflow, experiment_id, action, request, db, *, remote_source=False)
     ):
         raise ValueError("exact owner approval required")
     if db.execute(
-        "SELECT 1 FROM jobs WHERE experiment_id=? AND state='submitting' LIMIT 1", (experiment_id,)
+        "SELECT 1 FROM jobs WHERE experiment_id=? AND state='submitting' "
+        "AND (? IS NULL OR intent_id!=?) LIMIT 1",
+        (experiment_id, existing_intent, existing_intent),
     ).fetchone():
         raise ValueError("an existing job intent has uncertain outcome")
     limits = workflow.config.slurm
@@ -100,13 +120,20 @@ def _check(workflow, experiment_id, action, request, db, *, remote_source=False)
         raise ValueError("research submission is CPU-only until GPU budget accounting is wired")
     if (
         limits.max_jobs_per_experiment is not None
-        and db.execute("SELECT COUNT(*) FROM jobs WHERE experiment_id=?", (experiment_id,)).fetchone()[0]
+        and db.execute(
+            "SELECT COUNT(*) FROM jobs WHERE experiment_id=? AND (? IS NULL OR intent_id!=?)",
+            (experiment_id, existing_intent, existing_intent),
+        ).fetchone()[0]
         >= limits.max_jobs_per_experiment
     ):
         raise ValueError("experiment job limit reached")
     if (
         limits.max_concurrent_jobs is not None
-        and db.execute("SELECT COUNT(*) FROM jobs WHERE state IN ('submitting','submitted')").fetchone()[0]
+        and db.execute(
+            "SELECT COUNT(*) FROM jobs WHERE state IN ('submitting','submitted') "
+            "AND (? IS NULL OR intent_id!=?)",
+            (existing_intent, existing_intent),
+        ).fetchone()[0]
         >= limits.max_concurrent_jobs
     ):
         raise ValueError("executor concurrent job limit reached")

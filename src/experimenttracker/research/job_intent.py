@@ -10,6 +10,7 @@ from ..config import StrictModel
 from ..core import action_obligations, job_obligations
 from ..store import Conflict, encode
 from .admission import SubmitJobRequest, preflight
+from .remote_route import validate_remote_route
 from .tools import require_live_research
 
 
@@ -42,6 +43,13 @@ def save(workflow, eid, action, request, prepared, *, execution=None):
             ):
                 raise Conflict("job intent identity already belongs to another submission")
             return dict(prior), False
+
+        if execution is not None:
+            experiment = store.experiment(eid)
+            expected_root = Path(workflow.projects.base_root(eid)) / "attempts" / intent
+            if expected_root.is_symlink() or not expected_root.is_dir():
+                raise Conflict("remote job intent requires its exact prepared attempt")
+            validate_remote_route(experiment, intent, execution, str(expected_root))
 
         preflight(
             workflow,

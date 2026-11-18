@@ -2,6 +2,7 @@ import hashlib
 import json
 import subprocess
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -180,3 +181,45 @@ async def test_prepare_remote_resolves_per_intent_jean_zay_route_without_dispatc
             execution={**prepared.execution, "layout": {**prepared.execution["layout"], "host": "other"}},
         )
     assert scheduler.submissions == 0
+
+    from experimenttracker.remote import RemoteSlurmScheduler
+
+    remote_scheduler = RemoteSlurmScheduler(workflow, store.experiment(eid), saved=prepared.execution)
+    staged = {}
+    rsync_calls = []
+
+    async def scripted_remote_command(*args, **kwargs):
+        if args[0] == "mkdir":
+            return ""
+        if args[0] == "bash" and "cat" in args[2]:
+            return staged.get(args[-1], "absent")
+        if args[0] == "bash" and "mv -T" in args[2]:
+            staged[args[-2]] = staged.pop("pending")
+            return ""
+        raise AssertionError(args)
+
+    async def scripted_rsync(*args, **kwargs):
+        rsync_calls.append(args)
+        local = Path(args[-2].rstrip("/"))
+        staged["pending"] = (local / "intent.json").read_text().strip()
+
+    remote_scheduler.remote_command = scripted_remote_command
+    remote_scheduler.rsync = scripted_rsync
+    assert (await remote_scheduler.stage_research_source(job))["state"] == "staged"
+    assert len(rsync_calls) == 1
+    save_outcome = remote_scheduler._save_transfer_outcome
+    interrupted = True
+
+    def lose_completion(*args, **kwargs):
+        nonlocal interrupted
+        if interrupted:
+            interrupted = False
+            raise RuntimeError("interrupted after remote rename")
+        return save_outcome(*args, **kwargs)
+
+    remote_scheduler._save_transfer_outcome = lose_completion
+    with pytest.raises(RuntimeError, match="after remote rename"):
+        await remote_scheduler.stage_research_source(job)
+    remote_scheduler._save_transfer_outcome = save_outcome
+    await remote_scheduler.stage_research_source(job)
+    assert len(rsync_calls) == 1
