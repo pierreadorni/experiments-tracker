@@ -77,6 +77,7 @@ def test_v4_selects_only_research_tools_and_keeps_contract_three_listing(runtime
         "job_logs",
         "job_status",
         "register_figure",
+        "register_result",
         "request_integration",
         "save_checkpoint",
         "update_report",

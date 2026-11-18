@@ -24,6 +24,8 @@ from .research.integration_tool import RequestIntegration, request_integration
 from .research.owner_tool import AskOwnerQuestion, ask_owner
 from .research.report_tool import UpdateReport
 from .research.report_tool import update_report as update_research_report
+from .research.result_tool import RegisterResult
+from .research.result_tool import register_result as register_research_result
 from .research.tools import (
     ClusterInfo,
     JobLogs,
@@ -200,6 +202,11 @@ RESEARCH_TOOLS = [
         "request_integration",
         "Queue this experiment's exact saved named branch for the existing integration worker, with a bounded reason. Returns queued and never merged; the worker still owns approval, Git and the terminal stage. Repeating a request_id with the same reason adopts the saved queue entry.",
         RequestIntegration,
+    ),
+    tool_from_model(
+        "register_result",
+        "Register one validated result file from this experiment's exact successful job as a stable artifact receipt. Repeating a request_id with the same intent and path adopts the saved receipt.",
+        RegisterResult,
     ),
     tool_from_model(
         "register_figure",
@@ -438,7 +445,12 @@ class Controller:
         exp = wf.store.experiment(eid)
         if execution_frozen(exp) and name != "job_status":
             raise ValueError("legacy execution is archived; only status reads are available")
-        if name in STAGE_TOOLS and not iteration.enabled(exp):
+        research_result = (
+            (exp.get("contract") or {}).get("execution_contract") == 4
+            and action["phase"] == "research"
+            and name == "register_result"
+        )
+        if name in STAGE_TOOLS and not iteration.enabled(exp) and not research_result:
             raise ValueError("stage-engine tools require execution contract 3")
         if (exp.get("contract") or {}).get("execution_contract") == 4 and name not in RESEARCH_TOOL_NAMES:
             raise ValueError("contract 4 turns permit only the listed research tools")
@@ -483,6 +495,10 @@ class Controller:
             require_research_write(wf, exp, action)
             request = RequestIntegration.model_validate(args)
             return request_integration(wf.store, exp, action, request)
+        if research_result:
+            require_research_write(wf, exp, action)
+            request = RegisterResult.model_validate(args)
+            return await asyncio.to_thread(register_research_result, wf, exp, action, request)
         if name == "register_figure":
             require_research_write(wf, exp, action)
             request = RegisterFigure.model_validate(args)
@@ -571,10 +587,9 @@ class Controller:
         if name == "submit_stage":
             return await wf.submit_prepared_stage(exp, args["stage_id"], str(UUID(args["request_id"])))
         if name == "register_result":
-            stage = args["stage_id"]
             job = wf.store.one(
                 "SELECT j.* FROM jobs j JOIN stage_producers p ON p.intent_id=j.intent_id WHERE p.experiment_id=? AND p.stage_id=?",
-                (eid, stage),
+                (eid, args["stage_id"]),
             )
             if not job or job["state"] != "complete":
                 raise ValueError("result registration requires a validated terminal successful job")
