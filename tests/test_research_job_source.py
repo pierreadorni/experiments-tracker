@@ -113,6 +113,36 @@ async def test_prepare_remote_rejects_unsafe_result_transport_before_filesystem_
 
 
 @pytest.mark.asyncio
+async def test_prepare_remote_enforces_source_ceiling_before_remote_route_or_intent(runtime, tmp_path):
+    store, scheduler, _, workflow = runtime
+    _, eid, action, request = setup_request(workflow, tmp_path)
+    request["result_file"] = "results/result.json"
+    store.command(
+        uuid4(), "answer", {"pending_request_id": request["approval_request_id"], "answer": "accept"}, eid=eid
+    )
+    experiment = store.experiment(eid)
+    contract = experiment["contract"]
+    contract["execution"] = {
+        "context": "jean-zay",
+        "ssh_host": "jz-test",
+        "remote_project": "/scratch/project",
+        "poll_seconds": 600,
+    }
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET contract=? WHERE id=?", (json.dumps(contract), eid))
+    worktree = workflow.workspaces.branch_checkout(eid)
+    oversized = Path(worktree, "shared.py")
+    await asyncio.to_thread(oversized.write_bytes, b"x" * (16 * 1024 * 1024 + 1))
+    await asyncio.to_thread(git, worktree, "add", "shared.py")
+
+    with pytest.raises(WorkspaceUnavailable, match="source exceeds its size limit"):
+        await prepare_remote(workflow, eid, action, request)
+
+    assert not store.rows("SELECT * FROM jobs")
+    assert scheduler.submissions == 0
+
+
+@pytest.mark.asyncio
 async def test_prepare_remote_resolves_per_intent_jean_zay_route_without_dispatch(
     runtime, tmp_path, monkeypatch
 ):

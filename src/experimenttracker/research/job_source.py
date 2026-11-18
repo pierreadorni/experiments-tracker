@@ -45,7 +45,16 @@ def prepare(workflow, experiment_id, action, request, *, remote_source=False):
     workflow.workspaces.pin_job_commit(experiment_id, intent, commit)
     source = root / "source"
     script = root / "job.sh"
-    gitworkspace.export(branch["repo"], commit, source)
+    gitworkspace.export(
+        branch["repo"],
+        commit,
+        source,
+        **(
+            {"max_archive_bytes": 32 * 1024 * 1024, "max_source_bytes": 16 * 1024 * 1024}
+            if remote_source
+            else {}
+        ),
+    )
     exports = {
         "EXPERIMENT_ROOT": str(root),
         "EXPERIMENT_SOURCE": str(source),
