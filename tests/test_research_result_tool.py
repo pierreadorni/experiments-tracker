@@ -64,13 +64,22 @@ def test_register_result_reads_exact_successful_slurm_job_and_validates(runtime,
     root.mkdir(parents=True)
     add_saved_job(store, eid, intent, root)
     (root / "results.json").write_text(json.dumps(RESULT))
-    before = store.rows("SELECT * FROM events ORDER BY seq")
-    result = register_result(workflow, store.experiment(eid), action, request(intent))
-    assert result["result"]["metrics"][0]["value"] == 0.25
-    assert store.rows("SELECT * FROM events ORDER BY seq") == before
+    req = request(intent)
+    result = register_result(workflow, store.experiment(eid), action, req)
+    assert result["artifact_id"]
+    assert result["artifact_id"]
+    assert result["intent_id"] == intent
+    assert register_result(workflow, store.experiment(eid), action, req) == result
+    (root / "results.json").unlink()
+    assert register_result(workflow, store.experiment(eid), action, req) == result
+    mismatch = {**req, "path": "other.json"}
+    with pytest.raises(Exception, match="request identity"):
+        register_result(workflow, store.experiment(eid), action, mismatch)
+    assert store.rows("SELECT * FROM events WHERE kind='research_result_registered'")[0]["payload"]
+    other = request(intent)
     (root / "results.json").write_text('{"protocol":"p","metrics":[{"value":NaN}]}')
     with pytest.raises(ValueError):
-        register_result(workflow, store.experiment(eid), action, request(intent))
+        register_result(workflow, store.experiment(eid), action, other)
 
 
 def test_register_result_refuses_foreign_failed_agent_jobs_and_symlink(runtime, tmp_path):
