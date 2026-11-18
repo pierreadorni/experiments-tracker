@@ -46,6 +46,7 @@ def setup(runtime, tmp_path, monkeypatch):
             "WHERE id=?",
             (action["id"],),
         )
+        db.execute("UPDATE experiments SET thread_id='thread-1' WHERE id=?", (eid,))
         action_obligations.sync_action(db, action["id"], before=before)
     return store, eid, workflow, store.one("SELECT * FROM agent_actions WHERE id=?", (action["id"],))
 
@@ -254,15 +255,23 @@ async def test_a_row_changed_while_git_awaited_is_not_settled(runtime, tmp_path,
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("field", [("phase", "cancelled"), ("deleted_at", 1.0)])
-async def test_settlement_never_changes_a_cancelled_or_deleted_experiment_phase(
+@pytest.mark.parametrize(
+    "field", [("phase", "cancelled"), ("phase", "complete"), ("phase", "failed"), ("deleted_at", 1.0)]
+)
+async def test_terminal_cancelled_or_deleted_runs_save_the_outcome_without_committing(
     runtime, tmp_path, monkeypatch, field
 ):
     store, eid, workflow, action = setup(runtime, tmp_path, monkeypatch)
+    before_head = branch_head(workflow, eid)
     with store.tx() as db:
         db.execute(f"UPDATE experiments SET {field[0]}=? WHERE id=?", (field[1], eid))
 
-    assert (await complete(workflow, action, turn("continue")))["state"] == "completed"
+    settled = await complete(workflow, action, turn("continue"))
+
+    assert settled["state"] == "completed"
+    assert json.loads(settled["result"]) == turn("continue")
+    assert branch_head(workflow, eid) == before_head
+    assert events(store, eid) == []
     assert store.experiment(eid)[field[0]] == field[1]
 
 
@@ -301,3 +310,109 @@ async def test_a_different_read_back_turn_or_contract_is_refused(runtime, tmp_pa
 
     assert saved(store, action)["state"] == "running"
     assert events(store, eid) == []
+
+
+@pytest.mark.asyncio
+async def test_a_different_saved_experiment_thread_refuses_before_git(runtime, tmp_path, monkeypatch):
+    store, eid, workflow, action = setup(runtime, tmp_path, monkeypatch)
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET thread_id='thread-2' WHERE id=?", (eid,))
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("a mismatched experiment thread must not commit")
+
+    monkeypatch.setattr(workflow.workspaces, "commit_branch", refuse)
+    with pytest.raises(NeedsAttention, match="thread differs"):
+        await complete(workflow, action, turn("continue"))
+
+    assert saved(store, action)["state"] == "running"
+    assert events(store, eid) == []
+
+
+@pytest.mark.asyncio
+async def test_a_pending_request_without_an_open_owner_obligation_is_not_evidence(
+    runtime, tmp_path, monkeypatch
+):
+    store, eid, workflow, action = setup(runtime, tmp_path, monkeypatch)
+    ask_owner(store, eid)
+    with store.tx() as db:
+        db.execute("DELETE FROM obligations WHERE experiment_id=? AND id LIKE 'request:%'", (eid,))
+
+    rejected = await complete(workflow, action, turn("needs_owner"))
+
+    assert rejected["state"] == "failed"
+    assert "open ask_owner" in rejected["error"]
+
+
+@pytest.mark.asyncio
+async def test_multiple_action_commit_receipts_fail_closed(runtime, tmp_path, monkeypatch):
+    store, eid, workflow, action = setup(runtime, tmp_path, monkeypatch)
+    workflow.workspaces.commit_branch(eid, commit_message(action["id"]))
+    before_head = branch_head(workflow, eid)
+    with store.tx() as db:
+        store.emit(
+            db,
+            eid,
+            "workspace_commit_intent",
+            {"parent": before_head, "message": commit_message(action["id"]), "id": str(uuid4())},
+        )
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("duplicate receipts must not commit")
+
+    monkeypatch.setattr(workflow.workspaces, "commit_branch", refuse)
+    with pytest.raises(NeedsAttention, match="multiple workspace commit receipts"):
+        await complete(workflow, action, turn("continue"))
+
+    current = saved(store, action)
+    assert (current["state"], current["turn_id"]) == ("running", "turn-1")
+    assert branch_head(workflow, eid) == before_head
+
+
+@pytest.mark.asyncio
+async def test_an_uncertain_git_outcome_keeps_the_adopted_read_back_turn(runtime, tmp_path, monkeypatch):
+    store, eid, workflow, action = setup(runtime, tmp_path, monkeypatch)
+    before_head = branch_head(workflow, eid)
+    with store.tx() as db:
+        before = dict(db.execute("SELECT * FROM agent_actions WHERE id=?", (action["id"],)).fetchone())
+        db.execute("UPDATE agent_actions SET state='uncertain',turn_id=NULL WHERE id=?", (action["id"],))
+        action_obligations.sync_action(db, action["id"], before=before)
+        store.emit(
+            db,
+            eid,
+            "workspace_commit_intent",
+            {"parent": before_head, "message": commit_message(action["id"]), "id": str(uuid4())},
+        )
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("an unknown commit effect must not be replayed")
+
+    monkeypatch.setattr(workflow.workspaces, "commit_branch", refuse)
+    with pytest.raises(NeedsAttention, match="needs inspection"):
+        await complete(workflow, saved(store, action), turn("continue"), recovered_turn_id="turn-9")
+
+    current = saved(store, action)
+    assert (current["state"], current["turn_id"]) == ("uncertain", "turn-9")
+
+
+@pytest.mark.asyncio
+async def test_evidence_is_rechecked_after_git_before_settlement(runtime, tmp_path, monkeypatch):
+    store, eid, workflow, action = setup(runtime, tmp_path, monkeypatch)
+    store.report_state(eid, store.working_report(eid, "# Result", str(uuid4())), "ready")
+    worktree = Path(workflow.workspaces.branch(eid)["worktree"])
+    (worktree / "recheck.md").write_text("measured\n")
+    before_head = branch_head(workflow, eid)
+    real = workflow.workspaces.commit_branch
+
+    def drop_report(*args, **kwargs):
+        outcome = real(*args, **kwargs)
+        with store.tx() as db:
+            db.execute("DELETE FROM report_versions WHERE experiment_id=?", (eid,))
+        return outcome
+
+    monkeypatch.setattr(workflow.workspaces, "commit_branch", drop_report)
+    with pytest.raises(NeedsAttention, match="evidence changed"):
+        await complete(workflow, action, turn("done"))
+
+    assert saved(store, action)["state"] == "running"
+    assert branch_head(workflow, eid) != before_head

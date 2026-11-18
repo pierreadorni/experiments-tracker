@@ -7,7 +7,8 @@ settles the action and its existing obligation in one transaction. It never star
 retries a turn, reads a contract 3 stage result or changes an experiment phase.
 The commit reuses ``Workspaces.commit_branch`` and its intent/settled events: a
 settled receipt is reused without a second commit; an unsettled intent is left for
-inspection instead of being replayed.
+inspection instead of being replayed. Terminal, cancelled and deleted experiments
+settle their exact raw outcome without committing.
 """
 
 import asyncio
@@ -23,6 +24,7 @@ from .prompt import TurnEnd, TurnEvidence, validate_turn_end
 PHASE = "research"
 _COMMIT_PREFIX = "Research turn "
 _ACTIVE_JOB_STATES = ("submitting", "submitted", "agent")
+_TERMINAL_PHASES = frozenset({"complete", "failed", "cancelled"})
 _LIVE_STATES = frozenset({"dispatching", "running", "uncertain"})
 _ADOPTING_STATES = frozenset({"dispatching", "uncertain"})
 _WORKSPACE_EVENTS = ("workspace_commit_intent", "workspace_commit_settled")
@@ -40,14 +42,20 @@ def _saved_action(store, expected):
     return current
 
 
-def _contract_four(store, eid):
+def _contract_four(store, expected):
     try:
-        experiment = store.experiment(eid)
+        experiment = store.experiment(expected["experiment_id"])
     except KeyError:
         raise NeedsAttention("saved research experiment disappeared before settlement") from None
     if (experiment["contract"] or {}).get("execution_contract") != 4:
         raise NeedsAttention("a saved contract 3 action is not a research turn")
+    if experiment["thread_id"] != expected["thread_id"]:
+        raise NeedsAttention("saved experiment thread differs from the research action")
     return experiment
+
+
+def _terminal(experiment):
+    return experiment["deleted_at"] is not None or experiment["phase"] in _TERMINAL_PHASES
 
 
 def _turn_identity(action, recovered_turn_id):
@@ -73,26 +81,41 @@ def _turn_identity(action, recovered_turn_id):
     return saved
 
 
-def _open_question(experiment):
-    """True when the saved experiment waits for an owner answer that is still live."""
+def _open_question(db, experiment):
+    """True when a saved owner request also has its open owner obligation."""
     pending = experiment["pending_request"]
-    return bool(isinstance(pending, dict) and not pending.get("expired") and not pending.get("answer"))
+    if not (
+        isinstance(pending, dict)
+        and isinstance(pending.get("id"), str)
+        and pending["id"]
+        and not pending.get("expired")
+        and not pending.get("answer")
+    ):
+        return False
+    row = db.execute(
+        "SELECT 1 FROM obligations WHERE experiment_id=? AND state='open' AND owner='owner' "
+        "AND kind IN ('owner_answer','owner_approval') AND target=? LIMIT 1",
+        (experiment["id"], f"{experiment['id']}:{pending['id']}"),
+    ).fetchone()
+    return row is not None
 
 
-def _evidence(store, experiment):
+def _evidence(db, experiment):
     """Observe the saved conditions C7 requires; timers stay unvalidated until T4.3."""
     eid = experiment["id"]
-    active = store.one(
+    active = db.execute(
         "SELECT 1 FROM jobs WHERE experiment_id=? AND state IN (?,?,?) LIMIT 1",
         (eid, *_ACTIVE_JOB_STATES),
-    )
-    question = _open_question(experiment)
-    report = store.one("SELECT 1 FROM report_versions WHERE experiment_id=? AND state='ready' LIMIT 1", (eid,))
+    ).fetchone()
+    question = _open_question(db, experiment)
+    report = db.execute(
+        "SELECT 1 FROM report_versions WHERE experiment_id=? AND state='ready' LIMIT 1", (eid,)
+    ).fetchone()
     return TurnEvidence(
         active_jobs=1 if active else 0,
         pending_answers=1 if question else 0,
         open_ask_owner=question,
-        published_report=bool(report),
+        published_report=report is not None,
     )
 
 
@@ -114,7 +137,7 @@ def _raw_result(raw_result):
 
 
 def _commit_receipt(store, eid, message):
-    """Return the settled commit for this action, or ``None`` when none was attempted."""
+    """Return the one settled commit for this action, or ``None`` when none was attempted."""
     intents, settled = {}, {}
     for row in store.rows(
         "SELECT kind,payload FROM events WHERE experiment_id=? AND kind IN (?,?) ORDER BY seq",
@@ -124,14 +147,18 @@ def _commit_receipt(store, eid, message):
         if row["kind"] == "workspace_commit_intent":
             intents[payload["id"]] = payload
         else:
-            settled[payload["id"]] = payload
+            settled.setdefault(payload["id"], []).append(payload)
     matches = [payload for payload in intents.values() if payload.get("message") == message]
-    for payload in matches:
-        if payload["id"] in settled:
-            return settled[payload["id"]]["commit"]
-    if matches:
-        raise NeedsAttention("the research turn's workspace commit outcome needs inspection")
-    return None
+    if len(matches) > 1:
+        raise NeedsAttention("multiple workspace commit receipts exist for the research action")
+    if not matches:
+        return None
+    receipts = settled.get(matches[0]["id"], [])
+    if len(receipts) > 1:
+        raise NeedsAttention("multiple settled workspace receipts exist for the research action")
+    if receipts:
+        return receipts[0]["commit"]
+    raise NeedsAttention("the research turn's workspace commit outcome needs inspection")
 
 
 async def _commit(workflow, eid, action_id):
@@ -144,12 +171,52 @@ async def _commit(workflow, eid, action_id):
     return outcome["commit"]
 
 
-def _settle(store, expected, *, turn_id, state, result, error):
+def _save_turn_identity(store, expected, turn_id):
+    """Persist a read-back turn even though the Git outcome still needs inspection."""
+    with store.tx() as db:
+        current = action_obligations.expected_saved(db, expected)
+        action_obligations.transition(
+            db, expected["id"], {"turn_id": turn_id}, before=current, expected=expected
+        )
+        store.emit(
+            db,
+            expected["experiment_id"],
+            "agent_action_changed",
+            {"action_id": expected["id"], "state": current["state"]},
+        )
+
+
+def _experiment_in_tx(db, eid):
+    row = db.execute(
+        "SELECT id,phase,deleted_at,thread_id,pending_request FROM experiments WHERE id=?", (eid,)
+    ).fetchone()
+    if row is None:
+        raise NeedsAttention("saved research experiment disappeared during settlement")
+    experiment = dict(row)
+    experiment["pending_request"] = (
+        json.loads(experiment["pending_request"]) if experiment["pending_request"] else None
+    )
+    return experiment
+
+
+def _settle(store, expected, *, turn_id, state, result, error, turn=None):
     changes = {"state": state, "result": result, "error": error}
     if turn_id != expected["turn_id"]:
         changes["turn_id"] = turn_id
     with store.tx() as db:
         current = action_obligations.expected_saved(db, expected)
+        if turn is not None:
+            experiment = _experiment_in_tx(db, expected["experiment_id"])
+            # Git awaited after validation: recheck the live experiment and its evidence.
+            if not _terminal(experiment):
+                if experiment["thread_id"] != expected["thread_id"]:
+                    raise NeedsAttention("saved experiment thread changed during the turn commit")
+                try:
+                    validate_turn_end(turn, _evidence(db, experiment))
+                except ValueError as exc:
+                    raise NeedsAttention(
+                        f"saved research evidence changed during the turn commit: {exc}"
+                    ) from None
         action_obligations.transition(db, expected["id"], changes, before=current, expected=expected)
         store.emit(
             db,
@@ -163,18 +230,19 @@ def _settle(store, expected, *, turn_id, state, result, error):
 async def complete(workflow, expected_action, raw_result, *, recovered_turn_id=None):
     """Settle one exact saved research turn and return its saved action row.
 
-    A changed row, non-contract 4 experiment or different read-back turn refuses before
-    any effect. Invalid evidence settles the action as failed without a commit and keeps
-    its thread and turn. A valid result is committed before the action and its obligation
-    are completed atomically; Git runs in a worker thread.
+    A changed row, non-contract 4 experiment, different experiment thread or different
+    read-back turn refuses before any effect. Invalid evidence settles the action as
+    failed without a commit and keeps its thread and turn. A terminal, cancelled or
+    deleted experiment saves its exact raw outcome without committing. A valid live
+    result is committed, rechecked in the final transaction and settled atomically;
+    Git runs in a worker thread.
     """
     store = workflow.store
     expected = _saved_action(store, expected_action)
-    experiment = _contract_four(store, expected["experiment_id"])
+    experiment = _contract_four(store, expected)
     turn_id = _turn_identity(expected, recovered_turn_id)
     try:
         turn = _turn_end(raw_result)
-        validate_turn_end(turn, _evidence(store, experiment))
     except (ValidationError, ValueError, TypeError) as exc:
         return _settle(
             store,
@@ -184,7 +252,34 @@ async def complete(workflow, expected_action, raw_result, *, recovered_turn_id=N
             result=_raw_result(raw_result),
             error=f"research turn end rejected: {exc}",
         )
-    await _commit(workflow, expected["experiment_id"], expected["id"])
+    if _terminal(experiment):
+        return _settle(
+            store,
+            expected,
+            turn_id=turn_id,
+            state="completed",
+            result=_raw_result(raw_result),
+            error=None,
+        )
+    with store.tx() as db:
+        evidence = _evidence(db, experiment)
+    try:
+        validate_turn_end(turn, evidence)
+    except ValueError as exc:
+        return _settle(
+            store,
+            expected,
+            turn_id=turn_id,
+            state="failed",
+            result=_raw_result(raw_result),
+            error=f"research turn end rejected: {exc}",
+        )
+    try:
+        await _commit(workflow, expected["experiment_id"], expected["id"])
+    except (Exception, asyncio.CancelledError):
+        if turn_id != expected["turn_id"]:
+            _save_turn_identity(store, expected, turn_id)
+        raise
     # Git and the receipt check awaited; refuse a row that moved while they ran.
     return _settle(
         store,
@@ -193,4 +288,5 @@ async def complete(workflow, expected_action, raw_result, *, recovered_turn_id=N
         state="completed",
         result=encode(turn.model_dump()),
         error=None,
+        turn=turn,
     )
