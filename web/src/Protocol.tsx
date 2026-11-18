@@ -16,6 +16,7 @@ export function Protocol({ exp }: { exp: Experiment }) {
   const agent = exp.contract.agent as { model?: string; reasoning_effort?: string } | undefined;
   const execution = exp.contract.execution as ExecutionSettings | undefined;
   const parameters = exp.snapshot?.parameters || exp.contract.parameters;
+  const researchLoop = exp.contract.execution_contract === 4;
   return (
     <section className="panel protocol-panel">
       <h2>Protocol & provenance</h2>
@@ -82,26 +83,43 @@ export function Protocol({ exp }: { exp: Experiment }) {
       )}
       <details className="technical-details">
         <summary>
-          {exp.contract.execution_contract === 3
+          {researchLoop || exp.contract.execution_contract === 3
             ? 'Saved experiment contract'
             : 'Frozen experiment contract'}
         </summary>
         <pre>{JSON.stringify(exp.contract, null, 2)}</pre>
       </details>
-      <details className="technical-details">
-        <summary>
-          {exp.contract.execution_contract === 3 ? 'Implementation record' : 'Snapshot manifest'}
-        </summary>
-        <pre>{JSON.stringify(exp.snapshot, null, 2)}</pre>
-      </details>
-      {Boolean(exp.report_versions?.length) && (
+      {!researchLoop && (
+        <details className="technical-details">
+          <summary>
+            {exp.contract.execution_contract === 3 ? 'Implementation record' : 'Snapshot manifest'}
+          </summary>
+          <pre>{JSON.stringify(exp.snapshot, null, 2)}</pre>
+        </details>
+      )}
+      {(researchLoop || Boolean(exp.report_versions?.length)) && (
         <>
           <h3>Report provenance</h3>
           <p>
-            {exp.contract.execution_contract === 3
-              ? 'Report versions retain small displayed measurements and figures. Working source and large outputs remain editable.'
-              : 'Report versions derive from saved measurements. The original scientific source and results remain immutable.'}
+            {researchLoop
+              ? 'Working reports are versioned from the evidence available at each update. Checkpoint notebook content remains private.'
+              : exp.contract.execution_contract === 3
+                ? 'Report versions retain small displayed measurements and figures. Working source and large outputs remain editable.'
+                : 'Report versions derive from saved measurements. The original scientific source and results remain immutable.'}
           </p>
+          {researchLoop &&
+            (exp.report_versions?.length ? (
+              <ol className="research-turns" aria-label="Working report status">
+                {exp.report_versions.map((report) => (
+                  <li key={report.version}>
+                    <strong>Version {report.version}</strong> · {report.state}
+                    {report.state === 'failed' && report.error && <p>{report.error}</p>}
+                  </li>
+                ))}
+              </ol>
+            ) : (
+              <p className="muted">No working report yet.</p>
+            ))}
           <div className="stage-output-links">
             {exp.artifacts
               .filter((a) => /^report-v[0-9]+\.json$/.test(a.name))

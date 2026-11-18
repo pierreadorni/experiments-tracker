@@ -108,6 +108,40 @@ test('shell/GPU reproduction describes required allocation and executor-only che
   assert.doesNotMatch(readme, /recipe.py train|fit CPU models locally/);
 });
 
+test('contract four downloads present working research without exposing checkpoint contents', async () => {
+  const exp = {
+    ...experiment,
+    contract: { execution_contract: 4 },
+    recipe_id: 'agent_experiment_v1',
+    snapshot: null,
+    research_turns: [{ id: 'turn-1', status: 'wait', summary: 'Waiting for results' }],
+    research_checkpoint: { version: 2, bytes: 64, created_at: 10 },
+    report_versions: [
+      {
+        version: 1,
+        state: 'ready',
+        artifact_ids: [reportId],
+        report_artifact_id: reportId,
+        error: null,
+        created_at: 10,
+        updated_at: 11,
+      },
+    ],
+  };
+  const files = unzipSync(
+    await evidenceBundle(exp, async (a) => (a.id === figureId ? figure : report)),
+  );
+  const readme = strFromU8(files['README.txt']);
+  assert.match(readme, /research results download/);
+  assert.match(readme, /private checkpoint notebook content/);
+  assert.doesNotMatch(readme, /pip install|recipe.py/);
+  assert.deepEqual(files[`evidence/${reportId}/report.html`], report);
+  const saved = strFromU8(files['experiment.json']);
+  assert.match(saved, /Waiting for results/);
+  assert.match(saved, /"version": 2/);
+  assert.doesNotMatch(saved, /markdown|Private notebook/);
+});
+
 test('iteration downloads preserve duplicate historical names by object ID without reproduction claims', async () => {
   const exp = {
     ...experiment,

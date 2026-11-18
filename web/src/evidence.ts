@@ -68,8 +68,10 @@ export async function evidenceBundle(
     throw new Error('The evidence bundle is available after publication');
   if (exp.artifacts.reduce((n, a) => n + a.size, 0) > maxBundleBytes)
     throw new Error('Bundle exceeds 128 MiB');
-  const iteration = exp.contract?.execution_contract === 3;
-  const archiveName = (a: Artifact) => (iteration ? `${a.id}/${a.name}` : a.name);
+  const contract = exp.contract?.execution_contract;
+  const iteration = contract === 3;
+  const researchLoop = contract === 4;
+  const archiveName = (a: Artifact) => (iteration || researchLoop ? `${a.id}/${a.name}` : a.name);
   const files: Record<string, Uint8Array> = Object.create(null);
   for (const artifact of exp.artifacts) {
     if (
@@ -118,9 +120,11 @@ export async function evidenceBundle(
       2,
     ),
   );
-  if (iteration) {
+  if (iteration || researchLoop) {
     files['README.txt'] = strToU8(
-      'ExperimentTracker working results download\n\nOpen report.html. Small published metrics, reports and figures are retained under evidence/ by object ID. This convenience archive does not promise reproducibility, include large scientific data/checkpoints, or certify scientific validity. Original producer associations and task status are in experiment.json. This is private research content.\n',
+      iteration
+        ? 'ExperimentTracker working results download\n\nOpen report.html. Small published metrics, reports and figures are retained under evidence/ by object ID. This convenience archive does not promise reproducibility, include large scientific data/checkpoints, or certify scientific validity. Original producer associations and task status are in experiment.json. This is private research content.\n'
+        : 'ExperimentTracker research results download\n\nOpen report.html. Published reports, metrics and figures are retained under evidence/ by object ID. This convenience archive does not promise reproducibility, include large scientific data or private checkpoint notebook content, or certify scientific validity. Research turns, checkpoint metadata, original producer associations and task status are in experiment.json. This is private research content.\n',
     );
     return zipSync(files, { level: 0 });
   }
