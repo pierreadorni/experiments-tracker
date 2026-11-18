@@ -17,10 +17,12 @@ from .config import StrictModel
 from .core import action_obligations, wakeup_obligations
 from .legacy_archive import execution_frozen
 from .models import Analysis, Implementation, ReportDocument, ResearchPlan
+from .research.admission import SubmitJobRequest
 from .research.cancel_tool import CancelJob, cancel_job
 from .research.checkpoints import SaveCheckpoint, save_checkpoint
 from .research.figure_tool import RegisterFigure, register_figure
 from .research.integration_tool import RequestIntegration, request_integration
+from .research.job_dispatch import dispatch as dispatch_research_job
 from .research.owner_tool import AskOwnerQuestion, ask_owner
 from .research.report_tool import UpdateReport
 from .research.report_tool import update_report as update_research_report
@@ -162,6 +164,11 @@ TOOLS = [
 
 # Contract 4 advertises only research tools, never the stage-engine tools.
 RESEARCH_TOOLS = [
+    tool_from_model(
+        "submit_job",
+        "Submit one locally scoped research job after exact owner approval. Repeating a request_id adopts the saved outcome and never resubmits an uncertain job.",
+        SubmitJobRequest,
+    ),
     tool_from_model(
         "cancel_job",
         "Save a cancellation request for this experiment's exact tracked Slurm intent. This records the decision only; the existing backend reconciler handles scheduler cancellation later. Repeating a request_id with the same decision adopts the saved request.",
@@ -454,6 +461,23 @@ class Controller:
             raise ValueError("stage-engine tools require execution contract 3")
         if (exp.get("contract") or {}).get("execution_contract") == 4 and name not in RESEARCH_TOOL_NAMES:
             raise ValueError("contract 4 turns permit only the listed research tools")
+        if name == "submit_job":
+            request = SubmitJobRequest.model_validate(args)
+            require_research_write(wf, exp, action)
+            reservation = wf.agent_pool.lookup("agent_actions", action["id"])
+            if (
+                reservation is None
+                or reservation.owner != experiment_owner(eid)
+                or wf.agent_pool.live_slot(reservation) is None
+            ):
+                raise ValueError("submission requires exact live pool ownership")
+            row = await dispatch_research_job(wf, eid, action, request)
+            return {
+                "state": row["state"],
+                "intent_id": row["intent_id"],
+                "job_id": row["job_id"],
+                "commit": json.loads(row["execution_manifest"] or "{}").get("commit"),
+            }
         if name == "cancel_job" and (exp.get("contract") or {}).get("execution_contract") == 4:
             require_live_research(exp, action)
             return cancel_job(wf.store, exp, action, CancelJob.model_validate(args))

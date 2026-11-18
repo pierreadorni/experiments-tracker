@@ -80,6 +80,7 @@ def test_v4_selects_only_research_tools_and_keeps_contract_three_listing(runtime
         "register_result",
         "request_integration",
         "save_checkpoint",
+        "submit_job",
         "update_report",
     }
     assert "cluster_info" not in {item["name"] for item in controller.served_tools()}
