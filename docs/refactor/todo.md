@@ -526,9 +526,11 @@ role busy flags it still writes. All retire with the contract-3 engine in T4.8.
 
 ## Phase 4 — Research loop, execution contract 4 (C7)
 
-### [~] T4.1 Contract 4 skeleton · S · M per subcard
+### [x] T4.1 Contract 4 skeleton · S · M per subcard
 - Ordered source rollout: [bounded cards and identity boundaries](notes/t4.1-rollout.md).
 - [x] T4.1a–d: turn protocol, stage isolation, archive boundary and inert first-turn intent.
+- [x] T4.1e–g: exact dispatch, settlement and readback; opt-in creation and one first turn.
+- The skeleton is not a pilot: tools, event wakeups, approvals and UI are still separate cards.
 - Add a project flag `research_loop`. The create path sets `execution_contract: 4`.
 - One session per experiment, with `cwd` = branch worktree. Add the turn-input
   builder (under 8 KB) and the turn-end schema with the enforcement rules.
@@ -560,6 +562,8 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 ---
 
 ## Log
+
+- **T4.1e–g, 2026-11-18:** Isolated Node 24 locked Ruff and **1,150 Python tests passed** (one existing dependency warning) on byte-identical source/tests/scripts. Scripted managed turns and temporary real Git prove opt-in workspace setup, exact dispatch and restart readback without replay or stage advancement. The old engine remains until T4.8. Per-card production; test additions/deletions: e `2e92808` +200/−0; +299/−0, f1 `62a7be2` +196/−0; +303/−0, hardening `6ffcceb` +124/−28; +118/−3, f2 `2abca2c` +131/−2; +294/−0, format `4e3d9c1` +3/−11; +21/−19, g1 `7a8a518` +34/−8; +176/−0, g2 `5ff6007` +42/−0; +161/−0. Dispatch and settlement add a persistent-thread boundary while reusing the existing pool, intent ledger, resolver and Git commit primitives. Default remains 3; no live activation.
 
 - **T4.1a–d, 2026-11-18:** `378e4ba`, `17b0f62`, `e1ba734`, `6196f95`. The bounded protocol and saved first-turn intent are inert; archive eligibility is separate from entry to the contract-3 engine. The queue and its admission obligation commit together. Numstat (production; tests): a +267/−0; +203/−0, b +65/−21; +234/−0, c +43/−13; +255/−4, d +96/−1; +167/−0. The prompt/schema add capability not present in the stage manifests; T4.8 retires those old execution paths. Isolated Node 24 locked Ruff and **1,092 Python tests passed** (one existing dependency warning), including 94 focused tests before the full run. No contract-4 create or live activation.
 
