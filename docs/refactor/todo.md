@@ -553,10 +553,12 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 - [x] T4.3b: the exact durable owner answer queues one debounced follow-up after settlement.
 - [x] Settled `continue` queues once on the exact saved thread.
 - [x] Known local scheduler jobs route separately from contract 3. Terminal job wakes can share one follow-up with a due owner answer.
-- [x] Missing local scheduler IDs use the existing exact-intent resolver before observation. Remote observation, steering and explicit timers remain.
+- [x] Missing local scheduler IDs use the existing exact-intent resolver before observation.
+- [x] Contract-4 steering is saved for the next eligible turn on the exact saved thread; it never restarts the stage engine. Remote observation and explicit timers remain.
 ### [~] T4.4 Approval gate (manual review and Autopilot envelope) · F+R · S per subcard
 - [x] Durable manual approval requests through `ask_owner` and exact owner decision verification.
-- Remaining: compute admission and the Autopilot envelope.
+- [x] Inert CPU-only admission validation checks the latest exact owner approval, saved action, pause/maintenance and resource limits.
+- Remaining: durable intent and dispatch wiring, and the Autopilot envelope.
 ### [ ] T4.5 UI for contract 4 (turns, checkpoint, jobs, approvals, report) · F · M
 ### [ ] T4.6 Contract 4 scenario suite (design.md C12 list) · F · M
 ### [ ] T4.7 Live pilot — owner-authorized, small brief, measure turns, tokens and interventions · owner + S
@@ -576,6 +578,8 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 ---
 
 ## Log
+
+- **T4.3 steering and T4.4 manual admission:** `607e3c7`, `eedf0f5`. Production; tests respectively: +28/−2; +26/−0 and +91/−0; +54/−0. Steering consumes one bounded saved message in the same transaction as the follow-up. Admission has no external effects and is not exposed as a submission tool. Locked Ruff and **1,351 Python tests passed** (one existing dependency warning). No live activation.
 
 - **T4.3 local job reconciliation:** `bfd7bfb`. Production +10/−2; tests +40/−3. Contract-4 local observation adopts exact missing scheduler IDs through the existing resolver and honors in-flight ownership. Locked Ruff and **1,346 Python tests passed** (one existing dependency warning). No live activation.
 
