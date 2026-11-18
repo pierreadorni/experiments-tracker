@@ -437,14 +437,40 @@ class Workflow:
         await self.connect_agent()
         # A request belongs to its original connection. Never replay an obsolete RPC ID after restart.
         for row in self.store.rows(
-            "SELECT id,pending_request FROM experiments WHERE pending_request IS NOT NULL"
+            "SELECT id,pending_request,contract FROM experiments WHERE pending_request IS NOT NULL"
         ):
             pending = json.loads(row["pending_request"])
+            # A durable contract-4 owner question has no live RPC to expire; its
+            # saved answer is consumed by the next research turn (T4.3).
+            if self._durable_owner_question(row["id"], json.loads(row["contract"]), pending):
+                continue
             pending["expired"] = True
             self.store.update(row["id"], pending_request=pending, hold_reason="expired_agent_request")
         await self.controller.start()
         await self.start_agent_pool()
         self.started = True
+
+    def _durable_owner_question(self, eid, contract, pending):
+        """True for a saved contract-4 ask_owner question, not a live app-server RPC.
+
+        It names its own saved ``phase='research'`` action and carries no
+        ``rpc_id``, so the owner's answer is saved for the next research turn
+        (T4.3) instead of being replayed through an obsolete connection. Such a
+        question survives restart and drain, including its saved answer.
+        """
+        if not isinstance(pending, dict):
+            return False
+        if not isinstance(pending.get("id"), str) or not pending["id"]:
+            return False
+        if pending.get("rpc_id") is not None:
+            return False
+        if (contract or {}).get("execution_contract") != 4:
+            return False
+        action_id = pending.get("action_id")
+        if not action_id:
+            return False
+        action = self.store.one("SELECT experiment_id,phase FROM agent_actions WHERE id=?", (action_id,))
+        return bool(action and action["experiment_id"] == eid and action["phase"] == RESEARCH_PHASE)
 
     async def refresh_cluster(self):
         self.last_cluster_refresh = clock.now()
@@ -652,6 +678,10 @@ class Workflow:
         for row in self.store.rows("SELECT id FROM experiments WHERE pending_request IS NOT NULL"):
             exp = self.store.experiment(row["id"])
             pending = exp["pending_request"]
+            # A durable contract-4 question is answered into saved state, never
+            # drained through an old RPC reply. Keep it and its saved answer.
+            if self._durable_owner_question(exp["id"], exp["contract"], pending):
+                continue
             action = (
                 self.store.one("SELECT * FROM agent_actions WHERE id=?", (pending.get("action_id"),))
                 if pending.get("action_id")
