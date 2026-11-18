@@ -4,11 +4,13 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import os
 import re
 import shlex
 import shutil
+import tempfile
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from . import artifacts, clock
 from .core import obligation_sources, transfer_obligations
@@ -27,6 +29,51 @@ class TransferCancelled(RuntimeError):
 
 class TransferPending(RuntimeError):
     """A retryable transport failure, never evidence that scientific work failed."""
+
+
+def exact_research_attempt(workflow, experiment_id, job):
+    try:
+        intent = str(UUID(str(job.get("intent_id"))))
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise ValueError("remote result requires a UUID job intent") from exc
+    if intent != job.get("intent_id") or job.get("experiment_id") != experiment_id:
+        raise ValueError("remote result requires this experiment's exact saved intent")
+    root = Path(job.get("execution_root") or "")
+    base = Path(workflow.projects.base_root(experiment_id)).resolve()
+    expected = base / "attempts" / intent
+    if (
+        not root.is_absolute()
+        or root.is_symlink()
+        or root != expected
+        or root.resolve() != expected
+        or not root.is_dir()
+    ):
+        raise ValueError("remote result requires this intent's exact saved attempt")
+    return root
+
+
+def place_research_result(temporary, target, root):
+    root = root.resolve()
+    parent = target.parent
+    relative = parent.relative_to(root)
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError("result destination parent must not contain symlinks")
+        if not current.exists():
+            current.mkdir()
+        if not current.is_dir() or not current.resolve().is_relative_to(root):
+            raise ValueError("result destination escapes the exact attempt")
+    downloaded = artifacts.allowed_path(temporary, root)
+    try:
+        os.link(downloaded, target)
+    except FileExistsError:
+        # A crash can leave the file installed before transfer completion commits.
+        existing = artifacts.allowed_path(target, root)
+        if existing.read_bytes() != downloaded.read_bytes():
+            raise ValueError("pending remote result destination has different contents") from None
+    return artifacts.allowed_path(target, root)
 
 
 def ssh_args(host):
@@ -258,7 +305,9 @@ class RemoteSlurmScheduler(SlurmScheduler):
         self.user = self.association_user = user
         return {**await super().discover(), "execution_context": "jean-zay"}
 
-    async def transfer(self, direction, operation, *, identity=None, supersedes=None, superseded_by=None):
+    async def transfer(
+        self, direction, operation, *, identity=None, supersedes=None, superseded_by=None, result_path=None
+    ):
         """Run one exact saved transfer episode under its caller's saved identity.
 
         A terminal delivery admission passes the same job's ``supersedes`` preview
@@ -273,6 +322,8 @@ class RemoteSlurmScheduler(SlurmScheduler):
         if self.store.experiment(self.exp["id"])["phase"] == "cancelled":
             raise TransferCancelled("Experiment cancelled")
         payload = {"settings": self.settings.model_dump(), "layout": layout}
+        if result_path is not None:
+            payload["result_path"] = result_path
         identity = identity or str(uuid4())
         with self.store.tx() as db:
             before_row = db.execute("SELECT * FROM execution_transfers WHERE id=?", (identity,)).fetchone()
@@ -568,6 +619,90 @@ class RemoteSlurmScheduler(SlurmScheduler):
         # A single queue/accounting snapshot per host per sweep is supplied by
         # the workflow. Reads still use the saved exact job ID.
         return await super().observe(job_id)
+
+    async def fetch_result(self, job):
+        """Deliver a declared C4 result after saved successful Slurm accounting."""
+        if (self.exp.get("contract") or {}).get("execution_contract") != 4:
+            raise ValueError("remote result delivery requires saved execution contract 4")
+        intent = job.get("intent_id")
+        saved_job = self.store.one("SELECT * FROM jobs WHERE intent_id=?", (intent,))
+        # Delivery requires the exact durable successful-accounting tuple while the
+        # workflow still owns the submitted job pending result accounting.
+        if (
+            not saved_job
+            or saved_job["experiment_id"] != self.exp["id"]
+            or saved_job["state"] != "submitted"
+            or saved_job["scheduler_state"] != "COMPLETED"
+            or saved_job["exit_code"] != "0:0"
+            or saved_job["ended_at"] is None
+            or not saved_job["job_id"]
+            or saved_job["job_id"] != job.get("job_id")
+        ):
+            raise ValueError("remote result requires saved successful terminal accounting")
+        job = dict(saved_job)
+        manifest = json.loads(job.get("execution_manifest") or "{}")
+        if manifest.get("executor") == "agent":
+            raise ValueError("remote result requires a saved Slurm job")
+        request = manifest.get("research_request") or {}
+        from .research.result_path import validate_result_path
+
+        name = validate_result_path(request.get("result_file"))
+        if not re.fullmatch(r"[A-Za-z0-9._/-]+", name) or any(
+            part.startswith("-") for part in Path(name).parts
+        ):
+            raise ValueError("remote result path contains characters unsafe for rsync transport")
+        root = await asyncio.to_thread(exact_research_attempt, self.workflow, self.exp["id"], job)
+        execution = manifest.get("execution") or {}
+        saved_settings = ExecutionSettings.model_validate(execution.get("settings"))
+        saved_layout = execution.get("layout")
+        if not isinstance(saved_layout, dict):
+            raise ValueError("remote result requires this job's saved execution layout")
+        if (
+            saved_settings.context != "jean-zay"
+            or saved_layout.get("host") != saved_settings.ssh_host
+            or saved_layout.get("local_run") != str(root)
+            or not Path(saved_layout.get("remote_run", "")).is_absolute()
+            or not Path(saved_layout.get("remote_project", "")).is_absolute()
+        ):
+            raise ValueError("saved execution route differs from this job's exact attempt")
+        if saved_settings.model_dump() != self.settings.model_dump():
+            raise ValueError("scheduler settings differ from this job's saved execution route")
+        self.layout = saved_layout
+        identity = hashlib.sha256((self.exp["id"] + ":" + intent + ":c4-result").encode()).hexdigest()
+        saved = self.store.one("SELECT * FROM execution_transfers WHERE id=?", (identity,))
+        if saved:
+            if saved["experiment_id"] != self.exp["id"] or saved["direction"] != "down":
+                raise ValueError("transfer identity changed")
+            payload = json.loads(saved["payload"])
+            layout = payload.get("layout") or {}
+            if (
+                payload.get("settings") != saved_settings.model_dump()
+                or payload.get("result_path") != name
+                or layout != saved_layout
+                or layout.get("local_run") != str(root)
+                or layout.get("host") != self.settings.ssh_host
+            ):
+                raise ValueError("saved transfer route differs from this job or declared result")
+            self.layout = layout
+        else:
+            layout = saved_layout
+        remote = Path(layout["remote_run"]) / name
+        target = root / name
+        if saved and saved["state"] == "complete":
+            return await asyncio.to_thread(artifacts.allowed_path, target, root)
+
+        async def download():
+            # A private fresh directory prevents collisions and rsync --max-size from
+            # leaving a prior attempt's bytes at its deterministic destination.
+            temporary_dir = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix=".result-", dir=root))
+            temporary = temporary_dir / "result"
+            try:
+                await self.rsync("-lt", "--max-size=10m", layout["host"] + ":" + str(remote), str(temporary))
+                return await asyncio.to_thread(place_research_result, temporary, target, root)
+            finally:
+                await asyncio.to_thread(shutil.rmtree, temporary_dir, True)
+
+        return await self.transfer("down", download, identity=identity, result_path=name)
 
     async def fetch(self, job, observed):
         layout = await self.resolve()

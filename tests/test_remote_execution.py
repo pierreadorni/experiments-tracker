@@ -3,6 +3,7 @@
 No tests in this file submit actual cluster jobs or use managed inference.
 """
 
+import hashlib
 import json
 import shlex
 import sys
@@ -277,6 +278,101 @@ async def test_remote_roundtrip_seals_checkpoints_without_downloading_bytes(runt
     # Saved routing wins even after the project selection changes.
     settings(wf, "remote-project", context="acacia")
     assert isinstance(wf.scheduler_for(wf.store.experiment(exp["id"]), job), RemoteSlurmScheduler)
+
+
+async def test_c4_remote_result_transfer_replays_and_recovers_interrupted_download(
+    runtime, tmp_path, monkeypatch
+):
+    wf, exp, _ = prepared(runtime, tmp_path)
+    machines = Machines(monkeypatch, wf.store)
+    intent = str(uuid4())
+    contract = {**exp["contract"], "execution_contract": 4}
+    with wf.store.tx() as db:
+        db.execute("UPDATE experiments SET contract=? WHERE id=?", (json.dumps(contract), exp["id"]))
+    exp = wf.store.experiment(exp["id"])
+    base = Path(wf.projects.base_root(exp["id"]))
+    root = base / "attempts" / intent
+    root.mkdir(parents=True)
+    stage = "research-" + intent
+    with wf.store.tx() as db:
+        db.execute(
+            "INSERT INTO stages(experiment_id,id,updated_at) VALUES(?,?,?)", (exp["id"], stage, time.time())
+        )
+        db.execute(
+            "INSERT INTO jobs(intent_id,experiment_id,stage_id,state,job_id,scheduler_state,exit_code,script_hash,resources,snapshot_hash,created_at,ended_at,execution_root,execution_manifest) "
+            "VALUES(?,?,?,'complete','12345','COMPLETED','0:0','x','{}','x',?,?,?,?)",
+            (
+                intent,
+                exp["id"],
+                stage,
+                time.time(),
+                time.time(),
+                str(root),
+                json.dumps(
+                    {
+                        "executor": "slurm",
+                        "research_request": {"result_file": "metrics/result.json"},
+                        "execution": {
+                            "settings": exp["contract"]["execution"],
+                            "layout": {
+                                "remote_base": str(tmp_path / "remote"),
+                                "remote_project": str(tmp_path / "remote" / "project"),
+                                "remote_run": str(tmp_path / "remote" / "run"),
+                                "local_project": str(wf.projects.base_root(exp["id"])),
+                                "local_run": str(root),
+                                "host": "jz",
+                            },
+                        },
+                    }
+                ),
+            ),
+        )
+    job = wf.store.one("SELECT * FROM jobs WHERE intent_id=?", (intent,))
+    # Result delivery remains under a submitted job; only its exact terminal
+    # accounting tuple authorizes the result transfer.
+    wf.store.db.execute("UPDATE jobs SET state='submitted' WHERE intent_id=?", (intent,))
+    scheduler = wf.scheduler_for(exp, job)
+    wf.store.db.execute("UPDATE jobs SET scheduler_state=NULL WHERE intent_id=?", (intent,))
+    with pytest.raises(ValueError, match="successful terminal accounting"):
+        await scheduler.fetch_result(job)
+    wf.store.db.execute(
+        "UPDATE jobs SET scheduler_state='COMPLETED',exit_code='0:0',ended_at=? WHERE intent_id=?",
+        (time.time(), intent),
+    )
+    job = wf.store.one("SELECT * FROM jobs WHERE intent_id=?", (intent,))
+    layout = await scheduler.resolve()
+    remote_result = Path(layout["remote_run"]) / "metrics/result.json"
+    remote_result.parent.mkdir(parents=True, exist_ok=True)
+    remote_result.write_text('{"metrics": []}')
+    machines.fail_download = True
+    with pytest.raises(remote.TransferPending):
+        await scheduler.fetch_result(job)
+    transfer_id = hashlib.sha256((exp["id"] + ":" + intent + ":c4-result").encode()).hexdigest()
+    assert (
+        wf.store.one("SELECT state FROM execution_transfers WHERE id=?", (transfer_id,))["state"] == "pending"
+    )
+    assert not (root / "metrics/result.json").exists()
+    machines.fail_download = False
+    # Resume from the persisted transfer using a newly constructed scheduler, as
+    # after an owner restart; successful scheduler accounting remains saved locally.
+    scheduler = wf.scheduler_for(exp, job)
+    target = root / "metrics/result.json"
+    target.parent.mkdir()
+    target.write_text("different")
+    with pytest.raises(remote.TransferPending, match="different contents"):
+        await scheduler.fetch_result(job)
+    assert target.read_text() == "different"
+    # A prior owner may have installed these bytes before committing completion.
+    target.write_bytes(remote_result.read_bytes())
+    await scheduler.fetch_result(job)
+    calls = len(machines.calls)
+    assert target.read_text() == '{"metrics": []}'
+    await scheduler.fetch_result(job)
+    assert len(machines.calls) == calls
+    assert (
+        wf.store.one("SELECT state FROM execution_transfers WHERE id=?", (transfer_id,))["state"]
+        == "complete"
+    )
 
 
 async def test_lost_submission_reconciles_exactly_once_across_restart(runtime, tmp_path, monkeypatch):
