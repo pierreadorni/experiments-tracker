@@ -49,9 +49,32 @@ def test_ask_owner_schema_is_advertised_from_the_actual_model():
     assert schema == AskOwnerQuestion.model_json_schema()
     assert schema["additionalProperties"] is False
     assert schema["required"] == ["request_id", "question"]
-    assert set(schema["properties"]) == {"request_id", "question", "options"}
-    # Approval stays disabled: no kind/approval field is advertised.
-    assert "kind" not in schema["properties"] and "approval" not in schema["properties"]
+    assert set(schema["properties"]) == {"request_id", "question", "options", "kind", "objective"}
+
+
+@pytest.mark.parametrize("decision", ["accept", "decline", "cancel"])
+async def test_durable_approval_only_grants_exact_owner_accept(runtime, tmp_path, monkeypatch, decision):
+    from experimenttracker.research.approval import approved
+    from experimenttracker.store import Conflict
+
+    store, eid, workflow, _ = setup(runtime, tmp_path, monkeypatch)
+    asked = question()
+    request_id = str(asked.request_id)
+    objective = "Compare the two synthetic data splits"
+    request = {**payload(asked), "kind": "approval", "objective": objective}
+    receipt = await workflow.controller.call(eid, "ask_owner", request)
+    assert await workflow.controller.call(eid, "ask_owner", request) == receipt
+    assert approved(store, eid, request_id, objective) is None
+    assert saved_pending(store, eid)["params"]["objective"] == objective
+    body = {"pending_request_id": request_id, "answer": decision}
+    with pytest.raises(Conflict):
+        store.command(uuid4(), "answer", body, eid=eid, origin="agent")
+    store.command(uuid4(), "answer", body, eid=eid)
+    assert bool(approved(store, eid, request_id, objective)) == (decision == "accept")
+    with pytest.raises(Conflict):
+        store.command(uuid4(), "answer", body, eid=eid)
+    store.update(eid, pending_request=None)
+    assert bool(approved(store, eid, request_id, objective)) == (decision == "accept")
 
 
 async def test_ask_owner_routes_one_question_and_needs_owner_settles(runtime, tmp_path, monkeypatch):

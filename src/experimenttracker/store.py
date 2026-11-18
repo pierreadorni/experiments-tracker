@@ -118,7 +118,8 @@ def public_projection(value):
     for event in result.get("events", []):
         omitted = {
             "automatic_repair_started": {"snapshot"},
-            "owner_question_asked": {"question", "options"},
+            "owner_question_asked": {"question", "options", "objective"},
+            "owner_approval_requested": {"brief", "objective"},
             "selective_repair_queued": {"original_work", "error"},
             "selective_cancellation_uncertain": {"error"},
             "research_checkpoint_saved": {"markdown"},
@@ -1709,6 +1710,12 @@ class Store:
                         request_answer(pending, payload["answer"])
                     except ValueError as exc:
                         raise Conflict(str(exc)) from None
+                    if (
+                        exp["contract"].get("execution_contract") == 4
+                        and pending.get("kind") == "approval"
+                        and (origin not in ("local", "gateway") or pending.get("answer"))
+                    ):
+                        raise Conflict("only the owner can decide a research approval once")
                     if resumes_stage:
                         # A settled turn has no live RPC to answer, even if its request survived restart.
                         # Resuming clears the request, so record the answer that fulfills it.

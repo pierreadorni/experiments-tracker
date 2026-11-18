@@ -195,7 +195,7 @@ RESEARCH_TOOLS = [
     ),
     tool_from_model(
         "ask_owner",
-        "Ask the owner one durable question tied to this exact live research turn. Returns the saved question state; the existing answer command settles it and approval stays disabled. Repeating a request_id with the same question adopts the saved question.",
+        "Ask the owner a durable question or request approval for an explicit proposed objective. Only an owner can decide approval. Repeating a request_id with the same input returns the saved state.",
         AskOwnerQuestion,
     ),
     tool_from_model(

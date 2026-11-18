@@ -1,11 +1,8 @@
 """C7 ``ask_owner``: one durable owner question tied to the exact research turn.
 
-This is the inert question-only slice of the tool. It records a reply-free owner
-question against one saved live contract 4 research action and persists the same
-required-decision notice, owner-answer obligation, event and outbox row in one
-transaction. It never replies to a model RPC, consumes a prompt, pauses, settles,
-deletes, changes a terminal phase, approves or submits anything. Approval remains
-closed until T4.4.
+It records a question or approval request against one live contract-4 action.
+The notice, owner obligation and receipt commit together. This tool does not send
+an RPC reply, accept an approval or submit compute.
 
 The saved ``owner_question_asked`` event is the exact historical receipt, so a
 replay never reopens a consumed request. A changed payload, a second unanswered
@@ -14,15 +11,17 @@ compatible with the existing answer command.
 """
 
 import json
+from typing import Literal
 from uuid import UUID, uuid4
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from .. import clock
 from ..config import StrictModel
 from ..core import action_obligations, request_obligations
 from ..maintenance import blocked
 from ..store import Conflict, encode
+from .approval import REQUEST_EVENT
 
 _RESEARCH_PHASE = "research"
 _LIVE_STATES = frozenset({"running"})
@@ -37,11 +36,22 @@ _MAX_OPTIONS = 10
 
 
 class AskOwnerQuestion(StrictModel):
-    """The strict bounded input of one question; approval has no field here."""
+    """One durable question or objective-linked approval request."""
 
     request_id: UUID
     question: str = Field(min_length=1, max_length=_MAX_QUESTION)
     options: list[str] = Field(default_factory=list, max_length=_MAX_OPTIONS)
+    kind: Literal["question", "approval"] = "question"
+    objective: str | None = Field(default=None, max_length=_MAX_QUESTION)
+
+    @model_validator(mode="after")
+    def approval_shape(self):
+        if self.kind == "approval":
+            if not self.objective or not self.objective.strip() or self.options:
+                raise ValueError("approval requires an objective and no custom options")
+        elif self.objective is not None:
+            raise ValueError("only approval requests take an objective")
+        return self
 
     @field_validator("question")
     @classmethod
@@ -76,7 +86,7 @@ def _receipt(experiment_id, action, request_id, state):
 
 def _experiment(db, expected_action):
     row = db.execute(
-        "SELECT id,phase,deleted_at,contract,thread_id,pause_agent,pending_request "
+        "SELECT id,brief,phase,deleted_at,contract,thread_id,pause_agent,pending_request "
         "FROM experiments WHERE id=?",
         (expected_action["experiment_id"],),
     ).fetchone()
@@ -141,6 +151,8 @@ def ask_owner(store, expected_action, question):
             if (
                 event.get("action_id") != action["id"]
                 or event.get("thread_id") != action["thread_id"]
+                or event.get("kind", "question") != question.kind
+                or event.get("objective") != question.objective
                 or event.get("question") != question.question
                 or tuple(event.get("options") or ()) != tuple(options)
             ):
@@ -154,11 +166,12 @@ def ask_owner(store, expected_action, question):
                 raise Conflict("the saved owner answer has not been consumed yet")
             raise Conflict("another owner question is still unanswered")
 
+        approval = question.kind == "approval"
         saved = {
             "id": request_id,
             "action_id": action["id"],
             "thread_id": action["thread_id"],
-            "method": _REQUEST_METHOD,
+            "method": "item/commandExecution/requestApproval" if approval else _REQUEST_METHOD,
             "params": {
                 "questions": [
                     {
@@ -170,6 +183,24 @@ def ask_owner(store, expected_action, question):
             },
             "expired": False,
         }
+        if approval:
+            saved["kind"] = "approval"
+            saved["params"]["objective"] = question.objective
+            project_id = json.loads(experiment["contract"]).get("project", {}).get("id")
+            if not project_id:
+                raise Conflict("approval requires an exact saved project")
+            store.emit(
+                db,
+                experiment["id"],
+                REQUEST_EVENT,
+                {
+                    "experiment_id": experiment["id"],
+                    "project_id": project_id,
+                    "brief": experiment["brief"],
+                    "request_id": request_id,
+                    "objective": question.objective,
+                },
+            )
         before = request_obligations.saved_pending(db, experiment["id"])
         now = clock.now()
         db.execute(
@@ -192,6 +223,7 @@ def ask_owner(store, expected_action, question):
                 "thread_id": action["thread_id"],
                 "question": question.question,
                 "options": options,
+                **({"kind": "approval", "objective": question.objective} if approval else {}),
             },
         )
         return _receipt(experiment["id"], action, request_id, "open")
