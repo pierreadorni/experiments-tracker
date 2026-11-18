@@ -1095,8 +1095,8 @@ class Store:
     def _integration_branch(self, exp):
         """Return this experiment's exact saved named branch, or refuse.
 
-        Integration is a contract-3 Git feature: a frozen legacy record and a run
-        without a saved branch have no scope the queue could bind safely.
+        A frozen legacy record or a run without a saved branch has no scope the
+        integration queue could bind safely.
         """
         if execution_frozen(exp):
             raise Conflict("integration requires a live contract-3 experiment")
@@ -1168,36 +1168,49 @@ class Store:
             raise Conflict(str(exc)) from None
 
     def request_completion_integration(self, eid, *, _db=None):
-        """Queue the agent's opt-in integration for the interpretation that just completed.
+        """Queue a saved completion decision through the same command as owner integration.
 
-        The decision is the saved final interpretation (``Analysis.integrate`` and its
-        reason). Nothing is queued without it, for a Don't merge experiment, for a
-        branch that is no longer active, or while this experiment already has a saved
-        merge request. The request goes through ``command`` like an owner request, so
-        it only enqueues: the worker's project check, approval setting and exact saved
-        scope still decide whether it lands. The request ID derives from the completed
-        interpretation, so replaying the completion boundary reuses the same command.
+        The worker still owns the project check, approval setting and merge. The
+        completion action determines the request ID, so replay cannot queue it again.
         """
         with contextlib.nullcontext(_db) if _db is not None else self.tx() as db:
             exp = self.experiment(eid)
-            analysis = exp["analysis"] or {}
-            reason = analysis.get("integrate_reason")
             if (
                 exp["phase"] != "complete"
+                or exp["deleted_at"] is not None
                 or execution_frozen(exp)
-                or not analysis.get("integrate")
                 or exp["contract"].get("dont_merge")
             ):
                 return None
-            branch = self.one("SELECT * FROM experiment_branches WHERE experiment_id=?", (eid,))
-            if branch is None or branch["state"] != "active":
-                return None
+            research = exp["contract"].get("execution_contract") == 4
             action = self.one(
-                "SELECT id FROM agent_actions WHERE experiment_id=? AND phase='interpret' "
+                "SELECT id,result FROM agent_actions WHERE experiment_id=? AND phase=? "
                 "AND state='completed' ORDER BY rowid DESC LIMIT 1",
-                (eid,),
+                (eid, "research" if research else "interpret"),
             )
             if action is None:
+                return None
+            if research:
+                # A checkpoint, pre-completion decision or C3 analysis cannot authorize this merge.
+                try:
+                    result = json.loads(action["result"] or "null")
+                except ValueError:
+                    return None
+                if not isinstance(result, dict) or result.get("status") != "done":
+                    return None
+                decision = result.get("integrate")
+                if not isinstance(decision, dict) or decision.get("value") is not True:
+                    return None
+                reason = decision.get("reason")
+                if not isinstance(reason, str) or not reason.strip() or len(reason) > 2000:
+                    return None
+            else:
+                analysis = exp["analysis"] or {}
+                if not analysis.get("integrate"):
+                    return None
+                reason = analysis.get("integrate_reason")
+            branch = self.one("SELECT * FROM experiment_branches WHERE experiment_id=?", (eid,))
+            if branch is None or branch["state"] != "active":
                 return None
             views = integration_queue.pending(db, branch["repo"])
             if len(views) >= integration_queue.MAX_QUEUED:

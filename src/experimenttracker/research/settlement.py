@@ -4,7 +4,8 @@
 identities still match the caller's snapshot, validates the turn end against saved
 evidence, commits the named worktree once with an action-specific message, then
 settles the action and its existing obligation in one transaction. It never starts or
-retries a turn, reads a contract 3 stage result or changes an experiment phase.
+retries a turn or reads a contract 3 stage result. A valid ``done`` completes the
+experiment and may queue C6 integration in the same transaction.
 The commit reuses ``Workspaces.commit_branch`` and its intent/settled events: a
 settled receipt is reused without a second commit; an unsettled intent is left for
 inspection instead of being replayed. Terminal, cancelled and deleted experiments
@@ -250,6 +251,8 @@ def _settle(store, expected, *, turn_id, state, result, error, turn=None):
                 (expected["experiment_id"],),
             )
             store.emit(db, expected["experiment_id"], "state_changed", {"phase": "complete"})
+            if turn.integrate is not None and turn.integrate.value:
+                store.request_completion_integration(expected["experiment_id"], _db=db)
         store.emit(
             db,
             expected["experiment_id"],

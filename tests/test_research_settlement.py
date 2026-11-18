@@ -153,6 +153,41 @@ async def test_valid_turn_ends_need_real_saved_evidence(runtime, tmp_path, monke
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["opt_in", "opt_out", "dont_merge", "already_queued"])
+async def test_done_routes_integration_through_the_existing_queue(runtime, tmp_path, monkeypatch, case):
+    store, eid, workflow, action = setup(runtime, tmp_path, monkeypatch)
+    store.report_state(eid, store.working_report(eid, "# Result", str(uuid4())), "ready")
+    branch = workflow.workspaces.branch(eid)
+    base = git(Path(branch["repo"]), "rev-parse", "HEAD")
+    (Path(branch["worktree"]) / "keep.md").write_text("new research code\n")
+    if case == "dont_merge":
+        store.command(uuid4(), "dont_merge", {"value": True}, eid=eid)
+    if case == "already_queued":
+        store.command(uuid4(), "integrate", {"reason": "Owner request."}, eid=eid)
+    outcome = turn("done", integrate={"value": case != "opt_out", "reason": "Keep the code."})
+
+    assert (await complete(workflow, action, outcome))["state"] == "completed"
+    assert store.experiment(eid)["phase"] == "complete"
+    assert git(Path(branch["repo"]), "rev-parse", "HEAD") == base
+    assert store.request_completion_integration(eid) is None
+    commands = store.rows(
+        "SELECT origin,payload FROM commands WHERE kind='integrate' AND experiment_id=?", (eid,)
+    )
+    queued = store.rows("SELECT detail FROM obligations WHERE kind='integration' AND experiment_id=?", (eid,))
+    if case in {"opt_in", "already_queued"}:
+        origin, reason = ("agent", "Keep the code.") if case == "opt_in" else ("local", "Owner request.")
+        assert [(row["origin"], json.loads(row["payload"])) for row in commands] == [
+            (origin, {"reason": reason})
+        ]
+        request = json.loads(queued[0]["detail"])
+        assert len(queued) == 1 and request["stage"] == "queued"
+        assert request["request"]["branch"] == branch["branch"]
+        assert git(Path(branch["worktree"]), "show", "HEAD:keep.md") == b"new research code\n"
+    else:
+        assert commands == queued == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("unresolved", [add_job, ask_owner])
 async def test_done_refuses_unresolved_work_before_committing(runtime, tmp_path, monkeypatch, unresolved):
     store, eid, workflow, action = setup(runtime, tmp_path, monkeypatch)
