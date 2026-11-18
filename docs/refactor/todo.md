@@ -544,6 +544,7 @@ See [tool rollout and effect boundaries](notes/t4.2-rollout.md).
 - [x] `register_result`: bounded exact-attempt validation, immutable registration, MCP and report evidence.
 - [x] `ask_owner` and `request_integration` through MCP. The manual approval gate is T4.4; answer wakeup is T4.3.
 - [x] `submit_job` for manually approved local CPU jobs. `register_result` advertises a usable JSON example without relaxing exact producer or metric validation. Remote dispatch and GPU admission are not enabled.
+- [x] A submission can declare a bounded `result_file`. The exact saved intent binds registration to that file; older undeclared submissions and replays retain their existing behavior.
 `cluster_info`, `submit_job`, `job_status`/`job_logs`, `cancel_job` (reuse),
 `register_result`, `register_figure`, `update_report` (reuse), `save_checkpoint`,
 `ask_owner`, `request_integration`. Each: a Pydantic input schema, immediate
@@ -559,7 +560,7 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 - [x] Explicit `timer:<seconds>` waits settle atomically and survive restart. Terminal job evidence can supersede a timer before its deadline.
 - [x] Follow-up dispatch loads the latest private checkpoint without copying its text into the saved action. Lost starts still reconcile by the exact dispatched prompt hash.
 - [x] Rotate at 80% of the reported context window, using only the last request of the exact settled turn and only when a private checkpoint can seed the new thread. The new thread and exact rendered prompt hash are saved before `turn/start`; prior identities stay unchanged.
-- Remaining: remote observation, output transfer, and wake on transfer readiness.
+- Remaining: remote observation, output transfer, and wake on transfer readiness. See the [remote job source gates](notes/t4.3-remote-rollout.md).
 ### [~] T4.4 Approval gate (manual review and Autopilot envelope) · F+R · S per subcard
 - [x] Durable manual approval requests through `ask_owner` and exact owner decision verification.
 - [x] Inert CPU-only admission validation checks the latest exact owner approval, saved action, pause/maintenance and resource limits.
@@ -576,7 +577,7 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 - [x] Quota denial → owner restart → admission dispatches the same pending action once. One branch waiting on an owner question does not block a second branch; the debounced answer only reaches the question's thread.
 - [x] A failed figure call preserves metrics and still allows a metrics-only report and completion. The watchdog reports a C4 experiment with no open obligation after the grace interval without dispatching or changing work.
 - [x] A valid `done` opt-in queues integration through C6 in the completion transaction; opt-out, Don't merge and an already-queued request do not add a merge.
-- Remaining: drive the C6 conflict resolver from two actual C4 integration requests. Existing fixtures prove C4 enqueue and C6 conflict resolution separately, not the pair end to end.
+- [x] Two actual C4 completion requests edit the same tracked file. The C6 queue merges the first, resolves the second with one scripted integrator turn, checks and applies that candidate, and performs no extra turn or merge on repeat.
 ### [x] T4.7 Live pilot — owner-authorized, small brief, measure turns, tokens and interventions · owner + S
 - The isolated, owner-authorized live pilot completed one CPU/no-GPU Slurm job, registered its results, published a ready report, and reached `complete`. It required a metadata-only normalization of a copy of the original metric file; it was not a zero-intervention run. See the [acceptance summary](notes/t4.7-pilot.md). This does not authorize a rollout or contract-3 retirement.
 ### [ ] T4.8 Make contract 4 the default; archive contract 3 after it drains; delete the old engine · S · L
@@ -596,6 +597,7 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 
 ## Log
 
+- **T4.2 remote result prerequisite and T4.6 conflict scenario:** `892a692` binds the declared result to its saved job without dropping historical resource defaults (source +43/−8; tests +53/−3); `9b571c2` exercises two C4 completion requests through real Git and one scripted C6 conflict resolution (source 0; tests +139/−0). Isolated Ruff and format passed. The 26 submit/result and 56 integration targets passed; all **1,401** Python tests passed across file shards, with the scenario directory rerun as a group to load its fixtures. Remote submission remains closed.
 - **T4.2/T4.3/T4.5/T4.6 research loop follow-through:** `fd5f7ed` documents the result JSON (source +1/−1; tests +26/−0); `d8109fc` rotates with exact context evidence (+49/−11; +63/−0); `a39e704` handles C4 report status and export (+37/−15; +34/−0); `8741bba` relays C4 decisions and controls (+66/−12; +130/−0); `1f91475` detects orphaned C4 runs (+22/−3; +30/−0); `12808ac` and `6346a63` add quota, plot and owner-wait scenarios (source 0; tests +255/−0). Isolated Node 24 checks: Ruff, the full Python suite in eight file shards (**1,396 passed**), web formatting/build (**37 tests**), and gateway build/types (**50 tests**) passed. The C3 synthetic demo and C4 loopback browser acceptance passed separately. No installation change.
 - **T4.7 approval repair and live pilot:** `c5216b3`. The follow-up carries lossless approval values, and the backend verifies the versioned loopback answer against its exact saved command and objective. Source +55/−9; scenario tests +20/−4. Isolated Node 24 `make check`: **1,385 Python, 36 web and 48 gateway tests passed** (one existing Python warning). Separately, the live pilot reached `complete` after one CPU job and a metadata-only operator intervention; detailed evidence stays in the private installation receipt. No rollout.
 
