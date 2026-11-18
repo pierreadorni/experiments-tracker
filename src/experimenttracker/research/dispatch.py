@@ -133,7 +133,9 @@ class ResearchDispatch:
                 return
             thread_id = self._thread(expected, experiment)
             saved_thread = experiment["thread_id"]
-            resumed, _model = await slot.agent.session(thread_id, workspace, writable=True)
+            runtime_config = self.workflow.controller.session_config(eid)
+            session_options = {"runtime_config": runtime_config} if runtime_config else {}
+            resumed, _model = await slot.agent.session(thread_id, workspace, writable=True, **session_options)
             if thread_id is not None and resumed != thread_id:
                 raise NeedsAttention("the session did not resume the saved experiment thread")
             if blocked(self.store) or not self.workflow.agent_pool.quota(eid=eid).admitted:

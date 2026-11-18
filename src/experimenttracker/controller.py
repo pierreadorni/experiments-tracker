@@ -17,6 +17,7 @@ from .config import StrictModel
 from .core import action_obligations, wakeup_obligations
 from .legacy_archive import execution_frozen
 from .models import Analysis, Implementation, ReportDocument, ResearchPlan
+from .research.tools import ClusterInfo, cluster_info, require_live_research
 from .store import Conflict, encode
 
 
@@ -134,6 +135,24 @@ TOOLS = [
     ),
 ]
 
+# The explicit contract-4 MCP selection: one new bounded read and the existing shared
+# job read. Contract-3 stage mutation tools are never part of it.
+RESEARCH_TOOLS = [
+    tool(
+        "cluster_info",
+        "Return this executor's cached cluster capabilities and owner resource caps. Read-only; repeating a request_id is the same read and never refreshes discovery.",
+        {"request_id": {"type": "string", "format": "uuid"}},
+        ["request_id"],
+    ),
+    next(item for item in TOOLS if item["name"] == "job_status"),
+]
+RESEARCH_TOOL_NAMES = frozenset(item["name"] for item in RESEARCH_TOOLS)
+
+
+def served_tools(research=False):
+    """The tools an MCP process advertises for one saved execution contract."""
+    return RESEARCH_TOOLS if research else TOOLS
+
 
 class Controller:
     def __init__(self, workflow):
@@ -162,17 +181,22 @@ class Controller:
     def session_config(self, eid):
         if not self.server:
             return None
+        row = self.workflow.store.one("SELECT contract FROM experiments WHERE id=?", (eid,))
+        research = bool(row and (json.loads(row["contract"]) or {}).get("execution_contract") == 4)
+        args = [
+            "-m",
+            "experimenttracker.controller",
+            "--socket",
+            str(self.socket_path),
+            "--experiment",
+            eid,
+        ]
+        if research:
+            args.append("--research")
         return {
             "mcp_servers.experimenttracker": {
                 "command": sys.executable,
-                "args": [
-                    "-m",
-                    "experimenttracker.controller",
-                    "--socket",
-                    str(self.socket_path),
-                    "--experiment",
-                    eid,
-                ],
+                "args": args,
                 "startup_timeout_sec": 15,
                 "tool_timeout_sec": 120,
             }
@@ -348,6 +372,12 @@ class Controller:
             raise ValueError("legacy execution is archived; only status reads are available")
         if name in STAGE_TOOLS and not iteration.enabled(exp):
             raise ValueError("stage-engine tools require execution contract 3")
+        if (exp.get("contract") or {}).get("execution_contract") == 4 and name not in RESEARCH_TOOL_NAMES:
+            raise ValueError("contract 4 turns permit only the listed research tools")
+        if name == "cluster_info":
+            request = ClusterInfo.model_validate(args)
+            require_live_research(exp, action)
+            return cluster_info(wf, exp, request)
         if (
             name not in ("job_status", "check_manifest", "check_agent_stage")
             and action.get("autopilot_control_revision") is not None
@@ -738,6 +768,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--socket", required=True)
     parser.add_argument("--experiment", required=True)
+    parser.add_argument("--research", action="store_true")
     args = parser.parse_args()
     for line in sys.stdin:
         try:
@@ -752,7 +783,7 @@ def main():
                     "serverInfo": {"name": "experimenttracker", "version": "1"},
                 }
             elif method == "tools/list":
-                result = {"tools": TOOLS}
+                result = {"tools": served_tools(args.research)}
             elif method == "tools/call":
                 with socket.socket(socket.AF_UNIX) as connection:
                     connection.settimeout(120)
