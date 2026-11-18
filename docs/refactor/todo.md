@@ -558,7 +558,8 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 ### [~] T4.4 Approval gate (manual review and Autopilot envelope) · F+R · S per subcard
 - [x] Durable manual approval requests through `ask_owner` and exact owner decision verification.
 - [x] Inert CPU-only admission validation checks the latest exact owner approval, saved action, pause/maintenance and resource limits.
-- Remaining: durable intent and dispatch wiring, and the Autopilot envelope.
+- [x] Persist exact local submission intents and reconciliation obligations; replay never authorizes another submit.
+- Remaining: prepare the exact source and script, wire dispatch, and add the Autopilot envelope.
 ### [ ] T4.5 UI for contract 4 (turns, checkpoint, jobs, approvals, report) · F · M
 ### [ ] T4.6 Contract 4 scenario suite (design.md C12 list) · F · M
 ### [ ] T4.7 Live pilot — owner-authorized, small brief, measure turns, tokens and interventions · owner + S
@@ -578,6 +579,8 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 ---
 
 ## Log
+
+- **T4.2 saved submission intent:** `51a1a4b`. Production +142/−57; tests +55/−0. Admission and intent persistence share a transaction. The existing jobs foreign key uses one compatibility identity per job, not a stage graph. Duplicate receipts do not grant send permission. Locked Ruff and **1,352 Python tests passed** (one existing dependency warning). No scheduler dispatch or live pilot.
 
 - **T4.3 steering and T4.4 manual admission:** `607e3c7`, `eedf0f5`. Production; tests respectively: +28/−2; +26/−0 and +91/−0; +54/−0. Steering consumes one bounded saved message in the same transaction as the follow-up. Admission has no external effects and is not exposed as a submission tool. Locked Ruff and **1,351 Python tests passed** (one existing dependency warning). No live activation.
 
