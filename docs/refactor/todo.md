@@ -551,7 +551,7 @@ See [tool rollout and effect boundaries](notes/t4.2-rollout.md).
 `ask_owner`, `request_integration`. Each: a Pydantic input schema, immediate
 validation, an idempotent `request_id`, unit tests, and a scenario test.
 
-### [~] T4.3 Event wakeups with debounce · F+R · M per subcard
+### [x] T4.3 Event wakeups with debounce · F+R · M per subcard
 - [x] T4.3a: exact wake queue and fixed 60-second window, not yet wired to dispatch.
 - [x] T4.3b: the exact durable owner answer queues one debounced follow-up after settlement.
 - [x] Settled `continue` queues once on the exact saved thread.
@@ -585,6 +585,7 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 - The isolated, owner-authorized live pilot completed one CPU/no-GPU Slurm job, registered its results, published a ready report, and reached `complete`. It required a metadata-only normalization of a copy of the original metric file; it was not a zero-intervention run. See the [acceptance summary](notes/t4.7-pilot.md). This does not authorize a rollout or contract-3 retirement.
 ### [ ] T4.8 Make contract 4 the default; archive contract 3 after it drains; delete the old engine · S · L
 - [Source gates, drain criteria and retirement sequence](notes/t4.8-rollout.md). No default or archive boundary has changed.
+- [Delayed create compatibility](notes/t4.8-create-compat.md) and [drain evidence](notes/t4.8-drain-evidence.md) are mapped. The test at `9c75f3d` proves already-applied hosted creates replay their exact receipt and keep their saved contract after project settings change (source 0; tests +62/−1; Ruff and 33 focused tests passed). This does not cover yet-unapplied creates.
 
 ---
 
