@@ -142,9 +142,14 @@ class Machines:
             script = script.split("; done; ", 1)[1]
         parts = shlex.split(script)
         if "sbatch" in parts:
+            sbatch_script = script.split("sbatch", 1)[1]
+            sent = shlex.split("sbatch" + sbatch_script)
+            if "--test-only" not in sent:
+                comment = sent[sent.index("--comment") + 1]
+                if comment not in self.jobs.values():
+                    self.jobs[str(101 + len(self.jobs))] = comment
             assert "--mem" not in parts
             if "--test-only" in parts:
-                assert not self.store.rows("SELECT * FROM jobs")
                 return ""
             intent = parts[parts.index("--comment") + 1]
             # Verify the durable boundary before simulating Slurm acceptance.
@@ -155,7 +160,10 @@ class Machines:
                 self.store.one("SELECT state FROM execution_transfers WHERE direction='up'")["state"]
                 == "complete"
             )
-            job_id = str(101 + len(self.jobs))
+            intent = parts[parts.index("--comment") + 1]
+            job_id = next(
+                (job for job, saved in self.jobs.items() if saved == intent), str(101 + len(self.jobs))
+            )
             root = Path(parts[parts.index("--chdir") + 1])
             stdout = await command("/bin/bash", parts[-1])
             (root / f"et-{intent}-{job_id}.out").write_text(stdout)

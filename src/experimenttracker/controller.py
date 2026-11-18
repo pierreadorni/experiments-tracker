@@ -22,8 +22,10 @@ from .research.cancel_tool import CancelJob, cancel_job
 from .research.checkpoints import SaveCheckpoint, save_checkpoint
 from .research.figure_tool import RegisterFigure, register_figure
 from .research.integration_tool import RequestIntegration, request_integration
+from .research.job_dispatch import _replay as replay_research_job
 from .research.job_dispatch import dispatch as dispatch_research_job
 from .research.owner_tool import AskOwnerQuestion, ask_owner
+from .research.remote_dispatch import dispatch as dispatch_remote_research_job
 from .research.report_tool import UpdateReport
 from .research.report_tool import update_report as update_research_report
 from .research.result_tool import RegisterResult
@@ -471,7 +473,20 @@ class Controller:
                 or wf.agent_pool.live_slot(reservation) is None
             ):
                 raise ValueError("submission requires exact live pool ownership")
-            row = await dispatch_research_job(wf, eid, action, request)
+            remote_route = (exp.get("contract") or {}).get("execution_contract") == 4 and (
+                exp.get("contract") or {}
+            ).get("execution", {}).get("context") == "jean-zay"
+            if remote_route:
+                row = replay_research_job(wf.store, eid, action, request)
+                if row is not None:
+                    manifest = json.loads(row["execution_manifest"] or "{}")
+                    if (manifest.get("execution") or {}).get("context") != "jean-zay":
+                        raise Conflict("job intent identity already belongs to another submission")
+                else:
+                    result = await dispatch_remote_research_job(wf, eid, action, request)
+                    row = result["job"]
+            else:
+                row = await dispatch_research_job(wf, eid, action, request)
             return {
                 "state": row["state"],
                 "intent_id": row["intent_id"],

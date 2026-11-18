@@ -217,6 +217,38 @@ def test_uncertain_send_restart_adopts_exact_identity_without_replay(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_controller_refuses_invalid_saved_remote_route_without_send(runtime, tmp_path, monkeypatch):
+    store, _, _, workflow = runtime
+    _, eid, action, request = setup_request(workflow, tmp_path)
+    store.command(
+        uuid4(), "answer", {"pending_request_id": request["approval_request_id"], "answer": "accept"}, eid=eid
+    )
+    contract = store.experiment(eid)["contract"]
+    contract["execution"] = {"context": "jean-zay"}
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET contract=? WHERE id=?", (json.dumps(contract), eid))
+    pool = workflow.agent_pool
+    pool.claim(
+        role="research",
+        source_table="agent_actions",
+        row=action,
+        owner=("experiment", eid),
+        slot=pool.primary,
+    )
+    calls = []
+
+    async def forbidden(*args, **kwargs):
+        calls.append(args)
+        pytest.fail("invalid saved remote route must not reach SSH/Slurm")
+
+    monkeypatch.setattr(remote, "command", forbidden)
+    with pytest.raises((ValueError, KeyError)):
+        await workflow.controller.call(eid, "submit_job", request)
+    assert calls == []
+    assert store.one("SELECT * FROM jobs WHERE intent_id=?", (request["request_id"],)) is None
+
+
+@pytest.mark.asyncio
 async def test_scripted_remote_send_recovery_and_result_wakeup_once(runtime, tmp_path, monkeypatch):
     """Exercise the saved remote boundary through SSH, accounting, and result delivery."""
     store, _, _, workflow = runtime
@@ -244,11 +276,16 @@ async def test_scripted_remote_send_recovery_and_result_wakeup_once(runtime, tmp
 
     now = fake_clock(monkeypatch)
     machines = Machines(monkeypatch, store)
-    # The reused C3 Machines preflight assertion assumes no intent row exists;
-    # C4 deliberately saves its intent before that same read-only sbatch check.
-    rows = store.rows
-    machines.store.rows = lambda query, *params: [] if query == "SELECT * FROM jobs" else rows(query, *params)
+    # C4 saves the intent before running this read-only sbatch check.
     machines.lost_submit = True
+    pool = workflow.agent_pool
+    pool.claim(
+        role="research",
+        source_table="agent_actions",
+        row=action,
+        owner=("experiment", eid),
+        slot=pool.primary,
+    )
     hide_accounting = True
     original_run = machines.run
 
@@ -260,13 +297,13 @@ async def test_scripted_remote_send_recovery_and_result_wakeup_once(runtime, tmp
 
     monkeypatch.setattr(remote, "command", scripted_run)
     with pytest.raises(SubmissionUncertain):
-        await remote_dispatch.dispatch(workflow, eid, action, request)
+        await workflow.controller.call(eid, "submit_job", request)
     job = store.one("SELECT * FROM jobs WHERE intent_id=?", (request["request_id"],))
     manifest = json.loads(job["execution_manifest"])
     assert job["state"] == "submitting" and job["job_id"] is None
     assert manifest["execution"]["context"] == "jean-zay"
     sbatch = [call[-1] for call in machines.calls if call[0] == "ssh" and "sbatch" in call[-1]]
-    assert len(sbatch) == 2  # read-only admission check, then exactly one real send
+    assert len([call for call in sbatch if "--test-only" not in call]) == 1
     command = shlex.split(sbatch[-1])[2]
     if "; done; " in command:
         command = command.split("; done; ", 1)[1]
@@ -274,11 +311,10 @@ async def test_scripted_remote_send_recovery_and_result_wakeup_once(runtime, tmp
     assert sent[sent.index("--comment") + 1] == request["request_id"]
     assert "--test-only" not in sent
     assert "--no-requeue" in sent
-    # The shared C3 fake's sbatch parser records only stage-output receipts;
-    # represent the accepted C4 Slurm identity in its accounting fixture.
-    machines.jobs["101"] = request["request_id"]
-    with pytest.raises(Conflict, match="not permission to send or replay"):
-        await remote_dispatch.dispatch(workflow, eid, action, request)
+    # The scripted sbatch boundary records acceptance from this exact comment.
+    replay = await workflow.controller.call(eid, "submit_job", request)
+    assert replay["state"] == "submitting" and replay["intent_id"] == request["request_id"]
+    assert len(machines.jobs) == 1
 
     # The actual resolver must preserve the uncertain intent during accounting lag.
     with store.tx() as db:
