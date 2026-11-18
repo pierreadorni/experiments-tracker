@@ -2043,8 +2043,16 @@ class Workflow:
             try:
                 exp = self.store.experiment(eid)
                 if exp["contract"].get("execution_contract") == 4:
-                    # Remote support and missing-ID reconciliation land separately.
-                    if exp["contract"].get("execution", {}).get("context", "acacia") == "acacia":
+                    # Remote output transfer has its own observation protocol.
+                    if (
+                        exp["deleted_at"] is not None
+                        or exp["phase"] in ("complete", "failed", "cancelled")
+                        or exp["contract"].get("execution", {}).get("context", "acacia") != "acacia"
+                    ):
+                        continue
+                    if not job["job_id"]:
+                        job = await resolver.resolve(self, exp, job)
+                    if job:
                         from .research import job_observe
 
                         await job_observe.observe(self, exp, job)

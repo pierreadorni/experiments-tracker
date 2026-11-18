@@ -21,7 +21,7 @@ class FakeScheduler:
         return self.observed
 
 
-def saved_job(store):
+def saved_job(store, *, pending=False):
     eid = store.command(
         "manual-observe-create", "create", {"brief": "synthetic observer", "recipe_id": "agent_experiment_v1"}
     )["experiment_id"]
@@ -33,8 +33,15 @@ def saved_job(store):
         db.execute("INSERT INTO stages(experiment_id,id,updated_at) VALUES(?,'research',1)", (eid,))
         db.execute(
             "INSERT INTO jobs(intent_id,experiment_id,stage_id,attempt,state,job_id,script_hash,resources,"
-            "snapshot_hash,created_at,execution_manifest) VALUES(?,?,?,1,'submitted','42','manual','{}','synthetic',1,?)",
-            (intent, eid, "research", encode({"executor": "slurm"})),
+            "snapshot_hash,created_at,execution_manifest) VALUES(?,?,?,1,?,?,'manual','{}','synthetic',1,?)",
+            (
+                intent,
+                eid,
+                "research",
+                "submitting" if pending else "submitted",
+                None if pending else "42",
+                encode({"executor": "slurm"}),
+            ),
         )
         from experimenttracker.core import job_obligations
 
@@ -111,6 +118,36 @@ async def test_workflow_routes_healthy_contract4_without_wakeup(runtime):
 
     assert store.rows("SELECT * FROM agent_wakeups WHERE experiment_id=?", (exp["id"],)) == []
     assert store.one("SELECT state FROM jobs WHERE intent_id=?", (job["intent_id"],))["state"] == "submitted"
+
+
+async def test_missing_local_job_id_is_adopted_before_terminal_observation(runtime, monkeypatch):
+    store, _, _, workflow = runtime
+    exp, original = saved_job(store, pending=True)
+    scheduler = FakeScheduler(SimpleNamespace(state="COMPLETED", exit_code="0:0", ended_at=9))
+    reconciled = []
+
+    async def reconcile(intent_id):
+        reconciled.append(intent_id)
+        return "42"
+
+    scheduler.reconcile = reconcile
+    workflow.scheduler_for = lambda *_: scheduler
+    monkeypatch.setattr("experimenttracker.iteration.enabled", lambda *_: pytest.fail("C3 logic reached"))
+
+    workflow.submissions_in_flight.add(original["intent_id"])
+    await workflow.observe_jobs()
+    assert not reconciled
+    workflow.submissions_in_flight.remove(original["intent_id"])
+    await workflow.observe_jobs()
+    await workflow.observe_jobs()
+
+    assert reconciled == [original["intent_id"]]
+    assert scheduler.calls == ["42"]
+    assert store.one("SELECT state,job_id FROM jobs WHERE intent_id=?", (original["intent_id"],)) == {
+        "state": "complete",
+        "job_id": "42",
+    }
+    assert len(store.rows("SELECT id FROM agent_wakeups WHERE experiment_id=?", (exp["id"],))) == 1
 
 
 async def test_scheduler_uncertainty_is_not_a_terminal_retry(runtime):
