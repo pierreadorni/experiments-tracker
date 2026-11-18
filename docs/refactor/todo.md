@@ -571,8 +571,8 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 - [x] Approval → one submit with lost reply → exact adoption → debounced terminal wake → registered result → ready report → completed experiment. Model turns are scripted; no live scheduler.
 - [x] Owner pause/reopen/resume, healthy job observation without an inference turn, and concurrent branch edits that do not change the base checkout.
 - [x] A valid `done` opt-in queues integration through C6 in the completion transaction; opt-out, Don't merge and an already-queued request do not add a merge. This does not drive conflict resolution in the C4 scenario.
-### [ ] T4.7 Live pilot — owner-authorized, small brief, measure turns, tokens and interventions · owner + S
-- The owner has authorized the pilot; execution waits for the [readiness and isolation checks](notes/t4.7-pilot.md). This does not authorize a rollout or contract-3 retirement.
+### [x] T4.7 Live pilot — owner-authorized, small brief, measure turns, tokens and interventions · owner + S
+- The isolated, owner-authorized live pilot completed one CPU/no-GPU Slurm job, registered its results, published a ready report, and reached `complete`. It required a metadata-only normalization of a copy of the original metric file; it was not a zero-intervention run. See the [acceptance summary](notes/t4.7-pilot.md). This does not authorize a rollout or contract-3 retirement.
 ### [ ] T4.8 Make contract 4 the default; archive contract 3 after it drains; delete the old engine · S · L
 
 ---
@@ -588,6 +588,8 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 ---
 
 ## Log
+
+- **T4.7 approval repair and live pilot:** `c5216b3`. The follow-up carries lossless approval values, and the backend verifies the versioned loopback answer against its exact saved command and objective. Source +55/−9; scenario tests +20/−4. Isolated Node 24 `make check`: **1,385 Python, 36 web and 48 gateway tests passed** (one existing Python warning). Separately, the live pilot reached `complete` after one CPU job and a metadata-only operator intervention; detailed evidence stays in the private installation receipt. No rollout.
 
 - **T4.5 loopback approval:** `4ab6dee`. Turn history is bounded and omits failed raw results. `node web/scripts/research-owner-acceptance.mjs` exercises the real local API with disposable synthetic state and headless Chromium; approval, replay and checkpoint privacy passed. Source +42/−18; tests/fixtures +343/−1. Isolated Node 24 `make check`: **1,385 Python, 36 web and 48 gateway tests passed** (one existing Python warning). No hosted or live activation.
 
