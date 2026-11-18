@@ -757,31 +757,44 @@ class Store:
             # saved action result or private checkpoint Markdown.
             result["research_turns"] = []
             for action in self.rows(
-                "SELECT id,state,result,error,created_at,updated_at FROM agent_actions "
-                "WHERE experiment_id=? AND phase='research' ORDER BY created_at",
+                "SELECT id,state,result,created_at,updated_at FROM ("
+                "SELECT id,state,result,created_at,updated_at,rowid FROM agent_actions "
+                "WHERE experiment_id=? AND phase='research' ORDER BY created_at DESC,rowid DESC LIMIT 50) "
+                "ORDER BY created_at,rowid",
                 (eid,),
             ):
                 turn = {key: action[key] for key in ("id", "state", "created_at", "updated_at")}
-                try:
-                    end = json.loads(action["result"] or "null")
-                except (TypeError, ValueError):
-                    end = None
-                if isinstance(end, dict) and end.get("status") in ("continue", "wait", "needs_owner", "done"):
-                    for key in ("status", "summary", "next"):
-                        value = end.get(key)
-                        if isinstance(value, str):
-                            turn[key] = value[: 4000 if key == "summary" else 2000]
+                # Only completed turns have a validated C7 turn-end. Failed/uncertain raw
+                # results may contain arbitrary agent output and are never projected.
+                if action["state"] == "completed":
+                    try:
+                        end = json.loads(action["result"] or "null")
+                    except (TypeError, ValueError):
+                        end = None
+                    if (
+                        isinstance(end, dict)
+                        and end.get("status") in ("continue", "wait", "needs_owner", "done")
+                        and isinstance(end.get("summary"), str)
+                        and isinstance(end.get("next"), str)
+                    ):
+                        turn.update(
+                            status=end["status"],
+                            summary=end["summary"][:4000],
+                            next=end["next"][:2000],
+                        )
                 result["research_turns"].append(turn)
             checkpoint = self.one(
-                "SELECT seq,payload,created_at FROM events WHERE experiment_id=? "
+                "SELECT payload,created_at FROM events WHERE experiment_id=? "
                 "AND kind='research_checkpoint_saved' ORDER BY seq DESC LIMIT 1",
                 (eid,),
             )
             if checkpoint:
                 payload = json.loads(checkpoint["payload"])
+                version = payload.get("version")
+                size = payload.get("bytes")
                 result["research_checkpoint"] = {
-                    "version": payload.get("version"),
-                    "bytes": payload.get("bytes"),
+                    "version": version if isinstance(version, int) and version > 0 else None,
+                    "bytes": size if isinstance(size, int) and size >= 0 else None,
                     "created_at": checkpoint["created_at"],
                 }
             else:

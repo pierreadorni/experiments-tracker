@@ -56,9 +56,21 @@ import { FollowExperiment, forgetNotificationDevice } from './FollowExperiment';
 
 const terminal = ['complete', 'failed', 'cancelled'];
 const pretty = (value: string) => value.replaceAll('_', ' ');
+function researchRequestQuestion(params: unknown) {
+  if (!params || typeof params !== 'object') return null;
+  const value = params as { question?: unknown; questions?: { question?: unknown }[] };
+  if (typeof value.question === 'string') return value.question;
+  const first = Array.isArray(value.questions) ? value.questions[0] : null;
+  return first && typeof first.question === 'string' ? first.question : null;
+}
 const experimentTitle = (exp: Experiment) => {
   if (exp.title || exp.analysis?.title) return exp.title || exp.analysis!.title;
-  if (exp.contract.planning_version && !exp.plan_review && !terminal.includes(exp.phase))
+  if (
+    exp.contract.execution_contract !== 4 &&
+    exp.contract.planning_version &&
+    !exp.plan_review &&
+    !terminal.includes(exp.phase)
+  )
     return 'Planning experiment…';
   return exp.brief.length <= 100 ? exp.brief : `${exp.brief.slice(0, 97).replace(/\s+\S*$/, '')}…`;
 };
@@ -1470,9 +1482,8 @@ function App() {
                       </p>
                       {exp.contract?.execution_contract === 4 ? (
                         <div className="research-decision-summary">
-                          {typeof (exp.pending_request.params as { question?: unknown })
-                            ?.question === 'string' && (
-                            <p>{(exp.pending_request.params as { question: string }).question}</p>
+                          {researchRequestQuestion(exp.pending_request.params) && (
+                            <p>{researchRequestQuestion(exp.pending_request.params)}</p>
                           )}
                           {typeof (exp.pending_request.params as { objective?: unknown })
                             ?.objective === 'string' && (

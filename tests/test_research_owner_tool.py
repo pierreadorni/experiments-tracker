@@ -78,7 +78,7 @@ def test_contract_four_projection_exposes_turn_and_checkpoint_metadata_only(runt
     )
     with store.tx() as db:
         db.execute(
-            "UPDATE agent_actions SET result=? WHERE id=?",
+            "UPDATE agent_actions SET state='completed',result=? WHERE id=?",
             (
                 encode({"status": "wait", "summary": "A safe turn summary", "next": "Check the job"}),
                 action["id"],
@@ -94,6 +94,29 @@ def test_contract_four_projection_exposes_turn_and_checkpoint_metadata_only(runt
     assert "markdown" not in projection["research_checkpoint"]
     assert "Private notebook" not in encode(projection)
     assert "secret detail" not in encode(projection)
+
+    with store.tx() as db:
+        db.execute(
+            "UPDATE agent_actions SET state='failed',result=? WHERE id=?",
+            (encode({"status": "done", "summary": "failed raw secret", "next": "private"}), action["id"]),
+        )
+        for index in range(55):
+            db.execute(
+                "INSERT INTO agent_actions(id,experiment_id,phase,evidence_revision,state,input,created_at,updated_at) "
+                "VALUES(?,?,?,0,'failed','{}',?,?)",
+                (
+                    f"research-{index:02d}",
+                    eid,
+                    "research",
+                    1_000_000_000_000 + index,
+                    1_000_000_000_000 + index,
+                ),
+            )
+    bounded = store.projection(eid)
+    assert len(bounded["research_turns"]) == 50
+    assert bounded["research_turns"][0]["id"] == "research-05"
+    assert all("summary" not in turn for turn in bounded["research_turns"])
+    assert "failed raw secret" not in encode(bounded)
 
 
 def test_ask_owner_saves_one_durable_question_and_its_responsibility(runtime):
