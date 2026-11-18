@@ -1694,29 +1694,22 @@ class Store:
                         )
                 elif kind == "answer":
                     pending = exp["pending_request"]
+                    resumes_stage = exp["contract"].get("execution_contract") == 3 and exp["hold_reason"] in (
+                        "implementation_blocked",
+                        "agent_stage_blocked",
+                        "agent_stage_failed",
+                    )
                     if (
                         not pending
                         or pending["id"] != payload["pending_request_id"]
-                        or (
-                            pending.get("expired")
-                            and exp["hold_reason"]
-                            not in (
-                                "implementation_blocked",
-                                "agent_stage_blocked",
-                                "agent_stage_failed",
-                            )
-                        )
+                        or (pending.get("expired") and not resumes_stage)
                     ):
                         raise Conflict("stale or mismatched pending request")
                     try:
                         request_answer(pending, payload["answer"])
                     except ValueError as exc:
                         raise Conflict(str(exc)) from None
-                    if exp["hold_reason"] in (
-                        "implementation_blocked",
-                        "agent_stage_blocked",
-                        "agent_stage_failed",
-                    ):
+                    if resumes_stage:
                         # A settled turn has no live RPC to answer, even if its request survived restart.
                         # Resuming clears the request, so record the answer that fulfills it.
                         pending["answer"] = payload["answer"]
@@ -1749,6 +1742,15 @@ class Store:
                             "UPDATE experiments SET pending_request=? WHERE id=?", (encode(pending), eid)
                         )
                         request_obligations.sync_request(db, eid, before=before)
+                        if exp["contract"].get("execution_contract") == 4 and pending.get("rpc_id") is None:
+                            # A saved contract 4 answer is that experiment's first event
+                            # wake: record it in the answer's own transaction so a restart
+                            # keeps the window next to the answer it debounces.
+                            from .research import wakeups
+
+                            wakeups.record(
+                                self, eid, wakeups.OWNER_REQUEST_ANSWERED, pending["id"], db=db, now=now
+                            )
                 elif kind == "plan_review":
                     review = exp["plan_review"]
                     if not review or review.get("state") != "awaiting_review":

@@ -2,8 +2,9 @@
 
 The tool exposes only the question-shaped ``AskOwnerQuestion`` model, reuses the
 shared live-research write guard and the exact owning research action, and leaves the
-existing ``answer`` command to settle the saved obligation. No model RPC, wakeup or
-contract-3 continuation is opened; consuming the answer belongs to T4.3.
+existing ``answer`` command to settle the saved obligation and record the one
+owner-answer event wake. No model RPC or contract-3 continuation is opened; turning
+that saved answer into a follow-up belongs to T4.3b.
 """
 
 import json
@@ -122,9 +123,13 @@ async def test_restart_keeps_the_question_and_the_existing_answer_settles_it(run
     answered = saved_pending(store, eid)
     assert (answered["expired"], answered["answer"]) == (False, "dataset B")
     assert obligation(store, eid, asked.request_id)["state"] == "satisfied"
-    # Answering only records the durable reply; it opens no model RPC, wakeup or C3 continuation.
+    # Answering records the durable reply and its one event wake: no model RPC, no C3
+    # continuation, and no research action before the window closes and the turn settles.
     assert store.rows("SELECT * FROM steering WHERE experiment_id=?", (eid,)) == []
-    assert store.rows("SELECT * FROM agent_wakeups WHERE experiment_id=?", (eid,)) == []
+    assert [
+        (row["state"], row["action_id"], json.loads(row["reason"])["source_id"])
+        for row in store.rows("SELECT * FROM agent_wakeups WHERE experiment_id=?", (eid,))
+    ] == [("pending", None, str(asked.request_id))]
     assert getattr(workflow.agent, "calls", 0) == 0
 
 

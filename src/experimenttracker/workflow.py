@@ -57,7 +57,7 @@ from .remote import AdmissionPending, RemoteSlurmScheduler, TransferPending
 from .research import readback as research_readback
 from .research.dispatch import PHASE as RESEARCH_PHASE
 from .research.dispatch import ResearchDispatch
-from .research.session import first_turn
+from .research.session import first_turn, follow_up_turn
 from .research.settlement import complete as settle_research_turn
 from .resolver import TurnResolver
 from .slurm import ResourceUnavailable, SubmissionUncertain, command, wrapper
@@ -806,14 +806,15 @@ class Workflow:
         await self.controller.advance()
 
     async def prepare_research_turns(self):
-        """Queue and verify one first C7 turn before its dispatcher can open a session.
+        """Queue and verify one C7 turn before its dispatcher can open a session.
 
         A supported saved contract 4 experiment gets one first research action and
-        never a second after a settled, failed or uncertain turn. Its exact named
-        worktree is created or verified off the loop here, before ``ResearchDispatch``
-        can open a writable session, so a shared checkout is never a fallback. A
-        paused, cancelled, deleted or maintained experiment prepares nothing, and one
-        experiment's saved filesystem failure holds only that experiment.
+        one follow-up per due owner-answer wakeup, never a replacement for a pending,
+        running or uncertain turn. Its exact named worktree is created or verified off
+        the loop here, before ``ResearchDispatch`` can open a writable session, so a
+        shared checkout is never a fallback. A paused, cancelled, deleted or maintained
+        experiment prepares nothing, and one experiment's saved filesystem failure
+        holds only that experiment.
         """
         if blocked(self.store):
             return
@@ -830,11 +831,15 @@ class Workflow:
                     continue
                 action = self.store.one(
                     "SELECT * FROM agent_actions WHERE experiment_id=? AND phase=? "
-                    "ORDER BY created_at,rowid LIMIT 1",
+                    "ORDER BY created_at DESC,rowid DESC LIMIT 1",
                     (eid, RESEARCH_PHASE),
                 )
                 if action is None:
                     action = first_turn(self.store, eid)
+                else:
+                    # One follow-up for a due owner answer after the settled turn; a
+                    # pending, running or uncertain turn is never replaced or retried.
+                    action = follow_up_turn(self.store, eid) or action
                 if action is None or action["state"] != "pending":
                     continue
                 await asyncio.to_thread(self.workspaces.ensure_branch, eid)
