@@ -603,6 +603,15 @@ class RemoteSlurmScheduler(SlurmScheduler):
         if not saved_job or saved_job["experiment_id"] != self.exp["id"]:
             raise ValueError("remote staging requires this experiment's exact saved job intent")
         job = dict(saved_job)
+        if job.get("state") != "submitting":
+            raise ValueError("remote staging requires a submitting job intent")
+        parent = self.store.one("SELECT phase,deleted_at FROM experiments WHERE id=?", (self.exp["id"],))
+        if (
+            parent is None
+            or parent["deleted_at"] is not None
+            or parent["phase"] in {"complete", "failed", "cancelled"}
+        ):
+            raise ValueError("remote staging requires a non-terminal parent experiment")
         manifest = json.loads(job.get("execution_manifest") or "{}")
         request = SubmitJobRequest.model_validate(manifest.get("research_request"))
         if str(request.request_id) != job["intent_id"] or manifest.get("commit") != job.get("snapshot_hash"):
@@ -626,34 +635,22 @@ class RemoteSlurmScheduler(SlurmScheduler):
         )
         if settings.model_dump() != self.settings.model_dump():
             raise ValueError("scheduler settings differ from this job's saved execution route")
-        self.layout = layout
-        root = Path(job["execution_root"])
-        source = root / "source"
-        if source.is_symlink() or not source.is_dir():
-            raise ValueError("pinned C4 source must be a regular directory")
-        total = 0
-        for path in source.rglob("*"):
-            if path.is_symlink():
-                raise ValueError("pinned C4 source contains a symbolic link")
-            if path.is_dir():
-                continue
-            if not path.is_file():
-                raise ValueError("pinned C4 source contains a non-regular file")
-            total += path.stat().st_size
-            if total > 16 * 1024 * 1024:
-                raise ValueError("pinned C4 source exceeds the 16 MiB submission budget")
         commit = manifest.get("commit")
         if not isinstance(commit, str) or job.get("snapshot_hash") != commit:
             raise ValueError("remote staging requires the exact pinned commit")
-        bundle = root / "c4-stage"
-        if bundle.is_symlink() or bundle.exists() and not bundle.is_dir():
-            raise ValueError("C4 remote staging bundle is not a regular directory")
-        if bundle.exists():
-            shutil.rmtree(bundle)
-        bundle.mkdir(mode=0o700)
-        shutil.copytree(source, bundle / "source", symlinks=True)
+        from .engine import gitworkspace
+        from .workspaces import git
+
+        branch = self.workflow.workspaces.branch(self.exp["id"])
+        pin = (
+            git(branch["repo"], "rev-parse", f"refs/et/jobs/{job['intent_id']}").decode().strip()
+            if branch
+            else None
+        )
+        if pin != commit:
+            raise ValueError("remote staging requires the exact saved Git pin")
+        self.layout = layout
         marker = json.dumps({"intent_id": job["intent_id"], "commit": commit}, sort_keys=True)
-        (bundle / "intent.json").write_text(marker + "\n")
         remote_root = layout["remote_run"]
         final = remote_root + "/c4-source"
         exports = {
@@ -672,36 +669,47 @@ class RemoteSlurmScheduler(SlurmScheduler):
             + shlex.join(request.command)
             + "\n"
         )
-        (bundle / "job.sh").write_text(wrapper)
-        (bundle / "job.sh").chmod(0o444)
         identity = hashlib.sha256(
             (self.exp["id"] + ":" + job["intent_id"] + ":c4-source").encode()
         ).hexdigest()
-        pending = remote_root + "/.c4-source-" + identity + ".pending"
-
-        async def upload():
-            await self.remote_command("mkdir", "-p", remote_root)
-            existing = await self.remote_command(
-                "bash",
-                "-lc",
-                'if test -e "$1"; then cat "$1/intent.json"; else printf absent; fi',
-                "stage",
-                final,
+        with tempfile.TemporaryDirectory(prefix="et-c4-source-") as temporary:
+            bundle = Path(temporary)
+            gitworkspace.export(
+                branch["repo"],
+                commit,
+                bundle / "source",
+                max_archive_bytes=32 * 1024 * 1024,
+                max_source_bytes=16 * 1024 * 1024,
             )
-            if existing.strip() != marker:
-                if existing.strip() != "absent":
-                    raise ValueError("conflicting remote C4 source already exists")
-                await self.rsync("-rlt", str(bundle) + "/", layout["host"] + ":" + pending + "/")
-                await self.remote_command(
+            (bundle / "intent.json").write_text(marker + "\n")
+            (bundle / "job.sh").write_text(wrapper)
+            (bundle / "job.sh").chmod(0o444)
+
+            async def upload():
+                await self.remote_command("mkdir", "-p", remote_root)
+                existing = await self.remote_command(
                     "bash",
                     "-lc",
-                    'test ! -e "$1" && mv -T "$2" "$1"',
+                    'if test -e "$1"; then if test -d "$1" && test -f "$1/intent.json"; then cat "$1/intent.json"; else printf conflict; fi; else printf absent; fi',
                     "stage",
                     final,
-                    pending,
                 )
+                if existing.strip() != marker:
+                    if existing.strip() != "absent":
+                        raise ValueError("conflicting remote C4 source already exists")
+                    pending = remote_root + "/.c4-source-" + identity + "." + uuid4().hex + ".pending"
+                    await self.rsync("-rlt", str(bundle) + "/", layout["host"] + ":" + pending + "/")
+                    await self.remote_command(
+                        "bash",
+                        "-lc",
+                        'mv -Tn -- "$2" "$1" && test -d "$1" && test -f "$1/intent.json" && test "$(cat "$1/intent.json")" = "$3"',
+                        "stage",
+                        final,
+                        pending,
+                        marker,
+                    )
 
-        await self.transfer("up", upload, identity=identity)
+            await self.transfer("up", upload, identity=identity)
         return {"state": "staged", "intent_id": job["intent_id"], "remote_path": final}
 
     async def preflight(self, intent_id, script, root, resources):

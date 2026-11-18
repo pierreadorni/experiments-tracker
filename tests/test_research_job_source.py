@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import subprocess
@@ -158,6 +159,8 @@ async def test_prepare_remote_resolves_per_intent_jean_zay_route_without_dispatc
         return fake
 
     monkeypatch.setattr(workflow, "scheduler_for", scheduler_for)
+    worktree = workflow.workspaces.branch_checkout(eid)
+    await asyncio.to_thread(Path(worktree, "comparison.py").write_text, "print('pinned source')\n")
     prepared = await prepare_remote(workflow, eid, action, request)
 
     assert prepared.execution["context"] == "jean-zay"
@@ -186,27 +189,47 @@ async def test_prepare_remote_resolves_per_intent_jean_zay_route_without_dispatc
 
     remote_scheduler = RemoteSlurmScheduler(workflow, store.experiment(eid), saved=prepared.execution)
     staged = {}
+    remote_calls = []
     rsync_calls = []
+    attempt_source = Path(job["execution_root"]) / "source"
+    attempt_source.mkdir(exist_ok=True)
+    expected_source = (attempt_source / "comparison.py").read_text()
+    (attempt_source / "comparison.py").write_text("tampered attempt source")
 
     async def scripted_remote_command(*args, **kwargs):
+        remote_calls.append(args)
         if args[0] == "mkdir":
+            return ""
+        if args[0] == "bash" and "mv -Tn" in args[2]:
+            staged[args[-3]] = staged.pop(args[-2])
             return ""
         if args[0] == "bash" and "cat" in args[2]:
             return staged.get(args[-1], "absent")
-        if args[0] == "bash" and "mv -T" in args[2]:
-            staged[args[-2]] = staged.pop("pending")
-            return ""
         raise AssertionError(args)
 
+    fail_upload = True
+
     async def scripted_rsync(*args, **kwargs):
+        nonlocal fail_upload
         rsync_calls.append(args)
         local = Path(args[-2].rstrip("/"))
-        staged["pending"] = (local / "intent.json").read_text().strip()
+        assert (local / "source" / "comparison.py").read_text() == expected_source
+        pending_path = args[-1].split(":", 1)[1].rstrip("/")
+        if fail_upload:
+            fail_upload = False
+            raise OSError("interrupted upload")
+        staged[pending_path] = (local / "intent.json").read_text().strip()
 
     remote_scheduler.remote_command = scripted_remote_command
     remote_scheduler.rsync = scripted_rsync
+    from experimenttracker.remote import TransferPending
+
+    with pytest.raises(TransferPending, match="interrupted upload"):
+        await remote_scheduler.stage_research_source(job)
+    first_pending = rsync_calls[0][-1]
     assert (await remote_scheduler.stage_research_source(job))["state"] == "staged"
-    assert len(rsync_calls) == 1
+    assert rsync_calls[1][-1] != first_pending
+    assert len(rsync_calls) == 2
     save_outcome = remote_scheduler._save_transfer_outcome
     interrupted = True
 
@@ -222,4 +245,14 @@ async def test_prepare_remote_resolves_per_intent_jean_zay_route_without_dispatc
         await remote_scheduler.stage_research_source(job)
     remote_scheduler._save_transfer_outcome = save_outcome
     await remote_scheduler.stage_research_source(job)
-    assert len(rsync_calls) == 1
+    assert len(rsync_calls) == 2
+    remote_count = len(remote_calls)
+    store.db.execute("UPDATE jobs SET state='submitted' WHERE intent_id=?", (job["intent_id"],))
+    with pytest.raises(ValueError, match="submitting job intent"):
+        await remote_scheduler.stage_research_source(job)
+    assert len(remote_calls) == remote_count and len(rsync_calls) == 2
+    store.db.execute("UPDATE jobs SET state='submitting' WHERE intent_id=?", (job["intent_id"],))
+    store.db.execute("UPDATE experiments SET phase='complete' WHERE id=?", (eid,))
+    with pytest.raises(ValueError, match="non-terminal parent"):
+        await remote_scheduler.stage_research_source(job)
+    assert len(remote_calls) == remote_count and len(rsync_calls) == 2

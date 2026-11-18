@@ -322,7 +322,8 @@ def commit(worktree, message, max_untracked_mb=5):
     return git(folder, "rev-parse", "HEAD").decode().strip(), skipped
 
 
-def _extract(archive, destination):
+def _extract(archive, destination, max_source_bytes=None):
+    total = 0
     with tarfile.open(archive) as bundle:
         for member in bundle:
             parts = PurePosixPath(member.name).parts
@@ -333,6 +334,9 @@ def _extract(archive, destination):
                 path.mkdir(parents=True, exist_ok=True)
                 path.chmod(stat.S_IMODE(member.mode) & 0o777)
             elif member.isreg():
+                total += member.size
+                if max_source_bytes is not None and total > max_source_bytes:
+                    raise WorkspaceUnavailable("The Git archive source exceeds its size limit")
                 path.parent.mkdir(parents=True, exist_ok=True)
                 source = bundle.extractfile(member)
                 if source is None:
@@ -344,11 +348,11 @@ def _extract(archive, destination):
                 raise WorkspaceUnavailable("The Git archive contains a link or special file")
 
 
-def export(repo, sha, target):
+def export(repo, sha, target, *, max_archive_bytes=None, max_source_bytes=None):
     """Extract exactly ``sha`` into an empty or absent local directory and return it.
 
-    Extraction happens in a sibling staging directory and is renamed into place only
-    after every archive member passed validation, so a failed export leaves no files.
+    Optional archive/source limits bound remote source exports. Extraction happens in
+    a sibling staging directory and is renamed into place only after validation.
     """
     root = _root(repo)
     commit_sha = _commit(root, sha)
@@ -363,8 +367,10 @@ def export(repo, sha, target):
         archive = Path(staging) / "source.tar"
         tree = Path(staging) / "tree"
         git(root, "archive", "--format=tar", "--output", str(archive), commit_sha)
+        if max_archive_bytes is not None and archive.stat().st_size > max_archive_bytes:
+            raise WorkspaceUnavailable("The Git archive exceeds its size limit")
         tree.mkdir()
-        _extract(archive, tree)
+        _extract(archive, tree, max_source_bytes=max_source_bytes)
         os.replace(tree, destination)
     return destination
 

@@ -133,6 +133,29 @@ def test_export_extracts_exact_commit_and_refuses_occupied_targets(tmp_path):
     assert not missing.exists()
 
 
+def test_export_enforces_archive_and_source_limits_before_install(tmp_path):
+    repo = make_repo(tmp_path)
+    sha = git(repo, "rev-parse", "HEAD").decode().strip()
+
+    archive_target = tmp_path / "archive-limited"
+    with pytest.raises(WorkspaceUnavailable, match="archive exceeds"):
+        export(repo, sha, archive_target, max_archive_bytes=1)
+    assert not archive_target.exists()
+
+    source_target = tmp_path / "source-limited"
+    with pytest.raises(WorkspaceUnavailable, match="source exceeds"):
+        export(repo, sha, source_target, max_source_bytes=1)
+    assert not source_target.exists()
+
+    (repo / "link").symlink_to("tracked.txt")
+    git(repo, "add", "link")
+    git(repo, "commit", "-m", "Add unsupported link")
+    link_target = tmp_path / "link-limited"
+    with pytest.raises(WorkspaceUnavailable, match="link or special file"):
+        export(repo, git(repo, "rev-parse", "HEAD").decode().strip(), link_target)
+    assert not link_target.exists()
+
+
 def test_pin_keeps_orphaned_commit_reachable_through_gc(tmp_path):
     repo = make_repo(tmp_path)
     created = create(repo, "pinned")
