@@ -2044,22 +2044,45 @@ class Workflow:
         ):
             eid = job["experiment_id"]
             observed = None
+            research_job = False
             try:
                 exp = self.store.experiment(eid)
-                if exp["contract"].get("execution_contract") == 4:
-                    # Remote output transfer has its own observation protocol.
-                    if (
-                        exp["deleted_at"] is not None
-                        or exp["phase"] in ("complete", "failed", "cancelled")
-                        or exp["contract"].get("execution", {}).get("context", "acacia") != "acacia"
-                    ):
+                research_job = exp["contract"].get("execution_contract") == 4
+                if research_job:
+                    if exp["deleted_at"] is not None or exp["phase"] in ("complete", "failed", "cancelled"):
                         continue
-                    if not job["job_id"]:
-                        job = await resolver.resolve(self, exp, job)
-                    if job:
-                        from .research import job_observe
+                    from .research import job_observe
 
-                        await job_observe.observe(self, exp, job)
+                    expected_route = exp["contract"].get("execution", {}).get("context", "acacia")
+                    manifest = json.loads(job.get("execution_manifest") or "{}")
+                    saved_route = (manifest.get("execution") or {}).get("context")
+                    if saved_route is not None and saved_route != expected_route:
+                        raise RuntimeError("saved execution route is incompatible with the experiment route")
+                    if expected_route != "acacia":
+                        if expected_route != "jean-zay" or saved_route != expected_route:
+                            raise RuntimeError(
+                                "saved remote execution route is missing, invalid, or incompatible"
+                            )
+                        job_observe.validate_remote_route(exp, job)
+                        scheduler = self.scheduler_for(exp, job)
+                        if not scheduler.due(job, clock.now()):
+                            continue
+                        with self.store.tx() as db:
+                            db.execute(
+                                "UPDATE jobs SET remote_polled_at=? WHERE intent_id=?",
+                                (clock.now(), job["intent_id"]),
+                            )
+                        if not job["job_id"]:
+                            if job["intent_id"] in self.submissions_in_flight:
+                                continue
+                            job = await resolver.resolve(self, exp, job)
+                        if job:
+                            await job_observe.observe_remote(self, exp, job)
+                    else:
+                        if not job["job_id"]:
+                            job = await resolver.resolve(self, exp, job)
+                        if job:
+                            await job_observe.observe(self, exp, job)
                     continue
                 if (
                     legacy_archive.execution_frozen(exp)
@@ -2300,6 +2323,9 @@ class Workflow:
                     if not restarting and not optional:
                         self.fail(eid, "compute_failed", error)
             except ValueError as exc:
+                if research_job:
+                    self.store.update(eid, hold_reason="executor_unavailable", error=str(exc))
+                    continue
                 self.output_checks.pop(job["intent_id"], None)
                 selected = early_repair.selected(self, self.store.experiment(eid), job)
                 if selected:

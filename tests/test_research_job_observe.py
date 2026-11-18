@@ -150,6 +150,281 @@ async def test_missing_local_job_id_is_adopted_before_terminal_observation(runti
     assert len(store.rows("SELECT id FROM agent_wakeups WHERE experiment_id=?", (exp["id"],))) == 1
 
 
+class FakeRemoteScheduler(FakeScheduler):
+    def __init__(self, observed=None, delivery=None):
+        super().__init__(observed)
+        self.delivery = delivery
+        self.delivery_calls = 0
+        self.due_calls = 0
+        self.is_due = True
+
+    def due(self, job, now):
+        self.due_calls += 1
+        return self.is_due
+
+    async def fetch_result(self, job):
+        self.delivery_calls += 1
+        if isinstance(self.delivery, Exception):
+            raise self.delivery
+
+
+async def remote_job(store):
+    exp, job = saved_job(store)
+    contract = dict(
+        exp["contract"],
+        execution={**exp["contract"].get("execution", {}), "context": "jean-zay", "ssh_host": "remote"},
+    )
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(contract), exp["id"]))
+        db.execute(
+            "UPDATE jobs SET execution_manifest=?,scheduler_state=NULL,exit_code=NULL,ended_at=NULL "
+            "WHERE intent_id=?",
+            (
+                encode(
+                    {
+                        "executor": "slurm",
+                        "execution": {
+                            "context": "jean-zay",
+                            "settings": contract["execution"],
+                            "layout": {"host": "remote", "remote_run": "/run"},
+                        },
+                    }
+                ),
+                job["intent_id"],
+            ),
+        )
+    return store.experiment(exp["id"]), store.one("SELECT * FROM jobs WHERE intent_id=?", (job["intent_id"],))
+
+
+@pytest.mark.asyncio
+async def test_remote_success_persists_accounting_then_delivers_and_wakes_once(runtime):
+    store, _, _, workflow = runtime
+    exp, job = await remote_job(store)
+    scheduler = FakeRemoteScheduler(SimpleNamespace(state="COMPLETED", exit_code="0:0", ended_at=9))
+    workflow.scheduler_for = lambda *_: scheduler
+
+    await job_observe.observe_remote(workflow, exp, job)
+    assert store.one(
+        "SELECT state,scheduler_state,ended_at FROM jobs WHERE intent_id=?", (job["intent_id"],)
+    ) == {"state": "complete", "scheduler_state": "COMPLETED", "ended_at": 9}
+    assert scheduler.calls == ["42"]
+    assert scheduler.delivery_calls == 1
+    await job_observe.observe_remote(
+        workflow, exp, store.one("SELECT * FROM jobs WHERE intent_id=?", (job["intent_id"],))
+    )
+    assert scheduler.delivery_calls == 1
+    assert len(store.rows("SELECT * FROM agent_wakeups WHERE experiment_id=?", (exp["id"],))) == 1
+
+
+@pytest.mark.asyncio
+async def test_remote_pending_delivery_restarts_from_saved_accounting_without_observation(runtime):
+    from experimenttracker.remote import TransferPending
+
+    store, _, _, workflow = runtime
+    exp, job = await remote_job(store)
+    scheduler = FakeRemoteScheduler(
+        SimpleNamespace(state="COMPLETED", exit_code="0:0", ended_at=9), TransferPending("later")
+    )
+    workflow.scheduler_for = lambda *_: scheduler
+
+    await job_observe.observe_remote(workflow, exp, job)
+    saved = store.one("SELECT * FROM jobs WHERE intent_id=?", (job["intent_id"],))
+    assert saved["state"] == "submitted" and saved["ended_at"] == 9
+    assert store.rows("SELECT * FROM agent_wakeups") == []
+    scheduler.delivery = None
+    await job_observe.observe_remote(workflow, exp, saved)
+    assert scheduler.calls == ["42"]
+    assert scheduler.delivery_calls == 2
+    assert store.one("SELECT state FROM jobs WHERE intent_id=?", (job["intent_id"],))["state"] == "complete"
+    assert len(store.rows("SELECT * FROM agent_wakeups WHERE experiment_id=?", (exp["id"],))) == 1
+
+
+@pytest.mark.asyncio
+async def test_remote_completed_nonzero_exit_is_saved_as_failure(runtime):
+    store, _, _, workflow = runtime
+    exp, job = await remote_job(store)
+    scheduler = FakeRemoteScheduler(SimpleNamespace(state="COMPLETED", exit_code="2:0", ended_at=10))
+    workflow.scheduler_for = lambda *_: scheduler
+
+    await job_observe.observe_remote(workflow, exp, job)
+
+    saved = store.one("SELECT state,error,ended_at FROM jobs WHERE intent_id=?", (job["intent_id"],))
+    assert saved == {"state": "failed", "error": "job exit 2:0", "ended_at": 10}
+    assert scheduler.delivery_calls == 0
+    assert len(store.rows("SELECT * FROM agent_wakeups WHERE experiment_id=?", (exp["id"],))) == 1
+
+
+@pytest.mark.asyncio
+async def test_remote_failed_job_wakes_once_without_delivery(runtime):
+    store, _, _, workflow = runtime
+    exp, job = await remote_job(store)
+    scheduler = FakeRemoteScheduler(SimpleNamespace(state="CANCELLED", exit_code=None, ended_at=10))
+    workflow.scheduler_for = lambda *_: scheduler
+
+    await job_observe.observe_remote(workflow, exp, job)
+    assert store.one("SELECT state FROM jobs WHERE intent_id=?", (job["intent_id"],))["state"] == "failed"
+    assert scheduler.delivery_calls == 0
+    assert len(store.rows("SELECT * FROM agent_wakeups WHERE experiment_id=?", (exp["id"],))) == 1
+
+
+@pytest.mark.asyncio
+async def test_workflow_routes_remote_c4_through_cadenced_result_delivery(runtime, monkeypatch):
+    store, _, _, workflow = runtime
+    exp, job = await remote_job(store)
+    scheduler = FakeRemoteScheduler(SimpleNamespace(state="COMPLETED", exit_code="0:0", ended_at=9))
+    workflow.scheduler_for = lambda *_: scheduler
+    monkeypatch.setattr("experimenttracker.iteration.enabled", lambda *_: pytest.fail("C3 logic reached"))
+
+    await workflow.observe_jobs()
+    await workflow.observe_jobs()
+
+    assert scheduler.calls == ["42"]
+    assert scheduler.delivery_calls == 1
+    assert store.one("SELECT state FROM jobs WHERE intent_id=?", (job["intent_id"],))["state"] == "complete"
+    assert len(store.rows("SELECT * FROM agent_wakeups WHERE experiment_id=?", (exp["id"],))) == 1
+
+
+async def test_remote_result_validation_failure_holds_without_marking_job_failed(runtime):
+    store, _, _, workflow = runtime
+    exp, job = await remote_job(store)
+    scheduler = FakeRemoteScheduler(
+        SimpleNamespace(state="COMPLETED", exit_code="0:0", ended_at=9), ValueError("saved route mismatch")
+    )
+    workflow.scheduler_for = lambda *_: scheduler
+
+    await workflow.observe_jobs()
+
+    assert store.one("SELECT state FROM jobs WHERE intent_id=?", (job["intent_id"],))["state"] == "submitted"
+    assert store.experiment(exp["id"])["hold_reason"] == "executor_unavailable"
+    assert store.rows("SELECT * FROM agent_wakeups") == []
+
+
+async def test_remote_workflow_resolves_missing_id_at_poll_cadence(runtime, monkeypatch):
+    store, _, _, workflow = runtime
+    exp, job = saved_job(store, pending=True)
+    contract = dict(
+        exp["contract"],
+        execution={**exp["contract"].get("execution", {}), "context": "jean-zay", "ssh_host": "remote"},
+    )
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(contract), exp["id"]))
+        db.execute(
+            "UPDATE jobs SET execution_manifest=? WHERE intent_id=?",
+            (
+                encode(
+                    {
+                        "executor": "slurm",
+                        "execution": {
+                            "context": "jean-zay",
+                            "settings": contract["execution"],
+                            "layout": {"host": "remote", "remote_run": "/run"},
+                        },
+                    }
+                ),
+                job["intent_id"],
+            ),
+        )
+    exp = store.experiment(exp["id"])
+    scheduler = FakeRemoteScheduler(SimpleNamespace(state="COMPLETED", exit_code="0:0", ended_at=9))
+    workflow.scheduler_for = lambda *_: scheduler
+    reconciled = []
+
+    async def resolve(_workflow, _exp, unresolved):
+        reconciled.append(unresolved["intent_id"])
+        from experimenttracker.core import job_obligations
+
+        with store.tx() as db:
+            before = job_obligations.locked_job(db, unresolved, "state")
+            db.execute(
+                "UPDATE jobs SET state='submitted',job_id='42' WHERE intent_id=?",
+                (unresolved["intent_id"],),
+            )
+            job_obligations.sync_backend(db, unresolved["intent_id"], before=before)
+        return store.one("SELECT * FROM jobs WHERE intent_id=?", (unresolved["intent_id"],))
+
+    monkeypatch.setattr("experimenttracker.resolver.resolve", resolve)
+    await workflow.observe_jobs()
+
+    assert reconciled == [job["intent_id"]]
+    assert scheduler.due_calls == 1
+    assert scheduler.calls == ["42"]
+    assert store.one("SELECT state FROM jobs WHERE intent_id=?", (job["intent_id"],))["state"] == "complete"
+
+
+async def test_workflow_cadence_suppresses_pending_delivery_until_one_terminal_wake(runtime):
+    from experimenttracker.remote import TransferPending
+
+    store, _, _, workflow = runtime
+    exp, job = await remote_job(store)
+    scheduler = FakeRemoteScheduler(
+        SimpleNamespace(state="COMPLETED", exit_code="0:0", ended_at=9), TransferPending("later")
+    )
+    workflow.scheduler_for = lambda *_: scheduler
+
+    await workflow.observe_jobs()
+    assert scheduler.calls == ["42"]
+    assert scheduler.delivery_calls == 1
+    assert store.rows("SELECT * FROM agent_wakeups") == []
+
+    scheduler.is_due = False
+    scheduler.delivery = None
+    await workflow.observe_jobs()
+    assert scheduler.calls == ["42"]
+    assert scheduler.delivery_calls == 1
+    assert store.rows("SELECT * FROM agent_wakeups") == []
+
+    scheduler.is_due = True
+    await workflow.observe_jobs()
+    await workflow.observe_jobs()
+    assert scheduler.calls == ["42"]
+    assert scheduler.delivery_calls == 2
+    assert store.one("SELECT state FROM jobs WHERE intent_id=?", (job["intent_id"],))["state"] == "complete"
+    assert len(store.rows("SELECT * FROM agent_wakeups WHERE experiment_id=?", (exp["id"],))) == 1
+
+
+async def test_workflow_rejects_invalid_saved_remote_route_without_rpc_or_c3(runtime, monkeypatch):
+    store, _, _, workflow = runtime
+    exp, job = await remote_job(store)
+    with store.tx() as db:
+        db.execute(
+            "UPDATE jobs SET execution_manifest=? WHERE intent_id=?",
+            (encode({"executor": "slurm"}), job["intent_id"]),
+        )
+    scheduler = FakeRemoteScheduler(SimpleNamespace(state="COMPLETED", exit_code="0:0", ended_at=9))
+    workflow.scheduler_for = lambda *_: scheduler
+    monkeypatch.setattr("experimenttracker.iteration.enabled", lambda *_: pytest.fail("C3 logic reached"))
+
+    await workflow.observe_jobs()
+
+    assert scheduler.calls == []
+    assert scheduler.delivery_calls == 0
+    saved = store.one("SELECT state FROM jobs WHERE intent_id=?", (job["intent_id"],))
+    assert saved["state"] == "submitted"
+    assert store.experiment(exp["id"])["hold_reason"] == "executor_unavailable"
+    assert store.rows("SELECT * FROM agent_wakeups") == []
+
+
+async def test_remote_success_without_ended_at_is_accounting_lag(runtime):
+    store, _, _, workflow = runtime
+    exp, job = await remote_job(store)
+    with store.tx() as db:
+        db.execute(
+            "UPDATE jobs SET scheduler_state=NULL,exit_code=NULL,ended_at=NULL WHERE intent_id=?",
+            (job["intent_id"],),
+        )
+    job = store.one("SELECT * FROM jobs WHERE intent_id=?", (job["intent_id"],))
+    scheduler = FakeRemoteScheduler(SimpleNamespace(state="COMPLETED", exit_code="0:0", ended_at=None))
+    workflow.scheduler_for = lambda *_: scheduler
+
+    await job_observe.observe_remote(workflow, exp, job)
+    saved = store.one(
+        "SELECT state,scheduler_state,ended_at FROM jobs WHERE intent_id=?", (job["intent_id"],)
+    )
+    assert saved == {"state": "submitted", "scheduler_state": None, "ended_at": None}
+    assert scheduler.delivery_calls == 0
+    assert store.rows("SELECT * FROM agent_wakeups") == []
+
+
 async def test_scheduler_uncertainty_is_not_a_terminal_retry(runtime):
     store, _, _, workflow = runtime
     exp, job = saved_job(store)
