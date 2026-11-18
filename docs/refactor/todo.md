@@ -552,8 +552,10 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 - [x] T4.3a: exact wake queue and fixed 60-second window, not yet wired to dispatch.
 - [x] T4.3b: the exact durable owner answer queues one debounced follow-up after settlement.
 - [x] Settled `continue` queues once on the exact saved thread.
-- The isolated terminal job observer saves the terminal outcome and wake together. Runner routing and wake consumption remain, alongside steering and explicit timers.
-### [ ] T4.4 Approval gate (manual review and Autopilot envelope) · F+R · S
+- [x] Known local scheduler jobs route separately from contract 3. Terminal job wakes can share one follow-up with a due owner answer.
+- Remaining: missing-ID recovery, remote observation, steering and explicit timers.
+### [~] T4.4 Approval gate (manual review and Autopilot envelope) · F+R · S per subcard
+- Saved owner approval verification landed; the request writer, tool wiring and compute admission gate remain.
 ### [ ] T4.5 UI for contract 4 (turns, checkpoint, jobs, approvals, report) · F · M
 ### [ ] T4.6 Contract 4 scenario suite (design.md C12 list) · F · M
 ### [ ] T4.7 Live pilot — owner-authorized, small brief, measure turns, tokens and interventions · owner + S
@@ -572,6 +574,8 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 ---
 
 ## Log
+
+- **T4.3 job wakes and T4.4 approval evidence:** `5f29487`, `b236c54`, `deed1f0`. Production; tests: +68/−0; +84/−0, +7/−0; +29/−0, +43/−21; +32/−1. Terminal local jobs wake by saved intent without entering the stage engine; owner and job evidence can share a turn. Approval verification checks the exact request, owner decision and satisfied obligation; it grants no dispatch authority yet. Locked Ruff and **1,342 Python tests passed** (one existing dependency warning). No live activation.
 
 - **T4.2 report evidence and T4.3 job observation groundwork:** `febf9e5`, `a014dcb`, `b1bef0e`. Production; tests respectively: +61/−10; +136/−10, +4/−4; 0, +82/−0; +95/−0. Contract-4 reports now build from registered job results and verify against the exact saved metric sources; contract-3 report invocation is unchanged. The observer is not wired into the runner yet. Locked Ruff and **1,335 Python tests passed** (one existing dependency warning). No live activation.
 
