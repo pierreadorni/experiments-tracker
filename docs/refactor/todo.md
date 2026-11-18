@@ -555,7 +555,9 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 - [x] Known local scheduler jobs route separately from contract 3. Terminal job wakes can share one follow-up with a due owner answer.
 - [x] Missing local scheduler IDs use the existing exact-intent resolver before observation.
 - [x] Contract-4 steering is saved for the next eligible turn on the exact saved thread; it never restarts the stage engine.
-- [x] Explicit `timer:<seconds>` waits settle atomically and survive restart. Terminal job evidence can supersede a timer before its deadline. Remote observation remains.
+- [x] Explicit `timer:<seconds>` waits settle atomically and survive restart. Terminal job evidence can supersede a timer before its deadline.
+- [x] Follow-up dispatch loads the latest private checkpoint without copying its text into the saved action. Lost starts still reconcile by the exact dispatched prompt hash.
+- Remaining: remote observation and transfer, thread rotation at a context threshold.
 ### [~] T4.4 Approval gate (manual review and Autopilot envelope) · F+R · S per subcard
 - [x] Durable manual approval requests through `ask_owner` and exact owner decision verification.
 - [x] Inert CPU-only admission validation checks the latest exact owner approval, saved action, pause/maintenance and resource limits.
@@ -563,9 +565,12 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 - [x] Pinned source preparation and local dispatch helper; synthetic lost response recovers by exact intent without a second submit.
 - [x] Manual local submission is exposed through MCP and covered by the approval-to-report scenario.
 - Remaining: the Autopilot envelope.
-### [ ] T4.5 UI for contract 4 (turns, checkpoint, jobs, approvals, report) · F · M
+### [~] T4.5 UI for contract 4 (turns, checkpoint, jobs, approvals, report) · F · M
+- [x] Local detail shows research turns, checkpoint metadata and job status without the contract-3 stage timeline; approvals use the exact durable owner request. Hosted parity remains.
 ### [~] T4.6 Contract 4 scenario suite (design.md C12 list) · F · M per subcard
 - [x] Approval → one submit with lost reply → exact adoption → debounced terminal wake → registered result → ready report → completed experiment. Model turns are scripted; no live scheduler.
+- [x] Owner pause/reopen/resume, healthy job observation without an inference turn, and concurrent branch edits that do not change the base checkout.
+- [x] A valid `done` opt-in queues integration through C6 in the completion transaction; opt-out, Don't merge and an already-queued request do not add a merge. This does not drive conflict resolution in the C4 scenario.
 ### [ ] T4.7 Live pilot — owner-authorized, small brief, measure turns, tokens and interventions · owner + S
 - The owner has authorized the pilot; execution waits for the [readiness and isolation checks](notes/t4.7-pilot.md). This does not authorize a rollout or contract-3 retirement.
 ### [ ] T4.8 Make contract 4 the default; archive contract 3 after it drains; delete the old engine · S · L
@@ -583,6 +588,8 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 ---
 
 ## Log
+
+- **T4.3/T4.5/T4.6 local research loop:** `0350874` enqueues a validated `done` integration decision through the existing C6 queue (source +35/−19; tests +35/−0). `bb9eabe` uses the private checkpoint at dispatch, not in the saved action input (source +36/−8; tests +36/−1). `e6d5acb` expands synthetic scenarios (source 0; tests +100/−1). `1d719f5` adds the local research detail and objective approval controls (source +238/−11; tests +29/−0). Isolated Node 24 `make check`: **1,385 Python, 36 web and 48 gateway tests passed** (one existing Python warning). The isolated contract-3 demo also completed. No live pilot.
 
 - **T4.3 explicit research timers:** `a80d518`. Production +101/−17; tests +78/−0. Reuses saved wakeup obligations; scheduler and owner events keep their own debounce window. Fake-clock checks cover reopen, exact single binding, supersession and transaction rollback. Isolated Node 24 `make check`: **1,376 Python, 36 web and 48 gateway tests passed** (one existing Python warning). No live pilot.
 
