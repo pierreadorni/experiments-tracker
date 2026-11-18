@@ -6,17 +6,18 @@ from uuid import uuid4
 
 import pytest
 from test_research_create import create, git_project
-from test_research_dispatch import ScriptedAgent, run_pass, scripted
+from test_research_dispatch import ScriptedAgent, run_pass, saved_action, scripted
 from test_research_follow_up import fake_clock
 from test_research_job_dispatch import FakeScheduler
 from test_research_job_observe import FakeScheduler as ObserveScheduler
 from test_research_job_observe import saved_job
 from test_research_write_tools import add_research_turn, document
 
+from experimenttracker.research.checkpoints import SaveCheckpoint, latest_checkpoint, save_checkpoint
 from experimenttracker.research.session import first_turn, follow_up_turn
 from experimenttracker.research.settlement import complete
 from experimenttracker.slurm import SubmissionUncertain
-from experimenttracker.store import Store
+from experimenttracker.store import Store, encode
 from experimenttracker.workflow import Workflow
 
 
@@ -157,6 +158,93 @@ async def test_contract4_synthetic_owner_job_result_report_done(runtime, config,
     assert settled["state"] == "completed", settled
     assert store.experiment(eid)["phase"] == "complete"
     assert follow_up_turn(store, eid) is None
+
+
+@pytest.mark.asyncio
+async def test_failed_job_dispatches_follow_up_with_latest_private_checkpoint_and_no_replay(
+    runtime, config, tmp_path, monkeypatch
+):
+    store, _, _, workflow = runtime
+    git_project(config, store, tmp_path, research_loop=True)
+    _, _, receipt = create(store)
+    eid = receipt["experiment_id"]
+    workflow.workspaces.ensure_branch(eid)
+    prior = first_turn(store, eid)
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET thread_id='thread-1' WHERE id=?", (eid,))
+        db.execute(
+            "UPDATE agent_actions SET state='running',thread_id='thread-1',turn_id='turn-1' WHERE id=?",
+            (prior["id"],),
+        )
+    prior = store.one("SELECT * FROM agent_actions WHERE id=?", (prior["id"],))
+    save_checkpoint(store, prior, SaveCheckpoint(request_id=uuid4(), markdown="# old private checkpoint"))
+    latest_text = "# latest private checkpoint\nrecover from failed comparison"
+    save_checkpoint(store, prior, SaveCheckpoint(request_id=uuid4(), markdown=latest_text))
+    with store.tx() as db:
+        db.execute(
+            "UPDATE agent_actions SET state='completed',result=? WHERE id=?",
+            (encode({"status": "wait", "summary": "Job submitted", "next": "Inspect outcome"}), prior["id"]),
+        )
+        db.execute("INSERT INTO stages(experiment_id,id,updated_at) VALUES(?,'research',1)", (eid,))
+        db.execute(
+            "INSERT INTO jobs(intent_id,experiment_id,stage_id,attempt,state,job_id,script_hash,resources,"
+            "snapshot_hash,created_at,execution_manifest) VALUES(?,?,?,1,'submitted','failed-job','synthetic',"
+            "'{}','synthetic',1,?)",
+            ("failed-intent", eid, "research", encode({"executor": "slurm"})),
+        )
+        db.execute(
+            "INSERT INTO jobs(intent_id,experiment_id,stage_id,attempt,state,job_id,script_hash,resources,"
+            "snapshot_hash,created_at,execution_manifest,scheduler_state,exit_code,ended_at) "
+            "VALUES('prior-success',?,'research',2,'complete','successful-job','synthetic','{}',"
+            "'synthetic',0,?,'COMPLETED','0:0',1)",
+            (eid, encode({"executor": "slurm"})),
+        )
+        from experimenttracker.core import job_obligations
+
+        job_obligations.sync_job(db, "failed-intent")
+
+    now = fake_clock(monkeypatch)
+
+    class FailedJobScheduler:
+        async def submit(self, *args, **kwargs):
+            pytest.fail("checkpoint recovery must not replay compute")
+
+        async def observe(self, job_id):
+            assert job_id == "failed-job"
+            return type("Observed", (), {"state": "FAILED", "exit_code": "1:0", "ended_at": 9})()
+
+    scheduler = FailedJobScheduler()
+    monkeypatch.setattr(workflow, "scheduler_for", lambda *_: scheduler)
+    await workflow.observe_jobs()
+    assert store.one("SELECT state,exit_code FROM jobs WHERE intent_id='failed-intent'") == {
+        "state": "failed",
+        "exit_code": "1:0",
+    }
+    assert follow_up_turn(store, eid) is None
+    now.advance(60)
+    queued = follow_up_turn(store, eid)
+    assert queued is not None
+    agent = scripted(
+        workflow,
+        ScriptedAgent(
+            result={"status": "continue", "summary": "Adjusted plan", "next": "Retry with safer settings"}
+        ),
+    )
+    await run_pass(workflow, workflow.research_dispatch)
+
+    sent_prompt = agent.calls[0][2]
+    assert latest_checkpoint(store, eid)["markdown"] == latest_text
+    assert latest_text in sent_prompt and "# old private checkpoint" not in sent_prompt
+    assert "Job failed-intent: failed (exit 1:0)" in sent_prompt
+    settled = saved_action(store, queued["id"])
+    assert settled["state"] == "completed"
+    assert json.loads(settled["result"])["status"] == "continue"
+    assert store.rows(
+        "SELECT intent_id,state,job_id FROM jobs WHERE experiment_id=? ORDER BY intent_id", (eid,)
+    ) == [
+        {"intent_id": "failed-intent", "state": "failed", "job_id": "failed-job"},
+        {"intent_id": "prior-success", "state": "complete", "job_id": "successful-job"},
+    ]
 
 
 @pytest.mark.asyncio
