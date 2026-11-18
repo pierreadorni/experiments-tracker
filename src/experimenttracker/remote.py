@@ -468,7 +468,9 @@ class RemoteSlurmScheduler(SlurmScheduler):
 
     def submission_args(self, intent_id, root, resources):
         args = super().submission_args(intent_id, root, resources)
-        if self.workflow.store.one("SELECT 1 FROM autopilot_allocations WHERE intent_id=?", (intent_id,)):
+        if (self.exp.get("contract") or {}).get("execution_contract") == 4 or self.workflow.store.one(
+            "SELECT 1 FROM autopilot_allocations WHERE intent_id=?", (intent_id,)
+        ):
             args += ["--no-requeue"]
         # The IDRIS submit plugin rejects explicit memory options. Memory follows
         # the cluster's CPU/GPU allocation policy; never pretend --mem was applied.

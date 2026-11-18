@@ -1,12 +1,19 @@
 import asyncio
+import json
+import shlex
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from test_remote_execution import Machines
 from test_research_admission import payload
+from test_research_follow_up import fake_clock
 from test_research_job_intent import PREPARED, setup_intent
+from test_research_job_source import setup_request
 
-from experimenttracker.research import remote_dispatch
+from experimenttracker import remote, resolver
+from experimenttracker.research import job_observe, remote_dispatch
 from experimenttracker.research.job_dispatch import record_pre_send_failure, record_submission
 from experimenttracker.research.job_intent import save
 from experimenttracker.slurm import SubmissionUncertain
@@ -207,3 +214,129 @@ def test_uncertain_send_restart_adopts_exact_identity_without_replay(monkeypatch
 
     asyncio.run(run())
     assert events.count("send") == 1
+
+
+@pytest.mark.asyncio
+async def test_scripted_remote_send_recovery_and_result_wakeup_once(runtime, tmp_path, monkeypatch):
+    """Exercise the saved remote boundary through SSH, accounting, and result delivery."""
+    store, _, _, workflow = runtime
+    _, eid, action, request = setup_request(workflow, tmp_path)
+    request["result_file"] = "results/result.json"
+    store.command(
+        uuid4(), "answer", {"pending_request_id": request["approval_request_id"], "answer": "accept"}, eid=eid
+    )
+    worktree = workflow.workspaces.branch_checkout(eid)
+    Path(worktree, "comparison.py").write_text(  # noqa: ASYNC240
+        "import json, os\nfrom pathlib import Path\n"
+        "Path(os.environ['EXPERIMENT_ROOT'], 'results/result.json').write_text(json.dumps({'metrics': []}))\n"
+    )
+    workflow.config.mode = "live"
+    contract = store.experiment(eid)["contract"]
+    contract["execution"] = {
+        "context": "jean-zay",
+        "ssh_host": "jz",
+        "remote_project": str(tmp_path / "remote"),
+        "accounting_lag_seconds": 60,
+        "poll_seconds": 600,
+    }
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET contract=? WHERE id=?", (json.dumps(contract), eid))
+
+    now = fake_clock(monkeypatch)
+    machines = Machines(monkeypatch, store)
+    # The reused C3 Machines preflight assertion assumes no intent row exists;
+    # C4 deliberately saves its intent before that same read-only sbatch check.
+    rows = store.rows
+    machines.store.rows = lambda query, *params: [] if query == "SELECT * FROM jobs" else rows(query, *params)
+    machines.lost_submit = True
+    hide_accounting = True
+    original_run = machines.run
+
+    async def scripted_run(*args, **kwargs):
+        if hide_accounting and args[0] == "ssh" and "--starttime" in args[-1]:
+            machines.calls.append(args)
+            return ""
+        return await original_run(*args, **kwargs)
+
+    monkeypatch.setattr(remote, "command", scripted_run)
+    with pytest.raises(SubmissionUncertain):
+        await remote_dispatch.dispatch(workflow, eid, action, request)
+    job = store.one("SELECT * FROM jobs WHERE intent_id=?", (request["request_id"],))
+    manifest = json.loads(job["execution_manifest"])
+    assert job["state"] == "submitting" and job["job_id"] is None
+    assert manifest["execution"]["context"] == "jean-zay"
+    sbatch = [call[-1] for call in machines.calls if call[0] == "ssh" and "sbatch" in call[-1]]
+    assert len(sbatch) == 2  # read-only admission check, then exactly one real send
+    command = shlex.split(sbatch[-1])[2]
+    if "; done; " in command:
+        command = command.split("; done; ", 1)[1]
+    sent = shlex.split(command)
+    assert sent[sent.index("--comment") + 1] == request["request_id"]
+    assert "--test-only" not in sent
+    assert "--no-requeue" in sent
+    # The shared C3 fake's sbatch parser records only stage-output receipts;
+    # represent the accepted C4 Slurm identity in its accounting fixture.
+    machines.jobs["101"] = request["request_id"]
+    with pytest.raises(Conflict, match="not permission to send or replay"):
+        await remote_dispatch.dispatch(workflow, eid, action, request)
+
+    # The actual resolver must preserve the uncertain intent during accounting lag.
+    with store.tx() as db:
+        db.execute("UPDATE jobs SET created_at=? WHERE intent_id=?", (now.now() - 1, request["request_id"]))
+    assert await resolver.resolve(workflow, store.experiment(eid), job) is None
+    assert (
+        store.one("SELECT state FROM jobs WHERE intent_id=?", (request["request_id"],))["state"]
+        == "submitting"
+    )
+    now.advance(601)  # pass the saved remote poll interval before refreshed accounting
+    workflow.remote_reads.clear()
+    hide_accounting = False
+    adopted = await resolver.resolve(workflow, store.experiment(eid), job)
+    assert adopted is not None, (
+        store.experiment(eid)["error"],
+        machines.jobs,
+        [call[-1] for call in machines.calls if call[0] == "ssh"],
+    )
+    assert adopted["job_id"] == "101" and adopted["state"] == "submitted"
+    assert len(machines.jobs) == 1
+
+    layout = manifest["execution"]["layout"]
+    remote_result = Path(layout["remote_run"]) / "results/result.json"
+    remote_result.parent.mkdir(parents=True, exist_ok=True)
+    remote_result.write_text('{"metrics": []}')
+    existing_wakeups = {
+        row["id"] for row in store.rows("SELECT id FROM agent_wakeups WHERE experiment_id=?", (eid,))
+    }
+    machines.fail_download = True
+    await job_observe.observe_remote(workflow, store.experiment(eid), adopted)
+    pending = store.one("SELECT * FROM jobs WHERE intent_id=?", (request["request_id"],))
+    assert pending["state"] == "submitted" and pending["scheduler_state"] == "COMPLETED"
+    assert {
+        row["id"] for row in store.rows("SELECT id FROM agent_wakeups WHERE experiment_id=?", (eid,))
+    } == existing_wakeups
+    machines.fail_download = False
+    await job_observe.observe_remote(workflow, store.experiment(eid), pending)
+    settled = store.one("SELECT state FROM jobs WHERE intent_id=?", (request["request_id"],))
+    assert settled["state"] == "complete"
+    wakeups = store.rows("SELECT id,state,reason FROM agent_wakeups WHERE experiment_id=?", (eid,))
+    job_wakeups = [
+        wake for wake in wakeups if json.loads(wake["reason"]).get("source_id") == request["request_id"]
+    ]
+    assert len(job_wakeups) == 1 and job_wakeups[0]["state"] == "pending"
+    calls = len(machines.calls)
+    await job_observe.observe_remote(
+        workflow,
+        store.experiment(eid),
+        store.one("SELECT * FROM jobs WHERE intent_id=?", (request["request_id"],)),
+    )
+    assert (
+        len(
+            [
+                wake
+                for wake in store.rows("SELECT id,reason FROM agent_wakeups WHERE experiment_id=?", (eid,))
+                if json.loads(wake["reason"]).get("source_id") == request["request_id"]
+            ]
+        )
+        == 1
+    )
+    assert len(machines.jobs) == 1 and len(machines.calls) == calls
