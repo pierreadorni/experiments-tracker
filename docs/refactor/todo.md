@@ -567,7 +567,8 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 - [x] Persist exact local submission intents and reconciliation obligations; replay never authorizes another submit.
 - [x] Pinned source preparation and local dispatch helper; synthetic lost response recovers by exact intent without a second submit.
 - [x] Manual local submission is exposed through MCP and covered by the approval-to-report scenario.
-- Remaining: the Autopilot envelope.
+- [x] Current Autopilot compute authority further constrains human-approved C4 member submissions, including inside intent persistence. Paused/deferred members and out-of-scope writing-phase compute are refused.
+- Remaining: exact automatic approval within the owner’s saved Autopilot envelope.
 ### [~] T4.5 UI for contract 4 (turns, checkpoint, jobs, approvals, report) · F · M
 - [x] Local detail shows research turns, checkpoint metadata and job status without the contract-3 stage timeline. A scripted FastAPI/SQLite loopback browser run accepts the exact objective and verifies identical replay.
 - [x] Report status and convenience exports use working-report semantics for C4. Local Worker/D1 tests cover durable answers, identical replay after clearance, and C4 pause/resume and next-turn steering. No private hosted deployment checked.
@@ -597,6 +598,7 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 
 ## Log
 
+- **T4.4 policy guard:** `cc51dbb` reuses the existing Autopilot compute authority for C4 submissions before effects and at intent save (source +3/−0; tests +87/−0). It does not replace exact human approval. Ruff, 21 focused tests, and all **1,402 Python tests** passed in isolated shards. No live activation.
 - **T4.2 remote result prerequisite and T4.6 conflict scenario:** `892a692` binds the declared result to its saved job without dropping historical resource defaults (source +43/−8; tests +53/−3); `9b571c2` exercises two C4 completion requests through real Git and one scripted C6 conflict resolution (source 0; tests +139/−0). Isolated Ruff and format passed. The 26 submit/result and 56 integration targets passed; all **1,401** Python tests passed across file shards, with the scenario directory rerun as a group to load its fixtures. Remote submission remains closed.
 - **T4.2/T4.3/T4.5/T4.6 research loop follow-through:** `fd5f7ed` documents the result JSON (source +1/−1; tests +26/−0); `d8109fc` rotates with exact context evidence (+49/−11; +63/−0); `a39e704` handles C4 report status and export (+37/−15; +34/−0); `8741bba` relays C4 decisions and controls (+66/−12; +130/−0); `1f91475` detects orphaned C4 runs (+22/−3; +30/−0); `12808ac` and `6346a63` add quota, plot and owner-wait scenarios (source 0; tests +255/−0). Isolated Node 24 checks: Ruff, the full Python suite in eight file shards (**1,396 passed**), web formatting/build (**37 tests**), and gateway build/types (**50 tests**) passed. The C3 synthetic demo and C4 loopback browser acceptance passed separately. No installation change.
 - **T4.7 approval repair and live pilot:** `c5216b3`. The follow-up carries lossless approval values, and the backend verifies the versioned loopback answer against its exact saved command and objective. Source +55/−9; scenario tests +20/−4. Isolated Node 24 `make check`: **1,385 Python, 36 web and 48 gateway tests passed** (one existing Python warning). Separately, the live pilot reached `complete` after one CPU job and a metadata-only operator intervention; detailed evidence stays in the private installation receipt. No rollout.
