@@ -98,7 +98,9 @@ def ask_owner(store, eid, *, expired=False):
 
 
 @pytest.mark.asyncio
-async def test_a_valid_turn_is_committed_once_and_settles_its_saved_obligation(runtime, tmp_path, monkeypatch):
+async def test_a_valid_turn_is_committed_once_and_settles_its_saved_obligation(
+    runtime, tmp_path, monkeypatch
+):
     store, eid, workflow, action = setup(runtime, tmp_path, monkeypatch)
     worktree = Path(workflow.workspaces.branch(eid)["worktree"])
     (worktree / "notes.md").write_text("first measurement\n")
@@ -113,9 +115,12 @@ async def test_a_valid_turn_is_committed_once_and_settles_its_saved_obligation(r
         "turn-1",
     )
     assert json.loads(settled["result"])["status"] == "continue"
-    assert store.one("SELECT state FROM obligations WHERE target=? ORDER BY rowid DESC", (action["id"],))[
-        "state"
-    ] == "satisfied"
+    assert (
+        store.one("SELECT state FROM obligations WHERE target=? ORDER BY rowid DESC", (action["id"],))[
+            "state"
+        ]
+        == "satisfied"
+    )
     assert store.rows("SELECT * FROM stages WHERE experiment_id=? ORDER BY id", (eid,)) == before_stages
     rows = events(store, eid)
     assert [row["kind"] for row in rows] == ["workspace_commit_intent", "workspace_commit_settled"]
@@ -280,9 +285,7 @@ async def test_read_back_adopts_the_exact_turn_a_lost_start_left_unknown(runtime
     store, eid, workflow, action = setup(runtime, tmp_path, monkeypatch)
     with store.tx() as db:
         before = dict(db.execute("SELECT * FROM agent_actions WHERE id=?", (action["id"],)).fetchone())
-        db.execute(
-            "UPDATE agent_actions SET state='uncertain',turn_id=NULL WHERE id=?", (action["id"],)
-        )
+        db.execute("UPDATE agent_actions SET state='uncertain',turn_id=NULL WHERE id=?", (action["id"],))
         action_obligations.sync_action(db, action["id"], before=before)
     expected = saved(store, action)
 

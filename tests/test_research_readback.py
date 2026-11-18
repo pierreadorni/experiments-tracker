@@ -31,9 +31,7 @@ class ReadbackAgent(ScriptedAgent):
     async def read_turn(self, thread_id, turn_id, *, expected_prompt_hash=None):
         self.reads.append(("turn", thread_id, turn_id, expected_prompt_hash))
         if expected_prompt_hash is not None:
-            saved_hash = next(
-                (row["prompt_sha256"] for row in self.thread if row["id"] == turn_id), None
-            )
+            saved_hash = next((row["prompt_sha256"] for row in self.thread if row["id"] == turn_id), None)
             if saved_hash != expected_prompt_hash:
                 raise NeedsAttention("saved turn input does not match the exact dispatched prompt")
         return self.turns[(thread_id, turn_id)]
@@ -104,9 +102,12 @@ async def test_control_finish_offers_a_saved_research_row_to_the_settlement_call
         "workspace_commit_intent",
         "workspace_commit_settled",
     ]
-    assert store.one("SELECT state FROM obligations WHERE target=? ORDER BY rowid DESC", (action["id"],))[
-        "state"
-    ] == "satisfied"
+    assert (
+        store.one("SELECT state FROM obligations WHERE target=? ORDER BY rowid DESC", (action["id"],))[
+            "state"
+        ]
+        == "satisfied"
+    )
 
 
 @pytest.mark.asyncio
@@ -176,9 +177,7 @@ async def test_a_missing_research_turn_adopts_only_the_saved_dispatch_hash(runti
 
 
 @pytest.mark.asyncio
-async def test_a_prior_turn_with_identical_scientific_input_is_never_accepted(
-    runtime, tmp_path, monkeypatch
-):
+async def test_a_prior_turn_with_identical_scientific_input_is_never_accepted(runtime, tmp_path, monkeypatch):
     store, eid, workflow, action = running_setup(runtime, tmp_path, monkeypatch)
     expected = unsaved(store, action)
     prompt_hash = intent(store, eid, expected)
@@ -262,9 +261,9 @@ async def test_a_proven_missing_research_turn_fails_for_inspection_without_a_con
 
     saved = saved_action(store, expected["id"])
     assert (saved["state"], saved["error"]) == ("failed", "turn_not_started")
-    assert [row["id"] for row in store.rows(
-        "SELECT id FROM agent_actions WHERE experiment_id=?", (eid,)
-    )] == [expected["id"]]
+    assert [
+        row["id"] for row in store.rows("SELECT id FROM agent_actions WHERE experiment_id=?", (eid,))
+    ] == [expected["id"]]
     exp = store.experiment(eid)
     assert (exp["hold_reason"], exp["error"]) == ("agent_dispatch_uncertain", "turn_not_started")
     evidence = [

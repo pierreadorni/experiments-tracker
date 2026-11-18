@@ -54,9 +54,7 @@ def _identity(workflow, action, turn_id):
         if action["state"] not in _ADOPTING_STATES:
             raise NeedsAttention("a running research action cannot adopt a different turn")
         if turn_id is None:
-            raise NeedsAttention(
-                "a research turn without a saved identity requires the exact read-back turn"
-            )
+            raise NeedsAttention("a research turn without a saved identity requires the exact read-back turn")
         exact = turn_id
     owned = workflow.store.one(
         "SELECT id FROM agent_actions WHERE thread_id=? AND turn_id=? AND id<>?",
@@ -79,11 +77,7 @@ async def reconcile(workflow, action, *, turn_id=None):
     """
     store = workflow.store
     expected = _saved(store, action)
-    if (
-        expected["state"] == "completed"
-        and turn_id is not None
-        and expected["turn_id"] == turn_id
-    ):
+    if expected["state"] == "completed" and turn_id is not None and expected["turn_id"] == turn_id:
         return _receipt(expected)
     exact, prompt_hash = _identity(workflow, expected, turn_id)
     reservation = workflow.agent_pool.lookup("agent_actions", expected["id"])
@@ -93,9 +87,7 @@ async def reconcile(workflow, action, *, turn_id=None):
     if prompt_hash is None:
         result = await slot.agent.read_turn(expected["thread_id"], exact)
     else:
-        result = await slot.agent.read_turn(
-            expected["thread_id"], exact, expected_prompt_hash=prompt_hash
-        )
+        result = await slot.agent.read_turn(expected["thread_id"], exact, expected_prompt_hash=prompt_hash)
     settled = await settlement.complete(
         workflow,
         expected,
