@@ -536,7 +536,9 @@ role busy flags it still writes. All retire with the contract-3 engine in T4.8.
   builder (under 8 KB) and the turn-end schema with the enforcement rules.
   Contract 4 skips `advance()` entirely.
 
-### [ ] T4.2a–j Tools, one per task · F (+R for submit_job) · S–M each
+### [~] T4.2a–j Tools, one per task · F (+R for submit_job) · S–M each
+See [tool rollout and effect boundaries](notes/t4.2-rollout.md).
+- [x] T4.2a `cluster_info` and scoped MCP bridge; T4.2b `job_status`/`job_logs`.
 `cluster_info`, `submit_job`, `job_status`/`job_logs`, `cancel_job` (reuse),
 `register_result`, `register_figure`, `update_report` (reuse), `save_checkpoint`,
 `ask_owner`, `request_integration`. Each: a Pydantic input schema, immediate
@@ -562,6 +564,8 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 ---
 
 ## Log
+
+- **T4.2a–b:** Scoped contract-4 MCP and cached/bounded cluster and job reads. Per-card production; tests: a `0adbccd` +115/−10; +169/−0; b `8607601` +156/−21; +235/−2. Reads reuse the existing controller socket and job log reader without scheduler or transfer effects. Isolated locked Ruff and **1,170 Python tests passed** (one existing dependency warning). No live activation.
 
 - **T4.1e–g, 2026-11-18:** Isolated Node 24 locked Ruff and **1,150 Python tests passed** (one existing dependency warning) on byte-identical source/tests/scripts. Scripted managed turns and temporary real Git prove opt-in workspace setup, exact dispatch and restart readback without replay or stage advancement. The old engine remains until T4.8. Per-card production; test additions/deletions: e `2e92808` +200/−0; +299/−0, f1 `62a7be2` +196/−0; +303/−0, hardening `6ffcceb` +124/−28; +118/−3, f2 `2abca2c` +131/−2; +294/−0, format `4e3d9c1` +3/−11; +21/−19, g1 `7a8a518` +34/−8; +176/−0, g2 `5ff6007` +42/−0; +161/−0. Dispatch and settlement add a persistent-thread boundary while reusing the existing pool, intent ledger, resolver and Git commit primitives. Default remains 3; no live activation.
 
