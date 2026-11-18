@@ -540,14 +540,14 @@ role busy flags it still writes. All retire with the contract-3 engine in T4.8.
 See [tool rollout and effect boundaries](notes/t4.2-rollout.md).
 - [x] T4.2a `cluster_info` and scoped MCP bridge; T4.2b `job_status`/`job_logs`.
 - [x] `save_checkpoint` and `update_report` through MCP.
-- [~] `ask_owner`: durable question/answer landed; MCP wiring in validation. Approval is T4.4.
-- [~] `request_integration`: queue adapter landed; MCP wiring remains.
+- [x] `ask_owner` question-only and `request_integration` through MCP. Approval is T4.4; answer wakeup is T4.3.
 `cluster_info`, `submit_job`, `job_status`/`job_logs`, `cancel_job` (reuse),
 `register_result`, `register_figure`, `update_report` (reuse), `save_checkpoint`,
 `ask_owner`, `request_integration`. Each: a Pydantic input schema, immediate
 validation, an idempotent `request_id`, unit tests, and a scenario test.
 
-### [ ] T4.3 Event wakeups with debounce · F+R · M
+### [~] T4.3 Event wakeups with debounce · F+R · M per subcard
+- First wire the exact durable owner answer and its debounced follow-up. Then cover `continue`, terminal job events, steering and explicit timers; no polling-triggered turns.
 ### [ ] T4.4 Approval gate (manual review and Autopilot envelope) · F+R · S
 ### [ ] T4.5 UI for contract 4 (turns, checkpoint, jobs, approvals, report) · F · M
 ### [ ] T4.6 Contract 4 scenario suite (design.md C12 list) · F · M
@@ -567,6 +567,8 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 ---
 
 ## Log
+
+- **T4.2 owner and integration tool wiring:** `f75f44a`, `6a1c7be`. Production; tests: +10/−0; +179/−0 and +52/−20; +140/−21. Exact durable questions survive restart and reuse the owner-answer authority. Integration requests reuse the command queue rather than perform Git effects. Locked Ruff and **1,258 Python tests passed** (one existing dependency warning). No live activation.
 
 - **T4.2 write tools and durable request foundations:** `fbd65eb`, `ace95d9`, `782d785`, `88e8da8`, `2d91ff2`, `f242a0a`. Respectively, production; tests: +141/−0; +248/−0, +91/−0; +231/−0, +44/−0; +213/−0, +198/−0; +300/−0, +64/−0; +186/−0, +31/−1; +161/−0. Reuses report versions, event redaction, owner obligations and command-based integration. Only checkpoint and report are exposed by this batch. Locked Ruff and **1,244 Python tests passed** (one existing dependency warning). Scripted turns and temporary Git only; no live activation.
 
