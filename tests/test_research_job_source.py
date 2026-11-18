@@ -2,6 +2,7 @@ import hashlib
 import json
 import subprocess
 import sys
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -9,7 +10,7 @@ from test_research_admission import payload
 from test_research_first_turn import create, research_project
 
 from experimenttracker.research import approval
-from experimenttracker.research.job_source import prepare
+from experimenttracker.research.job_source import prepare, prepare_remote
 from experimenttracker.research.session import first_turn
 from experimenttracker.workspaces import WorkspaceUnavailable, git
 
@@ -87,4 +88,60 @@ def test_prepare_requires_approval_and_exports_exact_pinned_argv_job(runtime, tm
     assert json.loads((root / "result.json").read_text()) == args
     with pytest.raises(WorkspaceUnavailable, match="already occupied"):
         prepare(workflow, eid, action, request)
+    assert scheduler.submissions == 0
+
+
+@pytest.mark.asyncio
+async def test_prepare_remote_resolves_per_intent_jean_zay_route_without_dispatch(
+    runtime, tmp_path, monkeypatch
+):
+    store, scheduler, _, workflow = runtime
+    _, eid, action, request = setup_request(workflow, tmp_path)
+    store.command(
+        uuid4(), "answer", {"pending_request_id": request["approval_request_id"], "answer": "accept"}, eid=eid
+    )
+    experiment = store.experiment(eid)
+    contract = experiment["contract"]
+    contract["execution"] = {
+        "context": "jean-zay",
+        "ssh_host": "jz-test",
+        "remote_project": "/scratch/project",
+        "poll_seconds": 600,
+    }
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET contract=? WHERE id=?", (json.dumps(contract), eid))
+
+    class FakeRemote:
+        settings = SimpleNamespace(model_dump=lambda: contract["execution"])
+
+        async def resolve(self):
+            assert scheduler.submissions == 0
+            route = {
+                "host": "jz-test",
+                "remote_base": "/scratch/project",
+                "remote_project": f"/scratch/project/.experimenttracker/executions/{eid}/{request['request_id']}/project",
+                "remote_run": f"/scratch/project/.experimenttracker/executions/{eid}/{request['request_id']}/run",
+                "local_project": "/local/project",
+                "local_run": str(workflow.projects.base_root(eid) / "attempts" / request["request_id"]),
+            }
+            self.route = route
+            return route
+
+    fake = FakeRemote()
+    captured = {}
+
+    def scheduler_for(exp):
+        captured.update(exp)
+        return fake
+
+    monkeypatch.setattr(workflow, "scheduler_for", scheduler_for)
+    prepared = await prepare_remote(workflow, eid, action, request)
+
+    assert prepared.execution["context"] == "jean-zay"
+    assert prepared.execution["settings"] == contract["execution"]
+    assert prepared.execution["layout"] == fake.route
+    assert captured["_attempt_id"] == request["request_id"]
+    assert captured["_attempt_root"] == str(prepared.root)
+    assert prepared.script.is_file() and prepared.prepared.commit == prepared.commit
+    assert not store.rows("SELECT * FROM jobs")
     assert scheduler.submissions == 0

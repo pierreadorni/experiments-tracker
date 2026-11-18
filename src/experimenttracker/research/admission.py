@@ -41,18 +41,18 @@ class SubmitJobRequest(StrictModel):
         return values
 
 
-def preflight(workflow, experiment_id, action, request, *, db=None):
+def preflight(workflow, experiment_id, action, request, *, db=None, remote_source=False):
     """Check saved admission facts in a new or caller-owned transaction."""
     request = SubmitJobRequest.model_validate(request)
     if db is not None:
-        _check(workflow, experiment_id, action, request, db)
+        _check(workflow, experiment_id, action, request, db, remote_source=remote_source)
         return request
     with workflow.store.tx() as transaction:
-        _check(workflow, experiment_id, action, request, transaction)
+        _check(workflow, experiment_id, action, request, transaction, remote_source=remote_source)
     return request
 
 
-def _check(workflow, experiment_id, action, request, db):
+def _check(workflow, experiment_id, action, request, db, *, remote_source=False):
     store = workflow.store
     experiment = store.experiment(experiment_id)
     saved = action_obligations.expected_saved(db, action)
@@ -70,10 +70,8 @@ def _check(workflow, experiment_id, action, request, db):
     if autopilot_hold:
         raise ValueError(f"Autopilot compute authority refused submission: {autopilot_hold}")
     contract = experiment["contract"]
-    if (
-        not contract.get("branch_workspace")
-        or contract.get("execution", {}).get("context", "acacia") != "acacia"
-    ):
+    context = contract.get("execution", {}).get("context", "acacia")
+    if not contract.get("branch_workspace") or (context != "acacia" and not (remote_source and context == "jean-zay")):
         raise ValueError("submission requires a local named research workspace")
     latest = db.execute(
         "SELECT json_extract(payload,'$.request_id') FROM events "

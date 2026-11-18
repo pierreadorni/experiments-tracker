@@ -19,11 +19,12 @@ class PreparedSource(StrictModel):
     source: Path
     script: Path
     commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    execution: dict | None = None
 
 
-def prepare(workflow, experiment_id, action, request):
+def prepare(workflow, experiment_id, action, request, *, remote_source=False):
     """Commit, pin and export one approved source and create its argv-safe script."""
-    request = preflight(workflow, experiment_id, action, request)
+    request = preflight(workflow, experiment_id, action, request, remote_source=remote_source)
     intent = str(request.request_id)
     # Admission precedes all filesystem/Git effects, including path inspection.
     root = Path(workflow.projects.base_root(experiment_id)) / "attempts" / intent
@@ -73,3 +74,29 @@ def prepare(workflow, experiment_id, action, request):
         script=script,
         commit=commit,
     )
+
+
+async def prepare_remote(workflow, experiment_id, action, request):
+    """Prepare the pinned C4 source and resolve its saved Jean Zay intent route.
+
+    This deliberately stops before remote staging, scheduler preflight, or submission.
+    """
+    experiment = workflow.store.experiment(experiment_id)
+    if experiment["contract"].get("execution", {}).get("context") != "jean-zay":
+        raise ValueError("remote source preparation requires the saved Jean Zay context")
+    request_id = str(request["request_id"] if isinstance(request, dict) else request.request_id)
+    prepared = prepare(workflow, experiment_id, action, request, remote_source=True)
+    experiment = dict(experiment)
+    experiment["_attempt_id"] = request_id
+    experiment["_attempt_root"] = str(prepared.root)
+    scheduler = workflow.scheduler_for(experiment)
+    layout = await scheduler.resolve()
+    prepared.execution = {
+        "context": "jean-zay",
+        "settings": scheduler.settings.model_dump(),
+        "layout": layout,
+        "memory_allocation": (
+            "cluster-assigned; --mem is not submitted; memory_mb_per_job is a planning estimate"
+        ),
+    }
+    return prepared
