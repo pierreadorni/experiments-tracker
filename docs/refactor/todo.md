@@ -539,7 +539,8 @@ role busy flags it still writes. All retire with the contract-3 engine in T4.8.
 ### [~] T4.2a–j Tools, one per task · F (+R for submit_job) · S–M each
 See [tool rollout and effect boundaries](notes/t4.2-rollout.md).
 - [x] T4.2a `cluster_info` and scoped MCP bridge; T4.2b `job_status`/`job_logs`.
-- [x] `save_checkpoint` and `update_report` through MCP.
+- [x] `save_checkpoint`, `update_report` and `register_figure` through MCP.
+- [~] `cancel_job`: shared cancellation adapter landed; MCP wiring remains.
 - [x] `ask_owner` question-only and `request_integration` through MCP. Approval is T4.4; answer wakeup is T4.3.
 `cluster_info`, `submit_job`, `job_status`/`job_logs`, `cancel_job` (reuse),
 `register_result`, `register_figure`, `update_report` (reuse), `save_checkpoint`,
@@ -547,6 +548,7 @@ See [tool rollout and effect boundaries](notes/t4.2-rollout.md).
 validation, an idempotent `request_id`, unit tests, and a scenario test.
 
 ### [~] T4.3 Event wakeups with debounce · F+R · M per subcard
+- [x] T4.3a: exact wake queue and fixed 60-second window, not yet wired to dispatch.
 - First wire the exact durable owner answer and its debounced follow-up. Then cover `continue`, terminal job events, steering and explicit timers; no polling-triggered turns.
 ### [ ] T4.4 Approval gate (manual review and Autopilot envelope) · F+R · S
 ### [ ] T4.5 UI for contract 4 (turns, checkpoint, jobs, approvals, report) · F · M
@@ -567,6 +569,8 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 ---
 
 ## Log
+
+- **T4.2 figures and cancellation; T4.3a:** `37d68a9`, `62bf8e4`, `07c65d2`, `adfc366`. Production; tests respectively: +189/−0; +304/−0, +12/−0; +118/−0, +107/−10; +220/−0, +217/−0; +277/−0. Figures register an immutable copy under the existing publication root. Cancellation reuses the selective-cancellation writer and observer; its v4 adapter is not advertised yet. The wake queue reuses saved timer obligations and keeps distinct evidence. Locked Ruff and **1,299 Python tests passed** (one existing dependency warning). No live activation.
 
 - **T4.2 owner and integration tool wiring:** `f75f44a`, `6a1c7be`. Production; tests: +10/−0; +179/−0 and +52/−20; +140/−21. Exact durable questions survive restart and reuse the owner-answer authority. Integration requests reuse the command queue rather than perform Git effects. Locked Ruff and **1,258 Python tests passed** (one existing dependency warning). No live activation.
 
