@@ -559,7 +559,8 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 - [x] Durable manual approval requests through `ask_owner` and exact owner decision verification.
 - [x] Inert CPU-only admission validation checks the latest exact owner approval, saved action, pause/maintenance and resource limits.
 - [x] Persist exact local submission intents and reconciliation obligations; replay never authorizes another submit.
-- Remaining: prepare the exact source and script, wire dispatch, and add the Autopilot envelope.
+- [x] Pinned source preparation and local dispatch helper; synthetic lost response recovers by exact intent without a second submit.
+- Remaining: expose the reviewed submission helper, prove the full research scenario, and add the Autopilot envelope.
 ### [ ] T4.5 UI for contract 4 (turns, checkpoint, jobs, approvals, report) · F · M
 ### [ ] T4.6 Contract 4 scenario suite (design.md C12 list) · F · M
 ### [ ] T4.7 Live pilot — owner-authorized, small brief, measure turns, tokens and interventions · owner + S
@@ -579,6 +580,8 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 ---
 
 ## Log
+
+- **T4.2 source preparation and dispatch:** `dbc3506`, `f1bdb64`. Production; tests respectively: +75/−0; +90/−0 and +77/−0; +87/−0. Preparation pins and exports the exact commit, preserves argv, and refuses occupied attempt directories. Fake scheduler tests prove fresh intent before send, pause refusal, and exact adoption after a lost response without a second submit. Locked Ruff and **1,356 Python tests passed** (one existing dependency warning). The isolated contract-3 synthetic demo completed; contract-4 MCP submission and the authorized live pilot have not started.
 
 - **T4.2 saved submission intent:** `51a1a4b`. Production +142/−57; tests +55/−0. Admission and intent persistence share a transaction. The existing jobs foreign key uses one compatibility identity per job, not a stage graph. Duplicate receipts do not grant send permission. Locked Ruff and **1,352 Python tests passed** (one existing dependency warning). No scheduler dispatch or live pilot.
 
