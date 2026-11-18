@@ -7,6 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from experimenttracker.core import action_obligations
+from experimenttracker.research.checkpoints import SaveCheckpoint, save_checkpoint
 from experimenttracker.research.owner_tool import AskOwnerQuestion, ask_owner
 from experimenttracker.research.session import first_turn
 from experimenttracker.store import Conflict, encode, public_projection
@@ -65,6 +66,34 @@ def counts(store, eid):
         len(store.rows("SELECT * FROM obligations WHERE id LIKE 'request:%'")),
         store.experiment(eid)["revision"],
     )
+
+
+def test_contract_four_projection_exposes_turn_and_checkpoint_metadata_only(runtime):
+    store, _, _, _ = runtime
+    eid, action = make_turn(store)
+    save_checkpoint(
+        store,
+        action,
+        SaveCheckpoint(request_id=uuid4(), markdown="# Private notebook\nsecret detail"),
+    )
+    with store.tx() as db:
+        db.execute(
+            "UPDATE agent_actions SET result=? WHERE id=?",
+            (
+                encode({"status": "wait", "summary": "A safe turn summary", "next": "Check the job"}),
+                action["id"],
+            ),
+        )
+
+    projection = store.projection(eid)
+
+    assert projection["research_turns"][0]["summary"] == "A safe turn summary"
+    assert projection["research_turns"][0]["next"] == "Check the job"
+    assert projection["research_checkpoint"]["version"] == 1
+    assert projection["research_checkpoint"]["bytes"] == len(b"# Private notebook\nsecret detail")
+    assert "markdown" not in projection["research_checkpoint"]
+    assert "Private notebook" not in encode(projection)
+    assert "secret detail" not in encode(projection)
 
 
 def test_ask_owner_saves_one_durable_question_and_its_responsibility(runtime):

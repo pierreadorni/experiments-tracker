@@ -752,6 +752,40 @@ class Store:
             "SELECT * FROM (SELECT seq,id,kind,revision,payload,created_at FROM events WHERE experiment_id=? ORDER BY seq DESC LIMIT 100) ORDER BY seq",
             (eid,),
         )
+        if result["contract"].get("execution_contract") == 4:
+            # Expose only validated turn-end fields and checkpoint metadata; never the
+            # saved action result or private checkpoint Markdown.
+            result["research_turns"] = []
+            for action in self.rows(
+                "SELECT id,state,result,error,created_at,updated_at FROM agent_actions "
+                "WHERE experiment_id=? AND phase='research' ORDER BY created_at",
+                (eid,),
+            ):
+                turn = {key: action[key] for key in ("id", "state", "created_at", "updated_at")}
+                try:
+                    end = json.loads(action["result"] or "null")
+                except (TypeError, ValueError):
+                    end = None
+                if isinstance(end, dict) and end.get("status") in ("continue", "wait", "needs_owner", "done"):
+                    for key in ("status", "summary", "next"):
+                        value = end.get(key)
+                        if isinstance(value, str):
+                            turn[key] = value[: 4000 if key == "summary" else 2000]
+                result["research_turns"].append(turn)
+            checkpoint = self.one(
+                "SELECT seq,payload,created_at FROM events WHERE experiment_id=? "
+                "AND kind='research_checkpoint_saved' ORDER BY seq DESC LIMIT 1",
+                (eid,),
+            )
+            if checkpoint:
+                payload = json.loads(checkpoint["payload"])
+                result["research_checkpoint"] = {
+                    "version": payload.get("version"),
+                    "bytes": payload.get("bytes"),
+                    "created_at": checkpoint["created_at"],
+                }
+            else:
+                result["research_checkpoint"] = None
         result["partial_results"] = (
             json.loads(result["partial_results"]) if result.get("partial_results") else None
         )

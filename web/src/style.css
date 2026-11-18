@@ -835,6 +835,43 @@ progress::-moz-progress-bar {
 .progress-view {
   max-width: 900px;
 }
+.research-progress > .panel + .panel {
+  margin-top: 16px;
+}
+.research-turns {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.research-turns li {
+  padding: 18px 0;
+  border-top: 1px solid var(--line);
+}
+.research-turns li:first-child {
+  border-top: 0;
+}
+.research-turns p {
+  white-space: pre-wrap;
+}
+.research-turns small {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.research-job {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+.research-decision-summary {
+  margin: 18px 0;
+  padding: 14px 18px;
+  border-left: 3px solid var(--accent);
+  background: var(--hover, #edeee5);
+}
 .plan-review,
 .steering-panel {
   border-bottom: 1px solid var(--line);

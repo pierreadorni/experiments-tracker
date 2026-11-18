@@ -37,6 +37,7 @@ import { Autopilot } from './Autopilot';
 import { downloadEvidenceBundle } from './evidence';
 import { currentReport, availableReports } from './reports';
 import { StageTimeline } from './Progress';
+import { ResearchProgress } from './ResearchProgress';
 import { timelineStages, experimentStatus } from './progress';
 import { PlanReview, Steering } from './PlanReview';
 import { Conversation } from './Conversation';
@@ -1117,7 +1118,10 @@ function App() {
                     )}
                   </div>
                   <div role="tabpanel" aria-labelledby={`tab-${tab}`}>
-                    {tab === 'Progress' && (
+                    {tab === 'Progress' && exp.contract?.execution_contract === 4 && (
+                      <ResearchProgress exp={exp} />
+                    )}
+                    {tab === 'Progress' && exp.contract?.execution_contract !== 4 && (
                       <div className="progress-view">
                         <PlanReview
                           key={`${exp.id}:${exp.plan_review?.revision || 0}`}
@@ -1464,7 +1468,29 @@ function App() {
                           ? 'This request belonged to a previous process connection. It cannot be replayed; use the runbook to reconcile the saved action.'
                           : 'Answer this request to continue the current turn.'}
                       </p>
-                      <pre>{JSON.stringify(exp.pending_request.params, null, 2)}</pre>
+                      {exp.contract?.execution_contract === 4 ? (
+                        <div className="research-decision-summary">
+                          {typeof (exp.pending_request.params as { question?: unknown })
+                            ?.question === 'string' && (
+                            <p>{(exp.pending_request.params as { question: string }).question}</p>
+                          )}
+                          {typeof (exp.pending_request.params as { objective?: unknown })
+                            ?.objective === 'string' && (
+                            <p>
+                              <strong>Proposed objective:</strong>{' '}
+                              {(exp.pending_request.params as { objective: string }).objective}
+                            </p>
+                          )}
+                          {exp.pending_request.method.includes('Approval') && (
+                            <p className="muted">
+                              This decision applies only to the exact request and proposed objective
+                              shown above.
+                            </p>
+                          )}
+                        </div>
+                      ) : (
+                        <pre>{JSON.stringify(exp.pending_request.params, null, 2)}</pre>
+                      )}
                       {!exp.pending_request.expired && (
                         <form
                           onSubmit={(e) => {
@@ -1483,15 +1509,41 @@ function App() {
                               ? 'Decision: accept, decline, or cancel'
                               : 'Your answer (multiple questions: JSON keyed by question ID)'}
                           </label>
-                          <input
-                            id="answer"
-                            value={answer}
-                            onChange={(e) => setAnswer(e.target.value)}
-                            required
-                          />
-                          <button className="primary" disabled={busy}>
-                            Send answer
-                          </button>
+                          {exp.contract?.execution_contract === 4 &&
+                          exp.pending_request.method.includes('Approval') ? (
+                            <div className="plan-actions">
+                              {(['accept', 'decline', 'cancel'] as const).map((decision) => (
+                                <button
+                                  className={decision === 'accept' ? 'primary' : undefined}
+                                  type="button"
+                                  key={decision}
+                                  disabled={busy}
+                                  onClick={() =>
+                                    void act(async () => {
+                                      await command(`/api/experiments/${exp.id}/answers`, {
+                                        pending_request_id: exp.pending_request!.id,
+                                        answer: decision,
+                                      });
+                                    })
+                                  }
+                                >
+                                  {decision[0].toUpperCase() + decision.slice(1)}
+                                </button>
+                              ))}
+                            </div>
+                          ) : (
+                            <>
+                              <input
+                                id="answer"
+                                value={answer}
+                                onChange={(e) => setAnswer(e.target.value)}
+                                required
+                              />
+                              <button className="primary" disabled={busy}>
+                                Send answer
+                              </button>
+                            </>
+                          )}
                         </form>
                       )}
                     </section>

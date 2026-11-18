@@ -151,6 +151,16 @@ export type Experiment = {
   conversation_total?: number;
   pending_messages?: { id: string; text: string; created_at: number }[];
   active_report_id?: string | null;
+  research_turns?: {
+    id: string;
+    state: string;
+    created_at: number;
+    updated_at: number;
+    status?: 'continue' | 'wait' | 'needs_owner' | 'done';
+    summary?: string;
+    next?: string;
+  }[];
+  research_checkpoint?: { version: number; bytes: number; created_at: number } | null;
   report_versions?: ReportVersion[];
   deleted_at?: number | null;
   stage_activity?: {
