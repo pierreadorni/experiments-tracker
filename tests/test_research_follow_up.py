@@ -372,9 +372,40 @@ def test_a_job_wake_is_not_consumed_by_the_owner_answer_follow_up(runtime, monke
 
     saved = saved_wakeups(store, eid)
     assert (saved["question"]["state"], saved["question"]["action_id"]) == ("queued", action["id"])
-    # Job-terminal wakes stay for their own task: no job wiring in this slice.
+    # Without a verified saved thread, the job wake cannot be bound.
     assert (saved[job]["state"], saved[job]["action_id"]) == ("pending", None)
     assert timer_states(store, eid) == {"open", "satisfied"}
+
+
+@pytest.mark.parametrize("with_answer", [False, True])
+def test_terminal_job_wake_queues_once_on_the_saved_thread(runtime, monkeypatch, with_answer):
+    store, _, _, _ = runtime
+    eid = make_experiment(store)
+    if with_answer:
+        asked_turn(store, eid)
+    else:
+        settled(store, first_turn(store, eid))
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET thread_id='thread-1' WHERE id=?", (eid,))
+        db.execute(
+            "UPDATE agent_actions SET thread_id='thread-1',turn_id='turn-1' WHERE experiment_id=?",
+            (eid,),
+        )
+    now = fake_clock(monkeypatch)
+    job = saved_job(store, eid)
+    wakeups.record(store, eid, wakeups.JOB_TERMINAL, job)
+    if with_answer:
+        now.advance(60)
+        assert follow_up_turn(store, eid) is None
+        answer(store, eid)
+    assert follow_up_turn(store, eid) is None
+    now.advance(60)
+    action = follow_up_turn(store, eid)
+    assert action["thread_id"] == "thread-1"
+    assert f"Job {job}: complete" in action["input"]
+    assert (ANSWER in action["input"]) == with_answer
+    assert all(row["action_id"] == action["id"] for row in saved_wakeups(store, eid).values())
+    assert follow_up_turn(store, eid) is None
 
 
 def test_a_wake_without_its_saved_answer_queues_nothing(runtime, monkeypatch):

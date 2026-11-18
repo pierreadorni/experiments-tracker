@@ -184,20 +184,30 @@ def _continue_turn(store, db, experiment, predecessor):
     )
 
 
-def follow_up_turn(store, eid, *, now=None):
-    """Queue one follow-up research turn for this experiment's due owner answer.
+def _job_events(db, experiment, predecessor, due):
+    thread = predecessor["thread_id"]
+    if not predecessor["turn_id"] or not thread or thread != experiment["thread_id"]:
+        return [], []
+    events, bind = [], []
+    for item in due:
+        if item["event"] != wakeups.JOB_TERMINAL:
+            continue
+        job = db.execute(
+            "SELECT state,exit_code FROM jobs WHERE experiment_id=? AND intent_id=? "
+            "AND job_id IS NOT NULL AND state IN ('complete','failed','cancelled')",
+            (experiment["id"], item["source_id"]),
+        ).fetchone()
+        if job is None:
+            continue
+        events.append(f"Job {item['source_id']}: {job['state']} (exit {job['exit_code'] or 'unknown'})")
+        bind.append(item["wakeup_id"])
+    return events, bind
 
-    Exactly one turn follows a settled predecessor and an answered owner request
-    whose 60-second window has closed. The exact answer enters the bounded prompt
-    and the due wakeup is bound to the new action in the same transaction, so a
-    restart or replay finds all of it or none of it. A paused, terminal, maintained
-    or non-contract-4 experiment, a running, uncertain or failed predecessor, an
-    unanswered or foreign request and a job or timer wake queue nothing. Returns the
-    saved pending action, or ``None`` when this pass has no owner answer to queue.
-    """
+
+def follow_up_turn(store, eid, *, now=None):
+    """Queue from a settled decision or due evidence; bind each consumed wake atomically."""
     now = clock.now() if now is None else now
     due = wakeups.due(store, eid, now=now)
-    due = [item for item in due if item["event"] == wakeups.OWNER_REQUEST_ANSWERED]
     with store.tx() as db:
         if blocked(store):
             return None
@@ -213,23 +223,35 @@ def follow_up_turn(store, eid, *, now=None):
         predecessor = _settled_predecessor(db, eid)
         if predecessor is None:
             return None
-        answered = _saved_answer(experiment, predecessor)
-        if answered is None:
-            return _continue_turn(store, db, experiment, predecessor)
-        pending, answer = answered
-        bind = [item["wakeup_id"] for item in due if item["source_id"] == pending["id"]]
+        events, bind = _job_events(db, experiment, predecessor, due)
+        pending = None
+        if experiment["pending_request"]:
+            answered = _saved_answer(experiment, predecessor)
+            if answered is None:
+                return None
+            pending, answer = answered
+            answer_ids = [
+                item["wakeup_id"]
+                for item in due
+                if item["event"] == wakeups.OWNER_REQUEST_ANSWERED and item["source_id"] == pending["id"]
+            ]
+            if not answer_ids:
+                return None
+            bind.extend(answer_ids)
+            events.append(_answer_line(pending, answer))
         if not bind:
-            return None
+            return _continue_turn(store, db, experiment, predecessor)
         action = _queue(
             store,
             db,
             experiment,
             _owner_constraints(db, experiment["contract"]),
-            events=[_answer_line(pending, answer)],
+            events=events,
             checkpoint=_DEFERRED_CHECKPOINT,
+            thread_id=experiment["thread_id"],
         )
         wakeups.consume(store, eid, bind, action["id"], db=db, now=now)
-        # The answer is consumed into the queued prompt; the saved request closes.
-        db.execute("UPDATE experiments SET pending_request=NULL WHERE id=?", (eid,))
-        request_obligations.sync_request(db, eid, before=pending)
+        if pending is not None:
+            db.execute("UPDATE experiments SET pending_request=NULL WHERE id=?", (eid,))
+            request_obligations.sync_request(db, eid, before=pending)
         return action
