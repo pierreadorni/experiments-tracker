@@ -4,6 +4,8 @@ import time
 from uuid import uuid4
 
 import pytest
+from test_research_create import create as create_research
+from test_research_create import git_project
 
 from experimenttracker.core import (
     action_obligations,
@@ -12,6 +14,7 @@ from experimenttracker.core import (
     transfer_obligations,
     wakeup_obligations,
 )
+from experimenttracker.research.session import first_turn
 from experimenttracker.store import Store
 from experimenttracker.watchdog import engine_watchdog
 
@@ -123,6 +126,33 @@ def test_an_orphaned_experiment_is_reported_once(store, clock):
     rows = notices(store, eid)
     assert [row["kind"] for row in rows] == ["engine_stuck"]
     assert rows[0]["text"].startswith("missing_dependency: advancement:")
+
+
+@pytest.mark.parametrize("dependency", [None, "paused", "queued"])
+def test_orphaned_research_experiment_is_reported_without_creating_work(
+    runtime, config, tmp_path, clock, dependency
+):
+    store, scheduler, agent, _ = runtime
+    git_project(config, store, tmp_path, research_loop=True)
+    _, _, receipt = create_research(store)
+    eid = receipt["experiment_id"]
+    assert store.experiment(eid)["contract"]["execution_contract"] == 4
+    assert store.rows("SELECT * FROM stages WHERE experiment_id=?", (eid,)) == []
+    if dependency == "paused":
+        store.update(eid, pause_agent=True)
+    elif dependency == "queued":
+        assert first_turn(store, eid) is not None
+    before = work_counts(store, eid)
+
+    clock.advance(29)
+    assert watch(store, clock) == 0
+    clock.advance(2)
+    assert watch(store, clock) == (1 if dependency is None else 0)
+    clock.advance(31)
+    assert watch(store, clock) == 0
+    assert [row["kind"] for row in notices(store, eid)] == (["engine_stuck"] if dependency is None else [])
+    assert work_counts(store, eid) == before
+    assert scheduler.submissions == 0 and agent.calls == 0
 
 
 def test_the_notice_survives_an_owner_restart(store, clock):

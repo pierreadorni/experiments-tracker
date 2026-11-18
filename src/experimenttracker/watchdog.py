@@ -25,8 +25,8 @@ NOTICED_SQL = "SELECT text FROM inbox WHERE experiment_id=? AND kind=?"
 def engine_watchdog(store, now, minutes, service):
     """Report each exact liveness defect once per (experiment, cause, obligation).
 
-    One read transaction judges every open obligation and every saved contract-3
-    lifetime against its exact source. Each defect then gets one ``engine_stuck``
+    One read transaction judges open obligations, contract-3 lifetimes and
+    research runs missing an open obligation. Each defect gets one ``engine_stuck``
     notice whose deterministic text starts with its cause and names the obligation,
     so repeated passes and owner restarts add no second notice; a defect with no
     experiment to notify is only logged. The watchdog never dispatches, repairs,

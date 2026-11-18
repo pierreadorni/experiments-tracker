@@ -79,7 +79,7 @@ class LivenessReport:
 
 
 def inspect(db, now, *, interval, service, owner_holds=()):
-    """Classify every open obligation and every saved contract-3 lifetime.
+    """Classify open obligations, C3 lifetimes, and C4 runs without a dependency.
 
     ``interval`` is the existing watchdog interval in seconds; ``service`` is the
     process-local record of real backend handler returns plus the process start;
@@ -92,6 +92,7 @@ def inspect(db, now, *, interval, service, owner_holds=()):
     watched = _Watch(db, rows, now, interval, service, owner_holds)
     verdicts = [LivenessVerdict(r["experiment_id"], r["id"], _family(r), watched.cause(r)) for r in rows]
     verdicts.extend(_missing_lifetimes(db))
+    verdicts.extend(_orphaned_research(db, now, interval, owner_holds))
     return LivenessReport(tuple(verdicts))
 
 
@@ -227,6 +228,24 @@ def _missing_lifetimes(db):
     return [
         LivenessVerdict(row["id"], None, "advancement", "missing_lifetime")
         for row in db.execute(_MISSING_LIFETIMES)
+    ]
+
+
+def _orphaned_research(db, now, interval, owner_holds):
+    # C4 has no stage advancement lifetime. Its turns, jobs, reports, and waits
+    # carry their own responsibilities. Allow a grace interval for handoffs.
+    rows = db.execute(
+        "SELECT e.id,e.hold_reason FROM experiments e WHERE e.deleted_at IS NULL "
+        "AND e.phase NOT IN ('complete','failed','cancelled') AND NOT e.pause_agent "
+        "AND json_extract(e.contract,'$.execution_contract') IS 4 AND e.updated_at<? "
+        "AND NOT EXISTS (SELECT 1 FROM obligations o WHERE o.experiment_id=e.id AND o.state='open') "
+        "ORDER BY e.id",
+        (now - interval,),
+    )
+    return [
+        LivenessVerdict(row["id"], None, "research", "missing_dependency")
+        for row in rows
+        if row["hold_reason"] not in owner_holds
     ]
 
 
