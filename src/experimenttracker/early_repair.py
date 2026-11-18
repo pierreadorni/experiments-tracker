@@ -218,28 +218,45 @@ def apply(wf, exp, plan, manifest):
         wf.store.emit(db, exp["id"], "selective_repair_applied", {"decisions": decisions})
 
 
-async def cancel(wf, exp, intent, request, reason):
-    if not preparing(exp):
-        raise ValueError("job cancellation requires an active contract 3 repair")
-    intent, request = str(UUID(intent)), str(UUID(request))
-    job = wf.store.one("SELECT * FROM jobs WHERE experiment_id=? AND intent_id=?", (exp["id"], intent))
+def save_cancellation(store, db, eid, intent, request, reason):
+    """Validate and idempotently save one exact selective cancellation in ``db``.
+
+    Contract-3 selective repair and the contract-4 ``cancel_job`` tool share this
+    save: the UUIDs are strict, the job must be this experiment's own saved Slurm
+    intent and an exact replay returns the saved decision. It never contacts the
+    scheduler; the existing cancellation reconciler proceeds later with the saved
+    identity. Returns ``(record, created)``.
+    """
+    intent, request = str(UUID(str(intent))), str(UUID(str(request)))
+    job = db.execute("SELECT * FROM jobs WHERE experiment_id=? AND intent_id=?", (eid, intent)).fetchone()
     if not job or json.loads(job["execution_manifest"] or "{}").get("executor") == "agent":
         raise ValueError("cancellation requires this experiment's exact Slurm intent")
     if not reason.strip() or len(reason) > 2000:
         raise ValueError("provide a cancellation reason of 1–2000 characters")
-    contract = wf.store.experiment(exp["id"])["contract"]
+    contract = json.loads(
+        db.execute("SELECT contract FROM experiments WHERE id=?", (eid,)).fetchone()["contract"]
+    )
     saved = contract.setdefault("job_cancellations", {}).get(request)
     if saved:
         if (saved["intent_id"], saved["reason"]) != (intent, reason):
             raise ValueError("cancellation request identity belongs to another decision")
-        return saved
+        return saved, False
     record = {"intent_id": intent, "reason": reason, "state": "pending"}
     contract["job_cancellations"][request] = record
+    db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(contract), eid))
+    store.emit(db, eid, "selective_cancellation_requested", {"request_id": request, **record})
+    return record, True
+
+
+async def cancel(wf, exp, intent, request, reason):
+    if not preparing(exp):
+        raise ValueError("job cancellation requires an active contract 3 repair")
     with wf.store.tx() as db:
-        db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(contract), exp["id"]))
-        wf.store.emit(db, exp["id"], "selective_cancellation_requested", {"request_id": request, **record})
+        saved, created = save_cancellation(wf.store, db, exp["id"], intent, request, reason)
+    if not created:
+        return saved
     await reconcile_cancellations(wf, exp["id"])
-    return wf.store.experiment(exp["id"])["contract"]["job_cancellations"][request]
+    return wf.store.experiment(exp["id"])["contract"]["job_cancellations"][str(UUID(request))]
 
 
 async def reconcile_cancellations(wf, eid=None):
