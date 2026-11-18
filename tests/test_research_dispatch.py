@@ -213,6 +213,67 @@ async def test_follow_up_dispatch_seeds_the_latest_checkpoint_without_persisting
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("last_tokens", "usage_turn", "has_checkpoint", "rotate"),
+    [
+        (800, "turn-1", True, True),
+        (799, "turn-1", True, False),
+        (900, "other-turn", True, False),
+        (900, "turn-1", False, False),
+    ],
+)
+async def test_follow_up_rotates_only_with_exact_context_pressure_and_checkpoint(
+    runtime, tmp_path, monkeypatch, last_tokens, usage_turn, has_checkpoint, rotate
+):
+    store, _, _, workflow = runtime
+    _, eid, branch, first = research_setup(runtime, tmp_path, monkeypatch)
+    agent = scripted(workflow, ScriptedAgent())
+    dispatcher = ResearchDispatch(workflow, completion([]))
+    await run_pass(workflow, dispatcher)
+    first_running = saved_action(store, first["id"])
+    notebook = "# Private rotation notebook"
+    if has_checkpoint:
+        save_checkpoint(store, first_running, SaveCheckpoint(request_id=uuid4(), markdown=notebook))
+    workflow._action_state(first["id"], "completed", result={"status": "continue"})
+    with store.tx() as db:
+        db.execute(
+            "INSERT INTO agent_usage(action_id,thread_id,turn_id,payload,observed_at) VALUES(?,?,?,?,0)",
+            (
+                first["id"],
+                "thread-1",
+                usage_turn,
+                json.dumps(
+                    {
+                        "model_context_window": 1000,
+                        "last_request": {"totalTokens": last_tokens},
+                        "thread_total": {"totalTokens": 100_000},
+                    }
+                ),
+            ),
+        )
+    follow_up = follow_up_turn(store, eid)
+    agent.session_thread = "thread-2" if rotate else None
+    agent.begin_fail = RuntimeError("lost start reply")
+
+    await run_pass(workflow, dispatcher)
+    await run_pass(workflow, dispatcher)
+
+    thread = "thread-2" if rotate else "thread-1"
+    assert len(agent.sessions) == 2
+    assert agent.sessions[-1] == (None if rotate else "thread-1", Path(branch["worktree"]), True)
+    assert store.experiment(eid)["thread_id"] == thread
+    assert saved_action(store, first["id"])["thread_id"] == "thread-1"
+    saved = saved_action(store, follow_up["id"])
+    assert (saved["state"], saved["thread_id"], saved["attempts"]) == ("uncertain", thread, 1)
+    _, sent_thread, prompt, _ = agent.calls[-1]
+    assert sent_thread == thread and (notebook in prompt) == has_checkpoint
+    assert notebook not in saved["input"] and notebook not in saved["error"]
+    receipt = json.loads(events(store, eid, ["agent_dispatch_intent"])[-1]["payload"])
+    assert receipt.get("rotated_from_thread_id") == ("thread-1" if rotate else None)
+    assert receipt["prompt_sha256"] == hashlib.sha256(prompt.encode()).hexdigest()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("gate", ["paused", "cancelled", "maintenance", "quota"])
 async def test_no_work_starts_behind_a_gate(runtime, tmp_path, monkeypatch, gate):
     store, _, _, workflow = runtime

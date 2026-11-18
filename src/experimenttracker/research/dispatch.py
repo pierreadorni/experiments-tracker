@@ -10,6 +10,7 @@ an uncertain start is never retried here. The saved live states keep pool accoun
 
 import asyncio
 import hashlib
+import json
 import logging
 from pathlib import Path
 
@@ -24,6 +25,8 @@ log = logging.getLogger(__name__)
 
 PHASE = "research"
 MAX_ERROR = 1800
+# Leave a fifth of the model window for the next wake and its tool results.
+_CONTEXT_THRESHOLD_PERCENT = 80
 _TERMINAL_PHASES = frozenset({"complete", "failed", "cancelled"})
 
 
@@ -114,6 +117,28 @@ class ResearchDispatch:
             raise NeedsAttention("saved research action and experiment thread identities differ")
         return action["thread_id"] or experiment["thread_id"]
 
+    def _context_full(self, eid, thread_id):
+        # Use the latest settled research turn on this thread. Thread totals
+        # count repeated inputs across calls and are not context occupancy.
+        row = self.store.one(
+            "SELECT usage.payload FROM agent_actions AS action LEFT JOIN agent_usage AS usage "
+            "ON usage.action_id=action.id AND usage.thread_id=action.thread_id AND usage.turn_id=action.turn_id "
+            "WHERE action.experiment_id=? AND action.phase=? AND action.thread_id=? AND action.state='completed' "
+            "ORDER BY action.created_at DESC,action.rowid DESC LIMIT 1",
+            (eid, PHASE, thread_id),
+        )
+        if row is None or row["payload"] is None:
+            return False
+        counters = json.loads(row["payload"])
+        size = counters.get("model_context_window")
+        last = counters.get("last_request", {}).get("totalTokens")
+        return (
+            type(size) is int
+            and size > 0
+            and type(last) is int
+            and last * 100 >= size * _CONTEXT_THRESHOLD_PERCENT
+        )
+
     async def dispatch(self, slot, action):
         """Start one saved research turn after every gate, then hand back its raw outcome."""
         expected = dict(action)
@@ -135,16 +160,28 @@ class ResearchDispatch:
                 return
             thread_id = self._thread(expected, experiment)
             saved_thread = experiment["thread_id"]
+            seeded = False
+            if thread_id is not None:
+                checkpoint = latest_checkpoint(self.store, eid)
+                markdown = checkpoint["markdown"] if checkpoint else None
+                rendered = with_checkpoint(prompt, markdown)
+                seeded = bool(markdown and rendered != prompt)
+                prompt = rendered
+            # Never drop the old session when there is no checkpoint to carry forward.
+            rotate = seeded and self._context_full(eid, thread_id)
+            target = None if rotate else thread_id
             runtime_config = self.workflow.controller.session_config(eid)
             session_options = {"runtime_config": runtime_config} if runtime_config else {}
-            resumed, _model = await slot.agent.session(thread_id, workspace, writable=True, **session_options)
-            if thread_id is not None and resumed != thread_id:
-                raise NeedsAttention("the session did not resume the saved experiment thread")
-            if blocked(self.store) or not self.workflow.agent_pool.quota(eid=eid).admitted:
-                return
+            resumed, _model = await slot.agent.session(target, workspace, writable=True, **session_options)
+            if not resumed or (target is not None and resumed != target):
+                raise NeedsAttention("the session did not return the expected research thread")
+            if rotate and resumed == thread_id:
+                raise NeedsAttention("research rotation did not return a new thread")
             # The session is another await, so verify the exact worktree and thread again.
             if Path(await asyncio.to_thread(self.workflow.workspaces.branch_checkout, eid)) != workspace:
                 raise NeedsAttention("the saved research worktree changed during the session")
+            if blocked(self.store) or not self.workflow.agent_pool.quota(eid=eid).admitted:
+                return
             expected = self._unchanged(expected)
             experiment = self._live(eid)
             if experiment is None:
@@ -163,11 +200,6 @@ class ResearchDispatch:
                     expected=expected,
                 )
                 db.execute("UPDATE experiments SET thread_id=? WHERE id=?", (resumed, eid))
-                if thread_id is not None:
-                    checkpoint = latest_checkpoint(self.store, eid)
-                    rendered = with_checkpoint(prompt, checkpoint["markdown"] if checkpoint else None)
-                    private_prompt = checkpoint is not None and rendered != prompt
-                    prompt = rendered
                 self.store.emit(
                     db,
                     eid,
@@ -177,8 +209,10 @@ class ResearchDispatch:
                         "phase": PHASE,
                         "thread_id": resumed,
                         "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
+                        **({"rotated_from_thread_id": thread_id} if rotate else {}),
                     },
                 )
+            private_prompt = seeded
             turn_id = await slot.agent.begin(
                 resumed, prompt, TurnEnd.model_json_schema(), workspace=workspace
             )

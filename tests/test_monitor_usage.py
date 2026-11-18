@@ -240,6 +240,7 @@ async def test_live_token_notifications_are_saved_only_for_exact_turn(runtime):
             "tokenUsage": {
                 "total": {"inputTokens": 100, "cachedInputTokens": 80, "secret": "excluded"},
                 "last": {"outputTokens": 10},
+                "modelContextWindow": 256_000,
             },
         },
     }
@@ -254,6 +255,7 @@ async def test_live_token_notifications_are_saved_only_for_exact_turn(runtime):
     assert (record["action_id"], record["thread_id"], record["turn_id"]) == (identity, "thread", "turn")
     assert usage["thread_total"] == {"inputTokens": 100, "cachedInputTokens": 80}
     assert usage["last_request"] == {"outputTokens": 10}
+    assert usage["model_context_window"] == 256_000
     assert store.experiment(eid)["revision"] == revision
     assert store.one("SELECT COUNT(*) AS n FROM outbox")["n"] == publications
     message["params"]["tokenUsage"]["total"]["inputTokens"] = 200

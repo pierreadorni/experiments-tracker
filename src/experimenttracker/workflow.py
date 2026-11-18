@@ -400,6 +400,10 @@ class Workflow:
                 }
                 for name in ("total", "last")
             }
+            payload = {"thread_total": saved["total"], "last_request": saved["last"]}
+            context_window = usage.get("modelContextWindow")
+            if type(context_window) is int and context_window > 0:
+                payload["model_context_window"] = context_window
             with self.store.tx() as db:
                 # Retain the latest exact turn counters in a local audit table;
                 # token notifications never create publication snapshots.
@@ -410,7 +414,7 @@ class Workflow:
                         action["id"],
                         action["thread_id"],
                         action["turn_id"],
-                        encode({"thread_total": saved["total"], "last_request": saved["last"]}),
+                        encode(payload),
                         clock.now(),
                     ),
                 )
