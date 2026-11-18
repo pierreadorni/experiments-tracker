@@ -72,7 +72,7 @@ def test_result_tool_documents_the_exact_generated_data_json_contract():
 def test_result_request_requires_uuid_intent_and_bounded_relative_path():
     valid = request(uuid4())
     assert RegisterResult.model_validate(valid).path == "results.json"
-    for path in ("../secret.json", "/tmp/result.json", "", "x" * 1025):
+    for path in ("../secret.json", "/tmp/result.json", "C:\\\\secret.json", "a\x00b", "", "x" * 1025):
         with pytest.raises(ValidationError):
             RegisterResult.model_validate(request(uuid4(), path))
     with pytest.raises(ValidationError):
@@ -106,6 +106,29 @@ def test_register_result_reads_exact_successful_slurm_job_and_validates(runtime,
     (root / "results.json").write_text('{"protocol":"p","metrics":[{"value":NaN}]}')
     with pytest.raises(ValueError):
         register_result(workflow, store.experiment(eid), action, other)
+
+
+def test_register_result_binds_declared_path_to_saved_job_intent(runtime, tmp_path):
+    store, _, _, workflow = runtime
+    eid = saved_contract4(store)
+    action = active_turn(store, eid)
+    intent = str(uuid4())
+    root = workflow.projects.base_root(eid) / "attempts" / intent
+    root.mkdir(parents=True)
+    add_saved_job(store, eid, intent, root)
+    with store.tx() as db:
+        db.execute(
+            "UPDATE jobs SET execution_manifest=? WHERE intent_id=?",
+            (json.dumps({"executor": "slurm", "research_request": {"result_file": "declared.json"}}), intent),
+        )
+    (root / "other.json").write_text(json.dumps(RESULT))
+    with pytest.raises(ValueError, match="exact job intent declaration"):
+        register_result(workflow, store.experiment(eid), action, request(intent, "other.json"))
+    (root / "declared.json").write_text(json.dumps(RESULT))
+    assert (
+        register_result(workflow, store.experiment(eid), action, request(intent, "declared.json"))["source"]
+        == "declared.json"
+    )
 
 
 def test_register_result_refuses_foreign_failed_agent_jobs_and_symlink(runtime, tmp_path):

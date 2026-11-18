@@ -33,7 +33,7 @@ def _replay(store, eid, action, request):
         if (
             row["experiment_id"] != eid
             or manifest.get("research_action_id") != saved["id"]
-            or manifest.get("research_request") != request.model_dump(mode="json")
+            or manifest.get("research_request") != request.saved_request()
         ):
             raise Conflict("job intent identity already belongs to another submission")
         return dict(row)

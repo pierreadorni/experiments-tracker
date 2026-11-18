@@ -9,6 +9,7 @@ from ..config import JobResources, StrictModel
 from ..core import action_obligations
 from ..maintenance import blocked
 from . import approval
+from .result_path import MAX_RESULT_PATH_CHARS, validate_result_path
 from .tools import require_live_research
 
 
@@ -19,6 +20,16 @@ class SubmitJobRequest(StrictModel):
     name: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,99}$")
     command: list[Annotated[str, Field(max_length=4096)]] = Field(min_length=1, max_length=128)
     resources: JobResources
+    result_file: str | None = Field(default=None, max_length=MAX_RESULT_PATH_CHARS)
+
+    @field_validator("result_file")
+    @classmethod
+    def valid_result_file(cls, value):
+        return None if value is None else validate_result_path(value)
+
+    def saved_request(self):
+        # Omit only the new field when absent; historical receipts included resource defaults.
+        return self.model_dump(mode="json", exclude={"result_file"} if self.result_file is None else set())
 
     @field_validator("command")
     @classmethod

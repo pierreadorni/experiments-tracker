@@ -13,8 +13,8 @@ from ..maintenance import blocked
 from ..models import ExperimentResult
 from ..store import Conflict
 from . import tools
+from .result_path import MAX_RESULT_PATH_CHARS, validate_result_path
 
-MAX_RESULT_PATH_CHARS = 1024
 EVENT_KIND = "research_result_registered"
 STAGE = "research"
 
@@ -29,10 +29,7 @@ class RegisterResult(StrictModel):
     @field_validator("path")
     @classmethod
     def bounded_relative_path(cls, value):
-        path = Path(value)
-        if not value.strip() or path.is_absolute() or ".." in path.parts:
-            raise ValueError("result path must be a bounded relative path without traversal")
-        return value
+        return validate_result_path(value)
 
 
 def register_result(workflow, experiment, action, request):
@@ -54,6 +51,10 @@ def register_result(workflow, experiment, action, request):
         or json.loads(job.get("execution_manifest") or "{}").get("executor") == "agent"
     ):
         raise ValueError("result intent must identify this experiment's successful Slurm job")
+    saved_request = json.loads(job.get("execution_manifest") or "{}").get("research_request") or {}
+    declared_result = saved_request.get("result_file")
+    if declared_result is not None and request.path != declared_result:
+        raise ValueError("result path differs from the exact job intent declaration")
     root_value = job.get("execution_root")
     if not root_value:
         raise ValueError("result job has no saved attempt output root")

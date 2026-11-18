@@ -48,6 +48,9 @@ def test_persists_uncertain_intent_and_replays_without_permission_to_send(runtim
     assert save(workflow, eid, action, request, PREPARED) == (job, False)
     with pytest.raises(Conflict, match="another submission"):
         save(workflow, eid, action, {**request, "name": "different"}, PREPARED)
+    declared = {**request, "result_file": "metrics/result.json"}
+    with pytest.raises(Conflict, match="another submission"):
+        save(workflow, eid, action, declared, PREPARED)
     assert store.one("SELECT kind,state FROM obligations WHERE target=?", (job["intent_id"],)) == {
         "kind": "reconcile",
         "state": "open",

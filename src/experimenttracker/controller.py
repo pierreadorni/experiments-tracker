@@ -166,7 +166,7 @@ TOOLS = [
 RESEARCH_TOOLS = [
     tool_from_model(
         "submit_job",
-        "Submit one locally scoped research job after exact owner approval. Repeating a request_id adopts the saved outcome and never resubmits an uncertain job.",
+        "Submit one locally scoped research job after exact owner approval. Optionally declare result_file as the bounded relative path register_result must use for this job. Repeating a request_id adopts the saved outcome and never resubmits an uncertain job.",
         SubmitJobRequest,
     ),
     tool_from_model(

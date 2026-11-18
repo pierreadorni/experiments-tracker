@@ -25,7 +25,7 @@ def save(workflow, eid, action, request, prepared):
     request = SubmitJobRequest.model_validate(request)
     prepared = PreparedJob.model_validate(prepared)
     intent = str(request.request_id)
-    wire = request.model_dump(mode="json")
+    wire = request.saved_request()
     store = workflow.store
     with store.tx() as db:
         prior = db.execute("SELECT * FROM jobs WHERE intent_id=?", (intent,)).fetchone()

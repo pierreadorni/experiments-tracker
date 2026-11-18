@@ -3,11 +3,13 @@
 from uuid import uuid4
 
 import pytest
+from pydantic import ValidationError
 from test_research_job_source import setup_request
 
 from experimenttracker import controller
 from experimenttracker.research.admission import SubmitJobRequest
 from experimenttracker.slurm import SubmissionUncertain
+from experimenttracker.store import Conflict
 
 
 def payload(request_id=None, approval_id=None):
@@ -31,6 +33,21 @@ def test_submit_job_schema_is_advertised_exactly():
     served = {item["name"]: item for item in controller.served_tools(research=True)}
     assert served["submit_job"]["inputSchema"] == SubmitJobRequest.model_json_schema()
     assert "submit_job" not in {item["name"] for item in controller.served_tools()}
+
+
+def test_submit_job_optional_result_file_preserves_historical_request_identity():
+    request = payload()
+    model = SubmitJobRequest.model_validate(request)
+    expected = model.model_dump(mode="json", exclude={"result_file"})
+    assert expected["resources"] != request["resources"]  # Historical receipts include defaults.
+    assert model.saved_request() == expected
+    assert SubmitJobRequest.model_validate({**request, "result_file": None}).saved_request() == expected
+    assert SubmitJobRequest.model_validate(
+        {**request, "result_file": "metrics/result.json"}
+    ).saved_request() == {**expected, "result_file": "metrics/result.json"}
+    for path in ("", "../outside.json", "/tmp/result.json", "C:\\\\result.json", "a\x00b", "x" * 1025):
+        with pytest.raises(ValidationError):
+            SubmitJobRequest.model_validate({**request, "result_file": path})
 
 
 async def test_submit_job_refuses_before_approval(runtime, tmp_path, monkeypatch):
@@ -67,9 +84,14 @@ class FakeScheduler:
 
 
 @pytest.mark.parametrize("lose", [False, True])
-async def test_submit_job_receipt_and_lost_reply_replay_never_resubmit(runtime, tmp_path, monkeypatch, lose):
+@pytest.mark.parametrize("result_file", [None, "metrics/result.json"])
+async def test_submit_job_receipt_and_lost_reply_replay_never_resubmit(
+    runtime, tmp_path, monkeypatch, lose, result_file
+):
     store, _, _, workflow = runtime
     _, eid, action, request = setup_request(workflow, tmp_path)
+    if result_file is not None:
+        request["result_file"] = result_file
     accept(store, eid, request)
     pool = workflow.agent_pool
     pool.claim(
@@ -90,6 +112,8 @@ async def test_submit_job_receipt_and_lost_reply_replay_never_resubmit(runtime, 
         assert set(receipt) == {"state", "intent_id", "job_id", "commit"}
         assert receipt["intent_id"] == request_id and receipt["job_id"] == "42"
         assert "command" not in str(receipt) and "execution_root" not in receipt
-    replay = await workflow.controller.call(eid, "submit_job", request)
+    replay = await workflow.controller.call(eid, "submit_job", {**request, "result_file": result_file})
     assert replay["state"] == ("submitting" if lose else "submitted")
+    with pytest.raises(Conflict, match="another submission"):
+        await workflow.controller.call(eid, "submit_job", {**request, "result_file": "different.json"})
     assert scheduler.submissions == 1
