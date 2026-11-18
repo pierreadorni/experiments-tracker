@@ -541,7 +541,7 @@ See [tool rollout and effect boundaries](notes/t4.2-rollout.md).
 - [x] T4.2a `cluster_info` and scoped MCP bridge; T4.2b `job_status`/`job_logs`.
 - [x] `save_checkpoint`, `update_report` and `register_figure` through MCP.
 - [x] `cancel_job` through MCP, reusing exact selective cancellation.
-- [~] `register_result`: bounded exact-attempt reader and immutable registration landed; report evidence and MCP wiring remain.
+- [~] `register_result`: bounded exact-attempt validation and immutable registration are exposed through MCP; report evidence wiring remains.
 - [x] `ask_owner` question-only and `request_integration` through MCP. Approval is T4.4; answer wakeup is T4.3.
 `cluster_info`, `submit_job`, `job_status`/`job_logs`, `cancel_job` (reuse),
 `register_result`, `register_figure`, `update_report` (reuse), `save_checkpoint`,
@@ -572,6 +572,8 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 ---
 
 ## Log
+
+- **T4.2 result tool bridge:** `825809b`. Production +18/−3; tests +50/−0. Separate contract-3 and contract-4 `register_result` schemas remain available; contract 4 returns a stable result receipt. Locked Ruff and **1,329 Python tests passed** (one existing dependency warning). No live activation.
 
 - **T4.3 continue and T4.2 result persistence:** `956c3fe`, `7ccdd5a`. Production; tests respectively: +36/−12; +54/−3, +106/−17; +14/−5. A settled continue result appends a single action on the verified saved thread. Result registration keeps a stable bounded copy under the existing publication root; replay does not reopen the source. Locked Ruff and **1,327 Python tests passed** (one existing dependency warning). No live activation.
 
