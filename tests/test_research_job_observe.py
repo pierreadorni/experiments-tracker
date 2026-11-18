@@ -168,25 +168,43 @@ class FakeRemoteScheduler(FakeScheduler):
             raise self.delivery
 
 
-async def remote_job(store):
-    exp, job = saved_job(store)
+async def remote_job(store, workflow, *, pending=False):
+    exp, job = saved_job(store, pending=pending)
     contract = dict(
         exp["contract"],
-        execution={**exp["contract"].get("execution", {}), "context": "jean-zay", "ssh_host": "remote"},
+        execution={
+            **exp["contract"].get("execution", {}),
+            "context": "jean-zay",
+            "ssh_host": "remote",
+            "remote_project": "/remote/project",
+        },
     )
+    root = workflow.projects.base_root(exp["id"]) / "attempts" / job["intent_id"]
+    root.mkdir(parents=True)
+    remote_prefix = f"/remote/project/.experimenttracker/executions/{exp['id']}/{job['intent_id']}"
+    layout = {
+        "host": "remote",
+        "remote_base": "/remote/project",
+        "remote_run": remote_prefix + "/run",
+        "remote_project": remote_prefix + "/project",
+        "local_project": str(workflow.working_directory(exp)),
+        "local_run": str(root),
+    }
     with store.tx() as db:
         db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(contract), exp["id"]))
         db.execute(
-            "UPDATE jobs SET execution_manifest=?,scheduler_state=NULL,exit_code=NULL,ended_at=NULL "
+            "UPDATE jobs SET execution_root=?,execution_manifest=?,scheduler_state=NULL,exit_code=NULL,ended_at=NULL "
             "WHERE intent_id=?",
             (
+                str(root),
                 encode(
                     {
                         "executor": "slurm",
                         "execution": {
                             "context": "jean-zay",
                             "settings": contract["execution"],
-                            "layout": {"host": "remote", "remote_run": "/run"},
+                            "layout": layout,
+                            "memory_allocation": "cluster-assigned; --mem is not submitted; memory_mb_per_job is a planning estimate",
                         },
                     }
                 ),
@@ -199,7 +217,7 @@ async def remote_job(store):
 @pytest.mark.asyncio
 async def test_remote_success_persists_accounting_then_delivers_and_wakes_once(runtime):
     store, _, _, workflow = runtime
-    exp, job = await remote_job(store)
+    exp, job = await remote_job(store, workflow)
     scheduler = FakeRemoteScheduler(SimpleNamespace(state="COMPLETED", exit_code="0:0", ended_at=9))
     workflow.scheduler_for = lambda *_: scheduler
 
@@ -221,7 +239,7 @@ async def test_remote_pending_delivery_restarts_from_saved_accounting_without_ob
     from experimenttracker.remote import TransferPending
 
     store, _, _, workflow = runtime
-    exp, job = await remote_job(store)
+    exp, job = await remote_job(store, workflow)
     scheduler = FakeRemoteScheduler(
         SimpleNamespace(state="COMPLETED", exit_code="0:0", ended_at=9), TransferPending("later")
     )
@@ -242,7 +260,7 @@ async def test_remote_pending_delivery_restarts_from_saved_accounting_without_ob
 @pytest.mark.asyncio
 async def test_remote_completed_nonzero_exit_is_saved_as_failure(runtime):
     store, _, _, workflow = runtime
-    exp, job = await remote_job(store)
+    exp, job = await remote_job(store, workflow)
     scheduler = FakeRemoteScheduler(SimpleNamespace(state="COMPLETED", exit_code="2:0", ended_at=10))
     workflow.scheduler_for = lambda *_: scheduler
 
@@ -257,7 +275,7 @@ async def test_remote_completed_nonzero_exit_is_saved_as_failure(runtime):
 @pytest.mark.asyncio
 async def test_remote_failed_job_wakes_once_without_delivery(runtime):
     store, _, _, workflow = runtime
-    exp, job = await remote_job(store)
+    exp, job = await remote_job(store, workflow)
     scheduler = FakeRemoteScheduler(SimpleNamespace(state="CANCELLED", exit_code=None, ended_at=10))
     workflow.scheduler_for = lambda *_: scheduler
 
@@ -270,7 +288,7 @@ async def test_remote_failed_job_wakes_once_without_delivery(runtime):
 @pytest.mark.asyncio
 async def test_workflow_routes_remote_c4_through_cadenced_result_delivery(runtime, monkeypatch):
     store, _, _, workflow = runtime
-    exp, job = await remote_job(store)
+    exp, job = await remote_job(store, workflow)
     scheduler = FakeRemoteScheduler(SimpleNamespace(state="COMPLETED", exit_code="0:0", ended_at=9))
     workflow.scheduler_for = lambda *_: scheduler
     monkeypatch.setattr("experimenttracker.iteration.enabled", lambda *_: pytest.fail("C3 logic reached"))
@@ -286,7 +304,7 @@ async def test_workflow_routes_remote_c4_through_cadenced_result_delivery(runtim
 
 async def test_remote_result_validation_failure_holds_without_marking_job_failed(runtime):
     store, _, _, workflow = runtime
-    exp, job = await remote_job(store)
+    exp, job = await remote_job(store, workflow)
     scheduler = FakeRemoteScheduler(
         SimpleNamespace(state="COMPLETED", exit_code="0:0", ended_at=9), ValueError("saved route mismatch")
     )
@@ -301,30 +319,7 @@ async def test_remote_result_validation_failure_holds_without_marking_job_failed
 
 async def test_remote_workflow_resolves_missing_id_at_poll_cadence(runtime, monkeypatch):
     store, _, _, workflow = runtime
-    exp, job = saved_job(store, pending=True)
-    contract = dict(
-        exp["contract"],
-        execution={**exp["contract"].get("execution", {}), "context": "jean-zay", "ssh_host": "remote"},
-    )
-    with store.tx() as db:
-        db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(contract), exp["id"]))
-        db.execute(
-            "UPDATE jobs SET execution_manifest=? WHERE intent_id=?",
-            (
-                encode(
-                    {
-                        "executor": "slurm",
-                        "execution": {
-                            "context": "jean-zay",
-                            "settings": contract["execution"],
-                            "layout": {"host": "remote", "remote_run": "/run"},
-                        },
-                    }
-                ),
-                job["intent_id"],
-            ),
-        )
-    exp = store.experiment(exp["id"])
+    exp, job = await remote_job(store, workflow, pending=True)
     scheduler = FakeRemoteScheduler(SimpleNamespace(state="COMPLETED", exit_code="0:0", ended_at=9))
     workflow.scheduler_for = lambda *_: scheduler
     reconciled = []
@@ -355,7 +350,7 @@ async def test_workflow_cadence_suppresses_pending_delivery_until_one_terminal_w
     from experimenttracker.remote import TransferPending
 
     store, _, _, workflow = runtime
-    exp, job = await remote_job(store)
+    exp, job = await remote_job(store, workflow)
     scheduler = FakeRemoteScheduler(
         SimpleNamespace(state="COMPLETED", exit_code="0:0", ended_at=9), TransferPending("later")
     )
@@ -384,7 +379,7 @@ async def test_workflow_cadence_suppresses_pending_delivery_until_one_terminal_w
 
 async def test_workflow_rejects_invalid_saved_remote_route_without_rpc_or_c3(runtime, monkeypatch):
     store, _, _, workflow = runtime
-    exp, job = await remote_job(store)
+    exp, job = await remote_job(store, workflow)
     with store.tx() as db:
         db.execute(
             "UPDATE jobs SET execution_manifest=? WHERE intent_id=?",
@@ -406,7 +401,7 @@ async def test_workflow_rejects_invalid_saved_remote_route_without_rpc_or_c3(run
 
 async def test_remote_success_without_ended_at_is_accounting_lag(runtime):
     store, _, _, workflow = runtime
-    exp, job = await remote_job(store)
+    exp, job = await remote_job(store, workflow)
     with store.tx() as db:
         db.execute(
             "UPDATE jobs SET scheduler_state=NULL,exit_code=NULL,ended_at=NULL WHERE intent_id=?",
