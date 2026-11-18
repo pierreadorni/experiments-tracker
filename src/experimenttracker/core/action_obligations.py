@@ -9,11 +9,15 @@ import json
 
 from .. import clock
 from ..codex_client import NeedsAttention
+from ..legacy_archive import supported_contract
 from . import obligation_sources
 
 _SOURCE = "agent-action"
 _LIVE_STATES = {"pending", "dispatching", "uncertain", "running"}
 _TERMINAL_STATES = {"completed", "failed", "cancelled", "superseded"}
+_RESEARCH_PHASE = "research"
+_DISCUSSION_PREFIX = "discuss:"
+_INTEGRATION_PREFIX = "integration:"
 _TRANSITION_FIELDS = ("state", "thread_id", "turn_id")
 _IDENTITY_FIELDS = ("id", "experiment_id", "phase", "evidence_revision")
 _EXPECTED_FIELDS = (*_IDENTITY_FIELDS, "thread_id", "turn_id")
@@ -121,11 +125,10 @@ def sync_action(db, action_id, *, before=None):
     if state in ("failed", "cancelled", "superseded"):
         return obligation_sources.terminalize(db, _SOURCE, action_id, latest, "abandon")
 
-    discussion = action["phase"].startswith("discuss:")
     if state == "pending" and (
         experiment["deleted_at"] is not None
         or experiment["phase"] == "cancelled"
-        or (contract.get("execution_contract") != 3 and not discussion)
+        or not _pending_admitted(contract, action["phase"])
     ):
         return obligation_sources.terminalize(db, _SOURCE, action_id, latest, "abandon")
 
@@ -156,6 +159,20 @@ def sync_action(db, action_id, *, before=None):
         wait=wait,
         detail=identity,
     )
+
+
+def _pending_admitted(contract, phase):
+    """Whether one saved pending action may keep its backend admission obligation.
+
+    Contract 3 queues stage actions. Contract 4 has one research turn plus the
+    shared discussion and integration actions, so a saved contract-3 stage action
+    on contract 4 is not admitted. Unsupported contracts keep only discussions.
+    """
+    if contract.get("execution_contract") == 4:
+        return phase == _RESEARCH_PHASE or phase.startswith((_DISCUSSION_PREFIX, _INTEGRATION_PREFIX))
+    if supported_contract(contract):
+        return True
+    return phase.startswith(_DISCUSSION_PREFIX)
 
 
 def _check_saved_identity(latest, action, project_id, identity):

@@ -19,7 +19,11 @@ from .core import (
     transfer_obligations,
 )
 from .engine import integration_queue
-from .legacy_archive import archive_active, execution_frozen
+from .legacy_archive import (
+    SUPPORTED_EXECUTION_CONTRACTS,
+    archive_active,
+    execution_frozen,
+)
 from .models import STAGES, request_answer
 from .title import title_prompt
 
@@ -676,13 +680,9 @@ class Store:
                 else ""
             )
             condition = " AND phase NOT LIKE 'discuss:%'" if table == "agent_actions" else ""
-            if table == "artifacts" and result["contract"].get("execution_contract") != 3:
+            if table == "artifacts" and not live:
                 condition = f" AND evidence_revision={int(result['evidence_revision'])}"
-            elif (
-                table == "jobs"
-                and result["contract"].get("auto_repair")
-                and result["contract"].get("execution_contract") != 3
-            ):
+            elif table == "jobs" and result["contract"].get("auto_repair") and not live:
                 reused = result["contract"].get("reused_job_intents", [])
                 condition = f" AND (attempt={int(result['evidence_revision'])}"
                 if reused:
@@ -856,11 +856,13 @@ class Store:
             "saved in-flight work can only be settled against its exact identity."
         )
         with self.tx() as db:
+            supported = ",".join("?" for _ in SUPPORTED_EXECUTION_CONTRACTS)
             rows = db.execute(
                 "SELECT id FROM experiments WHERE deleted_at IS NULL "
                 "AND phase NOT IN ('complete','failed','cancelled') "
-                "AND json_extract(contract,'$.execution_contract') IS NOT 3 "
-                "AND hold_reason IS NOT 'legacy_contract_archived'"
+                f"AND COALESCE(json_extract(contract,'$.execution_contract'),0) NOT IN ({supported}) "
+                "AND hold_reason IS NOT 'legacy_contract_archived'",
+                SUPPORTED_EXECUTION_CONTRACTS,
             ).fetchall()
             for row in rows:
                 eid = row["id"]

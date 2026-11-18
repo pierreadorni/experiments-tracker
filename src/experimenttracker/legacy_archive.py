@@ -3,6 +3,9 @@
 from . import clock
 from .core import job_obligations
 
+# Execution contracts this engine still runs; every other saved value is archived.
+SUPPORTED_EXECUTION_CONTRACTS = (3, 4)
+
 TERMINAL_BAD = {
     "FAILED",
     "CANCELLED",
@@ -16,8 +19,12 @@ TERMINAL_BAD = {
 }
 
 
+def supported_contract(contract):
+    return contract.get("execution_contract") in SUPPORTED_EXECUTION_CONTRACTS
+
+
 def execution_frozen(exp):
-    return exp["contract"].get("execution_contract") != 3
+    return not supported_contract(exp["contract"])
 
 
 def archive_active(exp):

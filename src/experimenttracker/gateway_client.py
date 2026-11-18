@@ -10,6 +10,7 @@ import httpx
 
 from . import artifacts, clock
 from .knowledge import Knowledge
+from .legacy_archive import SUPPORTED_EXECUTION_CONTRACTS
 from .models import (
     ActionCommand,
     AnswerCommand,
@@ -30,6 +31,8 @@ from .projects import Projects
 from .store import Conflict, encode, public_projection
 
 log = logging.getLogger(__name__)
+
+_SUPPORTED_CONTRACT_SQL = ",".join(str(version) for version in SUPPORTED_EXECUTION_CONTRACTS)
 
 
 class GatewayClient:
@@ -281,7 +284,8 @@ class GatewayClient:
             "JOIN outbox o ON o.id=e.id "
             "WHERE a.local_valid=1 AND a.remote_published=0 "
             "AND x.deleted_at IS NULL AND x.phase!='cancelled' "
-            "AND (json_extract(x.contract,'$.execution_contract')=3 OR a.evidence_revision=x.evidence_revision) "
+            "AND (COALESCE(json_extract(x.contract,'$.execution_contract'),0) "
+            f"IN ({_SUPPORTED_CONTRACT_SQL}) OR a.evidence_revision=x.evidence_revision) "
             "AND (EXISTS (SELECT 1 FROM artifact_registrations r WHERE r.artifact_id=a.id "
             "AND r.sha256=a.sha256 AND r.size=a.size) "
             "OR EXISTS (SELECT 1 FROM json_each(o.payload,'$.experiment.artifacts') j "

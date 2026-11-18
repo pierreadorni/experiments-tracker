@@ -571,7 +571,7 @@ async def test_failed_bridge_operations_do_not_block_other_experiments_or_heartb
     await client.close()
 
 
-@pytest.mark.parametrize("execution_contract", [2, 3])
+@pytest.mark.parametrize("execution_contract", [2, 3, 4])
 async def test_artifacts_wait_for_registration_and_failed_upload_cannot_starve_siblings(
     config, runtime, tmp_path, execution_contract
 ):
@@ -579,10 +579,10 @@ async def test_artifacts_wait_for_registration_and_failed_upload_cannot_starve_s
 
     store, _, _, workflow = runtime
     eid = publication_experiment(store)
-    if execution_contract == 2:
+    if execution_contract != 3:
         from experimenttracker.store import encode
 
-        contract = {**store.experiment(eid)["contract"], "execution_contract": 2}
+        contract = {**store.experiment(eid)["contract"], "execution_contract": execution_contract}
         with store.tx() as db:
             db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(contract), eid))
     assert store.experiment(eid)["contract"]["execution_contract"] == execution_contract
@@ -633,7 +633,7 @@ async def test_artifacts_wait_for_registration_and_failed_upload_cannot_starve_s
     )
     await client.publish_outbox()
     await client.upload_artifacts()
-    if execution_contract == 3:
+    if execution_contract in (3, 4):
         assert len(uploads) == 4
         assert (
             store.one("SELECT remote_published FROM artifacts WHERE name='retired.json'")["remote_published"]
