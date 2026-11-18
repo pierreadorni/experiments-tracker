@@ -68,6 +68,32 @@ def saved_wakeups(store, eid):
     return store.rows("SELECT * FROM agent_wakeups WHERE experiment_id=? ORDER BY due_at,id", (eid,))
 
 
+def test_steering_is_consumed_once_in_bounded_next_turn(runtime, monkeypatch):
+    store, _, _, _ = runtime
+    eid, action = contract_four(store)
+    store.db.execute(
+        "UPDATE agent_actions SET state='completed',thread_id='saved-thread',turn_id='saved-turn',result=? WHERE id=?",
+        ('{"status":"wait","summary":"waiting","next":"continue"}', action["id"]),
+    )
+    store.update(eid, thread_id="saved-thread")
+    fake_clock(monkeypatch)
+    first = store.command(uuid4(), "steer", {"text": "Use dataset B", "mode": "later"}, eid=eid)
+    assert first["state"] == "applied"
+    from experimenttracker.research.session import follow_up_turn
+
+    store.update(eid, thread_id="other-thread")
+    assert follow_up_turn(store, eid) is None
+    store.update(eid, thread_id="saved-thread", pause_agent=True)
+    assert follow_up_turn(store, eid) is None
+    store.update(eid, pause_agent=False)
+    follow_up = follow_up_turn(store, eid)
+    assert follow_up_turn(store, eid) is None
+    assert follow_up is not None
+    assert "Use dataset B" in follow_up["input"]
+    assert store.one("SELECT state FROM steering WHERE experiment_id=?", (eid,))["state"] == "applied"
+    assert "Use dataset B" not in str(store.rows("SELECT payload FROM events WHERE experiment_id=?", (eid,)))
+
+
 def test_one_supported_event_records_one_durable_window(runtime, monkeypatch):
     store, _, _, _ = runtime
     eid, action = contract_four(store)

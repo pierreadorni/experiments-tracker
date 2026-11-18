@@ -1810,7 +1810,12 @@ class Store:
                     if not text:
                         raise Conflict("steering text is required")
                     mode = payload.get("mode", "later")
-                    blocked_work = exp["hold_reason"] in (
+                    contract4 = exp["contract"].get("execution_contract") == 4
+                    if contract4 and mode == "restart":
+                        raise Conflict("restart steering is not supported for contract 4 research sessions")
+                    if contract4 and len(text.encode()) > 1000:
+                        raise Conflict("research steering must be at most 1000 UTF-8 bytes")
+                    blocked_work = not contract4 and exp["hold_reason"] in (
                         "implementation_blocked",
                         "agent_stage_blocked",
                         "agent_stage_failed",

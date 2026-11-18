@@ -239,8 +239,23 @@ def follow_up_turn(store, eid, *, now=None):
                 return None
             bind.extend(answer_ids)
             events.append(_answer_line(pending, answer))
-        if not bind:
+        guidance = None
+        # Reserve the bounded prompt's event budget for already-due wake evidence.
+        if (
+            not bind
+            and predecessor["turn_id"]
+            and predecessor["thread_id"]
+            and (predecessor["thread_id"] == experiment["thread_id"])
+        ):
+            guidance = db.execute(
+                "SELECT request_id,text FROM steering WHERE experiment_id=? AND mode='later' AND state='pending' "
+                "ORDER BY created_at,rowid LIMIT 1",
+                (eid,),
+            ).fetchone()
+        if not bind and not guidance:
             return _continue_turn(store, db, experiment, predecessor)
+        if guidance:
+            events.append(f"Owner steering: {guidance['text']}")
         action = _queue(
             store,
             db,
@@ -251,6 +266,12 @@ def follow_up_turn(store, eid, *, now=None):
             thread_id=experiment["thread_id"],
         )
         wakeups.consume(store, eid, bind, action["id"], db=db, now=now)
+        if guidance:
+            db.execute(
+                "UPDATE steering SET state='applied',applied_at=? WHERE request_id=? AND state='pending'",
+                (now, guidance["request_id"]),
+            )
+            store.emit(db, eid, "steering_applied", {"request_ids": [guidance["request_id"]]})
         if pending is not None:
             db.execute("UPDATE experiments SET pending_request=NULL WHERE id=?", (eid,))
             request_obligations.sync_request(db, eid, before=pending)
