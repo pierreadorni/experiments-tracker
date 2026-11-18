@@ -10,6 +10,7 @@ partial view as the whole history.
 
 from collections.abc import Sequence
 from typing import Literal
+from uuid import UUID
 
 from pydantic import Field, field_validator, model_validator
 
@@ -58,6 +59,19 @@ def _nonblank(value):
     if not value.strip():
         raise ValueError("must not be blank")
     return value
+
+
+def _action_marker(action_id):
+    """Return the saved action's marker line, or nothing when none was named."""
+    if action_id is None:
+        return ""
+    if not isinstance(action_id, str):
+        raise TypeError("action_id must be text")
+    try:
+        canonical = str(UUID(action_id))
+    except ValueError:
+        raise ValueError("action_id must be a UUID") from None
+    return f"ACTION {canonical}\n"
 
 
 class IntegrationDecision(StrictModel):
@@ -192,12 +206,15 @@ def turn_prompt(
     checkpoint: str | None = None,
     events: Sequence[str] = (),
     obligations: Sequence[str] = (),
+    action_id: str | None = None,
 ) -> str:
     """Build one deterministic, bounded turn prompt from the saved turn inputs.
 
     Sections keep their fixed order and headers whatever the input. Recent events are
     kept newest-first before the rest are dropped, the checkpoint takes up to about
     4 KB of the space left over, and cuts are marked instead of silently shortening.
+    A contract 4 action's UUID is rendered inside the same byte budget so the saved
+    prompt names the exact action it belongs to.
     """
     brief = _printable(_text(brief, "brief"))
     constraints = _items(owner_constraints, "owner constraint")
@@ -206,7 +223,8 @@ def turn_prompt(
     if checkpoint is not None:
         checkpoint = _printable(_text(checkpoint, "checkpoint"))
 
-    budget = MAX_PROMPT_BYTES - 1 - _FRAME_BYTES
+    marker = _action_marker(action_id)
+    budget = MAX_PROMPT_BYTES - 1 - _FRAME_BYTES - len(marker.encode())
     brief_text = _fit(brief, min(budget, MAX_BRIEF_BYTES))
     budget -= len(brief_text.encode())
     constraints_text = _bounded_lines(
@@ -239,6 +257,7 @@ def turn_prompt(
 
     return (
         "RESEARCH TURN\n"
+        f"{marker}"
         f"\nBRIEF\n{brief_text}\n"
         f"\nOWNER CONSTRAINTS\n{constraints_text}\n"
         f"\nLATEST CHECKPOINT\n{checkpoint_text}\n"
