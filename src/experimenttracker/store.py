@@ -1067,6 +1067,28 @@ class Store:
             return False
         return branch_eligible(project.checkout)
 
+    def research_loop_for(self, payload, *, branch_workspace):
+        """Decide once, at creation, whether this experiment runs the contract-4 loop.
+
+        The owner's project flag enables the loop, and eligibility comes from the
+        create-time ``branch_workspace`` derived from the configured checkout's verified
+        normal path, never from client input. A flagged project that cannot host the
+        named branch loop is refused; it never silently falls back to a contract-3
+        experiment.
+        """
+        project = self.projects.get(payload.get("project_id") or "test-project")
+        if not project or not project.research_loop:
+            return False
+        if not project.writable or not project.checkout:
+            raise Conflict("the research loop needs a writable Git project checkout")
+        if payload.get("reference_experiment_id"):
+            raise Conflict("the research loop does not copy a reference experiment snapshot")
+        if payload.get("workspace_mode", "auto") == "shared":
+            raise Conflict("the research loop needs its own named branch workspace")
+        if not branch_workspace:
+            raise Conflict("the research loop needs the project's main Git checkout and base branch")
+        return True
+
     def _integration_branch(self, exp):
         """Return this experiment's exact saved named branch, or refuse.
 
@@ -1194,9 +1216,6 @@ class Store:
         """Apply a validated user command atomically. Stable request IDs include a payload conflict check."""
         request_id = str(request_id)
         wire = encode(payload)
-        # The checkout is decided once, at creation, and saved in the contract: an
-        # existing run keeps its own path and a busy project never decides it.
-        branch_workspace = kind == "create" and self.branch_workspace_for(payload)
         with contextlib.nullcontext(_db) if _db is not None else self.tx() as db:
             prior = db.execute("SELECT * FROM commands WHERE request_id=?", (request_id,)).fetchone()
             if prior:
@@ -1264,6 +1283,10 @@ class Store:
                     and reference["contract"].get("project", {}).get("id", "test-project") != project_id
                 ):
                     raise Conflict("reference must belong to the selected project")
+                # The checkout is decided once, at creation, and saved in the contract:
+                # an existing run keeps its own path and a busy project never decides it.
+                branch_workspace = self.branch_workspace_for(payload)
+                research_loop = self.research_loop_for(payload, branch_workspace=branch_workspace)
                 contract = {
                     "schema_version": 1,
                     "recipe_id": "agent_experiment_v1",
@@ -1272,9 +1295,12 @@ class Store:
                     "brief_driven": True,
                     "reporting_version": 1,
                     "planning_version": 1,
-                    "execution_contract": 3,
+                    "execution_contract": 4 if research_loop else 3,
                     "workspace_mode": payload.get("workspace_mode", "auto"),
                 }
+                if research_loop:
+                    # The plan schema and its stage graph belong to contract 3 only.
+                    contract.pop("planning_version")
                 if branch_workspace:
                     contract["branch_workspace"] = True
                 from .execution_settings import ExecutionSettings
@@ -1324,12 +1350,10 @@ class Store:
                             str(folder / ".experimenttracker" / "experiments" / eid),
                         ),
                     )
+                stage_ids = () if research_loop else ("plan", "prepare", "interpret", "publish")
                 db.executemany(
                     "INSERT INTO stages(experiment_id,id,updated_at,ordinal) VALUES(?,?,?,?)",
-                    [
-                        (eid, stage, now, i)
-                        for i, stage in enumerate(("plan", "prepare", "interpret", "publish"))
-                    ],
+                    [(eid, stage, now, i) for i, stage in enumerate(stage_ids)],
                 )
             else:
                 exp = self.experiment(eid)

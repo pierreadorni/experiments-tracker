@@ -170,6 +170,8 @@ class ProjectConfig(StrictModel):
     name: str = Field(min_length=1, max_length=100)
     checkout: Path | None = None
     writable: bool = True
+    # Opt this project into new contract-4 research-loop experiments.
+    research_loop: bool = False
     environment: EnvironmentConfig = EnvironmentConfig()
     # A fixed argv, executed without a shell, for the optional integration check.
     check_command: list[str] | None = None
