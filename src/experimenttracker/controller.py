@@ -17,6 +17,7 @@ from .config import StrictModel
 from .core import action_obligations, wakeup_obligations
 from .legacy_archive import execution_frozen
 from .models import Analysis, Implementation, ReportDocument, ResearchPlan
+from .research.cancel_tool import CancelJob, cancel_job
 from .research.checkpoints import SaveCheckpoint, save_checkpoint
 from .research.figure_tool import RegisterFigure, register_figure
 from .research.integration_tool import RequestIntegration, request_integration
@@ -157,9 +158,13 @@ TOOLS = [
     ),
 ]
 
-# The explicit contract-4 MCP selection: bounded reads only. Contract-3 stage
-# mutation tools and the unfiltered stage job read are never part of it.
+# Contract 4 advertises only research tools, never the stage-engine tools.
 RESEARCH_TOOLS = [
+    tool_from_model(
+        "cancel_job",
+        "Save a cancellation request for this experiment's exact tracked Slurm intent. This records the decision only; the existing backend reconciler handles scheduler cancellation later. Repeating a request_id with the same decision adopts the saved request.",
+        CancelJob,
+    ),
     tool(
         "cluster_info",
         "Return this executor's cached cluster capabilities and owner resource caps. Read-only; repeating a request_id is the same read and never refreshes discovery.",
@@ -437,6 +442,9 @@ class Controller:
             raise ValueError("stage-engine tools require execution contract 3")
         if (exp.get("contract") or {}).get("execution_contract") == 4 and name not in RESEARCH_TOOL_NAMES:
             raise ValueError("contract 4 turns permit only the listed research tools")
+        if name == "cancel_job" and (exp.get("contract") or {}).get("execution_contract") == 4:
+            require_live_research(exp, action)
+            return cancel_job(wf.store, exp, action, CancelJob.model_validate(args))
         if name == "cluster_info":
             request = ClusterInfo.model_validate(args)
             require_live_research(exp, action)
