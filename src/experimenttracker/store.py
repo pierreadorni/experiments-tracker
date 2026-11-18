@@ -120,6 +120,7 @@ def public_projection(value):
             "automatic_repair_started": {"snapshot"},
             "selective_repair_queued": {"original_work", "error"},
             "selective_cancellation_uncertain": {"error"},
+            "research_checkpoint_saved": {"markdown"},
         }.get(event["kind"], set())
         if event["kind"].startswith("selective_cancellation_"):
             omitted.add("error")
