@@ -11,8 +11,10 @@ from test_projects import register
 
 from experimenttracker.codex_client import NeedsAttention
 from experimenttracker.engine import gitworkspace
+from experimenttracker.research.checkpoints import SaveCheckpoint, save_checkpoint
 from experimenttracker.research.dispatch import PHASE, ResearchDispatch
-from experimenttracker.research.session import first_turn
+from experimenttracker.research.prompt import MAX_PROMPT_BYTES
+from experimenttracker.research.session import first_turn, follow_up_turn
 from experimenttracker.workspaces import git, initialize_project
 
 BRIEF = "Compare two toy optimizers under one fixed compute budget."
@@ -42,6 +44,9 @@ class ScriptedAgent:
 
     async def quota(self):
         return quota_snapshot()
+
+    async def close(self):
+        pass
 
     async def session(self, thread_id, workspace, *, writable=False, **kwargs):
         self.sessions.append((thread_id, Path(workspace), writable))
@@ -175,6 +180,36 @@ async def test_only_the_saved_experiment_thread_is_resumed(runtime, tmp_path, mo
     assert agent.sessions == [("thread-9", Path(branch["worktree"]), True)]
     assert agent.calls[0][1] == "thread-9"
     assert saved_action(store, action["id"])["thread_id"] == "thread-9"
+
+
+@pytest.mark.asyncio
+async def test_follow_up_dispatch_seeds_the_latest_checkpoint_without_persisting_the_prompt(
+    runtime, tmp_path, monkeypatch
+):
+    store, _, _, workflow = runtime
+    _, eid, _, action = research_setup(runtime, tmp_path, monkeypatch)
+    agent = scripted(workflow, ScriptedAgent())
+    dispatcher = ResearchDispatch(workflow, completion([]))
+    await run_pass(workflow, dispatcher)
+    running = saved_action(store, action["id"])
+    for markdown in ("# old private notebook", "# latest private notebook\n" + "界" * 1300):
+        save_checkpoint(store, running, SaveCheckpoint(request_id=uuid4(), markdown=markdown))
+    workflow._action_state(action["id"], "completed", result={"status": "continue"})
+    next_action = follow_up_turn(store, eid)
+    assert next_action is not None and "private notebook" not in next_action["input"]
+    # Simulate a lost start reply that quotes the prompt: the exact receipt must
+    # still match the runtime input, but the exception cannot publish the Markdown.
+    agent.begin_fail = RuntimeError(markdown)
+    await run_pass(workflow, dispatcher)
+
+    sent_prompt = agent.calls[-1][2]
+    assert f"ACTION {next_action['id']}" in sent_prompt
+    assert "# latest private notebook" in sent_prompt and "# old private notebook" not in sent_prompt
+    assert len(sent_prompt.encode()) < MAX_PROMPT_BYTES
+    saved = saved_action(store, next_action["id"])
+    assert saved["state"] == "uncertain"
+    assert saved["input"] == next_action["input"] and "private notebook" not in saved["error"]
+    assert workflow.dispatch_prompt_hash(saved) == hashlib.sha256(sent_prompt.encode()).hexdigest()
 
 
 @pytest.mark.asyncio

@@ -17,7 +17,8 @@ from ..agent_pool import EXPERIMENT_PRIORITY, experiment_owner, role_for_phase
 from ..codex_client import NeedsAttention
 from ..core import action_obligations
 from ..maintenance import blocked
-from .prompt import TurnEnd
+from .checkpoints import latest_checkpoint
+from .prompt import TurnEnd, with_checkpoint
 
 log = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ _TERMINAL_PHASES = frozenset({"complete", "failed", "cancelled"})
 
 
 def saved_prompt(action):
-    """The exact saved prompt of one research action; dispatch never rebuilds it."""
+    """The saved prompt template, excluding private notebook Markdown."""
     if action.get("phase") != PHASE:
         raise ValueError("not a research action")
     text = action.get("input")
@@ -117,6 +118,7 @@ class ResearchDispatch:
         """Start one saved research turn after every gate, then hand back its raw outcome."""
         expected = dict(action)
         eid = action["experiment_id"]
+        private_prompt = False
         try:
             prompt = saved_prompt(action)
             await self.workflow.refresh_quota(slot)
@@ -161,6 +163,11 @@ class ResearchDispatch:
                     expected=expected,
                 )
                 db.execute("UPDATE experiments SET thread_id=? WHERE id=?", (resumed, eid))
+                if thread_id is not None:
+                    checkpoint = latest_checkpoint(self.store, eid)
+                    rendered = with_checkpoint(prompt, checkpoint["markdown"] if checkpoint else None)
+                    private_prompt = checkpoint is not None and rendered != prompt
+                    prompt = rendered
                 self.store.emit(
                     db,
                     eid,
@@ -199,4 +206,11 @@ class ResearchDispatch:
             # An unsent prerequisite keeps the row queued for a later pass; a turn
             # whose response was lost is durably uncertain and is never retried here.
             state = "uncertain" if current["state"] in ("dispatching", "running") else "pending"
-            self.workflow._action_state(action["id"], state, error=_text(exc), expected=current)
+            # A runtime exception can include the supplied input; never persist it
+            # when it may quote private notebook text.
+            error = (
+                "Research dispatch with a private checkpoint needs inspection"
+                if private_prompt
+                else _text(exc)
+            )
+            self.workflow._action_state(action["id"], state, error=error, expected=current)

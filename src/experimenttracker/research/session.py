@@ -22,7 +22,7 @@ from .. import clock
 from ..core import action_obligations, request_obligations
 from ..maintenance import blocked
 from . import wakeups
-from .prompt import turn_prompt
+from .prompt import DEFERRED_CHECKPOINT, turn_prompt
 
 _TERMINAL_PHASES = frozenset({"complete", "failed", "cancelled"})
 _RESEARCH_PHASE = "research"
@@ -30,8 +30,6 @@ _RESEARCH_PHASE = "research"
 # retried, and a failed one needs the owner, not another turn.
 _SETTLED_STATES = frozenset({"completed"})
 _TERMINAL_ACTION_STATES = frozenset({"completed", "failed", "cancelled"})
-# The notebook Markdown stays in its event and out of the saved action input.
-_DEFERRED_CHECKPOINT = "[saved notebook text is not copied into a follow-up turn]"
 
 
 def _owner_constraints(db, contract):
@@ -179,7 +177,7 @@ def _continue_turn(store, db, experiment, predecessor):
         db,
         experiment,
         _owner_constraints(db, experiment["contract"]),
-        checkpoint=_DEFERRED_CHECKPOINT,
+        checkpoint=DEFERRED_CHECKPOINT,
         thread_id=predecessor["thread_id"],
     )
 
@@ -268,7 +266,7 @@ def follow_up_turn(store, eid, *, now=None):
             experiment,
             _owner_constraints(db, experiment["contract"]),
             events=events,
-            checkpoint=_DEFERRED_CHECKPOINT,
+            checkpoint=DEFERRED_CHECKPOINT,
             thread_id=experiment["thread_id"],
         )
         wakeups.consume(store, eid, bind, action["id"], db=db, now=now)

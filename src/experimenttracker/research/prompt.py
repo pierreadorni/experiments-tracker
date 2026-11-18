@@ -25,6 +25,8 @@ MAX_CONSTRAINTS_BYTES = 800
 MAX_EVENTS_BYTES = 1600
 MAX_OBLIGATIONS_BYTES = 800
 
+DEFERRED_CHECKPOINT = "[saved notebook text is not copied into a follow-up turn]"
+
 _TRUNCATED = " [truncated]"
 _OLDER_EVENTS = "[older events omitted]"
 _MORE_CONSTRAINTS = "[more owner constraints omitted]"
@@ -181,6 +183,20 @@ def _fit(text, limit):
     if keep <= 0:
         return ""
     return encoded[:keep].decode("utf-8", "ignore") + _TRUNCATED
+
+
+def with_checkpoint(prompt: str, markdown: str | None) -> str:
+    """Fill the deferred notebook section without changing the saved action input."""
+    before, marker, after = prompt.rpartition(
+        f"\nLATEST CHECKPOINT\n{DEFERRED_CHECKPOINT}\n\nRECENT EVENTS\n"
+    )
+    # A marker quoted in the brief is followed by the actual checkpoint section.
+    if not marker or "\nLATEST CHECKPOINT\n" in after:
+        return prompt
+    content = _printable(markdown) if markdown else "no checkpoint saved yet"
+    budget = MAX_PROMPT_BYTES - 1 - len(prompt.encode()) + len(DEFERRED_CHECKPOINT.encode())
+    rendered = _fit(content, min(budget, MAX_CHECKPOINT_BYTES))
+    return f"{before}\nLATEST CHECKPOINT\n{rendered}\n\nRECENT EVENTS\n{after}"
 
 
 def _bounded_lines(items, limit, *, none_text, omitted_marker, recent):
