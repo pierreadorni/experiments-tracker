@@ -5,8 +5,9 @@ import httpx
 import pytest
 from test_integration_commands import awaiting, saved, seed_branch
 
-from experimenttracker.config import GatewayConfig
+from experimenttracker.config import GatewayConfig, ProjectConfig
 from experimenttracker.gateway_client import GatewayClient
+from experimenttracker.workspaces import initialize_project
 
 
 async def test_lost_ack_redelivery_and_publication_retry(config, runtime, tmp_path):
@@ -66,6 +67,66 @@ async def test_lost_ack_redelivery_and_publication_retry(config, runtime, tmp_pa
             db.execute("UPDATE outbox SET next_attempt_at=0")
         await client.publish_outbox()
         assert store.one("SELECT * FROM outbox")["delivered_at"] is not None
+    finally:
+        await client.close()
+
+
+async def test_hosted_create_replay_keeps_saved_contract_after_project_flag_changes(
+    config, runtime, tmp_path
+):
+    store, _, _, _ = runtime
+    credential = tmp_path / "executor-token"
+    credential.write_text("e" * 40)
+    config.gateway = GatewayConfig(url="https://gateway.example", credential_file=credential)
+    checkout = tmp_path / "research"
+    checkout.mkdir()
+    initialize_project(checkout)
+    project = ProjectConfig(
+        id="hosted-research", name="Hosted research", checkout=checkout, research_loop=True
+    )
+    config.projects.append(project)
+    store.projects[project.id] = project
+    request_id, experiment_id = str(uuid4()), str(uuid4())
+    command = {
+        "request_id": request_id,
+        "experiment_id": experiment_id,
+        "executor_id": "acacia",
+        "kind": "create",
+        "payload": {
+            "schema_version": 1,
+            "request_id": request_id,
+            "brief": "Measure a project-specific method.",
+            "recipe_id": "agent_experiment_v1",
+            "project_id": project.id,
+        },
+    }
+
+    ack_requests = []
+
+    async def handler(request):
+        if request.url.path == "/api/executor/commands":
+            return httpx.Response(200, json={"schema_version": 1, "commands": [command]})
+        if request.url.path == "/api/executor/ack":
+            ack_requests.append(request.content)
+            return httpx.Response(200, json={"schema_version": 1, "acknowledged": [request_id]})
+        return httpx.Response(404)
+
+    client = GatewayClient(config, store, transport=httpx.MockTransport(handler))
+    try:
+        await client.commands()
+        applied = store.one("SELECT * FROM commands WHERE request_id=?", (request_id,))
+        assert applied["state"] == "applied"
+        assert store.experiment(experiment_id)["contract"]["execution_contract"] == 4
+
+        project.research_loop = False
+        store.projects[project.id] = project
+        await client.commands()
+
+        assert store.experiment(experiment_id)["contract"]["execution_contract"] == 4
+        assert store.projection(experiment_id)["stages"] == []
+        assert store.one("SELECT * FROM commands WHERE request_id=?", (request_id,)) == applied
+        assert len(store.rows("SELECT * FROM experiments")) == 1
+        assert len(ack_requests) == 2 and ack_requests[0] == ack_requests[1]
     finally:
         await client.close()
 
