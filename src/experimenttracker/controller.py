@@ -18,6 +18,7 @@ from .core import action_obligations, wakeup_obligations
 from .legacy_archive import execution_frozen
 from .models import Analysis, Implementation, ReportDocument, ResearchPlan
 from .research.checkpoints import SaveCheckpoint, save_checkpoint
+from .research.owner_tool import AskOwnerQuestion, ask_owner
 from .research.report_tool import UpdateReport
 from .research.report_tool import update_report as update_research_report
 from .research.tools import (
@@ -182,6 +183,11 @@ RESEARCH_TOOLS = [
         "update_report",
         "Queue one new working report version from saved evidence. Returns the version and state; the existing report runner builds and publishes it. Repeating a request_id with the same document adopts the saved version.",
         UpdateReport,
+    ),
+    tool_from_model(
+        "ask_owner",
+        "Ask the owner one durable question tied to this exact live research turn. Returns the saved question state; the existing answer command settles it and approval stays disabled. Repeating a request_id with the same question adopts the saved question.",
+        AskOwnerQuestion,
     ),
 ]
 RESEARCH_TOOL_NAMES = frozenset(item["name"] for item in RESEARCH_TOOLS)
@@ -449,6 +455,10 @@ class Controller:
             require_research_write(wf, exp, action)
             request = UpdateReport.model_validate(args)
             return update_research_report(wf.store, exp, action, request)
+        if name == "ask_owner":
+            require_research_write(wf, exp, action)
+            request = AskOwnerQuestion.model_validate(args)
+            return ask_owner(wf.store, action, request)
         if action["phase"].startswith("agent:"):
             if name == "check_agent_stage":
                 job = iteration.agent_job(wf, exp, action["phase"])

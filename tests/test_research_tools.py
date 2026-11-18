@@ -71,6 +71,7 @@ def test_v4_selects_only_research_tools_and_keeps_contract_three_listing(runtime
         workflow.controller.server = None
     assert "--research" not in legacy["args"]
     assert {item["name"] for item in controller.served_tools(research=True)} == {
+        "ask_owner",
         "cluster_info",
         "job_logs",
         "job_status",
