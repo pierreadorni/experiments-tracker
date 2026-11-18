@@ -555,7 +555,8 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 - [x] Known local scheduler jobs route separately from contract 3. Terminal job wakes can share one follow-up with a due owner answer.
 - Remaining: missing-ID recovery, remote observation, steering and explicit timers.
 ### [~] T4.4 Approval gate (manual review and Autopilot envelope) · F+R · S per subcard
-- Saved owner approval verification landed; the request writer, tool wiring and compute admission gate remain.
+- [x] Durable manual approval requests through `ask_owner` and exact owner decision verification.
+- Remaining: compute admission and the Autopilot envelope.
 ### [ ] T4.5 UI for contract 4 (turns, checkpoint, jobs, approvals, report) · F · M
 ### [ ] T4.6 Contract 4 scenario suite (design.md C12 list) · F · M
 ### [ ] T4.7 Live pilot — owner-authorized, small brief, measure turns, tokens and interventions · owner + S
@@ -574,6 +575,8 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 ---
 
 ## Log
+
+- **T4.4 manual approval requests:** `857d7f6`. Production +51/−12; tests +26/−3. Requests bind the saved brief, project, and proposed objective. Only the owner may decide; decline and cancel never grant approval. The decision survives consumption of the pending request. Locked Ruff and **1,345 Python tests passed** (one existing dependency warning). No submission tool or live activation.
 
 - **T4.3 job wakes and T4.4 approval evidence:** `5f29487`, `b236c54`, `deed1f0`. Production; tests: +68/−0; +84/−0, +7/−0; +29/−0, +43/−21; +32/−1. Terminal local jobs wake by saved intent without entering the stage engine; owner and job evidence can share a turn. Approval verification checks the exact request, owner decision and satisfied obligation; it grants no dispatch authority yet. Locked Ruff and **1,342 Python tests passed** (one existing dependency warning). No live activation.
 
