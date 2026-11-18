@@ -553,7 +553,7 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 - [x] T4.3b: the exact durable owner answer queues one debounced follow-up after settlement.
 - [x] Settled `continue` queues once on the exact saved thread.
 - [x] Known local scheduler jobs route separately from contract 3. Terminal job wakes can share one follow-up with a due owner answer.
-- Remaining: missing-ID recovery, remote observation, steering and explicit timers.
+- [x] Missing local scheduler IDs use the existing exact-intent resolver before observation. Remote observation, steering and explicit timers remain.
 ### [~] T4.4 Approval gate (manual review and Autopilot envelope) · F+R · S per subcard
 - [x] Durable manual approval requests through `ask_owner` and exact owner decision verification.
 - Remaining: compute admission and the Autopilot envelope.
@@ -575,6 +575,8 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 ---
 
 ## Log
+
+- **T4.3 local job reconciliation:** `bfd7bfb`. Production +10/−2; tests +40/−3. Contract-4 local observation adopts exact missing scheduler IDs through the existing resolver and honors in-flight ownership. Locked Ruff and **1,346 Python tests passed** (one existing dependency warning). No live activation.
 
 - **T4.4 manual approval requests:** `857d7f6`. Production +51/−12; tests +26/−3. Requests bind the saved brief, project, and proposed objective. Only the owner may decide; decline and cancel never grant approval. The decision survives consumption of the pending request. Locked Ruff and **1,345 Python tests passed** (one existing dependency warning). No submission tool or live activation.
 
