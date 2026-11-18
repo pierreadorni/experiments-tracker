@@ -24,8 +24,16 @@ async def research_branch(runtime, tmp_path, monkeypatch):
     contract = {**store.experiment(eid)["contract"], "execution_contract": 4}
     with store.tx() as db:
         db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(contract), eid))
-    add_action(store, eid)
-    return source, store, workflow, eid
+    return source, store, workflow, eid, live_action(store, eid)
+
+
+def live_action(store, eid, *, phase="research", state="running", thread="thread-1"):
+    """One saved turn with the exact experiment thread the tool re-verifies."""
+    identity = add_action(store, eid, phase=phase, state=state)
+    with store.tx() as db:
+        db.execute("UPDATE agent_actions SET thread_id=? WHERE id=?", (thread, identity))
+        db.execute("UPDATE experiments SET thread_id=? WHERE id=?", (thread, eid))
+    return store.one("SELECT * FROM agent_actions WHERE id=?", (identity,))
 
 
 def request(reason="keep the measured improvement"):
@@ -73,11 +81,11 @@ def test_request_integration_input_requires_a_uuid_and_a_bounded_reason():
 async def test_request_integration_queues_the_exact_named_branch_and_never_merges(
     runtime, tmp_path, monkeypatch
 ):
-    source, store, workflow, eid = await research_branch(runtime, tmp_path, monkeypatch)
+    source, store, workflow, eid, action = await research_branch(runtime, tmp_path, monkeypatch)
     head = workflow.workspaces.branch(eid)["head_commit"]
     payload = request("  keep the measured improvement  ")
 
-    result = request_integration(workflow, store.experiment(eid), payload)
+    result = request_integration(store, store.experiment(eid), action, payload)
 
     assert result == {
         "request_id": str(payload.request_id),
@@ -109,27 +117,29 @@ async def test_request_integration_queues_the_exact_named_branch_and_never_merge
 
 
 async def test_repeating_the_request_uuid_replays_the_saved_queue_entry(runtime, tmp_path, monkeypatch):
-    _, store, workflow, eid = await research_branch(runtime, tmp_path, monkeypatch)
+    _, store, _, eid, action = await research_branch(runtime, tmp_path, monkeypatch)
     exp = store.experiment(eid)
     payload = request()
 
-    first = request_integration(workflow, exp, payload)
-    second = request_integration(workflow, exp, payload)
+    first = request_integration(store, exp, action, payload)
+    second = request_integration(store, exp, action, payload)
 
     assert second == first
     assert len(queued(store)) == 1
     with pytest.raises(Conflict, match="different command"):
-        request_integration(workflow, exp, RequestIntegration(request_id=payload.request_id, reason="other"))
+        request_integration(
+            store, exp, action, RequestIntegration(request_id=payload.request_id, reason="other")
+        )
     with pytest.raises(Conflict, match="already queued"):
-        request_integration(workflow, exp, request())
+        request_integration(store, exp, action, request())
 
 
 async def test_request_integration_reuses_the_existing_named_branch_gates(runtime, tmp_path):
-    store, _, _, workflow = runtime
+    store = runtime[0]
     eid = saved_contract4(store)
-    add_action(store, eid)
+    action = live_action(store, eid)
     with pytest.raises(Conflict, match="named experiment branch"):
-        request_integration(workflow, store.experiment(eid), request())
+        request_integration(store, store.experiment(eid), action, request())
 
     exp = store.experiment(eid)
     with store.tx() as db:
@@ -138,13 +148,13 @@ async def test_request_integration_reuses_the_existing_named_branch_gates(runtim
             (encode({**exp["contract"], "dont_merge": True}), eid),
         )
     with pytest.raises(Conflict, match="Don't merge"):
-        request_integration(workflow, store.experiment(eid), request())
+        request_integration(store, store.experiment(eid), action, request())
 
     other = saved_contract4(store)
-    add_action(store, other)
+    other_action = live_action(store, other)
     seed_research_branch(store, other, tmp_path, state="merged", merged_commit="c" * 40)
     with pytest.raises(Conflict, match="active experiment branch"):
-        request_integration(workflow, store.experiment(other), request())
+        request_integration(store, store.experiment(other), other_action, request())
     assert queued(store) == []
 
 
@@ -161,26 +171,28 @@ async def test_request_integration_reuses_the_existing_named_branch_gates(runtim
 async def test_request_integration_requires_the_owned_live_research_turn(
     runtime, tmp_path, phase, state, pause_agent, contract, message
 ):
-    store, _, _, workflow = runtime
+    store = runtime[0]
     eid = saved_contract4(store, phase=phase, pause_agent=pause_agent)
     seed_research_branch(store, eid, tmp_path)
     value = dict(store.experiment(eid)["contract"])
     value["execution_contract"] = contract
     with store.tx() as db:
         db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(value), eid))
-    add_action(store, eid, phase=phase if phase in ("plan", "research") else "research", state=state)
+    action = live_action(
+        store, eid, phase=phase if phase in ("plan", "research") else "research", state=state
+    )
     with pytest.raises(ValueError, match=message):
-        request_integration(workflow, store.experiment(eid), request())
+        request_integration(store, store.experiment(eid), action, request())
     assert queued(store) == []
 
 
 async def test_request_integration_requires_an_idle_installation(runtime, tmp_path):
-    store, _, _, workflow = runtime
+    store = runtime[0]
     eid = saved_contract4(store)
     seed_research_branch(store, eid, tmp_path)
-    add_action(store, eid)
+    action = live_action(store, eid)
     block_maintenance(store)
 
     with pytest.raises(ValueError, match="idle installation"):
-        request_integration(workflow, store.experiment(eid), request())
+        request_integration(store, store.experiment(eid), action, request())
     assert queued(store) == []

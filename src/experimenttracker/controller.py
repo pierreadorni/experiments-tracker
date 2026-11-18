@@ -18,6 +18,7 @@ from .core import action_obligations, wakeup_obligations
 from .legacy_archive import execution_frozen
 from .models import Analysis, Implementation, ReportDocument, ResearchPlan
 from .research.checkpoints import SaveCheckpoint, save_checkpoint
+from .research.integration_tool import RequestIntegration, request_integration
 from .research.owner_tool import AskOwnerQuestion, ask_owner
 from .research.report_tool import UpdateReport
 from .research.report_tool import update_report as update_research_report
@@ -188,6 +189,11 @@ RESEARCH_TOOLS = [
         "ask_owner",
         "Ask the owner one durable question tied to this exact live research turn. Returns the saved question state; the existing answer command settles it and approval stays disabled. Repeating a request_id with the same question adopts the saved question.",
         AskOwnerQuestion,
+    ),
+    tool_from_model(
+        "request_integration",
+        "Queue this experiment's exact saved named branch for the existing integration worker, with a bounded reason. Returns queued and never merged; the worker still owns approval, Git and the terminal stage. Repeating a request_id with the same reason adopts the saved queue entry.",
+        RequestIntegration,
     ),
 ]
 RESEARCH_TOOL_NAMES = frozenset(item["name"] for item in RESEARCH_TOOLS)
@@ -459,6 +465,10 @@ class Controller:
             require_research_write(wf, exp, action)
             request = AskOwnerQuestion.model_validate(args)
             return ask_owner(wf.store, action, request)
+        if name == "request_integration":
+            require_research_write(wf, exp, action)
+            request = RequestIntegration.model_validate(args)
+            return request_integration(wf.store, exp, action, request)
         if action["phase"].startswith("agent:"):
             if name == "check_agent_stage":
                 job = iteration.agent_job(wf, exp, action["phase"])
