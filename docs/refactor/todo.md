@@ -543,9 +543,9 @@ See [tool rollout and effect boundaries](notes/t4.2-rollout.md).
 - [x] `cancel_job` through MCP, reusing exact selective cancellation.
 - [x] `register_result`: bounded exact-attempt validation, immutable registration, MCP and report evidence.
 - [x] `ask_owner` and `request_integration` through MCP. The manual approval gate is T4.4; answer wakeup is T4.3.
-- [x] `submit_job` for manually approved local CPU jobs. `register_result` advertises a usable JSON example without relaxing exact producer or metric validation. Remote dispatch and GPU admission are not enabled.
+- [x] `submit_job` for manually approved local CPU jobs. `register_result` advertises a usable JSON example without relaxing exact producer or metric validation. GPU admission is not enabled.
 - [x] A submission can declare a bounded `result_file`. The exact saved intent binds registration to that file; older undeclared submissions and replays retain their existing behavior.
-- [x] Inert remote preparation, exact-route intent persistence and bounded pinned-source staging are implemented and tested. Remote send remains disabled.
+- [x] Manually approved C4 CPU jobs can use the saved Jean Zay route. Scripted controller acceptance covers pinned staging, lost submission reply, exact adoption, delayed accounting, interrupted delivery and one result-ready wake. No live remote acceptance.
 `cluster_info`, `submit_job`, `job_status`/`job_logs`, `cancel_job` (reuse),
 `register_result`, `register_figure`, `update_report` (reuse), `save_checkpoint`,
 `ask_owner`, `request_integration`. Each: a Pydantic input schema, immediate
@@ -561,7 +561,7 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 - [x] Explicit `timer:<seconds>` waits settle atomically and survive restart. Terminal job evidence can supersede a timer before its deadline.
 - [x] Follow-up dispatch loads the latest private checkpoint without copying its text into the saved action. Lost starts still reconcile by the exact dispatched prompt hash.
 - [x] Rotate at 80% of the reported context window, using only the last request of the exact settled turn and only when a private checkpoint can seed the new thread. The new thread and exact rendered prompt hash are saved before `turn/start`; prior identities stay unchanged.
-- [x] Remote observation saves exact accounting, retries output delivery at the saved cadence, and queues one wake only after delivery. Remote submission and full lost-submit acceptance remain under T4.2. See the [remote job source gates](notes/t4.3-remote-rollout.md).
+- [x] Remote observation saves exact accounting, retries output delivery at the saved cadence, and queues one wake only after delivery. T4.2 covers the full lost-submit lifecycle through the controller. See the [remote job source gates](notes/t4.3-remote-rollout.md).
 ### [~] T4.4 Approval gate (manual review and Autopilot envelope) · F+R · S per subcard
 - [x] Durable manual approval requests through `ask_owner` and exact owner decision verification.
 - [x] Inert CPU-only admission validation checks the latest exact owner approval, saved action, pause/maintenance and resource limits.
@@ -599,6 +599,7 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 
 ## Log
 
+- **T4.2 remote submission:** `c391fa0`, `55fc319`, `f7fac62`, `ee77448`, `1d4e5f9`, `aa0bd36` wire bounded preparation, saved staging evidence, one fresh send and exact replay/recovery through the controller. Combined source +209/−24; tests +495/−29. Ruff, 36 focused tests and all **1,428 Python tests** passed in isolation. No live remote dispatch or activation.
 - **T4.2 remote staging:** `be5beb8`, `b00bd9a`, `2792e81`, `5aed2cc`, `fe6f806` prepare, save and stage a CPU intent against its exact Jean Zay route. The upload is exported from the saved Git pin and retries use fresh pending destinations. Ruff, 48 focused tests and all **1,418 Python tests** passed in isolated shards. No send or live activation.
 - **T4.8 synthetic dispatcher gate:** `1762d7a` exercises exact owner approval, one fake CPU job, debounced research follow-up, result registration and a ready report through completion (source 0; tests +213/−0). Ruff passed. The isolated suite passed 1,414 tests with one maintenance fixture error; that test and both new targets then passed after restoring the expected `recipes/` directory in the validation checkout. The C3 CLI demo and default are unchanged.
 - **T4.3 remote delivery and observation:** `7d06123` delivers only the declared file using the job’s saved route, without replacing conflicting bytes (source +137/−2; tests +96/−0). `4068561` reuses exact observation and terminal wake settlement, keeping successful jobs unresolved until transfer completes (source +177/−42; tests +275/−0). Ruff, 68 focused tests, and all **1,413 Python tests** passed in isolated shards. Remote submission remains disabled; no live activation.
