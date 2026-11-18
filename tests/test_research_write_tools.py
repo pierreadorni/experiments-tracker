@@ -7,9 +7,10 @@ import pytest
 from test_research_create import create, git_project
 from test_research_tools import saved_contract4
 
-from experimenttracker import artifacts, controller
+from experimenttracker import controller
 from experimenttracker.research.checkpoints import EVENT_KIND, SaveCheckpoint
 from experimenttracker.research.report_tool import UpdateReport
+from experimenttracker.research.result_tool import register_result
 
 BRIEF = "Compare two toy optimizers under one fixed compute budget."
 
@@ -178,6 +179,69 @@ async def test_save_checkpoint_keeps_the_common_live_v4_gate(
     assert store.rows("SELECT * FROM events WHERE experiment_id=? AND kind=?", (eid, EVENT_KIND)) == []
 
 
+async def test_update_report_rejects_tampered_result_receipt_scope(runtime, config, tmp_path):
+    store, _, _, workflow = runtime
+    git_project(config, store, tmp_path, research_loop=True)
+    _, _, created = create(store)
+    eid = created["experiment_id"]
+    add_research_turn(store, eid)
+    intent = str(uuid4())
+    root = workflow.projects.base_root(eid) / "attempts" / intent
+    root.mkdir(parents=True)
+    with store.tx() as db:
+        db.execute(
+            "INSERT INTO stages(experiment_id,id,state,attempt,updated_at) VALUES(?,'evaluate','complete',1,0)",
+            (eid,),
+        )
+        db.execute(
+            "INSERT INTO jobs(intent_id,experiment_id,stage_id,attempt,state,job_id,script_hash,resources,"
+            "snapshot_hash,created_at,execution_root,execution_manifest,ended_at) "
+            "VALUES(?,?,'evaluate',1,'complete','synthetic-job','script','{}','snapshot',0,?,?,1)",
+            (intent, eid, str(root), json.dumps({"executor": "slurm"})),
+        )
+    (root / "results.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "protocol": "synthetic test",
+                "metrics": [{"name": "mse", "variant": "linear", "value": 1.0, "unit": ""}],
+            }
+        )
+    )
+    action = store.one("SELECT * FROM agent_actions WHERE experiment_id=?", (eid,))
+    register_result(
+        workflow,
+        store.experiment(eid),
+        action,
+        {
+            "request_id": str(uuid4()),
+            "intent_id": intent,
+            "path": "results.json",
+        },
+    )
+    event = store.one(
+        "SELECT id,payload FROM events WHERE experiment_id=? AND kind='research_result_registered'", (eid,)
+    )
+    payload = json.loads(event["payload"])
+    payload["experiment_id"] = str(uuid4())
+    with store.tx() as db:
+        db.execute("UPDATE events SET payload=? WHERE id=?", (json.dumps(payload), event["id"]))
+    await workflow.controller.call(
+        eid,
+        "update_report",
+        {
+            "request_id": str(uuid4()),
+            "document": document(),
+        },
+    )
+
+    await workflow.advance_reports()
+
+    assert store.one("SELECT state FROM report_versions WHERE experiment_id=?", (eid,))["state"] == "failed"
+    assert store.rows("SELECT * FROM stages WHERE experiment_id=?", (eid,))
+    assert store.rows("SELECT * FROM jobs WHERE experiment_id=?", (eid,))
+
+
 async def test_update_report_reaches_ready_through_the_runner_without_stage_rows(runtime, config, tmp_path):
     store, scheduler, agent, workflow = runtime
     git_project(config, store, tmp_path, research_loop=True)
@@ -186,12 +250,35 @@ async def test_update_report_reaches_ready_through_the_runner_without_stage_rows
     assert store.rows("SELECT * FROM stages WHERE experiment_id=?", (eid,)) == []
     add_research_turn(store, eid)
 
-    root = workflow.root(eid)
-    root.mkdir(parents=True, exist_ok=True)
+    intent = str(uuid4())
+    root = workflow.projects.base_root(eid) / "attempts" / intent
+    root.mkdir(parents=True)
+    with store.tx() as db:
+        db.execute(
+            "INSERT INTO stages(experiment_id,id,state,attempt,updated_at) VALUES(?,'evaluate','complete',1,0)",
+            (eid,),
+        )
+        db.execute(
+            "INSERT INTO jobs(intent_id,experiment_id,stage_id,attempt,state,job_id,script_hash,resources,"
+            "snapshot_hash,created_at,execution_root,execution_manifest,ended_at) "
+            "VALUES(?,?,'evaluate',1,'complete','synthetic-job','script','{}','snapshot',0,?,?,1)",
+            (intent, eid, str(root), json.dumps({"executor": "slurm"})),
+        )
     (root / "results.json").write_text(
-        json.dumps({"metrics": [{"name": "mse", "variant": "linear", "value": 1.0, "unit": ""}]})
+        json.dumps(
+            {
+                "schema_version": 1,
+                "protocol": "synthetic test",
+                "metrics": [{"name": "mse", "variant": "linear", "value": 1.0, "unit": ""}],
+            }
+        )
     )
-    artifacts.register(store, eid, "publish", root, ["results.json"])
+    result_receipt = register_result(
+        workflow,
+        store.experiment(eid),
+        store.one("SELECT * FROM agent_actions WHERE experiment_id=?", (eid,)),
+        {"request_id": str(uuid4()), "intent_id": intent, "path": "results.json"},
+    )
 
     queued = await workflow.controller.call(
         eid,
@@ -202,10 +289,16 @@ async def test_update_report_reaches_ready_through_the_runner_without_stage_rows
 
     await workflow.advance_reports()
 
-    saved = store.one("SELECT version,state FROM report_versions WHERE experiment_id=?", (eid,))
-    assert saved == {"version": 1, "state": "ready"}
+    saved = store.one("SELECT version,state,error FROM report_versions WHERE experiment_id=?", (eid,))
+    assert saved == {"version": 1, "state": "ready", "error": None}, store.one(
+        "SELECT error FROM report_versions WHERE experiment_id=?", (eid,)
+    )
     names = {row["name"] for row in store.rows("SELECT name FROM artifacts WHERE experiment_id=?", (eid,))}
-    assert {"report.html", "report-v1.json", "results.json"} <= names
-    assert store.rows("SELECT * FROM stages WHERE experiment_id=?", (eid,)) == []
-    assert store.rows("SELECT * FROM jobs WHERE experiment_id=?", (eid,)) == []
+    assert {"report.html", "report-v1.json", result_receipt["name"]} <= names
+    assert result_receipt["experiment_id"] == eid
+    assert store.rows(
+        "SELECT * FROM events WHERE experiment_id=? AND kind='research_result_registered'", (eid,)
+    )
+    assert store.rows("SELECT * FROM stages WHERE experiment_id=?", (eid,))
+    assert store.rows("SELECT * FROM jobs WHERE experiment_id=?", (eid,))
     assert scheduler.submissions == 0 and agent.calls == 0

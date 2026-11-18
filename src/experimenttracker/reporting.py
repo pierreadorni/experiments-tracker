@@ -28,9 +28,11 @@ def artifact_id(exp, name):
 
 
 class Evidence:
-    def __init__(self, exp, root, records, *, metric_source_ids=None):
+    def __init__(self, exp, root, records, *, metric_source_ids=None, result_receipts=None):
         self.exp, self.root = exp, root
-        iteration = exp["contract"].get("execution_contract") == 3
+        contract = exp["contract"].get("execution_contract")
+        iteration = contract == 3
+        research = contract == 4
         if iteration and root.parent.name == "records":
             self.root = root.parent.parent
         self.records = {r["id"]: r for r in records}
@@ -44,7 +46,26 @@ class Evidence:
             ),
             None,
         )
-        if iteration and metric_source_ids is not None:
+        if research and metric_source_ids is not None:
+            metrics = [m for identity in metric_source_ids for m in self.json(identity)["metrics"]]
+        elif research:
+            metrics = []
+            for receipt in result_receipts or []:
+                identity = receipt.get("artifact_id")
+                record = self.records.get(identity)
+                if (
+                    not record
+                    or record.get("name") != receipt.get("name")
+                    or record.get("sha256") != receipt.get("sha256")
+                    or record.get("size") != receipt.get("size")
+                    or record.get("evidence_revision", exp.get("evidence_revision"))
+                    != exp.get("evidence_revision")
+                ):
+                    raise ValueError("registered research result differs from current evidence")
+                result_value = self.json(identity)
+                metrics.extend(result_value["metrics"])
+                self.read(identity)
+        elif iteration and metric_source_ids is not None:
             metrics = [m for identity in metric_source_ids for m in self.json(identity)["metrics"]]
         elif iteration and not result:
             names = {s["result_file"] for s in exp["snapshot"]["plan"]["stages"] if s.get("result_file")}
@@ -106,6 +127,8 @@ class Evidence:
 
     def metric(self, reference):
         row = self.metrics.get((reference.name, reference.variant))
+        if row and isinstance(row["value"], str):
+            return row
         if not row or not artifacts.finite_number(row["value"]):
             raise ValueError("report refers to missing or non-finite metric")
         return row
@@ -300,10 +323,10 @@ figure{margin:30px 0}img{display:block;width:100%;height:auto;max-width:720px;ma
 """
 
 
-def build_report(exp, root, records, document, version, *, preview=False):
+def build_report(exp, root, records, document, version, *, preview=False, result_receipts=None):
     """Reproducible package. Outputs use fresh versioned names; existing bytes never change."""
     doc = ReportDocument.model_validate(document)
-    evidence = Evidence(exp, root, records)
+    evidence = Evidence(exp, root, records, result_receipts=result_receipts)
     validate_document(evidence, doc)
     prefix = f"report-v{version}"
     report_name = "report.html" if version == 1 else prefix + ".html"
@@ -406,7 +429,7 @@ def build_report(exp, root, records, document, version, *, preview=False):
             "source_artifacts": list(evidence.used.values()),
             **(
                 {"metric_source_ids": evidence.metric_source_ids}
-                if exp["contract"].get("execution_contract") == 3
+                if exp["contract"].get("execution_contract") in (3, 4)
                 else {}
             ),
             "outputs": {name: artifacts.sha256(pending / name) for name in generated},
@@ -434,9 +457,10 @@ def verify_report(exp, root, records, version, document):
     name = f"report-v{version}.json"
     if name not in by_name:
         raise ValueError("report provenance is missing")
-    iteration = exp["contract"].get("execution_contract") == 3
-    if iteration:
-        base = root.parent.parent if root.parent.name == "records" else root
+    contract = exp["contract"].get("execution_contract")
+    iteration = contract == 3
+    if contract in (3, 4):
+        base = root.parent.parent if iteration and root.parent.name == "records" else root
         metadata = artifacts.read_json(Path(by_name[name]["path"]), base)
         evidence = Evidence(exp, root, records, metric_source_ids=metadata.get("metric_source_ids", []))
         evidence.read(by_name[name]["id"])

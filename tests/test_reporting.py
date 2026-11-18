@@ -115,6 +115,39 @@ def evidence_fixture(tmp_path):
     return exp, records, reporting.Evidence(exp, tmp_path, records)
 
 
+def test_contract_four_metrics_load_only_registered_result_receipts(tmp_path):
+    exp = {
+        "id": str(uuid4()),
+        "evidence_revision": 1,
+        "contract": {"execution_contract": 4},
+    }
+    records = []
+    receipts = []
+    for variant, value in (("first", 1), ("second", 2)):
+        name = f"result-{variant}.json"
+        path = tmp_path / name
+        path.write_text(
+            json.dumps({"metrics": [{"name": "score", "variant": variant, "value": value, "unit": "u"}]})
+        )
+        record = {
+            "id": str(uuid4()),
+            "name": name,
+            "path": str(path),
+            "size": path.stat().st_size,
+            "sha256": artifacts.sha256(path),
+            "evidence_revision": 1,
+        }
+        records.append(record)
+        receipts.append(
+            {"artifact_id": record["id"], "name": name, "sha256": record["sha256"], "size": record["size"]}
+        )
+    evidence = reporting.Evidence(exp, tmp_path, records, result_receipts=receipts)
+    assert evidence.metric(type("Ref", (), {"name": "score", "variant": "second"})())["value"] == 2
+    receipts[1]["sha256"] = "conflict"
+    with pytest.raises(ValueError, match="differs from current evidence"):
+        reporting.Evidence(exp, tmp_path, records, result_receipts=receipts)
+
+
 def test_curve_reduction_and_ordering_are_derived_from_saved_records(tmp_path):
     exp, records, evidence = evidence_fixture(tmp_path)
     doc = ReportDocument.model_validate(
