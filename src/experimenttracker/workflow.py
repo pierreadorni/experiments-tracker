@@ -55,7 +55,9 @@ from .projects import Projects, ProjectUnavailable
 from .quota import QuotaGate
 from .remote import AdmissionPending, RemoteSlurmScheduler, TransferPending
 from .research import readback as research_readback
+from .research.dispatch import PHASE as RESEARCH_PHASE
 from .research.dispatch import ResearchDispatch
+from .research.session import first_turn
 from .research.settlement import complete as settle_research_turn
 from .resolver import TurnResolver
 from .slurm import ResourceUnavailable, SubmissionUncertain, command, wrapper
@@ -768,9 +770,48 @@ class Workflow:
         queue_late_reports(self)
         await self.conversation.advance()
         await self.integration_resolver.advance()
+        await self.prepare_research_turns()
         await self.research_dispatch.advance()
         await self.advance_title()
         await self.controller.advance()
+
+    async def prepare_research_turns(self):
+        """Queue and verify one first C7 turn before its dispatcher can open a session.
+
+        A supported saved contract 4 experiment gets one first research action and
+        never a second after a settled, failed or uncertain turn. Its exact named
+        worktree is created or verified off the loop here, before ``ResearchDispatch``
+        can open a writable session, so a shared checkout is never a fallback. A
+        paused, cancelled, deleted or maintained experiment prepares nothing, and one
+        experiment's saved filesystem failure holds only that experiment.
+        """
+        if blocked(self.store):
+            return
+        for row in self.store.rows(
+            "SELECT id FROM experiments WHERE deleted_at IS NULL "
+            "AND phase NOT IN ('complete','failed','cancelled') "
+            "AND json_extract(contract,'$.execution_contract') IS 4 "
+            "AND json_extract(contract,'$.branch_workspace') IS 1 "
+            "ORDER BY created_at,id"
+        ):
+            eid = row["id"]
+            try:
+                if self.store.experiment(eid)["pause_agent"]:
+                    continue
+                action = self.store.one(
+                    "SELECT * FROM agent_actions WHERE experiment_id=? AND phase=? "
+                    "ORDER BY created_at,rowid LIMIT 1",
+                    (eid, RESEARCH_PHASE),
+                )
+                if action is None:
+                    action = first_turn(self.store, eid)
+                if action is None or action["state"] != "pending":
+                    continue
+                await asyncio.to_thread(self.workspaces.ensure_branch, eid)
+            except ProjectUnavailable as exc:
+                self.store.update(eid, hold_reason="workspace_unavailable", error=str(exc))
+            except Exception as exc:
+                log.warning("research preparation unavailable for %s: %s", eid, exc)
 
     async def step_supervisor(self):
         """Advance the project supervisor; the next control pass selects its proposal."""

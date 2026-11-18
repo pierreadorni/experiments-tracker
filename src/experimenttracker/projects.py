@@ -34,6 +34,7 @@ class Projects:
                 id=row["id"],
                 name=row["name"],
                 checkout=row["folder"],
+                research_loop=configured.research_loop if configured else False,
                 environment=configured.environment if configured else EnvironmentConfig(),
                 check_command=configured.check_command if configured else None,
                 integration=configured.integration if configured else IntegrationConfig(),
