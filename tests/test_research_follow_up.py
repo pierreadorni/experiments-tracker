@@ -177,6 +177,49 @@ def test_the_due_answer_queues_one_bounded_follow_up_and_binds_its_wake(runtime,
     assert [row["id"] for row in research_actions(store, eid)] == [asked["id"], action["id"]]
 
 
+def test_settled_continue_queues_one_immediate_turn_and_reuses_thread(runtime):
+    store, _, _, _ = runtime
+    eid = make_experiment(store)
+    prior = first_turn(store, eid)
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET thread_id='saved-thread' WHERE id=?", (eid,))
+        db.execute(
+            "UPDATE agent_actions SET state='completed',thread_id='saved-thread',turn_id='turn-1',result=? WHERE id=?",
+            (
+                encode({"status": "continue", "summary": "progress", "next": "run another comparison"}),
+                prior["id"],
+            ),
+        )
+
+    assert not saved_wakeups(store, eid)
+    action = follow_up_turn(store, eid)
+
+    assert action["state"] == "pending"
+    assert action["thread_id"] == "saved-thread"
+    assert action["turn_id"] is None
+    assert follow_up_turn(store, eid) is None
+    assert len(research_actions(store, eid)) == 2
+
+
+def test_settled_continue_does_not_consume_owner_answer(runtime, monkeypatch):
+    store, _, _, _ = runtime
+    eid = make_experiment(store)
+    prior = first_turn(store, eid)
+    save_question(store, eid, prior)
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET thread_id='saved-thread' WHERE id=?", (eid,))
+        db.execute(
+            "UPDATE agent_actions SET state='completed',thread_id='saved-thread',result=? WHERE id=?",
+            (encode({"status": "continue", "summary": "progress", "next": "continue"}), prior["id"]),
+        )
+    fake_clock(monkeypatch)
+    answer(store, eid)
+    follow_up_turn(store, eid)
+
+    assert store.experiment(eid)["pending_request"]["answer"] == ANSWER
+    assert [row["state"] for row in saved_wakeups(store, eid).values()] == ["pending"]
+
+
 def test_a_reopened_store_keeps_the_window_and_queues_once(runtime, monkeypatch):
     store, _, _, _ = runtime
     eid = make_experiment(store)

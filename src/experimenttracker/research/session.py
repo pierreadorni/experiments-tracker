@@ -50,7 +50,7 @@ def _owner_constraints(db, contract):
 def _saved_experiment(db, eid):
     """The saved live, unpaused contract 4 experiment, or ``None`` for anything else."""
     row = db.execute(
-        "SELECT id,brief,contract,phase,deleted_at,pause_agent,pending_request,evidence_revision "
+        "SELECT id,brief,contract,phase,deleted_at,pause_agent,pending_request,evidence_revision,thread_id "
         "FROM experiments WHERE id=?",
         (eid,),
     ).fetchone()
@@ -72,7 +72,7 @@ def _saved_experiment(db, eid):
 def _settled_predecessor(db, eid):
     """The latest saved research action when all earlier turns are terminal."""
     rows = db.execute(
-        "SELECT id,state FROM agent_actions WHERE experiment_id=? AND phase=? "
+        "SELECT id,state,result,thread_id,turn_id FROM agent_actions WHERE experiment_id=? AND phase=? "
         "ORDER BY created_at DESC,rowid DESC",
         (eid, _RESEARCH_PHASE),
     ).fetchall()
@@ -136,7 +136,7 @@ def first_turn(store, eid):
         return _queue(store, db, experiment, _owner_constraints(db, contract))
 
 
-def _queue(store, db, experiment, owner_constraints, events=(), checkpoint=None):
+def _queue(store, db, experiment, owner_constraints, events=(), checkpoint=None, thread_id=None):
     """Save one pending research action for this experiment and return it."""
     eid = experiment["id"]
     action_id = str(uuid4())
@@ -150,13 +150,38 @@ def _queue(store, db, experiment, owner_constraints, events=(), checkpoint=None)
     now = clock.now()
     db.execute(
         "INSERT INTO agent_actions"
-        "(id,experiment_id,phase,evidence_revision,state,input,created_at,updated_at) "
-        "VALUES(?,?,?,?,'pending',?,?,?)",
-        (action_id, eid, _RESEARCH_PHASE, experiment["evidence_revision"], prompt, now, now),
+        "(id,experiment_id,phase,evidence_revision,state,thread_id,input,created_at,updated_at) "
+        "VALUES(?,?,?,?,'pending',?,?,?,?)",
+        (action_id, eid, _RESEARCH_PHASE, experiment["evidence_revision"], thread_id, prompt, now, now),
     )
     action_obligations.sync_action(db, action_id)
     store.emit(db, eid, "agent_action_queued", {"phase": _RESEARCH_PHASE, "action_id": action_id})
     return dict(db.execute("SELECT * FROM agent_actions WHERE id=?", (action_id,)).fetchone())
+
+
+def _continue_turn(store, db, experiment, predecessor):
+    """Queue from a settled result, never from the presence of unrelated wakeups."""
+    if (
+        experiment["pending_request"]
+        or not predecessor["turn_id"]
+        or not predecessor["thread_id"]
+        or predecessor["thread_id"] != experiment["thread_id"]
+    ):
+        return None
+    try:
+        result = json.loads(predecessor["result"] or "{}")
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(result, dict) or result.get("status") != "continue":
+        return None
+    return _queue(
+        store,
+        db,
+        experiment,
+        _owner_constraints(db, experiment["contract"]),
+        checkpoint=_DEFERRED_CHECKPOINT,
+        thread_id=predecessor["thread_id"],
+    )
 
 
 def follow_up_turn(store, eid, *, now=None):
@@ -171,12 +196,11 @@ def follow_up_turn(store, eid, *, now=None):
     saved pending action, or ``None`` when this pass has no owner answer to queue.
     """
     now = clock.now() if now is None else now
-    due = [
-        item for item in wakeups.due(store, eid, now=now) if item["event"] == wakeups.OWNER_REQUEST_ANSWERED
-    ]
-    if not due or blocked(store):
-        return None
+    due = wakeups.due(store, eid, now=now)
+    due = [item for item in due if item["event"] == wakeups.OWNER_REQUEST_ANSWERED]
     with store.tx() as db:
+        if blocked(store):
+            return None
         # The C3 blocked-phase resume flow is independent of the maintenance hold;
         # never use a C4 answer to bypass its saved blocked action.
         if db.execute(
@@ -191,7 +215,7 @@ def follow_up_turn(store, eid, *, now=None):
             return None
         answered = _saved_answer(experiment, predecessor)
         if answered is None:
-            return None
+            return _continue_turn(store, db, experiment, predecessor)
         pending, answer = answered
         bind = [item["wakeup_id"] for item in due if item["source_id"] == pending["id"]]
         if not bind:

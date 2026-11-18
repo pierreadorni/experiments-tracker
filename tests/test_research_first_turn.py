@@ -103,15 +103,23 @@ async def test_flagged_create_runs_one_first_turn_on_the_named_worktree(
     assert git(worktree, "show", "HEAD:notes.md").decode() == "first measurement\n"
     assert "Research turn " + action["id"] in git(worktree, "log", "-1", "--format=%s").decode()
 
-    # A completed first turn is never replaced by another turn or worktree.
+    # Continue appends one new action on the same worktree, never replaying the first.
     await workflow.prepare_research_turns()
-    assert len(research_actions(store, eid)) == 1
+    await workflow.prepare_research_turns()
+    first, continuation = research_actions(store, eid)
+    assert first == action
+    assert (continuation["state"], continuation["thread_id"], continuation["turn_id"]) == (
+        "pending",
+        "thread-1",
+        None,
+    )
+    assert workflow.workspaces.branch(eid)["worktree"] == str(worktree)
 
     store.close()
     reopened = Store(config.state_dir / "workflow.sqlite")
     try:
         assert first_turn(reopened, eid) is None
-        assert len(research_actions(reopened, eid)) == 1
+        assert [row["id"] for row in research_actions(reopened, eid)] == [action["id"], continuation["id"]]
     finally:
         reopened.close()
 
