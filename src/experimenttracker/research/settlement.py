@@ -119,6 +119,16 @@ def _evidence(db, experiment):
     )
 
 
+def _validate_saved_end(db, turn, experiment):
+    evidence = _evidence(db, experiment)
+    validate_turn_end(turn, evidence)
+    if turn.status == "done" and (
+        evidence.active_jobs
+        or (experiment["pending_request"] and not experiment["pending_request"].get("answer"))
+    ):
+        raise ValueError("done research turn cannot complete with unresolved jobs or owner decisions")
+
+
 def _turn_end(raw_result):
     if isinstance(raw_result, dict):
         return TurnEnd.model_validate(raw_result)
@@ -212,12 +222,18 @@ def _settle(store, expected, *, turn_id, state, result, error, turn=None):
                 if experiment["thread_id"] != expected["thread_id"]:
                     raise NeedsAttention("saved experiment thread changed during the turn commit")
                 try:
-                    validate_turn_end(turn, _evidence(db, experiment))
+                    _validate_saved_end(db, turn, experiment)
                 except ValueError as exc:
                     raise NeedsAttention(
                         f"saved research evidence changed during the turn commit: {exc}"
                     ) from None
         action_obligations.transition(db, expected["id"], changes, before=current, expected=expected)
+        if turn is not None and turn.status == "done" and not _terminal(experiment):
+            db.execute(
+                "UPDATE experiments SET phase='complete' WHERE id=? AND phase NOT IN ('cancelled','complete','failed') AND deleted_at IS NULL",
+                (expected["experiment_id"],),
+            )
+            store.emit(db, expected["experiment_id"], "state_changed", {"phase": "complete"})
         store.emit(
             db,
             expected["experiment_id"],
@@ -261,10 +277,9 @@ async def complete(workflow, expected_action, raw_result, *, recovered_turn_id=N
             result=_raw_result(raw_result),
             error=None,
         )
-    with store.tx() as db:
-        evidence = _evidence(db, experiment)
     try:
-        validate_turn_end(turn, evidence)
+        with store.tx() as db:
+            _validate_saved_end(db, turn, _experiment_in_tx(db, experiment["id"]))
     except ValueError as exc:
         return _settle(
             store,

@@ -149,6 +149,20 @@ async def test_valid_turn_ends_need_real_saved_evidence(runtime, tmp_path, monke
     prepare(store, eid)
 
     assert (await complete(workflow, action, turn(status)))["state"] == "completed"
+    assert (store.experiment(eid)["phase"] == "complete") == (status == "done")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unresolved", [add_job, ask_owner])
+async def test_done_refuses_unresolved_work_before_committing(runtime, tmp_path, monkeypatch, unresolved):
+    store, eid, workflow, action = setup(runtime, tmp_path, monkeypatch)
+    store.report_state(eid, store.working_report(eid, "# Result", str(uuid4())), "ready")
+    unresolved(store, eid)
+    rejected = await complete(workflow, action, turn("done"))
+    assert rejected["state"] == "failed"
+    assert "unresolved jobs or owner decisions" in rejected["error"]
+    assert store.experiment(eid)["phase"] != "complete"
+    assert events(store, eid) == []
 
 
 @pytest.mark.asyncio
