@@ -542,7 +542,8 @@ See [tool rollout and effect boundaries](notes/t4.2-rollout.md).
 - [x] `save_checkpoint`, `update_report` and `register_figure` through MCP.
 - [x] `cancel_job` through MCP, reusing exact selective cancellation.
 - [x] `register_result`: bounded exact-attempt validation, immutable registration, MCP and report evidence.
-- [x] `ask_owner` question-only and `request_integration` through MCP. Approval is T4.4; answer wakeup is T4.3.
+- [x] `ask_owner` and `request_integration` through MCP. The manual approval gate is T4.4; answer wakeup is T4.3.
+- [x] `submit_job` for manually approved local CPU jobs. `register_result` advertises a usable JSON example without relaxing exact producer or metric validation. Remote dispatch and GPU admission are not enabled.
 `cluster_info`, `submit_job`, `job_status`/`job_logs`, `cancel_job` (reuse),
 `register_result`, `register_figure`, `update_report` (reuse), `save_checkpoint`,
 `ask_owner`, `request_integration`. Each: a Pydantic input schema, immediate
@@ -557,7 +558,8 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 - [x] Contract-4 steering is saved for the next eligible turn on the exact saved thread; it never restarts the stage engine.
 - [x] Explicit `timer:<seconds>` waits settle atomically and survive restart. Terminal job evidence can supersede a timer before its deadline.
 - [x] Follow-up dispatch loads the latest private checkpoint without copying its text into the saved action. Lost starts still reconcile by the exact dispatched prompt hash.
-- Remaining: remote observation and transfer, thread rotation at a context threshold.
+- [x] Rotate at 80% of the reported context window, using only the last request of the exact settled turn and only when a private checkpoint can seed the new thread. The new thread and exact rendered prompt hash are saved before `turn/start`; prior identities stay unchanged.
+- Remaining: remote observation, output transfer, and wake on transfer readiness.
 ### [~] T4.4 Approval gate (manual review and Autopilot envelope) · F+R · S per subcard
 - [x] Durable manual approval requests through `ask_owner` and exact owner decision verification.
 - [x] Inert CPU-only admission validation checks the latest exact owner approval, saved action, pause/maintenance and resource limits.
@@ -566,14 +568,19 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 - [x] Manual local submission is exposed through MCP and covered by the approval-to-report scenario.
 - Remaining: the Autopilot envelope.
 ### [~] T4.5 UI for contract 4 (turns, checkpoint, jobs, approvals, report) · F · M
-- [x] Local detail shows research turns, checkpoint metadata and job status without the contract-3 stage timeline. A scripted FastAPI/SQLite loopback browser run accepts the exact objective and verifies identical replay. Hosted parity remains.
+- [x] Local detail shows research turns, checkpoint metadata and job status without the contract-3 stage timeline. A scripted FastAPI/SQLite loopback browser run accepts the exact objective and verifies identical replay.
+- [x] Report status and convenience exports use working-report semantics for C4. Local Worker/D1 tests cover durable answers, identical replay after clearance, and C4 pause/resume and next-turn steering. No private hosted deployment checked.
 ### [~] T4.6 Contract 4 scenario suite (design.md C12 list) · F · M per subcard
 - [x] Approval → one submit with lost reply → exact adoption → debounced terminal wake → registered result → ready report → completed experiment. Model turns are scripted; no live scheduler.
 - [x] Owner pause/reopen/resume, healthy job observation without an inference turn, and concurrent branch edits that do not change the base checkout.
-- [x] A valid `done` opt-in queues integration through C6 in the completion transaction; opt-out, Don't merge and an already-queued request do not add a merge. This does not drive conflict resolution in the C4 scenario.
+- [x] Quota denial → owner restart → admission dispatches the same pending action once. One branch waiting on an owner question does not block a second branch; the debounced answer only reaches the question's thread.
+- [x] A failed figure call preserves metrics and still allows a metrics-only report and completion. The watchdog reports a C4 experiment with no open obligation after the grace interval without dispatching or changing work.
+- [x] A valid `done` opt-in queues integration through C6 in the completion transaction; opt-out, Don't merge and an already-queued request do not add a merge.
+- Remaining: drive the C6 conflict resolver from two actual C4 integration requests. Existing fixtures prove C4 enqueue and C6 conflict resolution separately, not the pair end to end.
 ### [x] T4.7 Live pilot — owner-authorized, small brief, measure turns, tokens and interventions · owner + S
 - The isolated, owner-authorized live pilot completed one CPU/no-GPU Slurm job, registered its results, published a ready report, and reached `complete`. It required a metadata-only normalization of a copy of the original metric file; it was not a zero-intervention run. See the [acceptance summary](notes/t4.7-pilot.md). This does not authorize a rollout or contract-3 retirement.
 ### [ ] T4.8 Make contract 4 the default; archive contract 3 after it drains; delete the old engine · S · L
+- [Source gates, drain criteria and retirement sequence](notes/t4.8-rollout.md). No default or archive boundary has changed.
 
 ---
 
@@ -589,6 +596,7 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 
 ## Log
 
+- **T4.2/T4.3/T4.5/T4.6 research loop follow-through:** `fd5f7ed` documents the result JSON (source +1/−1; tests +26/−0); `d8109fc` rotates with exact context evidence (+49/−11; +63/−0); `a39e704` handles C4 report status and export (+37/−15; +34/−0); `8741bba` relays C4 decisions and controls (+66/−12; +130/−0); `1f91475` detects orphaned C4 runs (+22/−3; +30/−0); `12808ac` and `6346a63` add quota, plot and owner-wait scenarios (source 0; tests +255/−0). Isolated Node 24 checks: Ruff, the full Python suite in eight file shards (**1,396 passed**), web formatting/build (**37 tests**), and gateway build/types (**50 tests**) passed. The C3 synthetic demo and C4 loopback browser acceptance passed separately. No installation change.
 - **T4.7 approval repair and live pilot:** `c5216b3`. The follow-up carries lossless approval values, and the backend verifies the versioned loopback answer against its exact saved command and objective. Source +55/−9; scenario tests +20/−4. Isolated Node 24 `make check`: **1,385 Python, 36 web and 48 gateway tests passed** (one existing Python warning). Separately, the live pilot reached `complete` after one CPU job and a metadata-only operator intervention; detailed evidence stays in the private installation receipt. No rollout.
 
 - **T4.5 loopback approval:** `4ab6dee`. Turn history is bounded and omits failed raw results. `node web/scripts/research-owner-acceptance.mjs` exercises the real local API with disposable synthetic state and headless Chromium; approval, replay and checkpoint privacy passed. Source +42/−18; tests/fixtures +343/−1. Isolated Node 24 `make check`: **1,385 Python, 36 web and 48 gateway tests passed** (one existing Python warning). No hosted or live activation.
