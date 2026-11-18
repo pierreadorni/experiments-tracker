@@ -84,6 +84,35 @@ async def test_healthy_or_accounting_pending_job_does_not_wake(runtime, observed
 
 
 @pytest.mark.asyncio
+async def test_workflow_routes_contract4_saved_jobs_before_contract3_logic(runtime, monkeypatch):
+    store, _, _, workflow = runtime
+    exp, job = saved_job(store)
+    scheduler = FakeScheduler(SimpleNamespace(state="COMPLETED", exit_code="0:0", ended_at=9))
+    workflow.scheduler_for = lambda *_: scheduler
+    monkeypatch.setattr("experimenttracker.iteration.enabled", lambda *_: pytest.fail("C3 logic reached"))
+
+    await workflow.observe_jobs()
+    await workflow.observe_jobs()
+
+    assert scheduler.calls == ["42"]
+    assert store.one("SELECT state FROM jobs WHERE intent_id=?", (job["intent_id"],))["state"] == "complete"
+    assert len(store.rows("SELECT * FROM agent_wakeups WHERE experiment_id=?", (exp["id"],))) == 1
+
+
+@pytest.mark.asyncio
+async def test_workflow_routes_healthy_contract4_without_wakeup(runtime):
+    store, _, _, workflow = runtime
+    exp, job = saved_job(store)
+    workflow.scheduler_for = lambda *_: FakeScheduler(
+        SimpleNamespace(state="RUNNING", exit_code=None, ended_at=None)
+    )
+
+    await workflow.observe_jobs()
+
+    assert store.rows("SELECT * FROM agent_wakeups WHERE experiment_id=?", (exp["id"],)) == []
+    assert store.one("SELECT state FROM jobs WHERE intent_id=?", (job["intent_id"],))["state"] == "submitted"
+
+
 async def test_scheduler_uncertainty_is_not_a_terminal_retry(runtime):
     store, _, _, workflow = runtime
     exp, job = saved_job(store)

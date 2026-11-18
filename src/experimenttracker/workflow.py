@@ -2042,6 +2042,13 @@ class Workflow:
             observed = None
             try:
                 exp = self.store.experiment(eid)
+                if exp["contract"].get("execution_contract") == 4:
+                    # Remote support and missing-ID reconciliation land separately.
+                    if exp["contract"].get("execution", {}).get("context", "acacia") == "acacia":
+                        from .research import job_observe
+
+                        await job_observe.observe(self, exp, job)
+                    continue
                 if (
                     legacy_archive.execution_frozen(exp)
                     and exp["deleted_at"] is None
