@@ -199,6 +199,98 @@ async def test_contract4_pause_survives_workflow_restart_and_resume(runtime, con
 
 
 @pytest.mark.asyncio
+async def test_contract4_quota_denial_restart_and_resume_preserves_one_turn(
+    runtime, config, tmp_path, monkeypatch
+):
+    store, scheduler, _, workflow = runtime
+    git_project(config, store, tmp_path, research_loop=True)
+    _, _, receipt = create(store)
+    eid = receipt["experiment_id"]
+    workflow.workspaces.ensure_branch(eid)
+    action = first_turn(store, eid)
+    now = fake_clock(monkeypatch)
+    model = ScriptedAgent(result={"status": "wait", "summary": "resumed", "next": "timer:60"})
+    quota = {"ordinaryUsageAllowed": False}
+
+    async def quota_snapshot():
+        return quota
+
+    model.quota = quota_snapshot
+    scripted(workflow, model)
+    await run_pass(workflow, workflow.research_dispatch)
+
+    pending = store.one(
+        "SELECT id,state,attempts,thread_id,turn_id FROM agent_actions WHERE id=?", (action["id"],)
+    )
+    assert pending == {
+        "id": action["id"],
+        "state": "pending",
+        "attempts": 0,
+        "thread_id": None,
+        "turn_id": None,
+    }
+    assert model.calls == [] and model.sessions == []
+    assert (
+        store.rows(
+            "SELECT * FROM events WHERE experiment_id=? AND kind IN ('agent_dispatch_intent','agent_turn_started')",
+            (eid,),
+        )
+        == []
+    )
+
+    await workflow.close()
+    store.close()
+    reopened = Store(config.state_dir / "workflow.sqlite")
+    restarted = Workflow(config, reopened, scheduler, model)
+    scripted(restarted, model)
+    try:
+        quota = {
+            "ordinaryUsageAllowed": True,
+            "rateLimitsByLimitId": {
+                "codex": {
+                    "primary": {"windowDurationMins": 300, "usedPercent": 10},
+                    "secondary": {"windowDurationMins": 10080, "usedPercent": 10},
+                }
+            },
+        }
+        assert restarted.store.experiment(eid)["id"] == eid
+        assert restarted.store.one(
+            "SELECT id,state,attempts FROM agent_actions WHERE id=?", (action["id"],)
+        ) == {"id": action["id"], "state": "pending", "attempts": 0}
+        decision = await restarted.refresh_quota()
+        assert decision.admitted, decision
+        assert restarted.agent_pool.quota(eid=eid).admitted
+        await run_pass(restarted, restarted.research_dispatch)
+        saved = reopened.one(
+            "SELECT id,state,attempts,thread_id,turn_id FROM agent_actions WHERE id=?", (action["id"],)
+        )
+        assert saved == {
+            "id": action["id"],
+            "state": "completed",
+            "attempts": 1,
+            "thread_id": "thread-1",
+            "turn_id": "turn-1",
+        }
+        assert reopened.experiment(eid)["thread_id"] == "thread-1"
+        assert [call[:3] for call in model.calls] == [
+            ("begin", "thread-1", action["input"]),
+            ("finish", "thread-1", "turn-1"),
+        ]
+        events = reopened.rows(
+            "SELECT kind,payload FROM events WHERE experiment_id=? AND kind IN ('agent_dispatch_intent','agent_turn_started') ORDER BY seq",
+            (eid,),
+        )
+        assert [row["kind"] for row in events] == ["agent_dispatch_intent", "agent_turn_started"]
+        assert json.loads(events[0]["payload"])["action_id"] == action["id"]
+        assert json.loads(events[1]["payload"]) == {"action_id": action["id"], "turn_id": "turn-1"}
+        assert scheduler.submissions == 0
+        assert now.wall == 1000.0
+    finally:
+        await restarted.close()
+        reopened.close()
+
+
+@pytest.mark.asyncio
 async def test_contract4_healthy_job_scenario_observes_without_inference(runtime):
     store, scheduler, agent, workflow = runtime
     exp, job = saved_job(store)
