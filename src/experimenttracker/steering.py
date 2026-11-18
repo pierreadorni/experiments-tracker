@@ -3,9 +3,8 @@
 import json
 from uuid import NAMESPACE_URL, uuid5
 
-from . import clock
+from . import clock, iteration
 from .core import advancement_decisions, job_obligations
-from .legacy_archive import execution_frozen
 from .store import encode
 
 TERMINAL_JOBS = (
@@ -28,7 +27,9 @@ async def process_restarts(workflow):
     ):
         eid = item["experiment_id"]
         exp = store.experiment(eid)
-        if execution_frozen(exp):
+        # Restart steering replaces a contract-3 stage run; contract 4 keeps one session
+        # and takes owner guidance as a message in its next turn instead.
+        if not iteration.enabled(exp):
             continue
         if (
             not exp["snapshot"]

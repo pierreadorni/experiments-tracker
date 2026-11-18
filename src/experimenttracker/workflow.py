@@ -715,10 +715,13 @@ class Workflow:
         rows = self.store.rows(
             "SELECT e.id FROM experiments e LEFT JOIN autopilot_members m ON m.experiment_id=e.id "
             "WHERE e.deleted_at IS NULL AND e.phase NOT IN ('complete','failed','cancelled') "
+            "AND json_extract(e.contract,'$.execution_contract') IS 3 "
             "ORDER BY COALESCE(m.priority,0) DESC,e.created_at,e.id"
         )
         # Advance independent state machines under the same owner. Saved intents
-        # and the account-wide agent slot remain the dispatch authority.
+        # and the account-wide agent slot remain the dispatch authority. Only the
+        # saved contract-3 stage graph is selected here: contract 4 has its own
+        # turn loop, and a widened archive predicate must not enroll it.
         for row in rows:
             eid = row["id"]
             backoff = self.error_backoff.get(eid)
@@ -876,7 +879,7 @@ class Workflow:
             "SELECT * FROM agent_actions WHERE phase='summarize_title' AND state='pending' ORDER BY created_at"
         ):
             exp = self.store.experiment(action["experiment_id"])
-            if legacy_archive.archive_active(exp):
+            if not iteration.enabled(exp):
                 continue
             if not self.title_applicable(exp, action, dispatch=True) or exp["pause_agent"]:
                 continue
@@ -906,7 +909,7 @@ class Workflow:
             "AND phase='preparing' ORDER BY created_at"
         ):
             exp = self.store.experiment(row["id"])
-            if legacy_archive.archive_active(exp):
+            if not iteration.enabled(exp):
                 continue
             review = exp["plan_review"] or {}
             if review.get("state") != "awaiting_review" or review.get("questions") or exp["pause_agent"]:
@@ -957,7 +960,9 @@ class Workflow:
 
     @staticmethod
     def title_applicable(exp, action, *, dispatch=False):
-        if exp["deleted_at"] or legacy_archive.execution_frozen(exp):
+        # The separate title turn summarises a contract-3 plan review; contract 4 takes
+        # its title from the first summary instead.
+        if exp["deleted_at"] or not iteration.enabled(exp):
             return False
         if action["phase"] == "summarize_title":
             return True
@@ -975,7 +980,8 @@ class Workflow:
         eid = action["experiment_id"]
         expected = action
         try:
-            if legacy_archive.execution_frozen(self.store.experiment(eid)):
+            exp = self.store.experiment(eid)
+            if not iteration.enabled(exp):
                 return
             await self.refresh_quota(slot)
             if blocked(self.store):
@@ -1054,7 +1060,7 @@ class Workflow:
         ):
             exp = self.store.experiment(row["id"])
             if (
-                legacy_archive.execution_frozen(exp)
+                not iteration.enabled(exp)
                 or exp["recipe_id"] != "agent_experiment_v1"
                 or exp["pending_request"]
             ):
@@ -1113,7 +1119,7 @@ class Workflow:
         ):
             eid = row["id"]
             exp = self.store.experiment(eid)
-            if legacy_archive.execution_frozen(exp):
+            if not iteration.enabled(exp):
                 continue
             if self.config.mode != "live" or exp["recipe_id"] != "agent_experiment_v1" or not exp["snapshot"]:
                 continue
@@ -1283,7 +1289,11 @@ class Workflow:
         exp = self.store.experiment(eid)
         if exp["phase"] == "cancelled":
             return
-        if early_repair.preparing(exp) and reason in ("compute_failed", "validation_failed"):
+        if (
+            iteration.enabled(exp)
+            and early_repair.preparing(exp)
+            and reason in ("compute_failed", "validation_failed")
+        ):
             self.store.update(eid, phase="preparing", hold_reason="automatic_repair", error=error)
             return
         if reason in ("agent_correction_stalled", "agent_recovery_exhausted", "agent_budget_exhausted"):
@@ -1293,7 +1303,8 @@ class Workflow:
             if action and action["phase"].startswith("agent:"):
                 self.store.stage(eid, action["phase"].removeprefix("agent:"), "failed", error=error)
         if (
-            self.config.mode == "live"
+            iteration.enabled(exp)
+            and self.config.mode == "live"
             and exp["recipe_id"] == "agent_experiment_v1"
             and exp["snapshot"]
             and self.repair_available(exp)
@@ -1327,7 +1338,9 @@ class Workflow:
         for item in pending:
             eid = item["experiment_id"]
             exp = self.store.experiment(eid)
-            if legacy_archive.execution_frozen(exp):
+            # Plan-revision feedback is part of the contract-3 planning stage; contract 4
+            # steering becomes an owner message in its next turn instead.
+            if not iteration.enabled(exp):
                 continue
             review = exp["plan_review"]
             if (
@@ -1368,7 +1381,9 @@ class Workflow:
 
     async def advance(self, eid):
         exp = self.store.experiment(eid)
-        if legacy_archive.execution_frozen(exp):
+        # The stage graph is contract-3-only: archived legacy contracts and a future
+        # contract 4 both stop here, whatever the archive predicate admits.
+        if not iteration.enabled(exp):
             return
         if exp["phase"] == "cancelled" or exp["hold_reason"] in (
             "automatic_repair_pending",
@@ -1553,7 +1568,7 @@ class Workflow:
         eid = exp["id"]
         exp = self.store.experiment(eid)
         if (
-            legacy_archive.execution_frozen(exp)
+            not iteration.enabled(exp)
             or not exp["snapshot"]
             or exp["phase"]
             in (
@@ -1823,6 +1838,8 @@ class Workflow:
             }
         if legacy_archive.execution_frozen(exp):
             raise ValueError("archived legacy output reconciliation is unavailable")
+        if not iteration.enabled(exp):
+            raise ValueError("stage output reconciliation requires execution contract 3")
         if exp["phase"] != "failed" or exp["hold_reason"] != "validation_failed" or exp.get("deleted_at"):
             raise ValueError("output reconciliation requires a retained experiment failed on validation")
         jobs = self.store.rows("SELECT * FROM jobs WHERE experiment_id=? AND state='failed'", (eid,))
@@ -2220,7 +2237,8 @@ class Workflow:
         # A dispatched task may have reached its quota/turn ceiling while advance
         # awaited filesystem work. Never overwrite that terminal admission hold.
         exp = self.store.experiment(eid)
-        if legacy_archive.execution_frozen(exp) or exp["phase"] in ("complete", "failed", "cancelled"):
+        # A saved contract 4 has no plan/prepare/interpret stage to open a turn for.
+        if not iteration.enabled(exp) or exp["phase"] in ("complete", "failed", "cancelled"):
             return
         self.store.update(
             eid,
@@ -3289,6 +3307,8 @@ class Workflow:
             return {"experiment_id": eid, "action_id": action["id"], "state": "completed"}
         if legacy_archive.execution_frozen(exp):
             raise ValueError("archived legacy agent output reconciliation is unavailable")
+        if not iteration.enabled(exp):
+            raise ValueError("stage agent output reconciliation requires execution contract 3")
         if (
             exp["phase"] != "failed"
             or exp["hold_reason"] != "agent_recovery_exhausted"
@@ -3528,7 +3548,10 @@ class Workflow:
         eid = action["experiment_id"]
         expected = action
         try:
-            if legacy_archive.execution_frozen(self.store.experiment(eid)):
+            exp = self.store.experiment(eid)
+            # Stage and monitor turns are contract-3 entrances; contract 4 dispatches
+            # its own research turns.
+            if not iteration.enabled(exp):
                 return
             await self.refresh_quota(slot)
             decision = self.agent_pool.quota(eid=eid)
