@@ -66,6 +66,9 @@ def _check(workflow, experiment_id, action, request, db):
         raise ValueError("submission requires the exact running research turn")
     if blocked(store) or experiment["pause_compute"]:
         raise ValueError("new compute is paused or maintenance is active")
+    autopilot_hold = workflow.research.service.authority(experiment_id, phase="compute")
+    if autopilot_hold:
+        raise ValueError(f"Autopilot compute authority refused submission: {autopilot_hold}")
     contract = experiment["contract"]
     if (
         not contract.get("branch_workspace")
