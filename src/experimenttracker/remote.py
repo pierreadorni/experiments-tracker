@@ -644,13 +644,9 @@ class RemoteSlurmScheduler(SlurmScheduler):
         if manifest.get("executor") == "agent":
             raise ValueError("remote result requires a saved Slurm job")
         request = manifest.get("research_request") or {}
-        from .research.result_path import validate_result_path
+        from .research.result_path import validate_remote_result_path
 
-        name = validate_result_path(request.get("result_file"))
-        if not re.fullmatch(r"[A-Za-z0-9._/-]+", name) or any(
-            part.startswith("-") for part in Path(name).parts
-        ):
-            raise ValueError("remote result path contains characters unsafe for rsync transport")
+        name = validate_remote_result_path(request.get("result_file"))
         root = await asyncio.to_thread(exact_research_attempt, self.workflow, self.exp["id"], job)
         execution = manifest.get("execution") or {}
         saved_settings = ExecutionSettings.model_validate(execution.get("settings"))

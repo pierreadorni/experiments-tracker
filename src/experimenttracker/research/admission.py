@@ -9,7 +9,7 @@ from ..config import JobResources, StrictModel
 from ..core import action_obligations
 from ..maintenance import blocked
 from . import approval
-from .result_path import MAX_RESULT_PATH_CHARS, validate_result_path
+from .result_path import MAX_RESULT_PATH_CHARS, validate_remote_result_path, validate_result_path
 from .tools import require_live_research
 
 
@@ -71,8 +71,14 @@ def _check(workflow, experiment_id, action, request, db, *, remote_source=False)
         raise ValueError(f"Autopilot compute authority refused submission: {autopilot_hold}")
     contract = experiment["contract"]
     context = contract.get("execution", {}).get("context", "acacia")
-    if not contract.get("branch_workspace") or (context != "acacia" and not (remote_source and context == "jean-zay")):
+    if not contract.get("branch_workspace") or (
+        context != "acacia" and not (remote_source and context == "jean-zay")
+    ):
         raise ValueError("submission requires a local named research workspace")
+    if remote_source:
+        if request.result_file is None:
+            raise ValueError("remote submission requires a declared result_file")
+        validate_remote_result_path(request.result_file)
     latest = db.execute(
         "SELECT json_extract(payload,'$.request_id') FROM events "
         "WHERE experiment_id=? AND kind=? ORDER BY seq DESC LIMIT 1",

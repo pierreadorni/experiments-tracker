@@ -59,7 +59,7 @@ async def dispatch(workflow, eid, action, request):
         if hashlib.sha256(script.read_bytes()).hexdigest() != source.prepared.script_hash:
             raise Conflict("prepared research script changed during preflight")
         # save rechecks admission in the transaction that creates the intent.
-        job, created = save(workflow, eid, action, request, source.prepared)
+        job, created = save(workflow, eid, action, request, source.prepared, execution=source.execution)
         if not created:
             return job
         job_id = await scheduler.submit(intent, script, source.root, resources=request.resources)

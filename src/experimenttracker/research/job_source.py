@@ -84,7 +84,8 @@ async def prepare_remote(workflow, experiment_id, action, request):
     experiment = workflow.store.experiment(experiment_id)
     if experiment["contract"].get("execution", {}).get("context") != "jean-zay":
         raise ValueError("remote source preparation requires the saved Jean Zay context")
-    request_id = str(request["request_id"] if isinstance(request, dict) else request.request_id)
+    request = preflight(workflow, experiment_id, action, request, remote_source=True)
+    request_id = str(request.request_id)
     prepared = prepare(workflow, experiment_id, action, request, remote_source=True)
     experiment = dict(experiment)
     experiment["_attempt_id"] = request_id

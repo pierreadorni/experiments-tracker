@@ -20,7 +20,7 @@ class PreparedJob(StrictModel):
     script_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
-def save(workflow, eid, action, request, prepared):
+def save(workflow, eid, action, request, prepared, *, execution=None):
     """Return (saved job, created). A replay never grants permission to submit."""
     request = SubmitJobRequest.model_validate(request)
     prepared = PreparedJob.model_validate(prepared)
@@ -38,11 +38,19 @@ def save(workflow, eid, action, request, prepared):
                 or manifest.get("research_action_id") != action["id"]
                 or manifest.get("commit") != prepared.commit
                 or prior["script_hash"] != prepared.script_hash
+                or manifest.get("execution") != execution
             ):
                 raise Conflict("job intent identity already belongs to another submission")
             return dict(prior), False
 
-        preflight(workflow, eid, action, request, db=db)
+        preflight(
+            workflow,
+            eid,
+            action,
+            request,
+            db=db,
+            remote_source=(execution or {}).get("context") == "jean-zay",
+        )
         branch = db.execute(
             "SELECT head_commit FROM experiment_branches WHERE experiment_id=? AND state='active'",
             (eid,),
@@ -73,6 +81,7 @@ def save(workflow, eid, action, request, prepared):
                         "commit": prepared.commit,
                         "research_request": wire,
                         "research_action_id": action["id"],
+                        **({"execution": execution} if execution is not None else {}),
                     }
                 ),
             ),
