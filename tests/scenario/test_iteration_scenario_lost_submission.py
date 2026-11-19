@@ -5,7 +5,8 @@ Synthetic mechanism acceptance only: no live scheduler, model runtime or researc
 
 import json
 import sys
-from uuid import uuid4
+
+from helpers import seed_saved_contract3
 
 from experimenttracker.config import JobResources
 from experimenttracker.slurm import Observation
@@ -82,11 +83,7 @@ async def steps(scenario, count):
 
 async def test_lost_submission_intent_survives_lag_and_restart_then_reconciles_exactly(scenario):
     store, backend = scenario.store, scenario.slurm_backend
-    eid = store.command(
-        uuid4(),
-        "create",
-        {"brief": "Synthetic lost-submission response.", "recipe_id": "agent_experiment_v1"},
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Synthetic lost-submission response.")
     assert store.experiment(eid)["contract"]["execution_contract"] == 3
     scenario.agent.script("plan", turn=plan_turn, turns=1)
     scenario.agent.script("prepare", turn=prepare_turn, turns=1)

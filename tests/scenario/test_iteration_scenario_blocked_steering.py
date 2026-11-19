@@ -7,6 +7,8 @@ import json
 import sys
 from uuid import uuid4
 
+from helpers import seed_saved_contract3
+
 PLAN = {
     "schema_version": 3,
     "summary": "Synthetic blocked agent stage.",
@@ -65,11 +67,7 @@ def blocked_turn(payload, workspace):
 
 async def test_blocked_agent_stage_steering_queues_one_continuation_on_the_saved_attempt(scenario):
     store, agent_backend = scenario.store, scenario.agent_backend
-    eid = store.command(
-        uuid4(),
-        "create",
-        {"brief": "Synthetic blocked agent stage.", "recipe_id": "agent_experiment_v1"},
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Synthetic blocked agent stage.")
     assert store.experiment(eid)["contract"]["execution_contract"] == 3
     scenario.agent.script("plan", turn=plan_turn, turns=1)
     scenario.agent.script("prepare", turn=prepare_turn, turns=1)

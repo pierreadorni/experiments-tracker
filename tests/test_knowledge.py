@@ -3,7 +3,7 @@ import time
 from uuid import uuid4
 
 import pytest
-from helpers import role_step, wait_until
+from helpers import role_step, seed_saved_contract3, wait_until
 from legacy_fixture import load_legacy_completed
 
 from experimenttracker.config import ProjectConfig
@@ -12,15 +12,7 @@ from experimenttracker.store import Conflict, encode
 
 
 def completed(store, *, project="test-project", summary="A measured result with limited scope."):
-    eid = store.command(
-        uuid4(),
-        "create",
-        {
-            "brief": "Compare linear and quadratic models.",
-            "recipe_id": "agent_experiment_v1",
-            "project_id": project,
-        },
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Compare linear and quadratic models.", project_id=project)
     assert store.experiment(eid)["contract"]["execution_contract"] == 3
     store.update(
         eid,

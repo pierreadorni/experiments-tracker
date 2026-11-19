@@ -7,9 +7,9 @@ import json
 import os
 import sys
 from pathlib import Path
-from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3
 
 from experimenttracker.config import JobResources
 from experimenttracker.slurm import Observation
@@ -98,11 +98,7 @@ async def steps(scenario, count):
 @pytest.mark.parametrize("progress", [True, False])
 async def test_healthy_long_job_makes_zero_additional_agent_turns(scenario, progress):
     store, slurm_backend, agent_backend = scenario.store, scenario.slurm_backend, scenario.agent_backend
-    eid = store.command(
-        uuid4(),
-        "create",
-        {"brief": "Synthetic healthy long job.", "recipe_id": "agent_experiment_v1"},
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Synthetic healthy long job.")
     assert store.experiment(eid)["contract"]["execution_contract"] == 3
     scenario.agent.script("plan", turn=plan_turn, turns=1)
     scenario.agent.script("prepare", turn=prepare_turn, turns=1)

@@ -10,6 +10,7 @@ account, socket runtime or research.
 import json
 from uuid import uuid4
 
+from helpers import seed_saved_contract3
 from legacy_fixture import load_legacy_completed
 from test_iteration_autopilot import command, policy
 from test_knowledge import completed
@@ -67,9 +68,7 @@ def discuss_turn(payload, workspace):
 
 
 def create(store, brief="Synthetic mixed-role overlap."):
-    return store.command(uuid4(), "create", {"brief": brief, "recipe_id": "agent_experiment_v1"})[
-        "experiment_id"
-    ]
+    return seed_saved_contract3(store, brief)
 
 
 def saved(store, table, **where):

@@ -3,9 +3,9 @@
 import asyncio
 import time
 from types import SimpleNamespace
-from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3
 
 from scenario import FakeGate, ScenarioTimeout, run_until, settle
 
@@ -49,11 +49,7 @@ class GatedTick(StubTick):
 
 
 async def test_hung_tick_fails_within_the_real_time_bound_with_diagnostics(scenario):
-    eid = scenario.store.command(
-        uuid4(),
-        "create",
-        {"brief": "Exercise a synthetic scenario driver.", "recipe_id": "agent_experiment_v1"},
-    )["experiment_id"]
+    eid = seed_saved_contract3(scenario.store, "Exercise a synthetic scenario driver.")
     stuck = StubTick(scenario.workflow)
     started = time.monotonic()
     with pytest.raises(ScenarioTimeout) as failure:

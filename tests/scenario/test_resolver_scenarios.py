@@ -4,7 +4,8 @@ Synthetic mechanism acceptance only: no live scheduler, model runtime or researc
 """
 
 import json
-from uuid import uuid4
+
+from helpers import seed_saved_contract3
 
 from experimenttracker import early_repair
 from experimenttracker.core import job_obligations
@@ -26,11 +27,7 @@ async def steps(scenario, count):
 async def lost_submission(scenario):
     """Drive one synthetic experiment to a saved intent whose sbatch response was lost."""
     store, backend = scenario.store, scenario.slurm_backend
-    eid = store.command(
-        uuid4(),
-        "create",
-        {"brief": "Synthetic resolver scenario.", "recipe_id": "agent_experiment_v1"},
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Synthetic resolver scenario.")
     scenario.agent.script("plan", turn=plan_turn, turns=1)
     scenario.agent.script("prepare", turn=prepare_turn, turns=1)
     scenario.agent.script("interpret", turn=interpret_turn, turns=1)

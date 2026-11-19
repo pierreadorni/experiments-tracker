@@ -5,10 +5,12 @@ Synthetic mechanism acceptance only; no live scheduler, model runtime or researc
 
 import json
 import sys
-from uuid import uuid4
+
+from helpers import seed_saved_contract3
 
 from experimenttracker.codex_client import TransportError
 from experimenttracker.config import JobResources
+from experimenttracker.core import advancement_decisions
 from experimenttracker.resolver import ABSENT_AFTER_SECONDS, UNREADABLE_LIMIT
 from experimenttracker.slurm import Observation
 from scenario import settle
@@ -62,8 +64,10 @@ def prepare_turn(payload, workspace):
 
 
 def create(store, brief):
-    command = {"brief": brief, "recipe_id": "agent_experiment_v1"}
-    return store.command(uuid4(), "create", command)["experiment_id"]
+    eid = seed_saved_contract3(store, brief)
+    with store.tx() as db:
+        advancement_decisions.open_lifetime(db, eid)
+    return eid
 
 
 def actions(store, eid):
