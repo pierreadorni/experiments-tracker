@@ -5,6 +5,7 @@ import struct
 from types import SimpleNamespace
 
 import pytest
+from helpers import seed_saved_contract4
 from tensorboard.compat.proto.event_pb2 import Event
 from tensorboard.compat.proto.summary_pb2 import Summary
 from tensorboard.compat.tensorflow_stub.pywrap_tensorflow import masked_crc32c
@@ -26,14 +27,9 @@ class FakeScheduler:
 
 
 def saved_job(store, *, pending=False):
-    eid = store.command(
-        "manual-observe-create", "create", {"brief": "synthetic observer", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
-    exp = store.experiment(eid)
-    contract = dict(exp["contract"], execution_contract=4)
+    eid = seed_saved_contract4(store, "synthetic observer")
     intent = "manual-observe-job"
     with store.tx() as db:
-        db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(contract), eid))
         db.execute("INSERT INTO stages(experiment_id,id,updated_at) VALUES(?,'research',1)", (eid,))
         db.execute(
             "INSERT INTO jobs(intent_id,experiment_id,stage_id,attempt,state,job_id,script_hash,resources,"

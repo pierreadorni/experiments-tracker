@@ -7,10 +7,10 @@ RPC requests, contract 3 pending requests and real contract-4 RPCs keep their pr
 expire-and-reply behavior.
 """
 
-import json
 from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3, seed_saved_contract4
 
 from experimenttracker import clock
 from experimenttracker.research.session import first_turn
@@ -19,26 +19,16 @@ BRIEF = "Compare two toy optimizers under one fixed compute budget."
 
 
 def make_experiment(store, *, contract, pending):
-    eid = store.command(uuid4(), "create", {"brief": BRIEF, "recipe_id": "agent_experiment_v1"})[
-        "experiment_id"
-    ]
-    saved = store.experiment(eid)["contract"]
-    saved["execution_contract"] = contract
-    with store.tx() as db:
-        db.execute("UPDATE experiments SET contract=? WHERE id=?", (json.dumps(saved), eid))
+    assert contract in (3, 4)
+    seed = seed_saved_contract3 if contract == 3 else seed_saved_contract4
+    eid = seed(store, BRIEF)
     store.update(eid, pending_request=pending)
     return eid
 
 
 def question(store, *, answer=None, rpc_id=None):
     """Save one contract-4 experiment with a durable question and return its id."""
-    eid = store.command(uuid4(), "create", {"brief": BRIEF, "recipe_id": "agent_experiment_v1"})[
-        "experiment_id"
-    ]
-    contract = store.experiment(eid)["contract"]
-    contract["execution_contract"] = 4
-    with store.tx() as db:
-        db.execute("UPDATE experiments SET contract=? WHERE id=?", (json.dumps(contract), eid))
+    eid = seed_saved_contract4(store, BRIEF)
     action = first_turn(store, eid)
     pending = {
         "id": "question",

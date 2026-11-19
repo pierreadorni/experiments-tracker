@@ -7,16 +7,11 @@ from experimenttracker.research.session import first_turn
 
 
 def request_fixture(store):
-    eid = store.command(
-        uuid4(),
-        "create",
-        {"brief": "Synthetic approval evidence fixture", "recipe_id": "agent_experiment_v1"},
-    )["experiment_id"]
+    from helpers import seed_saved_contract4
+
+    eid = seed_saved_contract4(store, "Synthetic approval evidence fixture")
     experiment = store.experiment(eid)
     contract = experiment["contract"]
-    contract["execution_contract"] = 4
-    with store.tx() as db:
-        db.execute("UPDATE experiments SET contract=? WHERE id=?", (json.dumps(contract), eid))
     action = first_turn(store, eid)
     request_id = str(uuid4())
     objective = "Run the proposed comparison"
