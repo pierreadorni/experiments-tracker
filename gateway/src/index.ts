@@ -755,6 +755,15 @@ async function executorRecentlySupportsCreateContractFour(env: Env) {
     return false;
   }
 }
+async function executorDefaultsToCreateContractFour(env: Env) {
+  // Going offline does not revert the last advertised create policy.
+  const row = await first(env, 'SELECT payload FROM executor_status WHERE id=?', env.EXECUTOR_ID);
+  try {
+    return Boolean(row && JSON.parse(String(row.payload)).execution_contract_create_default === 4);
+  } catch {
+    return false;
+  }
+}
 async function enqueue(env: Env, kind: string, payload: Record<string, unknown>, eid?: string) {
   if (await first(env, 'SELECT 1 FROM settings_commands WHERE request_id=?', payload.request_id))
     throw new HttpError(409, 'request_id was already used for another command');
@@ -781,6 +790,12 @@ async function enqueue(env: Env, kind: string, payload: Record<string, unknown>,
       state: prior.state === 'acked' ? 'applied' : 'waiting_for_executor',
     };
   }
+  if (
+    kind === 'create' &&
+    payload.execution_contract === undefined &&
+    (await executorDefaultsToCreateContractFour(env))
+  )
+    throw new HttpError(409, 'This executor requires an explicit execution contract 4 create');
   if (kind === 'create' && payload.execution_contract === 4) {
     if (!(await executorRecentlySupportsCreateContractFour(env)))
       throw new HttpError(

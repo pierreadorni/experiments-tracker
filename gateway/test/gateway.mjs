@@ -83,6 +83,11 @@ test('explicit contract 4 creates preserve intent and require a fresh capable ex
       recipe_id: 'agent_experiment_v1',
       execution_contract: 4,
     };
+    const { execution_contract: _explicit, ...unbound } = { ...payload, request_id: randomUUID() };
+    const post = (body) => req('/api/experiments', { method: 'POST', body: JSON.stringify(body) });
+    const legacy = await post(unbound);
+    assert.equal(legacy.status, 202);
+    const savedLegacy = await legacy.json();
     for (const bad of [null, 3, 5, '4']) {
       assert.equal(
         (
@@ -100,8 +105,22 @@ test('explicit contract 4 creates preserve intent and require a fresh capable ex
     );
     await db
       .prepare('INSERT INTO executor_status(id,payload,received_at) VALUES(?,?,?)')
-      .bind('acacia', JSON.stringify({ execution_contract_create: 4 }), Date.now() / 1000 - 91)
+      .bind(
+        'acacia',
+        JSON.stringify({ execution_contract_create: 4, execution_contract_create_default: 4 }),
+        Date.now() / 1000 - 91,
+      )
       .run();
+    const late = { ...unbound, request_id: randomUUID() };
+    assert.equal((await post(late)).status, 409);
+    assert.deepEqual(await (await post(unbound)).json(), savedLegacy);
+    assert.equal(
+      await db
+        .prepare('SELECT request_id FROM commands WHERE request_id=?')
+        .bind(late.request_id)
+        .first(),
+      null,
+    );
     assert.equal(
       (await req('/api/experiments', { method: 'POST', body: JSON.stringify(payload) })).status,
       409,
@@ -110,6 +129,7 @@ test('explicit contract 4 creates preserve intent and require a fresh capable ex
       .prepare('UPDATE executor_status SET received_at=? WHERE id=?')
       .bind(Date.now() / 1000, 'acacia')
       .run();
+    assert.equal((await post(late)).status, 409);
     const response = await req('/api/experiments', {
       method: 'POST',
       body: JSON.stringify(payload),
@@ -130,7 +150,10 @@ test('explicit contract 4 creates preserve intent and require a fresh capable ex
     await req('/api/executor/ack', {
       token: executor,
       method: 'POST',
-      body: JSON.stringify({ schema_version: 1, request_ids: [payload.request_id] }),
+      body: JSON.stringify({
+        schema_version: 1,
+        request_ids: [payload.request_id, unbound.request_id],
+      }),
     });
     await db
       .prepare('UPDATE executor_status SET received_at=? WHERE id=?')
