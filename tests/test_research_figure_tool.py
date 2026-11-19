@@ -10,6 +10,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract4
 from pydantic import ValidationError
 from test_integration_commands import branch_experiment
 from test_tick_steps import block_maintenance
@@ -26,9 +27,7 @@ PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 
 
 def saved_contract4(store, *, thread="thread-1"):
-    eid = store.command(uuid4(), "create", {"brief": BRIEF, "recipe_id": "agent_experiment_v1"})[
-        "experiment_id"
-    ]
+    eid = seed_saved_contract4(store, BRIEF)
     contract = {**store.experiment(eid)["contract"], "execution_contract": 4}
     with store.tx() as db:
         db.execute(

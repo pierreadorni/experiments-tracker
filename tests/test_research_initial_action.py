@@ -4,6 +4,7 @@ import json
 from uuid import UUID, uuid4
 
 import pytest
+from helpers import seed_saved_contract4
 
 from experimenttracker.core import action_obligations
 from experimenttracker.research.prompt import MAX_PROMPT_BYTES, turn_prompt
@@ -14,9 +15,7 @@ BRIEF = "Compare two toy optimizers under one fixed compute budget."
 
 
 def make_experiment(store, *, contract=4, phase="preparing", hold_reason=None, deleted=False):
-    eid = store.command(uuid4(), "create", {"brief": BRIEF, "recipe_id": "agent_experiment_v1"})[
-        "experiment_id"
-    ]
+    eid = seed_saved_contract4(store, BRIEF)
     saved = store.experiment(eid)
     saved["contract"]["execution_contract"] = contract
     values = {
