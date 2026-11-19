@@ -11,7 +11,9 @@ from experimenttracker.gateway_client import GatewayClient
 from experimenttracker.workspaces import initialize_project
 
 
-async def test_lost_ack_redelivery_and_publication_retry(config, runtime, tmp_path):
+async def test_lost_ack_redelivery_and_publication_retry(config, runtime, tmp_path, monkeypatch):
+    # Preserve explicit legacy-mode coverage; the cutover default rejects unbound creates.
+    monkeypatch.setattr(store_module, "_REFUSE_UNBOUND_HOSTED_CREATES", False)
     store, _, _, _ = runtime
     credential = tmp_path / "executor-token"
     credential.write_text("e" * 40)
@@ -177,6 +179,7 @@ async def test_gateway_explicit_contract4_cannot_fall_back_for_ineligible_projec
 
 @pytest.mark.parametrize("refuse_unbound", [False, True], ids=["legacy-mode", "cutover-mode"])
 async def test_hosted_unbound_create_cutover_modes(config, runtime, tmp_path, monkeypatch, refuse_unbound):
+    assert store_module._REFUSE_UNBOUND_HOSTED_CREATES is True
     store, _, _, _ = runtime
     token = tmp_path / "token"
     token.write_text("e" * 40)

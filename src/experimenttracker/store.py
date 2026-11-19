@@ -36,8 +36,8 @@ def encode(value):
 _INTEGRATION_BASE = "main"
 _INTEGRATION_VERSION = 1
 
-# Flip only at the owner-authorized hosted-create cutover; local and explicit creates are unaffected.
-_REFUSE_UNBOUND_HOSTED_CREATES = False
+# Refuse delayed hosted creates without a saved contract intent after the cutover.
+_REFUSE_UNBOUND_HOSTED_CREATES = True
 
 
 def _integration_request(exp, branch, kind, *, merge_commit=None, reason=None):
