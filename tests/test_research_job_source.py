@@ -14,6 +14,7 @@ from test_research_first_turn import create, research_project
 from experimenttracker.research import approval
 from experimenttracker.research.job_intent import save
 from experimenttracker.research.job_source import prepare, prepare_remote
+from experimenttracker.research.result_tool import register_result
 from experimenttracker.research.session import first_turn
 from experimenttracker.store import Conflict
 from experimenttracker.workspaces import WorkspaceUnavailable, git
@@ -96,6 +97,128 @@ def test_prepare_requires_approval_and_exports_exact_pinned_argv_job(runtime, tm
 
 
 @pytest.mark.asyncio
+async def test_dispatch_wrapper_consumes_registered_result_and_rejects_tampering(
+    runtime, tmp_path, monkeypatch
+):
+    store, _, _, workflow = runtime
+    _, eid, action, request = setup_request(workflow, tmp_path)
+    producer_id = str(uuid4())
+    producer_root = workflow.projects.base_root(eid) / "attempts" / producer_id
+    producer_root.mkdir(parents=True)
+    with store.tx() as db:
+        db.execute(
+            "INSERT INTO stages(experiment_id,id,state,attempt,updated_at) VALUES(?,'producer','complete',1,0)",
+            (eid,),
+        )
+        db.execute(
+            "INSERT INTO jobs(intent_id,experiment_id,stage_id,attempt,state,job_id,script_hash,resources,"
+            "snapshot_hash,created_at,execution_root,execution_manifest,ended_at) "
+            "VALUES(?,?,'producer',1,'complete','123','s','{}','h',0,?,?,1)",
+            (producer_id, eid, str(producer_root), json.dumps({"executor": "slurm"})),
+        )
+    (producer_root / "results.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "protocol": "synthetic dispatch receipt",
+                "metrics": [{"name": "loss", "variant": "v1", "value": 2, "unit": "unit"}],
+            }
+        )
+    )
+    registration_id = uuid4()
+    receipt = register_result(
+        workflow,
+        store.experiment(eid),
+        action,
+        {"request_id": str(registration_id), "intent_id": producer_id, "path": "results.json"},
+    )
+
+    def accept():
+        store.command(
+            uuid4(),
+            "answer",
+            {"pending_request_id": request["approval_request_id"], "answer": "accept"},
+            eid=eid,
+        )
+
+    accept()
+    request["inputs"] = [str(registration_id)]
+    request["command"] = [
+        sys.executable,
+        "-c",
+        "import json,os; from pathlib import Path; "
+        "p=json.loads(os.environ['EXPERIMENT_INPUTS']); "
+        "Path(os.environ['EXPERIMENT_ROOT'],'consumed.json').write_text(Path(p[next(iter(p))]).read_text())",
+    ]
+
+    class WrapperScheduler:
+        submissions = 0
+
+        async def preflight(self, *args):
+            pass
+
+        async def submit(self, _intent, script, _root, **_kwargs):
+            self.submissions += 1
+            process = await asyncio.create_subprocess_exec("/bin/sh", str(script))
+            await asyncio.wait_for(process.wait(), timeout=10)
+            assert process.returncode == 0
+            return "4321"
+
+    scheduler = WrapperScheduler()
+    monkeypatch.setattr(workflow, "scheduler_for", lambda *_: scheduler)
+    from experimenttracker.research.job_dispatch import dispatch
+
+    await dispatch(workflow, eid, action, request)
+    job = store.one("SELECT execution_root FROM jobs WHERE intent_id=?", (request["request_id"],))
+    copied = Path(job["execution_root"]) / "inputs" / f"{registration_id}.json"
+    registered_path = Path(workflow.projects.base_root(eid)) / receipt["name"]
+    registered_bytes = registered_path.read_bytes()
+    assert copied.read_bytes() == registered_bytes
+    assert json.loads((Path(job["execution_root"]) / "consumed.json").read_text())["protocol"] == (
+        "synthetic dispatch receipt"
+    )
+    assert scheduler.submissions == 1
+    with store.tx() as db:
+        db.execute("UPDATE jobs SET state='complete',ended_at=2 WHERE intent_id=?", (request["request_id"],))
+
+    # A fresh intent cannot stage bytes that no longer match the registered receipt.
+    tampered_request = {**request, "request_id": str(uuid4())}
+    changed = Path(workflow.projects.base_root(eid)) / receipt["name"]
+    changed.chmod(0o600)
+    changed.write_text('{"metrics":[{"value":3}]}')
+    with pytest.raises(ValueError, match="registered immutable result changed"):
+        await dispatch(workflow, eid, action, tampered_request)
+    assert scheduler.submissions == 1
+    assert store.one("SELECT 1 FROM jobs WHERE intent_id=?", (tampered_request["request_id"],)) is None
+
+    registered_path.write_bytes(registered_bytes)
+    registered_path.unlink()
+    external = tmp_path / "external-result.json"
+    external.write_bytes(registered_bytes)
+    registered_path.symlink_to(external)
+    linked_request = {**request, "request_id": str(uuid4())}
+    with pytest.raises(ValueError, match="registered-result artifact"):
+        await dispatch(workflow, eid, action, linked_request)
+    assert scheduler.submissions == 1
+    assert store.one("SELECT 1 FROM jobs WHERE intent_id=?", (linked_request["request_id"],)) is None
+
+
+async def test_remote_registered_result_refusal_precedes_dispatch(runtime, tmp_path, monkeypatch):
+    store, scheduler, _, workflow = runtime
+    _, eid, action, request = setup_request(workflow, tmp_path)
+    request["result_file"] = "results/result.json"
+    request["inputs"] = [str(uuid4())]
+    contract = store.experiment(eid)["contract"]
+    contract["execution"] = {"context": "jean-zay"}
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET contract=? WHERE id=?", (json.dumps(contract), eid))
+    root = workflow.projects.base_root(eid) / "attempts" / request["request_id"]
+    with pytest.raises(ValueError, match="not supported for remote submissions"):
+        await prepare_remote(workflow, eid, action, request)
+    assert not root.exists()
+    assert scheduler.submissions == 0
+
+
 async def test_prepare_remote_rejects_unsafe_result_transport_before_filesystem_effects(runtime, tmp_path):
     store, _, _, workflow = runtime
     _, eid, action, request = setup_request(workflow, tmp_path)

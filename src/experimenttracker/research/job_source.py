@@ -2,7 +2,9 @@
 
 import hashlib
 import json
+import os
 import shlex
+import stat
 from pathlib import Path
 
 from pydantic import Field
@@ -10,7 +12,7 @@ from pydantic import Field
 from ..config import StrictModel
 from ..engine import gitworkspace
 from ..workspaces import WorkspaceUnavailable
-from .admission import preflight
+from .admission import MAX_INPUT_BYTES, preflight
 from .job_intent import PreparedJob
 
 
@@ -58,8 +60,6 @@ def prepare(workflow, experiment_id, action, request, *, remote_source=False):
     )
     inputs = {}
     if request.inputs:
-        from .. import artifacts
-
         input_root = root / "inputs"
         input_root.mkdir(mode=0o700)
         for input_id in request.inputs:
@@ -77,20 +77,29 @@ def prepare(workflow, experiment_id, action, request, *, remote_source=False):
             )
             if artifact is None or item.get("name") != f"result-{input_id}.json":
                 raise ValueError("registered-result artifact identity is invalid")
-            source_result = artifacts.allowed_path(
-                Path(workflow.projects.base_root(experiment_id)) / item["name"],
-                Path(workflow.projects.base_root(experiment_id)),
-                max_bytes=artifacts.MAX_ARTIFACT_BYTES,
-            )
+            base_root = Path(workflow.projects.base_root(experiment_id))
+            source_result = base_root / item["name"]
+            try:
+                if source_result.resolve(strict=True).parent != base_root.resolve(strict=True):
+                    raise ValueError("registered-result artifact is outside its root")
+                if not stat.S_ISREG(source_result.lstat().st_mode):
+                    raise ValueError("registered-result artifact must be a regular file")
+                descriptor = os.open(source_result, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            except OSError as exc:
+                raise ValueError("registered-result artifact is missing or not a regular file") from exc
+            target = input_root / f"{input_id}.json"
+            with os.fdopen(descriptor, "rb") as src:
+                if not stat.S_ISREG(os.fstat(src.fileno()).st_mode):
+                    raise ValueError("registered-result artifact must be a regular file")
+                data = src.read(MAX_INPUT_BYTES + 1)
             if (
-                source_result.stat().st_size != artifact["size"]
-                or artifacts.sha256(source_result) != artifact["sha256"]
+                len(data) != artifact["size"]
+                or len(data) > MAX_INPUT_BYTES
+                or hashlib.sha256(data).hexdigest() != artifact["sha256"]
             ):
                 raise ValueError("registered immutable result changed")
-            target = input_root / f"{input_id}.json"
-            with source_result.open("rb") as src, target.open("xb") as dst:
-                while chunk := src.read(1024 * 1024):
-                    dst.write(chunk)
+            with target.open("xb") as dst:
+                dst.write(data)
             target.chmod(0o444)
             inputs[str(input_id)] = str(target)
     exports = {
