@@ -608,6 +608,7 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 
 ## Log
 
+- **T4.8 opt-in C4 CLI demo:** `4fc9c59` and its fixture prerequisites run the real C4 dispatcher through exact approval, one synthetic CPU job and a ready report, using private temporary state with the gateway disabled. The C3 CLI default is unchanged. Ruff, five focused tests and all **1,454 Python tests** passed in isolated shards. No live activation.
 - **T4.2 remote registered inputs:** `52298f8` reuses saved receipts and bounded file reads to stage exact bytes with the pinned remote source (source +118/−47; tests +75/−3). Ruff and 41 focused tests passed, including scripted transport. No live activation.
 - **T4.2 registered-result inputs:** `d345db4`, `0059442` bind local input receipts to exact completed producers and verify the bytes the wrapper consumes (source +104/−3; tests +132/−1). Ruff, 38 focused tests and all **1,451 Python tests** passed in isolated shards. Remote input requests refuse before staging.
 - **T4.8 browser create binding:** `a219e67` submits explicit C4 only with current project and executor support, without a C3 fallback (source +97/−2, tests +76/−0). Isolated Node 24 `make check` passed **1,440 Python, 41 web, and 51 gateway tests**; loopback owner acceptance also passed. The late unbound hosted-create refusal in `a8a8d4f` remains disabled until cutover.
