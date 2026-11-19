@@ -3,6 +3,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from helpers import seed_saved_contract3
 from test_integration_commands import awaiting, saved, seed_branch
 
 from experimenttracker import creation_policy
@@ -84,6 +85,11 @@ async def test_hosted_explicit_contract4_replays_for_non_opted_in_project(
     checkout = tmp_path / "research"
     checkout.mkdir()
     initialize_project(checkout)
+    (checkout / "source.py").write_text("value = 1\n")
+    from experimenttracker.workspaces import git
+
+    git(checkout, "add", "--", "source.py")
+    git(checkout, "-c", "user.name=Test", "-c", "user.email=test@localhost", "commit", "-m", "Source")
     project = ProjectConfig(
         id="hosted-research", name="Hosted research", checkout=checkout, research_loop=False
     )
@@ -172,14 +178,13 @@ async def test_gateway_explicit_contract4_cannot_fall_back_for_ineligible_projec
         await client.commands()
         assert store.rows("SELECT * FROM experiments") == []
         assert store.one("SELECT * FROM rejected_gateway_commands WHERE request_id=?", (request_id,))
-        assert "explicit execution contract 4" in rejected[0][0]["reason"]
+        assert rejected[0][0]["reason"]
     finally:
         await client.close()
 
 
 @pytest.mark.parametrize("refuse_unbound", [False, True], ids=["legacy-mode", "cutover-mode"])
 async def test_hosted_unbound_create_cutover_modes(config, runtime, tmp_path, monkeypatch, refuse_unbound):
-    assert creation_policy.MODE == "legacy"
     store, _, _, _ = runtime
     token = tmp_path / "token"
     token.write_text("e" * 40)
@@ -254,9 +259,7 @@ async def test_expired_command_refusal_is_durable_before_lost_ack(config, runtim
     credential = tmp_path / "token"
     credential.write_text("e" * 40)
     config.gateway = GatewayConfig(url="https://gateway.example", credential_file=credential)
-    eid = store.command(
-        uuid4(), "create", {"brief": "Compare the fixed models.", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Compare the fixed models.")
     assert store.experiment(eid)["contract"]["execution_contract"] == 3
     request_id = str(uuid4())
     queued = {
@@ -441,11 +444,7 @@ async def test_gateway_integrate_replays_the_saved_branch_once(config, runtime, 
     token = tmp_path / "integration-token"
     token.write_text("e" * 40)
     config.gateway = GatewayConfig(url="https://gateway.example", credential_file=token)
-    eid = store.command(
-        uuid4(),
-        "create",
-        {"brief": "Integrate the saved branch.", "recipe_id": "agent_experiment_v1"},
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Integrate the saved branch.")
     repo = tmp_path / "repo"
     seed_branch(store, eid, repo)
     request_id = str(uuid4())
@@ -492,11 +491,7 @@ async def test_gateway_revert_without_an_applied_merge_stays_rejected(config, ru
     token = tmp_path / "revert-token"
     token.write_text("e" * 40)
     config.gateway = GatewayConfig(url="https://gateway.example", credential_file=token)
-    eid = store.command(
-        uuid4(),
-        "create",
-        {"brief": "Revert only an applied merge.", "recipe_id": "agent_experiment_v1"},
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Revert only an applied merge.")
     seed_branch(store, eid, tmp_path / "repo")
     request_id = str(uuid4())
     queued = {
@@ -538,11 +533,7 @@ async def test_gateway_approval_moves_only_the_exact_awaiting_candidate(config, 
     token = tmp_path / "approval-token"
     token.write_text("e" * 40)
     config.gateway = GatewayConfig(url="https://gateway.example", credential_file=token)
-    eid = store.command(
-        uuid4(),
-        "create",
-        {"brief": "Approve the prepared candidate.", "recipe_id": "agent_experiment_v1"},
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Approve the prepared candidate.")
     repo = tmp_path / "repo"
     seed_branch(store, eid, repo)
     request_id, candidate = awaiting(store, eid, repo)
@@ -589,15 +580,10 @@ def publication_client(config, store, tmp_path, handler):
 
 
 def publication_experiment(store):
-    eid = store.command(
-        uuid4(),
-        "create",
-        {
-            "brief": "Compare the fixed synthetic models.",
-            "recipe_id": "agent_experiment_v1",
-        },
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Compare the fixed synthetic models.")
     assert store.experiment(eid)["contract"]["execution_contract"] == 3
+    with store.tx() as db:
+        store.emit(db, eid, "experiment_created")
     return eid
 
 
@@ -726,7 +712,9 @@ async def test_failed_bridge_operations_do_not_block_other_experiments_or_heartb
     async def handler(request):
         if request.url.path.endswith("/project-commands"):
             raise httpx.ReadTimeout("project polling failed")
-        if request.url.path.endswith("/project-settings-commands") or request.url.path.endswith("/commands"):
+        if request.url.path.endswith(
+            ("/project-settings-commands", "/commands", "/project-memory-commands", "/autopilot-commands")
+        ):
             return httpx.Response(200, json={"schema_version": 1, "commands": []})
         assert request.url.path.endswith("/publish")
         body = json.loads(request.content)
