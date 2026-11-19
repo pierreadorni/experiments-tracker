@@ -841,11 +841,7 @@ class Autopilot:
             elif name == "approve_experiment_objective":
                 eid = str(args.experiment_id)
                 member = self.member(eid)
-                if (
-                    not member
-                    or member["run_id"] != run["id"]
-                    or member["project_id"] != run["project_id"]
-                ):
+                if not member or member["run_id"] != run["id"] or member["project_id"] != run["project_id"]:
                     raise Conflict("C4 approval is outside this project's membership")
                 exp = self.store.experiment(eid)
                 if exp["contract"].get("execution_contract") != 4:

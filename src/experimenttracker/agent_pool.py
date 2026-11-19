@@ -291,7 +291,7 @@ class AgentPool:
             if not self.unchanged(proposal):
                 continue
             slot = self.free_connection(proposal)
-            if slot is None or not self.owner_free(proposal.owner):
+            if slot is None or not self.owner_free(proposal.owner, proposal.key):
                 continue
             self.start(proposal, slot)
 
@@ -356,7 +356,7 @@ class AgentPool:
                 return slot
         return None
 
-    def owner_free(self, owner):
+    def owner_free(self, owner, candidate=None):
         """A live claim or a saved unsettled row keeps its owner's next turn out.
 
         The claim covers the moment before a dispatch saves its intent; the source
@@ -373,16 +373,17 @@ class AgentPool:
                 f"SELECT 1 FROM agent_actions WHERE experiment_id=? AND state IN {UNSETTLED_STATES_SQL}",
                 (identity,),
             )
-        return not (
-            self.store.one(
-                f"SELECT 1 FROM project_turns WHERE project_id=? AND state IN {UNSETTLED_STATES_SQL}",
-                (identity,),
-            )
-            or self.store.one(
-                "SELECT 1 FROM autopilot_actions a JOIN autopilot_runs r ON r.id=a.run_id "
-                f"WHERE r.project_id=? AND a.state IN {UNSETTLED_STATES_SQL}",
-                (identity,),
-            )
+        if self.store.one(
+            f"SELECT 1 FROM project_turns WHERE project_id=? AND state IN {UNSETTLED_STATES_SQL}",
+            (identity,),
+        ):
+            return False
+        action_id = candidate[1] if candidate and candidate[0] == "autopilot_actions" else None
+        return not self.store.one(
+            "SELECT 1 FROM autopilot_actions a JOIN autopilot_runs r ON r.id=a.run_id "
+            f"WHERE r.project_id=? AND a.state IN {UNSETTLED_STATES_SQL} "
+            "AND (? IS NULL OR a.id<>?)",
+            (identity, action_id, action_id),
         )
 
     def start(self, proposal, slot):

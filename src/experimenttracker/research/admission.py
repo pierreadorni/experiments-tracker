@@ -117,8 +117,10 @@ def _check(workflow, experiment_id, action, request, db, *, remote_source=False,
             db=db,
             attributed_action_id=saved["id"],
         )
-    if latest is None or latest[0] != str(request.approval_request_id) or not (
-        owner_approval or orchestrator_approval
+    if (
+        latest is None
+        or latest[0] != str(request.approval_request_id)
+        or not (owner_approval or orchestrator_approval)
     ):
         raise ValueError("exact owner approval or attributed orchestrator approval required")
     if db.execute(
