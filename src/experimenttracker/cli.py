@@ -195,6 +195,7 @@ def main():
         "--brief", default="Compare linear and quadratic regression on the fixed shared synthetic dataset."
     )
     run.add_argument("--max-seconds", type=int, default=900)
+    run.add_argument("--contract", type=int, choices=(3, 4), default=3)
     serve = sub.add_parser("serve", help="run the single owning daemon and loopback API")
     serve.add_argument("--max-seconds", type=int, default=None)
     serve.add_argument("--release", help="exact tested software release to serve")
@@ -267,6 +268,12 @@ def main():
         print(json.dumps(result, indent=2))
         raise SystemExit(0 if result["ok"] else 1)
     if args.command == "demo":
+        if args.max_seconds < 1:
+            raise ValueError("max-seconds must be positive")
+        if args.contract == 4:
+            from .research.demo import run_contract4_demo
+
+            raise SystemExit(asyncio.run(run_contract4_demo(config, args.max_seconds)))
         raise SystemExit(asyncio.run(demo(config, args.brief, args.max_seconds)))
     if args.command == "workspaces":
         from .engine import legacy_workspaces
