@@ -4,6 +4,8 @@ import json
 from contextlib import contextmanager
 from uuid import uuid4
 
+from helpers import seed_saved_contract3
+
 from experimenttracker import early_repair
 from experimenttracker.cancellation import process_cancellations
 from experimenttracker.core import job_obligations
@@ -12,9 +14,7 @@ from experimenttracker.slurm import Observation
 
 
 def seed_job(store, *, state="submitted", job_id="123"):
-    eid = store.command(
-        uuid4(), "create", {"brief": "Synthetic observation mapping", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Synthetic observation mapping")
     intent_id = str(uuid4())
     with store.tx() as db:
         db.execute(

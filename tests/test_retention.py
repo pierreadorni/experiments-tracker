@@ -1,16 +1,16 @@
 import sqlite3
-from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3
 
 from experimenttracker.retention import compact_snapshot, compare, prune_batch, verify
 from experimenttracker.store import encode
 
 
 def history(store):
-    eid = store.command(
-        uuid4(), "create", {"brief": "Synthetic retention fixture", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Synthetic retention fixture")
+    with store.tx() as db:
+        store.emit(db, eid, "experiment_created")
     assert store.experiment(eid)["contract"]["execution_contract"] == 3
     # Legacy owners persisted a complete view per event. Keep these fixtures
     # explicit now that emit writes references only.

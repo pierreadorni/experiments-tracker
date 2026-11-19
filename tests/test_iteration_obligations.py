@@ -2,9 +2,9 @@
 
 import contextlib
 import sqlite3
-from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3
 
 from experimenttracker import clock
 from experimenttracker.core import obligations
@@ -29,9 +29,7 @@ class Injected(RuntimeError):
 
 
 def experiment(store, brief="Synthetic obligations experiment"):
-    return store.command(uuid4(), "create", {"brief": brief, "recipe_id": "agent_experiment_v1"})[
-        "experiment_id"
-    ]
+    return seed_saved_contract3(store, brief)
 
 
 def saved_fixture(store):
