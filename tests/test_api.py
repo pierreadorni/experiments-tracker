@@ -129,8 +129,17 @@ def test_create_explicit_contract4_and_invalid_discriminators(config, runtime, t
         assert len(store.rows("SELECT * FROM experiments")) == 1
 
 
-def test_stale_answer_rejected(config, runtime):
+def test_stale_answer_rejected(config, runtime, tmp_path, monkeypatch):
+    from experimenttracker import creation_policy
+
     store, scheduler, _, workflow = runtime
+    checkout = tmp_path / "research"
+    checkout.mkdir()
+    initialize_project(checkout)
+    project = ProjectConfig(id="research", name="Research", checkout=checkout, research_loop=True)
+    config.projects.append(project)
+    store.projects[project.id] = project
+    monkeypatch.setattr(creation_policy, "MODE", "candidate")
     app = create_app(config, components=(None, store, workflow))
     with TestClient(app) as client:
         headers = {"Authorization": "Bearer " + "t" * 40}
@@ -141,9 +150,10 @@ def test_stale_answer_rejected(config, runtime):
                 "request_id": str(uuid4()),
                 "brief": "A safe synthetic comparison.",
                 "recipe_id": "agent_experiment_v1",
+                "project_id": "research",
             },
         ).json()
-        assert store.experiment(result["experiment_id"])["contract"]["execution_contract"] == 3
+        assert store.experiment(result["experiment_id"])["contract"]["execution_contract"] == 4
         response = client.post(
             f"/api/experiments/{result['experiment_id']}/answers",
             headers=headers,
