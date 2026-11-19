@@ -291,9 +291,18 @@ def consume(store, eid, wakeup_ids, action_id, *, db=None, now=None):
         if saved is None:
             raise Conflict("not this experiment's saved event wakeup")
         if saved["event"] == ORCHESTRATOR_APPROVAL:
-            if predecessor is None:
-                raise Conflict("orchestrator approval has no completed requesting predecessor")
-            _orchestrator_approval(store, db, experiment, saved["source_id"], predecessor["id"])
+            pending = json.loads(experiment["pending_request"]) if experiment["pending_request"] else None
+            if (
+                predecessor is None
+                or not isinstance(pending, dict)
+                or pending.get("id") != saved["source_id"]
+                or pending.get("action_id") != predecessor["id"]
+                or pending.get("answer_source", {}).get("kind") != "orchestrator"
+            ):
+                raise Conflict("orchestrator approval has no exact completed requesting predecessor")
+            # record() validated current authority transactionally when it saved this
+            # wakeup. A later orchestrator revision must not strand that wakeup or
+            # replay the old approval as authority; the follow-up is informational.
         if saved["state"] == "pending":
             if saved["due_at"] > now:
                 raise Conflict("a wakeup before its coalescing window cannot be bound")

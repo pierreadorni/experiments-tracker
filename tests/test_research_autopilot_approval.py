@@ -198,10 +198,21 @@ def test_autopilot_approval_proof_is_exact_and_separate_from_owner_answer(runtim
 
     recorded = wakeups.record(store, eid, wakeups.ORCHESTRATOR_APPROVAL, request_id, now=now)
     assert wakeups.record(store, eid, wakeups.ORCHESTRATOR_APPROVAL, request_id, now=now) == recorded
+    # The orchestrator can change policy after saving approval but before this wake
+    # is consumed. That must become an informational follow-up, not stale authority.
+    with store.tx() as db:
+        db.execute("UPDATE autopilot_runs SET control_revision=control_revision+1 WHERE id=?", (run["id"],))
+    assert approved(store, eid, request_id, objective, now=now) is None
     follow_up = follow_up_turn(store, eid, now=now + 60)
     assert follow_up is not None
+    assert '"approved_by": "project orchestrator"' not in follow_up["input"]
+    assert "request a new approval" in follow_up["input"]
+    assert '"answer": "Approved by the project orchestrator."' not in follow_up["input"]
+    # Restore the fixture revision for the existing admission checks below.
+    with store.tx() as db:
+        db.execute("UPDATE autopilot_runs SET control_revision=control_revision-1 WHERE id=?", (run["id"],))
     assert store.experiment(eid)["pending_request"] is None
-    assert "PROJECT ORCHESTRATOR APPROVAL" in follow_up["input"]
+    assert "request a new approval" in follow_up["input"]
     assert "\nOWNER APPROVAL DECISION\n{" not in follow_up["input"]
     assert approved(store, eid, request_id, objective, now=now) is None
     assert (

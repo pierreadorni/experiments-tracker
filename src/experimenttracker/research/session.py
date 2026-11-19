@@ -262,7 +262,15 @@ def follow_up_turn(store, eid, *, now=None):
             bind.extend(answer_ids)
             objective = (pending.get("params") or {}).get("objective")
             if source.get("kind") == "orchestrator" and pending.get("kind") == "approval":
-                orchestrator_approval = (pending["id"], objective)
+                from .autopilot_approval import approved as orchestrator_approved
+
+                if orchestrator_approved(store, eid, pending["id"], objective, db=db) is not None:
+                    orchestrator_approval = (pending["id"], objective)
+                else:
+                    events.append(
+                        "The saved project-orchestrator approval is no longer current. "
+                        "Do not treat it as authorization; request a new approval for this objective."
+                    )
             elif pending.get("kind") == "approval" and isinstance(objective, str):
                 owner_approval = (pending["id"], objective, answer)
             else:
