@@ -562,14 +562,14 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 - [x] Follow-up dispatch loads the latest private checkpoint without copying its text into the saved action. Lost starts still reconcile by the exact dispatched prompt hash.
 - [x] Rotate at 80% of the reported context window, using only the last request of the exact settled turn and only when a private checkpoint can seed the new thread. The new thread and exact rendered prompt hash are saved before `turn/start`; prior identities stay unchanged.
 - [x] Remote observation saves exact accounting, retries output delivery at the saved cadence, and queues one wake only after delivery. T4.2 covers the full lost-submit lifecycle through the controller. See the [remote job source gates](notes/t4.3-remote-rollout.md).
-### [~] T4.4 Approval gate (manual review and Autopilot envelope) · F+R · S per subcard
+### [x] T4.4 Approval gate (manual review and Autopilot envelope) · F+R · S per subcard
 - [x] Durable manual approval requests through `ask_owner` and exact owner decision verification.
 - [x] Inert CPU-only admission validation checks the latest exact owner approval, saved action, pause/maintenance and resource limits.
 - [x] Persist exact local submission intents and reconciliation obligations; replay never authorizes another submit.
 - [x] Pinned source preparation and local dispatch helper; synthetic lost response recovers by exact intent without a second submit.
 - [x] Manual local submission is exposed through MCP and covered by the approval-to-report scenario.
 - [x] Current Autopilot compute authority further constrains human-approved C4 member submissions, including inside intent persistence. Paused/deferred members and out-of-scope writing-phase compute are refused.
-- Remaining: exact automatic approval within the owner’s saved Autopilot envelope.
+- [x] The authorized project orchestrator approves exact C4 objectives within the active Autopilot run and policy. A scripted run reaches a ready report without a human answer; stale approvals cannot authorize dispatch, and compute pause prevents submission. C4 remains CPU-only.
 ### [~] T4.5 UI for contract 4 (turns, checkpoint, jobs, approvals, report) · F · M
 - [x] Local detail shows research turns, checkpoint metadata and job status without the contract-3 stage timeline. A scripted FastAPI/SQLite loopback browser run accepts the exact objective and verifies identical replay.
 - [x] Report status and convenience exports use working-report semantics for C4. Local Worker/D1 tests cover durable answers, identical replay after clearance, and C4 pause/resume and next-turn steering. No private hosted deployment checked.
@@ -601,6 +601,7 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 
 ## Log
 
+- **T4.4 autonomous CPU approval:** `d4c195f` and preceding T4.4 commits add exact attributed project approval, wakeup, stale-proof recovery and intent admission, reusing the existing project tool, pool, and compute authority. Combined source +445/−23; tests +461/−13. The new source verifies approval from a distinct project authority at settlement and dispatch; manual proof cannot carry this attribution. Ruff, 11 reviewer-selected tests and all **1,433 Python tests** passed in isolated shards. No live activation.
 - **T4.6 failed-job checkpoint:** `4911f63` proves the latest saved private checkpoint seeds the debounced follow-up, without touching a prior successful job (source 0; tests +90/−2). Ruff and 40 focused tests passed. No live activation.
 - **T4.2 remote submission:** `c391fa0`, `55fc319`, `f7fac62`, `ee77448`, `1d4e5f9`, `aa0bd36` wire bounded preparation, saved staging evidence, one fresh send and exact replay/recovery through the controller. Combined source +209/−24; tests +495/−29. Ruff, 36 focused tests and all **1,428 Python tests** passed in isolation. No live remote dispatch or activation.
 - **T4.2 remote staging:** `be5beb8`, `b00bd9a`, `2792e81`, `5aed2cc`, `fe6f806` prepare, save and stage a CPU intent against its exact Jean Zay route. The upload is exported from the saved Git pin and retries use fresh pending destinations. Ruff, 48 focused tests and all **1,418 Python tests** passed in isolated shards. No send or live activation.
