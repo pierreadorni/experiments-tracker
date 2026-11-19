@@ -3,12 +3,14 @@ from uuid import uuid4
 import pytest
 from legacy_fixture import load_legacy_completed
 
+from experimenttracker import creation_policy
 from experimenttracker.models import CreateExperiment
 from experimenttracker.store import Conflict
 
 
-def test_only_brief_driven_creates_are_new_and_replays_stay_idempotent(runtime):
+def test_only_brief_driven_creates_are_new_and_replays_stay_idempotent(runtime, monkeypatch):
     store, _, _, workflow = runtime
+    monkeypatch.setattr(creation_policy, "MODE", "legacy")
     request_id = uuid4()
     payload = {
         "schema_version": 1,

@@ -2,7 +2,7 @@ import json
 from uuid import uuid4
 
 import pytest
-from helpers import role_step
+from helpers import role_step, seed_saved_contract3
 
 from experimenttracker import creation_policy
 from experimenttracker.agent_pool import project_owner
@@ -54,9 +54,7 @@ def activated(runtime, monkeypatch):
 
 def linked(service, run, gpus=1, minutes=2400):
     store = service.store
-    eid = store.command(
-        uuid4(), "create", {"brief": "Synthetic acceptance only", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Synthetic acceptance only")
     intent = str(uuid4())
     resources = JobResources(partition="test", gpus_per_job=gpus, walltime_minutes_per_job=minutes)
     with store.tx() as db:
@@ -273,6 +271,7 @@ def foundation(service, identity):
 
 
 def test_project_tools_lost_response_scoping_and_stale_documents(runtime, monkeypatch):
+    monkeypatch.setattr(creation_policy, "MODE", "legacy")
     service, run = activated(runtime, monkeypatch)
     identity = action(service, run)
     with pytest.raises(Conflict, match="not ready"):
@@ -403,6 +402,7 @@ def test_candidate_autopilot_create_links_c4_and_routes_objective_approval(
 
 
 def test_scoped_defer_user_pause_and_cancellation_replay(runtime, monkeypatch):
+    monkeypatch.setattr(creation_policy, "MODE", "legacy")
     service, run = activated(runtime, monkeypatch)
     identity = action(service, run)
     foundation(service, identity)
@@ -447,6 +447,7 @@ def test_scoped_defer_user_pause_and_cancellation_replay(runtime, monkeypatch):
 
 
 def test_investigation_review_and_cumulative_borrowing(runtime, monkeypatch):
+    monkeypatch.setattr(creation_policy, "MODE", "legacy")
     service, run = activated(runtime, monkeypatch)
     identity = action(service, run)
     foundation(service, identity)
@@ -529,6 +530,7 @@ def test_quota_policy_hysteresis_does_not_mutate_owner(runtime, monkeypatch):
 
 
 async def test_common_gate_one_240_hour_experiment_no_inference_on_reset(runtime, monkeypatch):
+    monkeypatch.setattr(creation_policy, "MODE", "legacy")
     import sys
 
     from experimenttracker import artifacts
@@ -795,6 +797,7 @@ async def test_gateway_autopilot_lost_ack_and_durable_refusal(runtime, config, t
 
 
 async def test_delegated_child_runs_contract_three_with_attributed_approval(runtime, monkeypatch):
+    monkeypatch.setattr(creation_policy, "MODE", "legacy")
     from unittest.mock import AsyncMock
 
     from test_iteration import IterationAgent
@@ -933,6 +936,7 @@ def test_project_guidance_change_wakes_and_invalidates_stale_authority(runtime, 
 
 
 def test_request_identity_cannot_cross_project_and_experiment_commands(runtime, monkeypatch):
+    monkeypatch.setattr(creation_policy, "MODE", "legacy")
     service, _ = activated(runtime, monkeypatch)
     request = str(uuid4())
     payload = {
@@ -967,9 +971,7 @@ def test_synthetic_agent_evidence_cannot_become_a_research_claim(runtime, monkey
     from experimenttracker.autopilot_tools import Source
 
     service, run = activated(runtime, monkeypatch)
-    eid = service.store.command(
-        uuid4(), "create", {"brief": "Synthetic agent fixture", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    eid = seed_saved_contract3(service.store, "Synthetic agent fixture")
     service.store.update(eid, snapshot={"plan": {"synthetic_demo": True}})
     with pytest.raises(Conflict, match="synthetic"):
         service.validate_sources(run, [Source(kind="experiment", id=eid)])

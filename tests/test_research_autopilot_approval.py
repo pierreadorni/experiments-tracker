@@ -2,6 +2,7 @@ import json
 from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract4
 from test_iteration_autopilot import activated
 
 from experimenttracker.autopilot import Autopilot
@@ -33,18 +34,10 @@ def test_orchestrator_approval_parser_requires_exact_shape():
 async def test_c4_approval_request_schedules_project_turn_with_exact_objective(runtime, monkeypatch):
     store, _, agent, wf = runtime
     service, run = activated(runtime, monkeypatch)
-    eid = store.command(
-        uuid4(), "create", {"brief": "Synthetic C4 scheduling fixture", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
-    experiment = store.experiment(eid)
-    contract = experiment["contract"]
-    contract.update(execution_contract=4, project={"id": "test-project"})
+    eid = seed_saved_contract4(store, "Synthetic C4 scheduling fixture")
     action_id, request_id = str(uuid4()), uuid4()
     with store.tx() as db:
-        db.execute(
-            "UPDATE experiments SET contract=?,thread_id='research-thread' WHERE id=?",
-            (encode(contract), eid),
-        )
+        db.execute("UPDATE experiments SET thread_id='research-thread' WHERE id=?", (eid,))
         db.execute(
             "INSERT INTO autopilot_members VALUES(?,?,?,'question','exploration','test',0,1,0,NULL,'[]',?)",
             (eid, run["id"], "test-project", 1_000_000),
@@ -119,12 +112,10 @@ def test_autopilot_approval_proof_is_exact_and_separate_from_owner_answer(runtim
     service.command("test-project", {"request_id": str(uuid4()), "kind": "activate", "expected_revision": 1})
     run = service.run("test-project")
 
-    eid = store.command(
-        uuid4(), "create", {"brief": "Synthetic C4 proof", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    eid = seed_saved_contract4(store, "Synthetic C4 proof")
     experiment = store.experiment(eid)
     contract = experiment["contract"]
-    contract["execution_contract"] = 4
+    assert contract["execution_contract"] == 4
     request_id = str(uuid4())
     objective = "Run the proposed CPU comparison"
     with store.tx() as db:

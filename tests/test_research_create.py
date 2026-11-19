@@ -41,6 +41,7 @@ def test_status_advertises_candidate_create_default_without_changing_legacy_opt_
     config, runtime, tmp_path, monkeypatch
 ):
     _, _, _, workflow = runtime
+    monkeypatch.setattr(creation_policy, "MODE", "legacy")
     config.projects.extend(
         [
             ProjectConfig(id="anyup-rs", name="Research", checkout=tmp_path / "research", research_loop=True),
@@ -58,9 +59,10 @@ def test_status_advertises_candidate_create_default_without_changing_legacy_opt_
     assert candidate["research_loop_projects"] == ["anyup-rs"]
 
 
-def test_unflagged_project_keeps_the_contract_3_stage_create(runtime, config, tmp_path):
+def test_unflagged_project_keeps_the_contract_3_stage_create(runtime, config, tmp_path, monkeypatch):
     store, _, _, _ = runtime
     _, checkout = git_project(config, store, tmp_path, research_loop=False)
+    monkeypatch.setattr(creation_policy, "MODE", "legacy")
     _, _, receipt = create(store)
     exp = store.projection(receipt["experiment_id"])
     assert exp["contract"]["execution_contract"] == 3
@@ -108,6 +110,7 @@ def test_saved_c3_create_replays_unchanged_after_candidate_policy(runtime, monke
         "brief": "Preserve a previously saved contract-three create.",
         "recipe_id": "agent_experiment_v1",
     }
+    monkeypatch.setattr(creation_policy, "MODE", "legacy")
     original = store.command(request_id, "create", payload)
     eid = original["experiment_id"]
     assert store.experiment(eid)["contract"]["execution_contract"] == 3
@@ -118,8 +121,9 @@ def test_saved_c3_create_replays_unchanged_after_candidate_policy(runtime, monke
     assert len(store.rows("SELECT * FROM experiments")) == 1
 
 
-def test_explicit_contract4_is_exact_and_requires_project_opt_in(runtime, config, tmp_path):
+def test_explicit_contract4_is_exact_and_requires_project_opt_in(runtime, config, tmp_path, monkeypatch):
     store, _, _, _ = runtime
+    monkeypatch.setattr(creation_policy, "MODE", "legacy")
     # An explicit C4 request must not fall back on an opted-out project.
     with pytest.raises(Conflict, match="not enabled and eligible"):
         create(store, project_id="test-project", execution_contract=4)
@@ -229,8 +233,9 @@ def test_flagged_project_without_a_checkout_is_refused(runtime):
     assert store.rows("SELECT * FROM experiments") == []
 
 
-def test_restart_with_the_flag_removed_keeps_the_saved_contract_4(runtime, config, tmp_path):
+def test_restart_with_the_flag_removed_keeps_the_saved_contract_4(runtime, config, tmp_path, monkeypatch):
     store, _, _, _ = runtime
+    monkeypatch.setattr(creation_policy, "MODE", "legacy")
     project, _ = git_project(config, store, tmp_path, research_loop=True)
     request_id, payload, receipt = create(store)
     eid = receipt["experiment_id"]
