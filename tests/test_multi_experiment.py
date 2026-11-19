@@ -5,7 +5,7 @@ import json
 from uuid import uuid4
 
 import pytest
-from helpers import IterationAgent, approve_plan, until, wait_until
+from helpers import IterationAgent, approve_plan, seed_saved_contract3, until, wait_until
 
 from experimenttracker.config import ProjectConfig
 from experimenttracker.slurm import Observation
@@ -13,12 +13,13 @@ from experimenttracker.workflow import Workflow
 
 
 def create(store, **extra):
-    eid = store.command(
-        uuid4(),
-        "create",
-        {"brief": "Exercise synthetic iteration mechanisms.", "recipe_id": "agent_experiment_v1", **extra},
-    )["experiment_id"]
-    assert store.experiment(eid)["contract"]["execution_contract"] == 3
+    from experimenttracker import clock
+
+    eid = seed_saved_contract3(store, **extra)
+    # Preserve the enqueue order these concurrency scenarios previously got from create.
+    now = clock.now()
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET created_at=?,updated_at=? WHERE id=?", (now, now, eid))
     return eid
 
 

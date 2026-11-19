@@ -238,9 +238,10 @@ def seed_saved_contract3(
     *,
     project_id="test-project",
     branch_workspace=False,
+    workspace_mode="auto",
 ):
     """Insert the minimal saved C3 shape directly, without invoking current create policy."""
-    return _seed_saved_experiment(store, brief, 3, project_id, branch_workspace)
+    return _seed_saved_experiment(store, brief, 3, project_id, branch_workspace, workspace_mode)
 
 
 def seed_saved_contract4(store, brief, *, branch_workspace=False):
@@ -248,7 +249,9 @@ def seed_saved_contract4(store, brief, *, branch_workspace=False):
     return _seed_saved_experiment(store, brief, 4, "test-project", branch_workspace)
 
 
-def _seed_saved_experiment(store, brief, execution_contract, project_id, branch_workspace):
+def _seed_saved_experiment(
+    store, brief, execution_contract, project_id, branch_workspace, workspace_mode="auto"
+):
     from experimenttracker.execution_settings import ExecutionSettings
 
     eid = str(uuid4())
@@ -262,7 +265,7 @@ def _seed_saved_experiment(store, brief, execution_contract, project_id, branch_
         "reporting_version": 1,
         **({"planning_version": 1} if execution_contract == 3 else {}),
         "execution_contract": execution_contract,
-        "workspace_mode": "auto",
+        "workspace_mode": workspace_mode,
         "execution": ExecutionSettings().model_dump(),
         "project": {
             "id": project.id,
