@@ -573,12 +573,13 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 ### [~] T4.5 UI for contract 4 (turns, checkpoint, jobs, approvals, report) · F · M
 - [x] Local detail shows research turns, checkpoint metadata and job status without the contract-3 stage timeline. A scripted FastAPI/SQLite loopback browser run accepts the exact objective and verifies identical replay.
 - [x] Report status and convenience exports use working-report semantics for C4. Local Worker/D1 tests cover durable answers, identical replay after clearance, and C4 pause/resume and next-turn steering. No private hosted deployment checked.
-### [~] T4.6 Contract 4 scenario suite (design.md C12 list) · F · M per subcard
+### [x] T4.6 Contract 4 scenario suite (design.md C12 list) · F · M per subcard
 - [x] Approval → one submit with lost reply → exact adoption → debounced terminal wake → registered result → ready report → completed experiment. Model turns are scripted; no live scheduler.
 - [x] Owner pause/reopen/resume, healthy job observation without an inference turn, and concurrent branch edits that do not change the base checkout.
 - [x] Quota denial → owner restart → admission dispatches the same pending action once. One branch waiting on an owner question does not block a second branch; the debounced answer only reaches the question's thread.
 - [x] A failed figure call preserves metrics and still allows a metrics-only report and completion. The watchdog reports a C4 experiment with no open obligation after the grace interval without dispatching or changing work.
 - [x] A valid `done` opt-in queues integration through C6 in the completion transaction; opt-out, Don't merge and an already-queued request do not add a merge.
+- [x] Steering wakes an idle C4 thread once with the saved guidance; a lost turn start is reconciled only to the exact saved turn, without redispatch.
 - [x] A failed job wakes a real C4 dispatcher follow-up with the latest private checkpoint; the earlier successful job stays complete and no compute is replayed.
 - [x] Two actual C4 completion requests edit the same tracked file. The C6 queue merges the first, resolves the second with one scripted integrator turn, checks and applies that candidate, and performs no extra turn or merge on repeat.
 ### [x] T4.7 Live pilot — owner-authorized, small brief, measure turns, tokens and interventions · owner + S
@@ -601,6 +602,7 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 
 ## Log
 
+- **T4.6 scenario closeout:** `cb841e8` covers idle C4 steering on the saved thread (source 0; tests +39/−0). Ruff and 44 coordinator-selected tests passed. The scripted remote lifecycle and lost-turn readback tests cover the remaining C12 cases. No live activation.
 - **T4.8 explicit create binding:** `ddfdbab` binds an explicit C4 create in the executor; `ae6b920` adds Worker validation, exact replay, and a 90-second capability gate for new explicit requests. In an isolated Node 24 checkout, all **1,436 Python, 37 web and 51 gateway tests** passed. Gateway formatting was corrected after the first `make check`; the remaining frontend and gateway checks then passed, including build and typecheck. No client or default switch; no deployment.
 - **T4.4 autonomous CPU approval:** `d4c195f` and preceding T4.4 commits add exact attributed project approval, wakeup, stale-proof recovery and intent admission, reusing the existing project tool, pool, and compute authority. Combined source +445/−23; tests +461/−13. The new source verifies approval from a distinct project authority at settlement and dispatch; manual proof cannot carry this attribution. Ruff, 11 reviewer-selected tests and all **1,433 Python tests** passed in isolated shards. No live activation.
 - **T4.6 failed-job checkpoint:** `4911f63` proves the latest saved private checkpoint seeds the debounced follow-up, without touching a prior successful job (source 0; tests +90/−2). Ruff and 40 focused tests passed. No live activation.
