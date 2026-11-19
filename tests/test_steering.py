@@ -99,7 +99,9 @@ class WaitingScheduler:
         return "12345"
 
 
-async def test_restart_cancels_only_saved_job_and_creates_one_replacement(runtime):
+async def test_restart_cancels_only_saved_job_and_creates_one_replacement(runtime, monkeypatch):
+    # This case covers C3-to-C3 replacement; cutover has separate C3-to-C4 cases.
+    monkeypatch.setattr(creation_policy, "MODE", "legacy")
     store, _, _, old = runtime
     scheduler = WaitingScheduler()
     workflow = Workflow(old.config, store, scheduler, IterationAgent())
@@ -164,7 +166,8 @@ async def test_implementation_drift_requires_a_second_approval(runtime):
     await workflow.close()
 
 
-async def test_failed_run_restart_reconciles_a_job_that_was_last_seen_running(runtime):
+async def test_failed_run_restart_reconciles_a_job_that_was_last_seen_running(runtime, monkeypatch):
+    monkeypatch.setattr(creation_policy, "MODE", "legacy")
     store, _, _, old = runtime
     scheduler = WaitingScheduler()
     workflow = Workflow(old.config, store, scheduler, IterationAgent())
