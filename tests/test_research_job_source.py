@@ -203,7 +203,7 @@ async def test_dispatch_wrapper_consumes_registered_result_and_rejects_tampering
     assert store.one("SELECT 1 FROM jobs WHERE intent_id=?", (linked_request["request_id"],)) is None
 
 
-async def test_remote_registered_result_refusal_precedes_dispatch(runtime, tmp_path, monkeypatch):
+async def test_remote_unregistered_result_refusal_precedes_dispatch(runtime, tmp_path, monkeypatch):
     store, scheduler, _, workflow = runtime
     _, eid, action, request = setup_request(workflow, tmp_path)
     request["result_file"] = "results/result.json"
@@ -213,7 +213,7 @@ async def test_remote_registered_result_refusal_precedes_dispatch(runtime, tmp_p
     with store.tx() as db:
         db.execute("UPDATE experiments SET contract=? WHERE id=?", (json.dumps(contract), eid))
     root = workflow.projects.base_root(eid) / "attempts" / request["request_id"]
-    with pytest.raises(ValueError, match="not supported for remote submissions"):
+    with pytest.raises(ValueError, match="inputs must name registered results"):
         await prepare_remote(workflow, eid, action, request)
     assert not root.exists()
     assert scheduler.submissions == 0
@@ -272,6 +272,46 @@ async def test_prepare_remote_resolves_per_intent_jean_zay_route_without_dispatc
     store, scheduler, _, workflow = runtime
     _, eid, action, request = setup_request(workflow, tmp_path)
     request["result_file"] = "results/result.json"
+    producer_id = str(uuid4())
+    producer_root = workflow.projects.base_root(eid) / "attempts" / producer_id
+    producer_root.mkdir(parents=True)
+    with store.tx() as db:
+        db.execute(
+            "INSERT INTO stages(experiment_id,id,state,attempt,updated_at) "
+            "VALUES(?,'producer','complete',1,0)",
+            (eid,),
+        )
+        db.execute(
+            "INSERT INTO jobs(intent_id,experiment_id,stage_id,attempt,state,job_id,script_hash,resources,"
+            "snapshot_hash,created_at,execution_root,execution_manifest,ended_at) "
+            "VALUES(?,?,'producer',1,'complete','123','s','{}','h',0,?,?,1)",
+            (producer_id, eid, str(producer_root), json.dumps({"executor": "slurm"})),
+        )
+    (producer_root / "result.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "protocol": "registered remote input",
+                "metrics": [{"name": "loss", "variant": "baseline", "value": 1, "unit": "unit"}],
+            }
+        )
+    )
+    input_id = uuid4()
+    register_result(
+        workflow,
+        store.experiment(eid),
+        action,
+        {"request_id": str(input_id), "intent_id": producer_id, "path": "result.json"},
+    )
+    request["inputs"] = [str(input_id)]
+    request["command"] = [
+        sys.executable,
+        "-c",
+        "import json,os; from pathlib import Path; "
+        "inputs=json.loads(os.environ['EXPERIMENT_INPUTS']); "
+        "Path(os.environ['EXPERIMENT_ROOT'],'consumed.json').write_text("
+        "Path(inputs[next(iter(inputs))]).read_text())",
+    ]
     request["request_id"] = request["request_id"].upper()
     canonical_intent = str(UUID(request["request_id"]))
     store.command(
@@ -322,7 +362,7 @@ async def test_prepare_remote_resolves_per_intent_jean_zay_route_without_dispatc
     assert captured["_attempt_id"] == canonical_intent
     assert captured["_attempt_root"] == str(prepared.root)
     assert prepared.script.is_file() and prepared.prepared.commit == prepared.commit
-    assert not store.rows("SELECT * FROM jobs")
+    assert store.one("SELECT 1 FROM jobs WHERE intent_id=?", (canonical_intent,)) is None
     job, created = save(workflow, eid, action, request, prepared.prepared, execution=prepared.execution)
     assert created
     manifest = json.loads(job["execution_manifest"])
@@ -360,6 +400,16 @@ async def test_prepare_remote_resolves_per_intent_jean_zay_route_without_dispatc
             return staged.get(args[-1], "absent")
         raise AssertionError(args)
 
+    staged_input = Path(job["execution_root"]) / "inputs" / f"{input_id}.json"
+    saved_input = staged_input.read_bytes()
+    staged_input.chmod(0o600)
+    staged_input.write_bytes(b"conflicting bytes")
+    with pytest.raises(ValueError, match="staged input changed"):
+        await remote_scheduler.stage_research_source(job)
+    assert remote_calls == [] and rsync_calls == []
+    staged_input.write_bytes(saved_input)
+    staged_input.chmod(0o444)
+
     fail_upload = True
 
     async def scripted_rsync(*args, **kwargs):
@@ -367,6 +417,28 @@ async def test_prepare_remote_resolves_per_intent_jean_zay_route_without_dispatc
         rsync_calls.append(args)
         local = Path(args[-2].rstrip("/"))
         assert (local / "source" / "comparison.py").read_text() == expected_source
+        remote_input = local / "inputs" / f"{input_id}.json"
+        assert remote_input.read_bytes() == saved_input
+        wrapper = (local / "job.sh").read_text()
+        paths = json.loads(
+            next(
+                line.split("=", 1)[1].strip("'\"")
+                for line in wrapper.splitlines()
+                if line.startswith("export EXPERIMENT_INPUTS=")
+            )
+        )
+        remote_run = prepared.execution["layout"]["remote_run"]
+        assert paths == {str(input_id): remote_run + "/c4-source/inputs/" + str(input_id) + ".json"}
+        local_run = tmp_path / "scripted-remote"
+        local_run.mkdir(exist_ok=True)
+        rewritten = wrapper.replace(remote_run + "/c4-source/source", str(local / "source"))
+        rewritten = rewritten.replace(remote_run + "/c4-source/inputs", str(local / "inputs"))
+        rewritten = rewritten.replace(remote_run, str(local_run))
+        script = local / "scripted-job.sh"
+        script.write_text(rewritten)
+        process = await asyncio.create_subprocess_exec("/bin/sh", str(script))
+        assert await process.wait() == 0
+        assert json.loads((local_run / "consumed.json").read_text())["protocol"] == "registered remote input"
         pending_path = args[-1].split(":", 1)[1].rstrip("/")
         if fail_upload:
             fail_upload = False

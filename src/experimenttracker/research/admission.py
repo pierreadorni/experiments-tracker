@@ -123,8 +123,6 @@ def _check(workflow, experiment_id, action, request, db, *, remote_source=False,
             raise ValueError(
                 "dependencies must be saved complete jobs; wait for the terminal wake, then request"
             )
-    if request.inputs and remote_source:
-        raise ValueError("registered-result inputs are not supported for remote submissions")
     total = 0
     for input_id in request.inputs:
         event = db.execute(

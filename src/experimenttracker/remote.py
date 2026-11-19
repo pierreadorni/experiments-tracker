@@ -641,6 +641,7 @@ class RemoteSlurmScheduler(SlurmScheduler):
         if not isinstance(commit, str) or job.get("snapshot_hash") != commit:
             raise ValueError("remote staging requires the exact pinned commit")
         from .engine import gitworkspace
+        from .research.job_source import read_staged_input, verify_staged_inputs
         from .workspaces import git
 
         branch = self.workflow.workspaces.branch(self.exp["id"])
@@ -652,12 +653,23 @@ class RemoteSlurmScheduler(SlurmScheduler):
         if pin != commit:
             raise ValueError("remote staging requires the exact saved Git pin")
         self.layout = layout
-        marker = json.dumps({"intent_id": job["intent_id"], "commit": commit}, sort_keys=True)
+        input_receipts = verify_staged_inputs(
+            self.workflow, self.exp["id"], request, Path(job["execution_root"])
+        )
+        marker = json.dumps(
+            {"intent_id": job["intent_id"], "commit": commit, "inputs": input_receipts}, sort_keys=True
+        )
         remote_root = layout["remote_run"]
         final = remote_root + "/c4-source"
+        remote_inputs = {input_id: final + "/inputs/" + input_id + ".json" for input_id in input_receipts}
         exports = {
             "EXPERIMENT_ROOT": remote_root,
             "EXPERIMENT_SOURCE": final + "/source",
+            **(
+                {"EXPERIMENT_INPUTS": json.dumps(remote_inputs, sort_keys=True, separators=(",", ":"))}
+                if remote_inputs
+                else {}
+            ),
             "OMP_NUM_THREADS": str(request.resources.cpus_per_job),
             "OPENBLAS_NUM_THREADS": str(request.resources.cpus_per_job),
             "MKL_NUM_THREADS": str(request.resources.cpus_per_job),
@@ -683,6 +695,18 @@ class RemoteSlurmScheduler(SlurmScheduler):
                 max_archive_bytes=32 * 1024 * 1024,
                 max_source_bytes=16 * 1024 * 1024,
             )
+            if input_receipts:
+                input_dir = bundle / "inputs"
+                input_dir.mkdir()
+                for input_id in input_receipts:
+                    staged = Path(job["execution_root"]) / "inputs" / f"{input_id}.json"
+                    target = input_dir / f"{input_id}.json"
+                    data = await asyncio.to_thread(read_staged_input, staged)
+                    receipt = input_receipts[input_id]
+                    if len(data) != receipt["size"] or hashlib.sha256(data).hexdigest() != receipt["sha256"]:
+                        raise ValueError("registered-result staged input changed during remote staging")
+                    target.write_bytes(data)
+                    target.chmod(0o444)
             (bundle / "intent.json").write_text(marker + "\n")
             (bundle / "job.sh").write_text(wrapper)
             (bundle / "job.sh").chmod(0o444)

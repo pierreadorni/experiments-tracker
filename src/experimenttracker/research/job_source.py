@@ -16,6 +16,98 @@ from .admission import MAX_INPUT_BYTES, preflight
 from .job_intent import PreparedJob
 
 
+def stage_registered_inputs(workflow, experiment_id, request, root):
+    """Copy admitted inputs and return their exact saved receipt identities."""
+    inputs = {}
+    if not request.inputs:
+        return inputs
+    input_root = root / "inputs"
+    input_root.mkdir(mode=0o700)
+    for input_id in request.inputs:
+        receipt = workflow.store.one(
+            "SELECT payload FROM events WHERE kind='research_result_registered' "
+            "AND json_extract(payload,'$.request_id')=? AND experiment_id=? LIMIT 1",
+            (str(input_id), experiment_id),
+        )
+        if receipt is None:
+            raise ValueError("registered-result input receipt disappeared during preparation")
+        item = json.loads(receipt["payload"])
+        artifact = workflow.store.one(
+            "SELECT size,sha256 FROM artifacts WHERE id=? AND experiment_id=?",
+            (item["artifact_id"], experiment_id),
+        )
+        if artifact is None or item.get("name") != f"result-{input_id}.json":
+            raise ValueError("registered-result artifact identity is invalid")
+        base_root = Path(workflow.projects.base_root(experiment_id))
+        source_result = base_root / item["name"]
+        try:
+            if source_result.resolve(strict=True).parent != base_root.resolve(strict=True):
+                raise ValueError("registered-result artifact is outside its root")
+            if not stat.S_ISREG(source_result.lstat().st_mode):
+                raise ValueError("registered-result artifact must be a regular file")
+            descriptor = os.open(source_result, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except OSError as exc:
+            raise ValueError("registered-result artifact is missing or not a regular file") from exc
+        with os.fdopen(descriptor, "rb") as src:
+            if not stat.S_ISREG(os.fstat(src.fileno()).st_mode):
+                raise ValueError("registered-result artifact must be a regular file")
+            data = src.read(MAX_INPUT_BYTES + 1)
+        if (
+            len(data) != artifact["size"]
+            or len(data) > MAX_INPUT_BYTES
+            or hashlib.sha256(data).hexdigest() != artifact["sha256"]
+        ):
+            raise ValueError("registered immutable result changed")
+        target = input_root / f"{input_id}.json"
+        with target.open("xb") as dst:
+            dst.write(data)
+        target.chmod(0o444)
+        inputs[str(input_id)] = str(target)
+    return inputs
+
+
+def verify_staged_inputs(workflow, experiment_id, request, root):
+    """Recheck staged bytes against the current receipt before remote transport."""
+    expected = {}
+    for input_id in request.inputs:
+        receipt = workflow.store.one(
+            "SELECT payload FROM events WHERE kind='research_result_registered' "
+            "AND json_extract(payload,'$.request_id')=? AND experiment_id=? LIMIT 1",
+            (str(input_id), experiment_id),
+        )
+        if receipt is None:
+            raise ValueError("registered-result input receipt disappeared during staging")
+        item = json.loads(receipt["payload"])
+        artifact = workflow.store.one(
+            "SELECT size,sha256 FROM artifacts WHERE id=?", (item.get("artifact_id"),)
+        )
+        if (
+            artifact is None
+            or item.get("name") != f"result-{input_id}.json"
+            or item.get("size") != artifact["size"]
+            or item.get("sha256") != artifact["sha256"]
+        ):
+            raise ValueError("registered-result artifact identity is invalid")
+        path = root / "inputs" / f"{input_id}.json"
+        try:
+            data = read_staged_input(path)
+        except OSError as exc:
+            raise ValueError("registered-result staged input is missing") from exc
+        if len(data) != artifact["size"] or hashlib.sha256(data).hexdigest() != artifact["sha256"]:
+            raise ValueError("registered-result staged input changed")
+        expected[str(input_id)] = {"size": artifact["size"], "sha256": artifact["sha256"]}
+    return expected
+
+
+def read_staged_input(path):
+    """Read bounded bytes without following a link or blocking on a FIFO."""
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise ValueError("registered-result staged input is not a regular file")
+        return stream.read(MAX_INPUT_BYTES + 1)
+
+
 class PreparedSource(StrictModel):
     prepared: PreparedJob
     root: Path
@@ -58,50 +150,7 @@ def prepare(workflow, experiment_id, action, request, *, remote_source=False):
             else {}
         ),
     )
-    inputs = {}
-    if request.inputs:
-        input_root = root / "inputs"
-        input_root.mkdir(mode=0o700)
-        for input_id in request.inputs:
-            receipt = workflow.store.one(
-                "SELECT payload FROM events WHERE kind='research_result_registered' "
-                "AND json_extract(payload,'$.request_id')=? AND experiment_id=? LIMIT 1",
-                (str(input_id), experiment_id),
-            )
-            if receipt is None:
-                raise ValueError("registered-result input receipt disappeared during preparation")
-            item = json.loads(receipt["payload"])
-            artifact = workflow.store.one(
-                "SELECT size,sha256 FROM artifacts WHERE id=? AND experiment_id=?",
-                (item["artifact_id"], experiment_id),
-            )
-            if artifact is None or item.get("name") != f"result-{input_id}.json":
-                raise ValueError("registered-result artifact identity is invalid")
-            base_root = Path(workflow.projects.base_root(experiment_id))
-            source_result = base_root / item["name"]
-            try:
-                if source_result.resolve(strict=True).parent != base_root.resolve(strict=True):
-                    raise ValueError("registered-result artifact is outside its root")
-                if not stat.S_ISREG(source_result.lstat().st_mode):
-                    raise ValueError("registered-result artifact must be a regular file")
-                descriptor = os.open(source_result, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-            except OSError as exc:
-                raise ValueError("registered-result artifact is missing or not a regular file") from exc
-            target = input_root / f"{input_id}.json"
-            with os.fdopen(descriptor, "rb") as src:
-                if not stat.S_ISREG(os.fstat(src.fileno()).st_mode):
-                    raise ValueError("registered-result artifact must be a regular file")
-                data = src.read(MAX_INPUT_BYTES + 1)
-            if (
-                len(data) != artifact["size"]
-                or len(data) > MAX_INPUT_BYTES
-                or hashlib.sha256(data).hexdigest() != artifact["sha256"]
-            ):
-                raise ValueError("registered immutable result changed")
-            with target.open("xb") as dst:
-                dst.write(data)
-            target.chmod(0o444)
-            inputs[str(input_id)] = str(target)
+    inputs = stage_registered_inputs(workflow, experiment_id, request, root)
     exports = {
         "EXPERIMENT_ROOT": str(root),
         "EXPERIMENT_SOURCE": str(source),
