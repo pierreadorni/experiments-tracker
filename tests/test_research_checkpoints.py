@@ -4,6 +4,7 @@ import json
 from uuid import UUID, uuid4
 
 import pytest
+from helpers import seed_saved_contract4
 from pydantic import ValidationError
 
 from experimenttracker.codex_client import NeedsAttention
@@ -20,14 +21,7 @@ BRIEF = "Compare two toy optimizers under one fixed compute budget."
 
 
 def contract_four_experiment(store):
-    eid = store.command(uuid4(), "create", {"brief": BRIEF, "recipe_id": "agent_experiment_v1"})[
-        "experiment_id"
-    ]
-    contract = store.experiment(eid)["contract"]
-    contract["execution_contract"] = 4
-    with store.tx() as db:
-        db.execute("UPDATE experiments SET contract=? WHERE id=?", (json.dumps(contract), eid))
-    return eid
+    return seed_saved_contract4(store, BRIEF)
 
 
 def setup(runtime):

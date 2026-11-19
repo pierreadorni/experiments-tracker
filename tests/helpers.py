@@ -240,6 +240,15 @@ def seed_saved_contract3(
     branch_workspace=False,
 ):
     """Insert the minimal saved C3 shape directly, without invoking current create policy."""
+    return _seed_saved_experiment(store, brief, 3, project_id, branch_workspace)
+
+
+def seed_saved_contract4(store, brief, *, branch_workspace=False):
+    """Seed a C4 row for unit tests that exercise saved state, not workspace creation."""
+    return _seed_saved_experiment(store, brief, 4, "test-project", branch_workspace)
+
+
+def _seed_saved_experiment(store, brief, execution_contract, project_id, branch_workspace):
     from experimenttracker.execution_settings import ExecutionSettings
 
     eid = str(uuid4())
@@ -251,14 +260,14 @@ def seed_saved_contract3(
         "recovery_turns": 1,
         "brief_driven": True,
         "reporting_version": 1,
-        "planning_version": 1,
-        "execution_contract": 3,
+        **({"planning_version": 1} if execution_contract == 3 else {}),
+        "execution_contract": execution_contract,
         "workspace_mode": "auto",
         "execution": ExecutionSettings().model_dump(),
         "project": {
             "id": project.id,
             "name": project.name,
-            **({"writable": True} if branch_workspace else {}),
+            **({"writable": True} if execution_contract == 3 and branch_workspace else {}),
         },
         **({"branch_workspace": True} if branch_workspace else {}),
     }
@@ -267,7 +276,7 @@ def seed_saved_contract3(
             "INSERT INTO experiments(id,brief,recipe_id,contract,created_at,updated_at) VALUES(?,?,?,?,0,0)",
             (eid, brief, "agent_experiment_v1", encode(contract)),
         )
-        if branch_workspace:
+        if execution_contract == 3 and branch_workspace:
             assert project.writable and project.checkout is not None
             folder = project.checkout.resolve(strict=True)
             info = folder.stat()
@@ -281,13 +290,14 @@ def seed_saved_contract3(
                     str(folder / ".experimenttracker/experiments" / eid),
                 ),
             )
-        db.executemany(
-            "INSERT INTO stages(experiment_id,id,updated_at,ordinal) VALUES(?,?,0,?)",
-            [
-                (eid, stage, ordinal)
-                for ordinal, stage in enumerate(("plan", "prepare", "interpret", "publish"))
-            ],
-        )
+        if execution_contract == 3:
+            db.executemany(
+                "INSERT INTO stages(experiment_id,id,updated_at,ordinal) VALUES(?,?,0,?)",
+                [
+                    (eid, stage, ordinal)
+                    for ordinal, stage in enumerate(("plan", "prepare", "interpret", "publish"))
+                ],
+            )
     assert store.experiment(eid)["contract"] == contract
     return eid
 

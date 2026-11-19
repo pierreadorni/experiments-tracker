@@ -13,9 +13,10 @@ from experimenttracker.research.tools import JobLogs, JobStatus
 
 def add_job(store, eid, intent, root, *, job_id="123", state="failed", attempt=1, created_at=0):
     with store.tx() as db:
+        db.execute("INSERT OR IGNORE INTO stages(experiment_id,id,updated_at) VALUES(?,'research',0)", (eid,))
         db.execute(
             "INSERT INTO jobs(intent_id,experiment_id,stage_id,attempt,state,job_id,script_hash,resources,"
-            "snapshot_hash,created_at,execution_root) VALUES(?,?,'prepare',?,?,?,?,?,?,?,?)",
+            "snapshot_hash,created_at,execution_root) VALUES(?,?,'research',?,?,?,?,?,?,?,?)",
             (intent, eid, attempt, state, job_id, "s", "{}", "h", created_at, str(root)),
         )
     return intent

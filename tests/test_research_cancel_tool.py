@@ -20,11 +20,12 @@ from experimenttracker.slurm import Observation
 from experimenttracker.store import encode
 
 
-def saved_job(store, eid, *, stage_id="prepare", executor=None, job_id="101", state="submitted"):
+def saved_job(store, eid, *, stage_id="research", executor=None, job_id="101", state="submitted"):
     """Record one saved Slurm intent for an experiment (no scheduler contact)."""
     intent_id = str(uuid4())
     manifest = json.dumps({"executor": executor}) if executor else None
     with store.tx() as db:
+        db.execute("INSERT OR IGNORE INTO stages(experiment_id,id,updated_at) VALUES(?,?,0)", (eid, stage_id))
         db.execute(
             "INSERT INTO jobs(intent_id,experiment_id,stage_id,attempt,state,job_id,script_hash,"
             "resources,snapshot_hash,created_at,execution_manifest) VALUES(?,?,?,?,?,?,?,?,?,?,?)",

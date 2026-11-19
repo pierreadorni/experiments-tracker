@@ -8,6 +8,7 @@ already saved pending research action.
 from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3, seed_saved_contract4
 from scenario import FakeClock
 
 from experimenttracker.research import wakeups
@@ -19,14 +20,11 @@ BRIEF = "Compare two toy optimizers under one fixed compute budget."
 
 def contract_four(store, *, contract=4):
     """One live experiment with a queued research turn; no worktree or dispatch."""
-    eid = store.command(uuid4(), "create", {"brief": BRIEF, "recipe_id": "agent_experiment_v1"})[
-        "experiment_id"
-    ]
-    saved = store.experiment(eid)["contract"]
-    saved["execution_contract"] = contract
-    with store.tx() as db:
-        db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(saved), eid))
-    return eid, first_turn(store, eid) if contract == 4 else None
+    if contract == 3:
+        return seed_saved_contract3(store, BRIEF), None
+    assert contract == 4
+    eid = seed_saved_contract4(store, BRIEF)
+    return eid, first_turn(store, eid)
 
 
 def answered_request(store, eid, action, *, request_id="question", answer="dataset B", **extra):

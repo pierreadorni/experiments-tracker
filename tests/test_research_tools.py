@@ -4,6 +4,7 @@ import json
 from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3, seed_saved_contract4
 from pydantic import ValidationError
 from test_research_dispatch import ScriptedAgent, completion, research_setup, run_pass, scripted
 
@@ -16,18 +17,8 @@ BRIEF = "Compare two toy optimizers under one fixed compute budget."
 
 
 def saved_contract4(store, *, phase="training", pause_agent=False):
-    eid = store.command(uuid4(), "create", {"brief": BRIEF, "recipe_id": "agent_experiment_v1"})[
-        "experiment_id"
-    ]
-    with store.tx() as db:
-        value = json.loads(
-            db.execute("SELECT contract FROM experiments WHERE id=?", (eid,)).fetchone()["contract"]
-        )
-        value["execution_contract"] = 4
-        db.execute(
-            "UPDATE experiments SET contract=?,phase=?,pause_agent=? WHERE id=?",
-            (encode(value), phase, int(pause_agent), eid),
-        )
+    eid = seed_saved_contract4(store, BRIEF)
+    store.update(eid, phase=phase, pause_agent=pause_agent)
     return eid
 
 
@@ -61,9 +52,7 @@ def test_v4_selects_only_research_tools_and_keeps_contract_three_listing(runtime
     assert config["args"][config["args"].index("--experiment") + 1] == eid
     assert "--research" in config["args"]
 
-    contract3 = store.command(uuid4(), "create", {"brief": BRIEF, "recipe_id": "agent_experiment_v1"})[
-        "experiment_id"
-    ]
+    contract3 = seed_saved_contract3(store, BRIEF)
     workflow.controller.server = object()
     try:
         legacy = workflow.controller.session_config(contract3)["mcp_servers.experimenttracker"]

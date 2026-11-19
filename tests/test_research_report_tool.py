@@ -4,6 +4,7 @@ import json
 from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract4
 from pydantic import ValidationError
 
 from experimenttracker.codex_client import NeedsAttention
@@ -27,14 +28,7 @@ def document(standfirst="A bounded synthetic comparison."):
 
 
 def contract_four(store):
-    eid = store.command(uuid4(), "create", {"brief": BRIEF, "recipe_id": "agent_experiment_v1"})[
-        "experiment_id"
-    ]
-    contract = store.experiment(eid)["contract"]
-    contract["execution_contract"] = 4
-    with store.tx() as db:
-        db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(contract), eid))
-    return eid
+    return seed_saved_contract4(store, BRIEF)
 
 
 def add_action(store, eid, *, phase="research", state="running", thread_id="thread-1"):

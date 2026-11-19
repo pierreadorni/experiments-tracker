@@ -11,6 +11,7 @@ import json
 from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3, seed_saved_contract4
 from scenario import FakeClock
 from test_research_wakeups import saved_job
 
@@ -26,14 +27,16 @@ DEFERRED = "[saved notebook text is not copied into a follow-up turn]"
 
 
 def make_experiment(store, *, contract=4):
-    eid = store.command(uuid4(), "create", {"brief": BRIEF, "recipe_id": "agent_experiment_v1"})[
-        "experiment_id"
-    ]
-    saved = store.experiment(eid)["contract"]
-    saved["execution_contract"] = contract
-    saved["branch_workspace"] = 1
-    with store.tx() as db:
-        db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(saved), eid))
+    if contract == 3:
+        return seed_saved_contract3(store, BRIEF)
+    eid = seed_saved_contract4(store, BRIEF, branch_workspace=True)
+    if contract != 4:
+        # This deliberately unsupported version must not enter C4 follow-up handling.
+        with store.tx() as db:
+            db.execute(
+                "UPDATE experiments SET contract=json_set(contract,'$.execution_contract',?) WHERE id=?",
+                (contract, eid),
+            )
     return eid
 
 

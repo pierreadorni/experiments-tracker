@@ -4,6 +4,7 @@ import json
 from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract4
 from pydantic import ValidationError
 
 from experimenttracker.core import action_obligations
@@ -23,13 +24,7 @@ def question(request_id=None, text="Which dataset should the comparison use?", o
 
 def make_turn(store):
     """Create a contract 4 experiment with one saved running research action."""
-    eid = store.command(uuid4(), "create", {"brief": BRIEF, "recipe_id": "agent_experiment_v1"})[
-        "experiment_id"
-    ]
-    saved = store.experiment(eid)
-    saved["contract"]["execution_contract"] = 4
-    with store.tx() as db:
-        db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(saved["contract"]), eid))
+    eid = seed_saved_contract4(store, BRIEF)
     action = first_turn(store, eid)
     assert action is not None
     with store.tx() as db:
