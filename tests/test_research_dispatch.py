@@ -68,6 +68,7 @@ class ScriptedAgent:
 
 def git_project(workflow, store, tmp_path):
     source = register(workflow.config, store, tmp_path)
+    workflow.config.projects[-1].research_loop = True
     initialize_project(source)
     (source / "shared.py").write_text("value = 1\n")
     git(source, "add", "--", "shared.py")
@@ -77,19 +78,20 @@ def git_project(workflow, store, tmp_path):
 
 
 def research_setup(runtime, tmp_path, monkeypatch):
-    """Save one manually migrated contract 4 experiment with its named branch worktree."""
+    """Create a real contract 4 experiment with its named branch worktree."""
     store, _, _, workflow = runtime
     source = git_project(workflow, store, tmp_path)
     monkeypatch.setattr(gitworkspace, "_today", lambda: "20260101")
     eid = store.command(
         uuid4(),
         "create",
-        {"brief": BRIEF, "recipe_id": "agent_experiment_v1", "project_id": "anyup-rs"},
+        {
+            "brief": BRIEF,
+            "recipe_id": "agent_experiment_v1",
+            "project_id": "anyup-rs",
+            "execution_contract": 4,
+        },
     )["experiment_id"]
-    contract = store.experiment(eid)["contract"]
-    contract["execution_contract"] = 4
-    with store.tx() as db:
-        db.execute("UPDATE experiments SET contract=? WHERE id=?", (json.dumps(contract), eid))
     workflow.workspaces.ensure_branch(eid)
     action = first_turn(store, eid)
     return source, eid, workflow.workspaces.branch(eid), action

@@ -22,6 +22,7 @@ def setup(runtime, tmp_path, monkeypatch):
     """A live contract 4 experiment with one saved running research turn."""
     store, _, _, workflow = runtime
     source = register(workflow.config, store, tmp_path)
+    workflow.config.projects[-1].research_loop = True
     initialize_project(source)
     (source / "shared.py").write_text("value = 1\n")
     git(source, "add", "--", "shared.py")
@@ -31,12 +32,13 @@ def setup(runtime, tmp_path, monkeypatch):
     eid = store.command(
         uuid4(),
         "create",
-        {"brief": BRIEF, "recipe_id": "agent_experiment_v1", "project_id": "anyup-rs"},
+        {
+            "brief": BRIEF,
+            "recipe_id": "agent_experiment_v1",
+            "project_id": "anyup-rs",
+            "execution_contract": 4,
+        },
     )["experiment_id"]
-    contract = store.experiment(eid)["contract"]
-    contract["execution_contract"] = 4
-    with store.tx() as db:
-        db.execute("UPDATE experiments SET contract=? WHERE id=?", (json.dumps(contract), eid))
     workflow.workspaces.ensure_branch(eid)
     action = first_turn(store, eid)
     with store.tx() as db:
@@ -76,12 +78,14 @@ def saved(store, action):
 
 
 def add_job(store, eid):
-    stage = store.one("SELECT id FROM stages WHERE experiment_id=? LIMIT 1", (eid,))["id"]
+    intent = str(uuid4())
+    stage = "research-" + intent
     with store.tx() as db:
+        db.execute("INSERT INTO stages(experiment_id,id,updated_at) VALUES(?,?,0)", (eid, stage))
         db.execute(
             "INSERT INTO jobs(intent_id,experiment_id,stage_id,attempt,state,job_id,script_hash,resources,"
             "snapshot_hash,created_at) VALUES(?,?,?,99,'submitted','synthetic','source','{}','snapshot',0)",
-            (str(uuid4()), eid, stage),
+            (intent, eid, stage),
         )
 
 
