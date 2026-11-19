@@ -232,12 +232,18 @@ class IterationAgent(DemoAgent):
         return turn
 
 
-def seed_saved_contract3(store, brief="Exercise synthetic iteration mechanisms."):
+def seed_saved_contract3(
+    store,
+    brief="Exercise synthetic iteration mechanisms.",
+    *,
+    project_id="test-project",
+    branch_workspace=False,
+):
     """Insert the minimal saved C3 shape directly, without invoking current create policy."""
     from experimenttracker.execution_settings import ExecutionSettings
 
     eid = str(uuid4())
-    project = store.projects["test-project"]
+    project = store.projects[project_id]
     contract = {
         "schema_version": 1,
         "recipe_id": "agent_experiment_v1",
@@ -249,16 +255,38 @@ def seed_saved_contract3(store, brief="Exercise synthetic iteration mechanisms."
         "execution_contract": 3,
         "workspace_mode": "auto",
         "execution": ExecutionSettings().model_dump(),
-        "project": {"id": project.id, "name": project.name},
+        "project": {
+            "id": project.id,
+            "name": project.name,
+            **({"writable": True} if branch_workspace else {}),
+        },
+        **({"branch_workspace": True} if branch_workspace else {}),
     }
     with store.tx() as db:
         db.execute(
             "INSERT INTO experiments(id,brief,recipe_id,contract,created_at,updated_at) VALUES(?,?,?,?,0,0)",
             (eid, brief, "agent_experiment_v1", encode(contract)),
         )
+        if branch_workspace:
+            assert project.writable and project.checkout is not None
+            folder = project.checkout.resolve(strict=True)
+            info = folder.stat()
+            db.execute(
+                "INSERT INTO experiment_workspaces VALUES(?,?,?,?,?)",
+                (
+                    eid,
+                    str(folder),
+                    info.st_dev,
+                    info.st_ino,
+                    str(folder / ".experimenttracker/experiments" / eid),
+                ),
+            )
         db.executemany(
             "INSERT INTO stages(experiment_id,id,updated_at,ordinal) VALUES(?,?,0,?)",
-            [(eid, stage, ordinal) for ordinal, stage in enumerate(("plan", "prepare", "interpret", "publish"))],
+            [
+                (eid, stage, ordinal)
+                for ordinal, stage in enumerate(("plan", "prepare", "interpret", "publish"))
+            ],
         )
     assert store.experiment(eid)["contract"] == contract
     return eid

@@ -8,6 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3
 from test_generic import approve_plan
 from test_iteration import PLAN, IterationAgent
 from test_workflow import until
@@ -106,13 +107,15 @@ async def setup_mixed(runtime, agent=None, *, repo_path=None):
     store, scheduler, _, old = runtime
     agent = agent or MixedAgent()
     wf = Workflow(old.config, store, scheduler, agent)
-    payload = {"brief": "Synthetic mixed graph", "recipe_id": "agent_experiment_v1"}
+    project_id = "test-project"
     if repo_path is not None:
         from test_branch_workspaces import git_project
 
         git_project(wf, store, repo_path)
-        payload["project_id"] = "anyup-rs"
-    eid = store.command(uuid4(), "create", payload)["experiment_id"]
+        project_id = "anyup-rs"
+    eid = seed_saved_contract3(
+        store, "Synthetic mixed graph", project_id=project_id, branch_workspace=repo_path is not None
+    )
     agent.wf, agent.store, agent.eid, agent.scheduler = wf, store, eid, scheduler
     await approve_plan(wf, store, eid)
     return store, scheduler, agent, wf, eid

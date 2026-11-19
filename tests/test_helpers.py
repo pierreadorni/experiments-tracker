@@ -29,7 +29,10 @@ async def test_prepared_seeds_historical_contract3_under_each_create_policy(runt
     assert store.one("SELECT COUNT(*) AS count FROM commands WHERE experiment_id=?", (eid,))["count"] == 1
     assert store.one("SELECT COUNT(*) AS count FROM jobs WHERE experiment_id=?", (eid,))["count"] == 0
     assert [stage["id"] for stage in store.projection(eid)["stages"]] == [
-        "plan", "prepare", "interpret", "publish"
+        "plan",
+        "prepare",
+        "interpret",
+        "publish",
     ]
     await workflow.close()
 

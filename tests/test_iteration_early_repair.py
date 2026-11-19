@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from helpers import IterationAgent, approve_plan
+from helpers import IterationAgent, approve_plan, seed_saved_contract3
 from test_iteration import prepared
 from test_iteration_agent_stages import MixedAgent, setup_mixed
 from test_workflow import until
@@ -547,11 +547,7 @@ async def test_resource_amendment_raises_memory_without_a_second_approval(runtim
     agent = MemoryAmendmentAgent()
     wf = Workflow(config, store, scheduler, agent)
     wf.cluster_snapshot = {"fixture": True}
-    eid = store.command(
-        uuid4(),
-        "create",
-        {"brief": "Exercise synthetic iteration mechanisms.", "recipe_id": "agent_experiment_v1"},
-    )["experiment_id"]
+    eid = seed_saved_contract3(store)
     assert store.experiment(eid)["contract"]["execution_contract"] == 3
     await approve_plan(wf, store, eid)
     await until(wf, store, eid, lambda e: e["hold_reason"] == "resources_unavailable")
