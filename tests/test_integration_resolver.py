@@ -3,9 +3,9 @@
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract4
 
 from experimenttracker.codex_client import NeedsAttention
 from experimenttracker.engine import integration_queue as queue
@@ -97,11 +97,7 @@ def head(repo, ref="HEAD"):
 
 def save_conflict(store, repo, candidate, *, eid=None, request_id="r1"):
     if eid is None:
-        eid = store.command(
-            uuid4(),
-            "create",
-            {"brief": "Synthetic integration conflict resolution check.", "recipe_id": "agent_experiment_v1"},
-        )["experiment_id"]
+        eid = seed_saved_contract4(store, "Synthetic integration conflict resolution check.")
     store.update(eid, phase="complete")
     with store.tx() as db:
         db.execute(

@@ -12,9 +12,9 @@ import json
 from uuid import uuid4
 
 import pytest
-from helpers import IterationAgent, approve_plan, until
+from helpers import IterationAgent, approve_plan, seed_saved_contract3, until
 from pydantic import ValidationError
-from test_branch_workspaces import create, git_project
+from test_branch_workspaces import git_project
 
 from experimenttracker.engine import integration_queue
 from experimenttracker.models import Analysis
@@ -63,13 +63,12 @@ async def completed(runtime, agent, tmp_path=None):
     store, scheduler, _, old = runtime
     source = git_project(old, store, tmp_path) if tmp_path else None
     workflow = Workflow(old.config, store, scheduler, agent)
-    payload = {
-        "brief": "Test an entirely new method and show its frontier.",
-        "recipe_id": "agent_experiment_v1",
-    }
-    if source:
-        payload["project_id"] = "anyup-rs"
-    eid = store.command(uuid4(), "create", payload)["experiment_id"]
+    eid = seed_saved_contract3(
+        store,
+        "Test an entirely new method and show its frontier.",
+        project_id="anyup-rs" if source else "test-project",
+        branch_workspace=source is not None,
+    )
     await approve_plan(workflow, store, eid)
     await until(workflow, store, eid, lambda e: e["phase"] == "complete")
     return workflow, store, eid, source
@@ -132,7 +131,7 @@ async def test_dont_merge_flag_blocks_the_completion_request(runtime, tmp_path):
     store, scheduler, _, old = runtime
     git_project(old, store, tmp_path)
     workflow = Workflow(old.config, store, scheduler, OptInAgent({}))
-    eid = create(store)
+    eid = seed_saved_contract3(store, project_id="anyup-rs", branch_workspace=True)
     store.command(uuid4(), "dont_merge", {"value": True}, eid=eid)
     try:
         await approve_plan(workflow, store, eid)
@@ -148,7 +147,7 @@ async def test_an_owner_request_is_not_duplicated_at_completion(runtime, tmp_pat
     git_project(old, store, tmp_path)
     agent = OptInAgent({"integrate": True, "integrate_reason": "Keep the synthetic improvement."})
     workflow = Workflow(old.config, store, scheduler, agent)
-    eid = create(store)
+    eid = seed_saved_contract3(store, project_id="anyup-rs", branch_workspace=True)
     assert await workflow.prepare_workspace(store.experiment(eid))
     store.command(uuid4(), "integrate", {"reason": "Owner requested this merge."}, eid=eid)
     try:

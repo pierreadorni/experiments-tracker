@@ -12,7 +12,8 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from test_branch_workspaces import create, git_project
+from helpers import seed_saved_contract4
+from test_branch_workspaces import git_project
 
 from experimenttracker import clock
 from experimenttracker.api import create_app
@@ -56,14 +57,7 @@ def seed_branch(store, eid, repo, *, state="active", merged_commit=None):
 
 
 def make_experiment(store):
-    return store.command(
-        uuid4(),
-        "create",
-        {
-            "brief": "Test an entirely new method and show its frontier.",
-            "recipe_id": "agent_experiment_v1",
-        },
-    )["experiment_id"]
+    return seed_saved_contract4(store, "Test an entirely new method and show its frontier.")
 
 
 def awaiting(store, eid, repo, candidate_commit="c" * 40, reason=None):
@@ -188,7 +182,15 @@ async def branch_experiment(runtime, tmp_path, monkeypatch):
     store, _, _, workflow = runtime
     source = git_project(workflow, store, tmp_path)
     monkeypatch.setattr("experimenttracker.engine.gitworkspace._today", lambda: "20260101")
-    eid = create(store)
+    eid = store.command(
+        uuid4(),
+        "create",
+        {
+            "brief": "Test an entirely new method and show its frontier.",
+            "recipe_id": "agent_experiment_v1",
+            "project_id": "anyup-rs",
+        },
+    )["experiment_id"]
     assert await workflow.prepare_workspace(store.experiment(eid))
     return source, store, workflow, eid
 
