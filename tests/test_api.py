@@ -9,8 +9,17 @@ from experimenttracker.execution_settings import ExecutionSettings
 from experimenttracker.workspaces import initialize_project
 
 
-def test_api_authentication_csrf_and_idempotency(config, runtime):
+def test_api_authentication_csrf_and_idempotency(config, runtime, tmp_path, monkeypatch):
+    from experimenttracker import creation_policy
+
     store, scheduler, _, workflow = runtime
+    checkout = tmp_path / "research"
+    checkout.mkdir()
+    initialize_project(checkout)
+    project = ProjectConfig(id="research", name="Research", checkout=checkout, research_loop=True)
+    config.projects.append(project)
+    store.projects[project.id] = project
+    monkeypatch.setattr(creation_policy, "MODE", "candidate")
     app = create_app(config, components=(None, store, workflow))
     # TestClient owns closing the store; fixture finalization tolerates close again.
     with TestClient(app) as client:
@@ -22,6 +31,7 @@ def test_api_authentication_csrf_and_idempotency(config, runtime):
             "request_id": str(uuid4()),
             "brief": "Compare synthetic models safely.",
             "recipe_id": "agent_experiment_v1",
+            "project_id": "research",
         }
         first = client.post("/api/experiments", json=body, headers=headers)
         assert first.status_code == 202
@@ -45,7 +55,7 @@ def test_api_authentication_csrf_and_idempotency(config, runtime):
             == 422
         )
         eid = first.json()["experiment_id"]
-        assert store.experiment(eid)["contract"]["execution_contract"] == 3
+        assert store.experiment(eid)["contract"]["execution_contract"] == 4
         assert client.post("/api/session", headers=headers).status_code == 200
         note = {"request_id": str(uuid4()), "text": "Preserve my text"}
         assert (
@@ -67,7 +77,7 @@ def test_api_authentication_csrf_and_idempotency(config, runtime):
             client.get(f"/api/experiments/{eid}", headers=headers).json()["notes"][0]["author"]
             == "researcher"
         )
-    # A background tick must not submit work for a contract-3 plan still under review.
+    # Candidate-mode C4 creates are not advanced by the legacy stage engine.
     assert scheduler.submissions == 0
 
 
