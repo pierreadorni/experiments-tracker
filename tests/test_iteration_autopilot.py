@@ -4,13 +4,15 @@ from uuid import uuid4
 import pytest
 from helpers import role_step
 
+from experimenttracker import creation_policy
 from experimenttracker.agent_pool import project_owner
 from experimenttracker.autopilot import Autopilot, calendar
 from experimenttracker.autopilot_budget import WEEK, window
 from experimenttracker.autopilot_models import AutopilotPolicy
-from experimenttracker.config import JobResources
+from experimenttracker.config import JobResources, ProjectConfig
 from experimenttracker.slurm import Observation
 from experimenttracker.store import Conflict
+from experimenttracker.workspaces import initialize_project
 
 
 def policy(now=1000000, **overrides):
@@ -318,6 +320,85 @@ def test_project_tools_lost_response_scoping_and_stale_documents(runtime, monkey
             experiment_id=str(uuid4()),
             operation="abandon",
             reason="Not linked",
+        )
+
+
+def test_candidate_autopilot_create_links_c4_and_routes_objective_approval(
+    runtime, config, tmp_path, monkeypatch
+):
+    store = runtime[0]
+    checkout = tmp_path / "project"
+    checkout.mkdir()
+    initialize_project(checkout)
+    project = ProjectConfig(id="test-project", name="Synthetic project", checkout=checkout)
+    config.projects.append(project)
+    store.projects[project.id] = project
+    service, run = activated(runtime, monkeypatch)
+    identity = action(service, run)
+    foundation(service, identity)
+    monkeypatch.setattr(creation_policy, "MODE", "candidate")
+
+    arguments = {
+        "request_id": str(uuid4()),
+        "expected_revision": service.run("test-project")["revision"],
+        "brief": "Synthetic software acceptance only; no scientific work.",
+        "backlog_id": "question",
+        "scope_rationale": "Verify candidate create binding and replay.",
+        "estimated_finish_at": 1003600,
+    }
+    created = service.invoke(identity, "create_experiment", arguments)
+    eid = created["experiment_id"]
+    assert service.invoke(identity, "create_experiment", arguments) == created
+    assert store.experiment(eid)["contract"]["execution_contract"] == 4
+    member = store.one("SELECT * FROM autopilot_members WHERE experiment_id=?", (eid,))
+    assert member["run_id"] == run["id"]
+    assert member["project_id"] == "test-project"
+    assert [row["id"] for row in store.rows("SELECT id FROM experiments")] == [eid]
+
+    research_action = str(uuid4())
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET thread_id='synthetic-thread' WHERE id=?", (eid,))
+        db.execute(
+            "INSERT INTO agent_actions(id,experiment_id,phase,evidence_revision,state,thread_id,turn_id,input,created_at,updated_at) "
+            "VALUES(?,?,'research',0,'running','synthetic-thread','synthetic-turn','{}',1000000,1000000)",
+            (research_action, eid),
+        )
+    from experimenttracker.research.owner_tool import AskOwnerQuestion, ask_owner
+
+    objective = "Run the bounded synthetic CPU comparison."
+    approval_id = uuid4()
+    ask_owner(
+        store,
+        store.one("SELECT * FROM agent_actions WHERE id=?", (research_action,)),
+        AskOwnerQuestion(
+            request_id=approval_id,
+            question="May the synthetic comparison proceed?",
+            kind="approval",
+            objective=objective,
+        ),
+    )
+    prompt = runtime[3].research.prompt(store.one("SELECT * FROM autopilot_actions WHERE id=?", (identity,)))
+    assert "approve_experiment_objective" in prompt
+    assert "review_experiment_plan is only for saved contract-3 plans" in prompt
+    approval_args = {
+        "request_id": str(uuid4()),
+        "expected_revision": service.run("test-project")["revision"],
+        "experiment_id": eid,
+        "approval_request_id": str(approval_id),
+        "objective": objective,
+    }
+    approved = service.invoke(identity, "approve_experiment_objective", approval_args)
+    assert approved["approval"]["objective"] == objective
+    with pytest.raises(Conflict, match="contract 3"):
+        tool(
+            service,
+            identity,
+            "review_experiment_plan",
+            experiment_id=eid,
+            plan_revision=1,
+            scope_rationale="Must not route C4 through plan review.",
+            comparable_protocol="Synthetic protocol",
+            estimated_finish_at=1003600,
         )
 
 

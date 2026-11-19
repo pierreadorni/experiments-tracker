@@ -118,6 +118,8 @@ class ResearchController:
             "windows and observed queue delays still fit, marking unknowns. Narrow promptly if infeasible. "
             "Surface repeated deferrals/starvation; defer low-priority work if an important job needs allowance. "
             "Writing permits only justified correctness/essential-result work that can finish before handoff. "
+            "For a pending C4 objective listed below, use approve_experiment_objective for that exact request; "
+            "review_experiment_plan is only for saved contract-3 plans, including historical work not yet drained. "
             "At weekly_report events publish one current weekly_report covering argument, findings/contradictions, "
             "decisions, budget committed/consumed, next priorities and researcher questions, coalescing missed weeks. "
             "No recurring polling turns; schedule only a specific useful review. In handoff, research stops; "
