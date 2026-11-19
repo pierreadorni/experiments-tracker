@@ -38,7 +38,7 @@ def test_submit_job_schema_is_advertised_exactly():
 def test_submit_job_optional_result_file_preserves_historical_request_identity():
     request = payload()
     model = SubmitJobRequest.model_validate(request)
-    expected = model.model_dump(mode="json", exclude={"result_file", "tensorboard", "depends_on"})
+    expected = model.model_dump(mode="json", exclude={"result_file", "tensorboard", "depends_on", "inputs"})
     assert expected["resources"] != request["resources"]  # Historical receipts include defaults.
     assert model.saved_request() == expected
     assert SubmitJobRequest.model_validate({**request, "result_file": None}).saved_request() == expected

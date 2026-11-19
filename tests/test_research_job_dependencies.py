@@ -29,6 +29,14 @@ def test_depends_on_is_bounded_unique_and_empty_preserves_historical_identity():
         SubmitJobRequest.model_validate({**request, "depends_on": [dependency, dependency]})
     with pytest.raises(ValidationError):
         SubmitJobRequest.model_validate({**request, "depends_on": [str(uuid4()) for _ in range(33)]})
+    assert SubmitJobRequest.model_validate({**request, "inputs": []}).saved_request() == base
+    assert SubmitJobRequest.model_validate({**request, "inputs": [dependency]}).saved_request()["inputs"] == [
+        dependency
+    ]
+    with pytest.raises(ValidationError, match="unique register_result"):
+        SubmitJobRequest.model_validate({**request, "inputs": [dependency, dependency]})
+    with pytest.raises(ValidationError):
+        SubmitJobRequest.model_validate({**request, "inputs": [str(uuid4()) for _ in range(17)]})
 
 
 async def test_unknown_dependency_refuses_before_source_or_scheduler_effect(runtime, tmp_path, monkeypatch):

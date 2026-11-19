@@ -1,6 +1,7 @@
 """Bounded local preparation of an approved research job source."""
 
 import hashlib
+import json
 import shlex
 from pathlib import Path
 
@@ -55,9 +56,49 @@ def prepare(workflow, experiment_id, action, request, *, remote_source=False):
             else {}
         ),
     )
+    inputs = {}
+    if request.inputs:
+        from .. import artifacts
+
+        input_root = root / "inputs"
+        input_root.mkdir(mode=0o700)
+        for input_id in request.inputs:
+            receipt = workflow.store.one(
+                "SELECT payload FROM events WHERE kind='research_result_registered' "
+                "AND json_extract(payload,'$.request_id')=? AND experiment_id=? LIMIT 1",
+                (str(input_id), experiment_id),
+            )
+            if receipt is None:
+                raise ValueError("registered-result input receipt disappeared during preparation")
+            item = json.loads(receipt["payload"])
+            artifact = workflow.store.one(
+                "SELECT size,sha256 FROM artifacts WHERE id=? AND experiment_id=?",
+                (item["artifact_id"], experiment_id),
+            )
+            if artifact is None or item.get("name") != f"result-{input_id}.json":
+                raise ValueError("registered-result artifact identity is invalid")
+            source_result = artifacts.allowed_path(
+                Path(workflow.projects.base_root(experiment_id)) / item["name"],
+                Path(workflow.projects.base_root(experiment_id)),
+                max_bytes=artifacts.MAX_ARTIFACT_BYTES,
+            )
+            if (
+                source_result.stat().st_size != artifact["size"]
+                or artifacts.sha256(source_result) != artifact["sha256"]
+            ):
+                raise ValueError("registered immutable result changed")
+            target = input_root / f"{input_id}.json"
+            with source_result.open("rb") as src, target.open("xb") as dst:
+                while chunk := src.read(1024 * 1024):
+                    dst.write(chunk)
+            target.chmod(0o444)
+            inputs[str(input_id)] = str(target)
     exports = {
         "EXPERIMENT_ROOT": str(root),
         "EXPERIMENT_SOURCE": str(source),
+        **(
+            {"EXPERIMENT_INPUTS": json.dumps(inputs, sort_keys=True, separators=(",", ":"))} if inputs else {}
+        ),
         "OMP_NUM_THREADS": str(request.resources.cpus_per_job),
         "OPENBLAS_NUM_THREADS": str(request.resources.cpus_per_job),
         "MKL_NUM_THREADS": str(request.resources.cpus_per_job),

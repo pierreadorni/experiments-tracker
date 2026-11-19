@@ -1,5 +1,6 @@
 """Validate manual contract-4 job admission without performing external effects."""
 
+import json
 from typing import Annotated
 from uuid import UUID
 
@@ -14,6 +15,9 @@ from .result_path import MAX_RESULT_PATH_CHARS, validate_remote_result_path, val
 from .tools import require_live_research
 
 MAX_DEPENDENCIES = 32
+MAX_INPUTS = 16
+MAX_INPUT_BYTES = 10 * 1024 * 1024
+MAX_INPUTS_BYTES = 16 * 1024 * 1024
 
 
 class SubmitJobRequest(StrictModel):
@@ -26,6 +30,7 @@ class SubmitJobRequest(StrictModel):
     result_file: str | None = Field(default=None, max_length=MAX_RESULT_PATH_CHARS)
     tensorboard: TensorBoardDisplay | None = None
     depends_on: list[UUID] = Field(default_factory=list, max_length=MAX_DEPENDENCIES)
+    inputs: list[UUID] = Field(default_factory=list, max_length=MAX_INPUTS)
 
     @field_validator("depends_on")
     @classmethod
@@ -39,12 +44,20 @@ class SubmitJobRequest(StrictModel):
     def valid_result_file(cls, value):
         return None if value is None else validate_result_path(value)
 
+    @field_validator("inputs")
+    @classmethod
+    def unique_inputs(cls, values):
+        if len(set(values)) != len(values):
+            raise ValueError("inputs must contain unique register_result request UUIDs")
+        return values
+
     def saved_request(self):
         # Keep historical receipts stable when newer optional fields are absent.
         absent = {name for name in ("result_file", "tensorboard") if getattr(self, name) is None}
         saved = self.model_dump(mode="json", exclude=absent)
-        if not saved["depends_on"]:
-            saved.pop("depends_on")
+        for name in ("depends_on", "inputs"):
+            if not saved[name]:
+                saved.pop(name)
         return saved
 
     @field_validator("command")
@@ -110,6 +123,44 @@ def _check(workflow, experiment_id, action, request, db, *, remote_source=False,
             raise ValueError(
                 "dependencies must be saved complete jobs; wait for the terminal wake, then request"
             )
+    if request.inputs and remote_source:
+        raise ValueError("registered-result inputs are not supported for remote submissions")
+    total = 0
+    for input_id in request.inputs:
+        event = db.execute(
+            "SELECT experiment_id,payload FROM events WHERE kind='research_result_registered' "
+            "AND json_extract(payload,'$.request_id')=? LIMIT 1",
+            (str(input_id),),
+        ).fetchone()
+        if event is None or event["experiment_id"] != experiment_id:
+            raise ValueError("inputs must name registered results from this experiment")
+        receipt = json.loads(event["payload"])
+        producer = db.execute(
+            "SELECT state,job_id,ended_at,execution_manifest FROM jobs WHERE intent_id=? AND experiment_id=?",
+            (receipt.get("intent_id"), experiment_id),
+        ).fetchone()
+        artifact = db.execute(
+            "SELECT experiment_id,name,size,sha256 FROM artifacts WHERE id=?",
+            (receipt.get("artifact_id"),),
+        ).fetchone()
+        if (
+            producer is None
+            or producer["state"] != "complete"
+            or not producer["job_id"]
+            or producer["ended_at"] is None
+            or json.loads(producer["execution_manifest"] or "{}").get("executor") == "agent"
+            or artifact is None
+            or artifact["experiment_id"] != experiment_id
+            or artifact["name"] != receipt.get("name")
+            or artifact["size"] != receipt.get("size")
+            or artifact["sha256"] != receipt.get("sha256")
+        ):
+            raise ValueError("inputs must name immutable results from completed Slurm intents")
+        if artifact["size"] > MAX_INPUT_BYTES:
+            raise ValueError("registered-result input exceeds 10 MiB limit")
+        total += artifact["size"]
+    if total > MAX_INPUTS_BYTES:
+        raise ValueError("registered-result inputs exceed 16 MiB total")
     if blocked(store) or experiment["pause_compute"]:
         raise ValueError("new compute is paused or maintenance is active")
     autopilot_hold = workflow.research.service.authority(experiment_id, phase="compute")
