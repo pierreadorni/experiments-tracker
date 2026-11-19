@@ -9,15 +9,41 @@ const status = {
   heartbeat_received_at: 1_000,
 };
 
-test('contract 4 requires an explicit project opt-in and advertised support', () => {
+test('contract 4 supports legacy project opt-in and candidate create-default advertisements', () => {
   assert.equal(contractFourForProject(status, 'loop-project', 1_050), true);
   assert.equal(contractFourForProject(status, 'other-project', 1_050), false);
+  assert.equal(
+    contractFourForProject(
+      { ...status, execution_contract_create_default: 4 },
+      'new-project',
+      1_050,
+    ),
+    true,
+  );
+  assert.equal(
+    contractFourForProject(
+      { ...status, execution_contract_create_default: 4, execution_contract_create: undefined },
+      'new-project',
+      1_050,
+    ),
+    false,
+  );
   assert.equal(
     contractFourForProject({ ...status, execution_contract_create: 3 }, 'loop-project', 1_050),
     false,
   );
   assert.equal(
     contractFourForProject({ ...status, research_loop_projects: undefined }, 'loop-project', 1_050),
+    false,
+  );
+});
+
+test('candidate create-default support retains the gateway heartbeat freshness requirement', () => {
+  const candidate = { ...status, execution_contract_create_default: 4 };
+  assert.equal(contractFourForProject(candidate, 'new-project', 1_090), true);
+  assert.equal(contractFourForProject(candidate, 'new-project', 1_090.01), false);
+  assert.equal(
+    contractFourForProject({ ...candidate, heartbeat_received_at: null }, 'new-project', 1_050),
     false,
   );
 });

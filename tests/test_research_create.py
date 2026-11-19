@@ -37,7 +37,9 @@ def test_research_loop_defaults_off():
     assert project.research_loop is False
 
 
-def test_status_advertises_only_opted_in_research_loop_projects(config, runtime, tmp_path):
+def test_status_advertises_candidate_create_default_without_changing_legacy_opt_ins(
+    config, runtime, tmp_path, monkeypatch
+):
     _, _, _, workflow = runtime
     config.projects.extend(
         [
@@ -47,7 +49,13 @@ def test_status_advertises_only_opted_in_research_loop_projects(config, runtime,
     )
     status = workflow.status(None)
     assert status["execution_contract_create"] == 4
+    assert "execution_contract_create_default" not in status
     assert status["research_loop_projects"] == ["anyup-rs"]
+
+    monkeypatch.setattr(creation_policy, "MODE", "candidate")
+    candidate = workflow.status(None)
+    assert candidate["execution_contract_create_default"] == 4
+    assert candidate["research_loop_projects"] == ["anyup-rs"]
 
 
 def test_unflagged_project_keeps_the_contract_3_stage_create(runtime, config, tmp_path):

@@ -15,6 +15,7 @@ from . import (
     agent_conventions,
     artifacts,
     clock,
+    creation_policy,
     early_repair,
     iteration,
     legacy_archive,
@@ -340,6 +341,11 @@ class Workflow:
             "implementation_repair": True,
             "branch_integration": True,
             "execution_contract_create": 4,
+            **(
+                {"execution_contract_create_default": 4}
+                if creation_policy.defaults_to_research_loop()
+                else {}
+            ),
             "research_loop_projects": [
                 project.id for project in self.config.projects if project.research_loop
             ],

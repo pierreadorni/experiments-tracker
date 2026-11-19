@@ -1,8 +1,11 @@
 export function contractFourForProject(status, projectId, nowSeconds = Date.now() / 1000) {
   if (
     status?.execution_contract_create !== 4 ||
-    !Array.isArray(status.research_loop_projects) ||
-    !status.research_loop_projects.includes(projectId)
+    !(
+      status.execution_contract_create_default === 4 ||
+      (Array.isArray(status.research_loop_projects) &&
+        status.research_loop_projects.includes(projectId))
+    )
   )
     return false;
   if (status.mode !== 'gateway') return true;

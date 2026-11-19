@@ -357,8 +357,10 @@ function App() {
   ];
   const currentProject = projects.find((p) => p.id === projectId);
   const researchLoopProject = status?.research_loop_projects?.includes(projectId) === true;
+  const contractFourCreateDefault = status?.execution_contract_create_default === 4;
+  const contractFourProject = researchLoopProject || contractFourCreateDefault;
   const contractFourAvailable = contractFourForProject(status, projectId);
-  const researchLoopInputError = researchLoopProject
+  const researchLoopInputError = contractFourProject
     ? !contractFourAvailable
       ? 'Contract 4 is enabled for this project, but the gateway has not recently observed an executor advertising contract-4 create support. Refresh status or ask the administrator to update the executor; no contract-3 fallback will be used.'
       : contractFourCreateIssue(status, projectId, workspaceMode, referenceId)
@@ -1772,7 +1774,9 @@ function App() {
                   setStatus(freshStatus);
                   // Keep a displayed C4 intent even if the project setting changes mid-form.
                   const explicitContractFour =
-                    researchLoopProject || freshStatus.research_loop_projects?.includes(projectId);
+                    contractFourProject ||
+                    freshStatus.research_loop_projects?.includes(projectId) ||
+                    freshStatus.execution_contract_create_default === 4;
                   if (explicitContractFour) {
                     const issue = contractFourCreateIssue(
                       freshStatus,
@@ -1809,11 +1813,11 @@ function App() {
               <p className="brief-guidance" id="brief-guidance">
                 {status?.mode === 'demo'
                   ? 'Synthetic demonstration. No model calls or Slurm jobs.'
-                  : researchLoopProject
+                  : contractFourProject
                     ? 'Describe the research question, approach, data and evidence that would answer it. The research loop works through the investigation in this project workspace and may pause for your input.'
                     : 'Describe what you want to learn. You’ll review the plan before implementation starts.'}
               </p>
-              {researchLoopProject && researchLoopInputError && (
+              {contractFourProject && researchLoopInputError && (
                 <p className="error" role="alert">
                   {researchLoopInputError}
                 </p>
