@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from helpers import SOURCE, IterationAgent, wait_for_experiment
+from helpers import SOURCE, IterationAgent, seed_saved_contract3, wait_for_experiment
 from test_generic import approve_plan
 
 from experimenttracker.workflow import Workflow
@@ -68,11 +68,7 @@ async def failed_training(runtime):
     store, scheduler, _, old = runtime
     agent = TrainFailureAgent()
     workflow = Workflow(old.config, store, scheduler, agent)
-    eid = store.command(
-        uuid4(),
-        "create",
-        {"brief": "Exercise synthetic iteration mechanisms.", "recipe_id": "agent_experiment_v1"},
-    )["experiment_id"]
+    eid = seed_saved_contract3(store)
     assert store.experiment(eid)["contract"]["execution_contract"] == 3
     await approve_plan(workflow, store, eid)
     exp = await wait_for_experiment(workflow, store, eid, lambda e: e["phase"] == "failed")
@@ -134,8 +130,7 @@ async def test_session_retry_preserves_action_and_does_not_block_other_experimen
     store, scheduler, _, old = runtime
     agent = ContractAgent()
     workflow = Workflow(old.config, store, scheduler, agent)
-    brief = {"brief": "Exercise synthetic iteration mechanisms.", "recipe_id": "agent_experiment_v1"}
-    eid = store.command(uuid4(), "create", brief)["experiment_id"]
+    eid = seed_saved_contract3(store)
     assert store.experiment(eid)["contract"]["execution_contract"] == 3
     session = agent.session
 
@@ -155,7 +150,7 @@ async def test_session_retry_preserves_action_and_does_not_block_other_experimen
     assert saved["state"] == "failed" and saved["turn_id"] is None and saved["attempts"] == 0
     assert not workflow.agent_task and agent.calls == 0
     agent.session = session
-    other = store.command(uuid4(), "create", brief)["experiment_id"]
+    other = seed_saved_contract3(store)
     assert store.experiment(other)["contract"]["execution_contract"] == 3
     await approve_plan(workflow, store, other)
     other_exp = await wait_for_experiment(workflow, store, other, lambda e: e["phase"] == "complete")
@@ -276,9 +271,7 @@ async def test_repaired_readiness_does_not_wait_for_retired_artifact_uploads(run
 
 def test_repeated_identical_action_state_does_not_flood_outbox(runtime):
     store, _, _, workflow = runtime
-    eid = store.command(
-        uuid4(), "create", {"brief": "Compare fixed models.", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Compare fixed models.")
     assert store.experiment(eid)["contract"]["execution_contract"] == 3
     action_id = str(uuid4())
     with store.tx() as db:

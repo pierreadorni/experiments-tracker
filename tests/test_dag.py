@@ -6,7 +6,7 @@ import sys
 from uuid import uuid4
 
 import pytest
-from helpers import IterationAgent, approve_plan, wait_until
+from helpers import IterationAgent, approve_plan, seed_saved_contract3, wait_until
 from pydantic import ValidationError
 from test_workflow import until
 
@@ -170,11 +170,7 @@ async def test_dag_branches_submit_together_and_join_after_restart(runtime):
     old.config.slurm.max_concurrent_jobs = None
     agent = DagAgent()
     workflow = Workflow(old.config, store, scheduler, agent)
-    eid = store.command(
-        uuid4(),
-        "create",
-        {"brief": "Test an entirely new method and show its frontier.", "recipe_id": "agent_experiment_v1"},
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Test an entirely new method and show its frontier.")
     assert store.experiment(eid)["contract"]["execution_contract"] == 3
     await approve_plan(workflow, store, eid)
     assert store.experiment(eid)["plan_review"]["schema_version"] == 3
@@ -209,15 +205,15 @@ async def test_dag_branches_submit_together_and_join_after_restart(runtime):
     await resumed.close()
 
 
-async def test_restart_reconciles_each_active_branch_before_replacement(runtime):
+async def test_restart_reconciles_each_active_branch_before_replacement(runtime, monkeypatch):
+    from experimenttracker import creation_policy
+
+    # This historical scenario covers cancellation before a C3-to-C3 replacement.
+    monkeypatch.setattr(creation_policy, "MODE", "legacy")
     store, scheduler, _, old = runtime
     old.config.slurm.max_concurrent_jobs = None
     workflow = Workflow(old.config, store, scheduler, DagAgent())
-    eid = store.command(
-        uuid4(),
-        "create",
-        {"brief": "Test an entirely new method and show its frontier.", "recipe_id": "agent_experiment_v1"},
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Test an entirely new method and show its frontier.")
     assert store.experiment(eid)["contract"]["execution_contract"] == 3
     await approve_plan(workflow, store, eid)
     original_observe = scheduler.observe
@@ -261,11 +257,7 @@ async def test_restart_reconciles_each_active_branch_before_replacement(runtime)
 async def test_changed_dependencies_are_autonomous_within_the_approved_objective(runtime):
     store, scheduler, _, old = runtime
     workflow = Workflow(old.config, store, scheduler, ChangedGraphAgent())
-    eid = store.command(
-        uuid4(),
-        "create",
-        {"brief": "Test an entirely new method and show its frontier.", "recipe_id": "agent_experiment_v1"},
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Test an entirely new method and show its frontier.")
     assert store.experiment(eid)["contract"]["execution_contract"] == 3
     await approve_plan(workflow, store, eid)
     await until(workflow, store, eid, lambda e: bool(e["snapshot"]))
