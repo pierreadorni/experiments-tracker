@@ -1,8 +1,7 @@
 """Episode identities for saved obligation sources; no runtime wiring yet."""
 
-from uuid import uuid4
-
 import pytest
+from helpers import seed_saved_contract3
 
 from experimenttracker import clock
 from experimenttracker.core import obligation_sources as sources
@@ -31,9 +30,7 @@ def rows(store, source_type="action", saved_id="action-1"):
 
 def test_episode_replay_preserves_timestamps_and_requires_transition_for_rebind(runtime, monkeypatch):
     store = runtime[0]
-    eid = store.command(uuid4(), "create", {"brief": "Synthetic", "recipe_id": "agent_experiment_v1"})[
-        "experiment_id"
-    ]
+    eid = seed_saved_contract3(store, "Synthetic")
     monkeypatch.setattr(clock, "now", lambda: 10.0)
     with store.tx() as db:
         first = sources.open_episode(db, "action", "action-1", **responsibility(eid))
@@ -64,9 +61,7 @@ def test_episode_replay_preserves_timestamps_and_requires_transition_for_rebind(
 
 def test_transition_validation_is_atomic_and_source_target_cannot_rebind(runtime):
     store = runtime[0]
-    eid = store.command(uuid4(), "create", {"brief": "Synthetic", "recipe_id": "agent_experiment_v1"})[
-        "experiment_id"
-    ]
+    eid = seed_saved_contract3(store, "Synthetic")
     with store.tx() as db:
         first = sources.open_episode(db, "action", "action-1", **responsibility(eid))
     with pytest.raises(ValueError, match="unknown obligation owner"):
@@ -94,9 +89,7 @@ def test_transition_validation_is_atomic_and_source_target_cannot_rebind(runtime
 
 def test_colon_saved_ids_are_distinct_from_prefix_siblings(runtime):
     store = runtime[0]
-    eid = store.command(uuid4(), "create", {"brief": "Synthetic", "recipe_id": "agent_experiment_v1"})[
-        "experiment_id"
-    ]
+    eid = seed_saved_contract3(store, "Synthetic")
     parent_id = f"initial-report:{eid}"
     with store.tx() as db:
         parent = sources.open_episode(db, "publication", parent_id, **responsibility(eid, owner="backend"))
@@ -107,9 +100,7 @@ def test_colon_saved_ids_are_distinct_from_prefix_siblings(runtime):
 
 def test_running_uncertain_running_cycles_never_reopen_terminal_ids(runtime):
     store = runtime[0]
-    eid = store.command(uuid4(), "create", {"brief": "Synthetic", "recipe_id": "agent_experiment_v1"})[
-        "experiment_id"
-    ]
+    eid = seed_saved_contract3(store, "Synthetic")
     with store.tx() as db:
         running = sources.open_episode(
             db, "action", "action-1", **responsibility(eid, owner="agent", wait="turn:turn-1")
@@ -159,9 +150,7 @@ def test_running_uncertain_running_cycles_never_reopen_terminal_ids(runtime):
 
 def test_terminal_helpers_are_idempotent_and_conflicting_history_is_diagnostic(runtime):
     store = runtime[0]
-    eid = store.command(uuid4(), "create", {"brief": "Synthetic", "recipe_id": "agent_experiment_v1"})[
-        "experiment_id"
-    ]
+    eid = seed_saved_contract3(store, "Synthetic")
     with store.tx() as db:
         first = sources.open_episode(db, "action", "action-1", **responsibility(eid))
         assert sources.satisfy_episode(db, "action", "action-1", 0)["state"] == "satisfied"
@@ -188,9 +177,7 @@ def test_terminal_helpers_are_idempotent_and_conflicting_history_is_diagnostic(r
 
 def test_transaction_rollback_couples_source_event_and_episode(runtime):
     store = runtime[0]
-    eid = store.command(uuid4(), "create", {"brief": "Synthetic", "recipe_id": "agent_experiment_v1"})[
-        "experiment_id"
-    ]
+    eid = seed_saved_contract3(store, "Synthetic")
     before = {
         "phase": store.experiment(eid)["phase"],
         "events": store.rows("SELECT * FROM events WHERE experiment_id=?", (eid,)),
@@ -216,9 +203,7 @@ def test_transaction_rollback_couples_source_event_and_episode(runtime):
 
 def test_episode_helpers_reject_inactive_transaction_and_corrupt_history(runtime):
     store = runtime[0]
-    eid = store.command(uuid4(), "create", {"brief": "Synthetic", "recipe_id": "agent_experiment_v1"})[
-        "experiment_id"
-    ]
+    eid = seed_saved_contract3(store, "Synthetic")
     with pytest.raises(RuntimeError):
         sources.open_episode(store.db, "action", "action-1", **responsibility(eid))
     assert rows(store) == []
@@ -233,9 +218,7 @@ def test_episode_helpers_reject_inactive_transaction_and_corrupt_history(runtime
 
 def test_latest_episode_is_read_only_for_missing_open_and_terminal_rows(runtime):
     store = runtime[0]
-    eid = store.command(uuid4(), "create", {"brief": "Synthetic", "recipe_id": "agent_experiment_v1"})[
-        "experiment_id"
-    ]
+    eid = seed_saved_contract3(store, "Synthetic")
     with store.tx() as db:
         assert sources.latest_episode(db, "action", "missing") is None
     assert rows(store, "action", "missing") == []
@@ -260,9 +243,7 @@ def test_latest_episode_is_read_only_for_missing_open_and_terminal_rows(runtime)
 @pytest.mark.parametrize("bad_id", ["action:action-1:x", "action:action-1:3"])
 def test_latest_episode_reports_malformed_or_gapped_history_without_writes(runtime, bad_id):
     store = runtime[0]
-    eid = store.command(uuid4(), "create", {"brief": "Synthetic", "recipe_id": "agent_experiment_v1"})[
-        "experiment_id"
-    ]
+    eid = seed_saved_contract3(store, "Synthetic")
     with store.tx() as db:
         obligations.open(db, "action:action-1:0", **responsibility(eid))
         obligations.open(db, bad_id, **responsibility(eid))

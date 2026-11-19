@@ -1,17 +1,17 @@
 """Inert c1a advancement decision validation and replay behavior."""
 
-from uuid import uuid4
-
 import pytest
+from helpers import seed_saved_contract3
 
 from experimenttracker import clock
 from experimenttracker.core import advancement_decisions
 
 
 def experiment(store):
-    return store.command(
-        uuid4(), "create", {"brief": "Synthetic decision", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Synthetic decision")
+    with store.tx() as db:
+        advancement_decisions.open_lifetime(db, eid)
+    return eid
 
 
 def save(db, eid, exp, reason=None, wait="none"):

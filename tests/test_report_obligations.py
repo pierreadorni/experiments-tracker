@@ -1,8 +1,7 @@
 """Focused SQLite-only report publication responsibility tests."""
 
-from uuid import uuid4
-
 import pytest
+from helpers import seed_saved_contract3
 
 from experimenttracker import artifacts, clock
 from experimenttracker.core import report_obligations
@@ -14,10 +13,7 @@ def document(text="Synthetic result"):
 
 
 def create(store):
-    eid = store.command(
-        uuid4(), "create", {"brief": "Synthetic report obligation", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
-    return eid
+    return seed_saved_contract3(store, "Synthetic report obligation")
 
 
 def episode(store, eid, version, index=0):

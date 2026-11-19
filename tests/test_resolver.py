@@ -4,6 +4,7 @@ import json
 from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3
 
 from experimenttracker import clock, resolver
 from experimenttracker.core import job_obligations
@@ -38,9 +39,7 @@ class Scheduler:
 
 
 def saved_intent(store, *, created_at=None, state="submitting", job_id=None, lag=None):
-    eid = store.command(
-        uuid4(), "create", {"brief": "Synthetic resolver decision", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Synthetic resolver decision")
     intent_id = str(uuid4())
     contract = store.experiment(eid)["contract"]
     if lag is not None:
