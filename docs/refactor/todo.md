@@ -547,7 +547,8 @@ See [tool rollout and effect boundaries](notes/t4.2-rollout.md).
 - [x] A submission can declare a bounded `result_file`. The exact saved intent binds registration to that file; older undeclared submissions and replays retain their existing behavior.
 - [x] `depends_on` requires exact completed jobs in the same experiment before admission; it does not queue native Slurm dependencies.
 - [x] Local CPU jobs can select bounded TensorBoard previews without waking research. Jean Zay preview requests are explicitly refused.
-- Remaining: bounded registered-result `inputs` and acceptance; GPU admission remains disabled.
+- [x] Local CPU jobs can stage bounded `inputs` from exact registered results and read their staged paths through `EXPERIMENT_INPUTS`.
+- Remaining: Jean Zay support for `inputs` and TensorBoard previews. GPU admission remains disabled pending reservation/accounting; live remote acceptance is separate.
 - [x] Manually approved C4 CPU jobs can use the saved Jean Zay route. Scripted controller acceptance covers pinned staging, lost submission reply, exact adoption, delayed accounting, interrupted delivery and one result-ready wake. No live remote acceptance.
 `cluster_info`, `submit_job`, `job_status`/`job_logs`, `cancel_job` (reuse),
 `register_result`, `register_figure`, `update_report` (reuse), `save_checkpoint`,
@@ -606,6 +607,7 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 
 ## Log
 
+- **T4.2 registered-result inputs:** `d345db4`, `0059442` bind local input receipts to exact completed producers and verify the bytes the wrapper consumes (source +104/−3; tests +132/−1). Ruff, 38 focused tests and all **1,451 Python tests** passed in isolated shards. Remote input requests refuse before staging.
 - **T4.8 browser create binding:** `a219e67` submits explicit C4 only with current project and executor support, without a C3 fallback (source +97/−2, tests +76/−0). Isolated Node 24 `make check` passed **1,440 Python, 41 web, and 51 gateway tests**; loopback owner acceptance also passed. The late unbound hosted-create refusal in `a8a8d4f` remains disabled until cutover.
 - **T4.2 optional job controls:** `0328afe` adds local TensorBoard previews (source +49/−4, tests +99/−3); isolated `make check` passed **1,440 Python, 37 web, and 51 gateway tests**. `7892455` adds exact completed-job dependencies (source +26/−1, tests +140/−1); 23 coordinator-selected tests passed. No live acceptance.
 - **T4.5 UI closeout:** `51c0763` extends local browser assertions for turn history, checkpoint metadata and the jobs panel (source 0; smoke script +10/−0). The isolated loopback browser acceptance passed with cached Chromium. The Worker/D1 tests retain hosted relay evidence; no private hosted or physical-device validation.
