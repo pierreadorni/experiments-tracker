@@ -570,9 +570,10 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 - [x] Manual local submission is exposed through MCP and covered by the approval-to-report scenario.
 - [x] Current Autopilot compute authority further constrains human-approved C4 member submissions, including inside intent persistence. Paused/deferred members and out-of-scope writing-phase compute are refused.
 - [x] The authorized project orchestrator approves exact C4 objectives within the active Autopilot run and policy. A scripted run reaches a ready report without a human answer; stale approvals cannot authorize dispatch, and compute pause prevents submission. C4 remains CPU-only.
-### [~] T4.5 UI for contract 4 (turns, checkpoint, jobs, approvals, report) · F · M
+### [x] T4.5 UI for contract 4 (turns, checkpoint, jobs, approvals, report) · F · M
 - [x] Local detail shows research turns, checkpoint metadata and job status without the contract-3 stage timeline. A scripted FastAPI/SQLite loopback browser run accepts the exact objective and verifies identical replay.
-- [x] Report status and convenience exports use working-report semantics for C4. Local Worker/D1 tests cover durable answers, identical replay after clearance, and C4 pause/resume and next-turn steering. No private hosted deployment checked.
+- [x] Report status and convenience exports use working-report semantics for C4. Local Worker/D1 tests cover durable answers, identical replay after clearance, and C4 pause/resume and next-turn steering.
+- Source acceptance is complete. The loopback Chromium smoke also checks rendered turn, checkpoint and job metadata. Private hosted and physical-device acceptance are separate rollout checks, not completed here.
 ### [x] T4.6 Contract 4 scenario suite (design.md C12 list) · F · M per subcard
 - [x] Approval → one submit with lost reply → exact adoption → debounced terminal wake → registered result → ready report → completed experiment. Model turns are scripted; no live scheduler.
 - [x] Owner pause/reopen/resume, healthy job observation without an inference turn, and concurrent branch edits that do not change the base checkout.
@@ -602,6 +603,7 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 
 ## Log
 
+- **T4.5 UI closeout:** `51c0763` extends local browser assertions for turn history, checkpoint metadata and the jobs panel (source 0; smoke script +10/−0). The isolated loopback browser acceptance passed with cached Chromium. The Worker/D1 tests retain hosted relay evidence; no private hosted or physical-device validation.
 - **T4.6 scenario closeout:** `cb841e8` covers idle C4 steering on the saved thread (source 0; tests +39/−0). Ruff and 44 coordinator-selected tests passed. The scripted remote lifecycle and lost-turn readback tests cover the remaining C12 cases. No live activation.
 - **T4.8 explicit create binding:** `ddfdbab` binds an explicit C4 create in the executor; `ae6b920` adds Worker validation, exact replay, and a 90-second capability gate for new explicit requests. In an isolated Node 24 checkout, all **1,436 Python, 37 web and 51 gateway tests** passed. Gateway formatting was corrected after the first `make check`; the remaining frontend and gateway checks then passed, including build and typecheck. No client or default switch; no deployment.
 - **T4.4 autonomous CPU approval:** `d4c195f` and preceding T4.4 commits add exact attributed project approval, wakeup, stale-proof recovery and intent admission, reusing the existing project tool, pool, and compute authority. Combined source +445/−23; tests +461/−13. The new source verifies approval from a distinct project authority at settlement and dispatch; manual proof cannot carry this attribution. Ruff, 11 reviewer-selected tests and all **1,433 Python tests** passed in isolated shards. No live activation.
