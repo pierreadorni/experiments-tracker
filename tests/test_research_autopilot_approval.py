@@ -101,6 +101,15 @@ def test_autopilot_approval_proof_is_exact_and_separate_from_owner_answer(runtim
             "VALUES(?,?,0,?,'running',?,?)",
             (action_id, run["id"], run["control_revision"], now, now),
         )
+    discovery = service.invoke(
+        action_id,
+        "get_experiment",
+        {"experiment_id": eid},
+    )
+    assert discovery["experiment"]["pending_request"]["id"] == request_id
+    assert discovery["experiment"]["pending_request"]["kind"] == "approval"
+    assert discovery["experiment"]["pending_request"]["params"]["objective"] == objective
+
     arguments = {
         "request_id": str(uuid4()),
         "expected_revision": run["revision"],
