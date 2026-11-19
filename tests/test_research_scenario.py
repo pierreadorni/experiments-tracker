@@ -248,6 +248,45 @@ async def test_failed_job_dispatches_follow_up_with_latest_private_checkpoint_an
 
 
 @pytest.mark.asyncio
+async def test_contract4_later_steering_wakes_idle_research_thread(runtime, config, tmp_path, monkeypatch):
+    store, _, _, workflow = runtime
+    git_project(config, store, tmp_path, research_loop=True)
+    _, _, receipt = create(store)
+    eid = receipt["experiment_id"]
+    workflow.workspaces.ensure_branch(eid)
+    action = first_turn(store, eid)
+    now = fake_clock(monkeypatch)
+    agent = scripted(
+        workflow,
+        ScriptedAgent(result={"status": "wait", "summary": "idle", "next": "timer:3600"}),
+    )
+
+    await run_pass(workflow, workflow.research_dispatch)
+    idle = store.one("SELECT state,thread_id,turn_id FROM agent_actions WHERE id=?", (action["id"],))
+    assert idle == {"state": "completed", "thread_id": "thread-1", "turn_id": "turn-1"}
+    assert follow_up_turn(store, eid) is None
+
+    guidance = "Use the held-out dataset for the comparison."
+    request_id = str(uuid4())
+    assert (
+        store.command(request_id, "steer", {"text": guidance, "mode": "later"}, eid=eid)["state"] == "applied"
+    )
+    follow_up = follow_up_turn(store, eid)
+    assert follow_up is not None
+    assert follow_up["phase"] == "research"
+    assert follow_up["state"] == "pending" and follow_up["thread_id"] == "thread-1"
+    assert follow_up_turn(store, eid) is None
+
+    await run_pass(workflow, workflow.research_dispatch)
+    saved = store.one("SELECT state,thread_id,turn_id FROM agent_actions WHERE id=?", (follow_up["id"],))
+    assert saved == {"state": "completed", "thread_id": "thread-1", "turn_id": "turn-1"}
+    assert [call[0] for call in agent.calls] == ["begin", "finish", "begin", "finish"]
+    assert guidance in agent.calls[2][2]
+    assert store.one("SELECT state FROM steering WHERE request_id=?", (request_id,)) == {"state": "applied"}
+    assert now.wall == 1000.0
+
+
+@pytest.mark.asyncio
 async def test_contract4_pause_survives_workflow_restart_and_resume(runtime, config, tmp_path):
     store, scheduler, agent, workflow = runtime
     git_project(config, store, tmp_path, research_loop=True)
