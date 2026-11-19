@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from helpers import IterationAgent, approve_plan, role_step, wait_until
+from helpers import IterationAgent, approve_plan, role_step, seed_saved_contract3, wait_until
 from test_iteration_autopilot import activated
 
 from experimenttracker.agent_pool import experiment_owner, project_owner
@@ -52,11 +52,7 @@ class GatedIterationAgent(IterationAgent):
 
 
 def create(store):
-    return store.command(
-        uuid4(),
-        "create",
-        {"brief": "Exercise synthetic iteration mechanisms.", "recipe_id": "agent_experiment_v1"},
-    )["experiment_id"]
+    return seed_saved_contract3(store, "Exercise synthetic iteration mechanisms.")
 
 
 def saved(store, table, action_id):
@@ -118,7 +114,7 @@ async def test_stage_admission_claims_the_slot_before_dispatch(runtime):
     store, scheduler, _, old = runtime
     agent = GatedIterationAgent("prepare")
     wf = Workflow(old.config, store, scheduler, agent)
-    eid = create(store)
+    eid = seed_saved_contract3(store, "Exercise synthetic iteration mechanisms.")
     await approve_plan(wf, store, eid)
     action = await wait_until(
         lambda: store.one(
@@ -142,7 +138,7 @@ async def test_title_admissions_claim_plan_and_summary_turns(runtime):
     store, scheduler, _, old = runtime
     agent = GatedIterationAgent("title")
     wf = Workflow(old.config, store, scheduler, agent)
-    eid = create(store)
+    eid = seed_saved_contract3(store, "Exercise synthetic iteration mechanisms.")
 
     def running(action_id=None):
         if action_id:

@@ -4,7 +4,7 @@ import json
 from uuid import uuid4
 
 import pytest
-from helpers import IterationAgent, approve_plan, wait_for_experiment
+from helpers import IterationAgent, approve_plan, seed_saved_contract3, wait_for_experiment
 
 from experimenttracker.codex_client import DemoAgent
 from experimenttracker.models import SteerCommand
@@ -20,12 +20,7 @@ async def wait_for(workflow, store, eid, predicate):
 async def test_plan_is_reviewed_before_source_is_written(runtime):
     store, scheduler, _, old = runtime
     workflow = Workflow(old.config, store, scheduler, IterationAgent())
-    eid = store.command(
-        uuid4(),
-        "create",
-        {"brief": "Test an entirely new method and show its frontier.", "recipe_id": "agent_experiment_v1"},
-    )["experiment_id"]
-    assert store.experiment(eid)["contract"]["execution_contract"] == 3
+    eid = seed_saved_contract3(store, "Test an entirely new method and show its frontier.")
     await wait_for(
         workflow, store, eid, lambda exp: (exp["plan_review"] or {}).get("state") == "awaiting_review"
     )
@@ -55,12 +50,7 @@ async def test_plan_is_reviewed_before_source_is_written(runtime):
 async def test_long_steering_survives_planning_revision(runtime):
     store, scheduler, _, old = runtime
     workflow = Workflow(old.config, store, scheduler, IterationAgent())
-    eid = store.command(
-        uuid4(),
-        "create",
-        {"brief": "Test an entirely new method and show its frontier.", "recipe_id": "agent_experiment_v1"},
-    )["experiment_id"]
-    assert store.experiment(eid)["contract"]["execution_contract"] == 3
+    eid = seed_saved_contract3(store, "Test an entirely new method and show its frontier.")
     await wait_for(
         workflow, store, eid, lambda exp: (exp["plan_review"] or {}).get("state") == "awaiting_review"
     )
@@ -109,12 +99,7 @@ async def test_restart_cancels_only_saved_job_and_creates_one_replacement(runtim
     store, _, _, old = runtime
     scheduler = WaitingScheduler()
     workflow = Workflow(old.config, store, scheduler, IterationAgent())
-    eid = store.command(
-        uuid4(),
-        "create",
-        {"brief": "Test an entirely new method and show its frontier.", "recipe_id": "agent_experiment_v1"},
-    )["experiment_id"]
-    assert store.experiment(eid)["contract"]["execution_contract"] == 3
+    eid = seed_saved_contract3(store, "Test an entirely new method and show its frontier.")
     await approve_plan(workflow, store, eid)
     await wait_for(
         workflow,
@@ -160,12 +145,7 @@ async def test_implementation_drift_requires_a_second_approval(runtime):
             return turn
 
     workflow = Workflow(old.config, store, scheduler, AmendedAgent())
-    eid = store.command(
-        uuid4(),
-        "create",
-        {"brief": "Test an entirely new method and show its frontier.", "recipe_id": "agent_experiment_v1"},
-    )["experiment_id"]
-    assert store.experiment(eid)["contract"]["execution_contract"] == 3
+    eid = seed_saved_contract3(store, "Test an entirely new method and show its frontier.")
     await approve_plan(workflow, store, eid)
     await wait_for(
         workflow, store, eid, lambda exp: (exp["plan_review"] or {}).get("scope") == "implementation"
@@ -184,12 +164,7 @@ async def test_failed_run_restart_reconciles_a_job_that_was_last_seen_running(ru
     store, _, _, old = runtime
     scheduler = WaitingScheduler()
     workflow = Workflow(old.config, store, scheduler, IterationAgent())
-    eid = store.command(
-        uuid4(),
-        "create",
-        {"brief": "Test an entirely new method and show its frontier.", "recipe_id": "agent_experiment_v1"},
-    )["experiment_id"]
-    assert store.experiment(eid)["contract"]["execution_contract"] == 3
+    eid = seed_saved_contract3(store, "Test an entirely new method and show its frontier.")
     await approve_plan(workflow, store, eid)
     await wait_for(
         workflow,
@@ -247,12 +222,7 @@ async def test_message_arriving_during_interpretation_is_queued_for_discussion(r
             return turn
 
     workflow = Workflow(old.config, store, scheduler, LateAgent())
-    eid = store.command(
-        uuid4(),
-        "create",
-        {"brief": "Test an entirely new method and show its frontier.", "recipe_id": "agent_experiment_v1"},
-    )["experiment_id"]
-    assert store.experiment(eid)["contract"]["execution_contract"] == 3
+    eid = seed_saved_contract3(store, "Test an entirely new method and show its frontier.")
     await approve_plan(workflow, store, eid)
     await wait_for(workflow, store, eid, lambda exp: exp["phase"] == "complete")
     saved = store.one("SELECT * FROM steering WHERE request_id=?", (steering_id,))
@@ -295,15 +265,7 @@ async def test_planning_clarification_waits_for_durable_answer(runtime):
             return turn
 
     workflow = Workflow(old.config, store, scheduler, QuestionAgent())
-    eid = store.command(
-        uuid4(),
-        "create",
-        {
-            "brief": "Test an entirely new method and show its frontier.",
-            "recipe_id": "agent_experiment_v1",
-        },
-    )["experiment_id"]
-    assert store.experiment(eid)["contract"]["execution_contract"] == 3
+    eid = seed_saved_contract3(store, "Test an entirely new method and show its frontier.")
     await wait_for(workflow, store, eid, lambda exp: bool((exp["plan_review"] or {}).get("questions")))
     review = store.experiment(eid)["plan_review"]
     assert review["state"] == "awaiting_review"
@@ -339,14 +301,7 @@ async def test_planning_clarification_waits_for_durable_answer(runtime):
 @pytest.fixture
 def blocked_store(runtime):
     store, _, _, _ = runtime
-    eid = store.command(
-        uuid4(),
-        "create",
-        {
-            "brief": "Synthetic settled implementation",
-            "recipe_id": "agent_experiment_v1",
-        },
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Synthetic settled implementation")
     identity = str(uuid4())
     now = store.experiment(eid)["updated_at"]
     with store.tx() as db:
