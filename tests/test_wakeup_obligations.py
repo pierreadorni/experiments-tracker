@@ -9,7 +9,7 @@ from uuid import uuid4
 
 import pytest
 from helpers import role_step
-from test_controller import create
+from helpers import seed_saved_contract3 as create
 
 from experimenttracker.core import wakeup_obligations
 

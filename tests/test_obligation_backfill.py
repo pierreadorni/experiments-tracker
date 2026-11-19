@@ -10,10 +10,12 @@ import logging
 from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3
 from test_legacy_archive_activation import legacy_experiment
 
 from experimenttracker.core import (
     action_obligations,
+    advancement_decisions,
     job_obligations,
     obligation_backfill,
     transfer_obligations,
@@ -35,9 +37,10 @@ IDENTITY = (
 
 
 def create(store, brief="Synthetic obligation backfill"):
-    return store.command(uuid4(), "create", {"brief": brief, "recipe_id": "agent_experiment_v1"})[
-        "experiment_id"
-    ]
+    eid = seed_saved_contract3(store, brief)
+    with store.tx() as db:
+        advancement_decisions.open_lifetime(db, eid)
+    return eid
 
 
 def insert_raw_action(store, eid, *, phase, state="pending"):
