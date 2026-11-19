@@ -202,9 +202,21 @@ class FakeRemoteScheduler(FakeScheduler):
     def __init__(self, observed=None, delivery=None):
         super().__init__(observed)
         self.delivery = delivery
+        self.workflow = None
         self.delivery_calls = 0
         self.due_calls = 0
         self.is_due = True
+        self.preview_calls = 0
+
+    async def fetch_event_preview(self, job):
+        self.preview_calls += 1
+        return {
+            "scalar": {"tag": "loss", "points": [[1, 2.0]]},
+            "image": None,
+            "image_pending": False,
+            "updated_at": 1,
+            "limited": False,
+        }
 
     def due(self, job, now):
         self.due_calls += 1
@@ -267,6 +279,7 @@ async def test_remote_success_persists_accounting_then_delivers_and_wakes_once(r
     store, _, _, workflow = runtime
     exp, job = await remote_job(store, workflow)
     scheduler = FakeRemoteScheduler(SimpleNamespace(state="COMPLETED", exit_code="0:0", ended_at=9))
+    scheduler.workflow = workflow
     workflow.scheduler_for = lambda *_: scheduler
 
     await job_observe.observe_remote(workflow, exp, job)
@@ -275,11 +288,30 @@ async def test_remote_success_persists_accounting_then_delivers_and_wakes_once(r
     ) == {"state": "complete", "scheduler_state": "COMPLETED", "ended_at": 9}
     assert scheduler.calls == ["42"]
     assert scheduler.delivery_calls == 1
+    assert scheduler.preview_calls == 0
     await job_observe.observe_remote(
         workflow, exp, store.one("SELECT * FROM jobs WHERE intent_id=?", (job["intent_id"],))
     )
     assert scheduler.delivery_calls == 1
     assert len(store.rows("SELECT * FROM agent_wakeups WHERE experiment_id=?", (exp["id"],))) == 1
+
+
+@pytest.mark.asyncio
+async def test_remote_running_preview_persists_without_waking(runtime):
+    store, _, _, workflow = runtime
+    exp, job = await remote_job(store, workflow)
+    scheduler = FakeRemoteScheduler(SimpleNamespace(state="RUNNING", exit_code=None, ended_at=None))
+    scheduler.workflow = workflow
+    workflow.scheduler_for = lambda *_: scheduler
+
+    await job_observe.observe_remote(workflow, exp, job)
+
+    saved = store.one("SELECT tensorboard,state FROM jobs WHERE intent_id=?", (job["intent_id"],))
+    assert saved["state"] == "submitted"
+    assert json.loads(saved["tensorboard"])["scalar"]["points"] == [[1, 2.0]]
+    assert scheduler.preview_calls == 1
+    assert store.rows("SELECT * FROM agent_wakeups") == []
+    assert len(store.rows("SELECT * FROM events WHERE kind='job_progress'")) == 1
 
 
 @pytest.mark.asyncio

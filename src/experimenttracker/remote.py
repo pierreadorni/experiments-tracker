@@ -929,6 +929,42 @@ class RemoteSlurmScheduler(SlurmScheduler):
 
         return await self.transfer("down", download, identity=identity, result_path=name)
 
+    async def fetch_event_preview(self, job):
+        import base64
+
+        from .remote_preview import REMOTE_EVENT_READER
+        from .tfevents import read_previews, selection
+
+        layout = await self.resolve()
+
+        manifest = json.loads(job["execution_manifest"])
+        display = selection(manifest, job["stage_id"])
+        if not display:
+            return
+        log_dir = display["log_dir"]
+        parts = Path(log_dir).parts
+        if not parts or Path(log_dir).is_absolute() or any(part in (".", "..") for part in parts):
+            return
+        remote_run = layout["remote_run"]
+        result = await self.remote_command(
+            "python3", "-c", REMOTE_EVENT_READER, remote_run, log_dir, timeout=20
+        )
+        payload = json.loads(result)
+        encoded = payload.get("data")
+        if not isinstance(encoded, str) or len(encoded) > 4 * ((2 * 1024 * 1024 + 2) // 3):
+            return
+        data = base64.b64decode(encoded, validate=True)
+        if len(data) > 2 * 1024 * 1024:
+            return
+        # Parse in a disposable private tree; untrusted remote basenames never reach local paths.
+        with tempfile.TemporaryDirectory(prefix="et-remote-preview-") as temporary:
+            scratch = Path(temporary)
+            destination = scratch / log_dir
+            destination.mkdir(parents=True)
+            event_path = destination / "events.out.tfevents.remote"
+            event_path.write_bytes(data)
+            return await asyncio.to_thread(read_previews, scratch, job, manifest)
+
     async def fetch(self, job, observed):
         layout = await self.resolve()
         root = Path(layout["local_run"])

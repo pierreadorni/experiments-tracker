@@ -102,16 +102,7 @@ async def observe(workflow, experiment, job):
     )
 
 
-async def _observe_tensorboard(workflow, job):
-    """Persist an optional bounded local C4 preview without creating a wake."""
-    manifest = json.loads(job.get("execution_manifest") or "{}")
-    if not tensorboard_selection(manifest, job["stage_id"]) or not job.get("execution_root"):
-        return
-    if manifest.get("execution", {}).get("context", "acacia") != "acacia":
-        return
-    preview = await asyncio.to_thread(read_previews, Path(job["execution_root"]), job, manifest)
-    if preview is None:
-        return
+def _merge_tensorboard_preview(job, preview):
     previous = json.loads(job["tensorboard"]) if job.get("tensorboard") else None
     if previous:
         if not preview["image"]:
@@ -121,6 +112,11 @@ async def _observe_tensorboard(workflow, job):
         preview["updated_at"] = max(preview["updated_at"], previous["updated_at"])
         if preview["image"]:
             preview["image_pending"] = False
+    return previous, preview
+
+
+def _publish_tensorboard(workflow, job, preview):
+    previous, preview = _merge_tensorboard_preview(job, preview)
     if preview == previous:
         return
     with workflow.store.tx() as db:
@@ -129,6 +125,18 @@ async def _observe_tensorboard(workflow, job):
             return
         db.execute("UPDATE jobs SET tensorboard=? WHERE intent_id=?", (encode(preview), job["intent_id"]))
         workflow.store.emit(db, job["experiment_id"], "job_progress", {"job_id": job["job_id"]})
+
+
+async def _observe_tensorboard(workflow, job):
+    """Persist an optional bounded local C4 preview without creating a wake."""
+    manifest = json.loads(job.get("execution_manifest") or "{}")
+    if not tensorboard_selection(manifest, job["stage_id"]) or not job.get("execution_root"):
+        return
+    if manifest.get("execution", {}).get("context", "acacia") != "acacia":
+        return
+    preview = await asyncio.to_thread(read_previews, Path(job["execution_root"]), job, manifest)
+    if preview is not None:
+        _publish_tensorboard(workflow, job, preview)
 
 
 async def observe_remote(workflow, experiment, job):
@@ -169,6 +177,20 @@ async def observe_remote(workflow, experiment, job):
         return await deliver(job)
 
     observed = await scheduler.observe(job["job_id"])
+    if manifest.get("execution", {}).get("context") == "jean-zay" and observed.state in {
+        "PENDING",
+        "CONFIGURING",
+        "RUNNING",
+        "SUSPENDED",
+        "COMPLETING",
+    }:
+        try:
+            preview = await scheduler.fetch_event_preview(job)
+        except Exception:
+            pass
+        else:
+            if preview is not None:
+                _publish_tensorboard(workflow, job, preview)
     if observed.state == "COMPLETED" and observed.exit_code == "0:0":
         # Accounting may expose the exit status before its terminal timestamp.
         if observed.ended_at is None:

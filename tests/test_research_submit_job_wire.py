@@ -58,7 +58,7 @@ def test_submit_job_optional_result_file_preserves_historical_request_identity()
         SubmitJobRequest.model_validate({**request, "tensorboard": {"log_dir": "../outside"}})
 
 
-async def test_jean_zay_submit_rejects_unsupported_tensorboard_selection(runtime, tmp_path):
+async def test_jean_zay_preflight_accepts_tensorboard_selection(runtime, tmp_path):
     store, _, _, workflow = runtime
     _, eid, action, request = setup_request(workflow, tmp_path)
     exp = store.experiment(eid)
@@ -75,8 +75,9 @@ async def test_jean_zay_submit_rejects_unsupported_tensorboard_selection(runtime
         "image_tag": None,
     }
 
-    with pytest.raises(ValueError, match="TensorBoard previews are not supported for Jean Zay"):
-        preflight(workflow, eid, action, request, remote_source=True)
+    accept(store, eid, request)
+    admitted = preflight(workflow, eid, action, request, remote_source=True)
+    assert admitted.tensorboard.log_dir == "tensorboard/fit"
 
     assert store.rows("SELECT * FROM jobs WHERE experiment_id=?", (eid,)) == []
 

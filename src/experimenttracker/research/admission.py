@@ -171,8 +171,6 @@ def _check(workflow, experiment_id, action, request, db, *, remote_source=False,
     ):
         raise ValueError("submission requires a local named research workspace")
     if remote_source:
-        if request.tensorboard is not None:
-            raise ValueError("TensorBoard previews are not supported for Jean Zay submissions")
         if request.result_file is None:
             raise ValueError("remote submission requires a declared result_file")
         validate_remote_result_path(request.result_file)
