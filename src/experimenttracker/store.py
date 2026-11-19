@@ -1292,6 +1292,10 @@ class Store:
                 return json.loads(prior["result"])
             if kind == "create" and payload.get("recipe_id") != "agent_experiment_v1":
                 raise Conflict("recipe is retired; create a brief-driven experiment")
+            if kind == "create" and "execution_contract" in payload:
+                requested_contract = payload["execution_contract"]
+                if type(requested_contract) is not int or requested_contract != 4:
+                    raise Conflict("only explicit execution contract 4 is supported")
             if db.execute("SELECT 1 FROM autopilot_requests WHERE request_id=?", (request_id,)).fetchone():
                 raise Conflict("request_id was already used for an Autopilot command")
             if (
@@ -1350,6 +1354,10 @@ class Store:
                 # an existing run keeps its own path and a busy project never decides it.
                 branch_workspace = self.branch_workspace_for(payload)
                 research_loop = self.research_loop_for(payload, branch_workspace=branch_workspace)
+                if payload.get("execution_contract") == 4 and not research_loop:
+                    raise Conflict(
+                        "explicit execution contract 4 is not enabled and eligible for this project"
+                    )
                 contract = {
                     "schema_version": 1,
                     "recipe_id": "agent_experiment_v1",

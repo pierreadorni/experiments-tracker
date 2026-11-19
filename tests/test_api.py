@@ -4,8 +4,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from experimenttracker.api import create_app
-from experimenttracker.config import GatewayConfig
+from experimenttracker.config import GatewayConfig, ProjectConfig
 from experimenttracker.execution_settings import ExecutionSettings
+from experimenttracker.workspaces import initialize_project
 
 
 def test_api_authentication_csrf_and_idempotency(config, runtime):
@@ -68,6 +69,54 @@ def test_api_authentication_csrf_and_idempotency(config, runtime):
         )
     # A background tick must not submit work for a contract-3 plan still under review.
     assert scheduler.submissions == 0
+
+
+def test_create_explicit_contract4_and_invalid_discriminators(config, runtime, tmp_path):
+    store, _, _, workflow = runtime
+    checkout = tmp_path / "research"
+    checkout.mkdir()
+    initialize_project(checkout)
+    project = ProjectConfig(id="research", name="Research", checkout=checkout, research_loop=True)
+    config.projects.append(project)
+    store.projects[project.id] = project
+    headers = {"Authorization": "Bearer " + "t" * 40}
+    with TestClient(create_app(config, components=(None, store, workflow))) as client:
+        for invalid in (None, 3, 5, "4", True, 4.0):
+            response = client.post(
+                "/api/experiments",
+                headers=headers,
+                json={
+                    "request_id": str(uuid4()),
+                    "brief": "Explicit contract discriminator validation.",
+                    "project_id": "research",
+                    "execution_contract": invalid,
+                },
+            )
+            assert response.status_code == 422
+        response = client.post(
+            "/api/experiments",
+            headers=headers,
+            json={
+                "schema_version": 1,
+                "request_id": str(uuid4()),
+                "brief": "Explicit contract discriminator validation.",
+                "project_id": "research",
+                "execution_contract": 4,
+            },
+        )
+        assert response.status_code == 202
+        assert store.experiment(response.json()["experiment_id"])["contract"]["execution_contract"] == 4
+        incompatible = client.post(
+            "/api/experiments",
+            headers=headers,
+            json={
+                "request_id": str(uuid4()),
+                "brief": "Explicit contract must not silently downgrade.",
+                "execution_contract": 4,
+            },
+        )
+        assert incompatible.status_code == 409
+        assert len(store.rows("SELECT * FROM experiments")) == 1
 
 
 def test_stale_answer_rejected(config, runtime):

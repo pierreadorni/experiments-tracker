@@ -98,6 +98,7 @@ async def test_hosted_create_replay_keeps_saved_contract_after_project_flag_chan
             "brief": "Measure a project-specific method.",
             "recipe_id": "agent_experiment_v1",
             "project_id": project.id,
+            "execution_contract": 4,
         },
     }
 
@@ -127,6 +128,47 @@ async def test_hosted_create_replay_keeps_saved_contract_after_project_flag_chan
         assert store.one("SELECT * FROM commands WHERE request_id=?", (request_id,)) == applied
         assert len(store.rows("SELECT * FROM experiments")) == 1
         assert len(ack_requests) == 2 and ack_requests[0] == ack_requests[1]
+    finally:
+        await client.close()
+
+
+async def test_gateway_explicit_contract4_cannot_fall_back_for_ineligible_project(config, runtime, tmp_path):
+    store, _, _, _ = runtime
+    credential = tmp_path / "executor-token"
+    credential.write_text("e" * 40)
+    config.gateway = GatewayConfig(url="https://gateway.example", credential_file=credential)
+    request_id = str(uuid4())
+    command = {
+        "request_id": request_id,
+        "experiment_id": str(uuid4()),
+        "executor_id": "acacia",
+        "kind": "create",
+        "payload": {
+            "schema_version": 1,
+            "request_id": request_id,
+            "brief": "Explicit C4 cannot downgrade through gateway.",
+            "recipe_id": "agent_experiment_v1",
+            "execution_contract": 4,
+        },
+    }
+    rejected = []
+
+    async def handler(request):
+        if request.url.path == "/api/executor/commands":
+            return httpx.Response(200, json={"schema_version": 1, "commands": [command]})
+        if request.url.path == "/api/executor/reject":
+            rejected.append(json.loads(request.content)["rejections"])
+            return httpx.Response(200, json={"schema_version": 1, "rejected": [request_id]})
+        if request.url.path == "/api/executor/ack":
+            raise AssertionError("Ineligible explicit C4 must not be acknowledged as applied")
+        raise AssertionError(f"unexpected gateway endpoint {request.url.path}")
+
+    client = GatewayClient(config, store, transport=httpx.MockTransport(handler))
+    try:
+        await client.commands()
+        assert store.rows("SELECT * FROM experiments") == []
+        assert store.one("SELECT * FROM rejected_gateway_commands WHERE request_id=?", (request_id,))
+        assert "explicit execution contract 4" in rejected[0][0]["reason"]
     finally:
         await client.close()
 

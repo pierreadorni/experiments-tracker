@@ -56,10 +56,18 @@ def test_unflagged_project_keeps_the_contract_3_stage_create(runtime, config, tm
     assert workspace["folder"] == str(checkout.resolve())
 
 
+def test_explicit_contract4_is_exact_and_requires_project_opt_in(runtime, config, tmp_path):
+    store, _, _, _ = runtime
+    # An explicit C4 request must not fall back on an opted-out project.
+    with pytest.raises(Conflict, match="not enabled and eligible"):
+        create(store, project_id="test-project", execution_contract=4)
+    assert store.rows("SELECT * FROM experiments") == []
+
+
 def test_flagged_eligible_project_saves_contract_4_without_stage_rows(runtime, config, tmp_path):
     store, _, _, _ = runtime
     _, checkout = git_project(config, store, tmp_path, research_loop=True)
-    request_id, payload, receipt = create(store)
+    request_id, payload, receipt = create(store, execution_contract=4)
     eid = receipt["experiment_id"]
     exp = store.projection(eid)
     contract = exp["contract"]

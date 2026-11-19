@@ -2,7 +2,7 @@ import json
 from typing import Literal
 from uuid import UUID
 
-from pydantic import Field, FiniteFloat, model_validator
+from pydantic import Field, FiniteFloat, StrictInt, model_validator
 
 from .config import JobResources, StrictModel
 from .execution_settings import ExecutionSettings
@@ -28,12 +28,19 @@ class CreateExperiment(StrictModel):
     request_id: UUID
     brief: str = Field(min_length=10, max_length=4000)
     recipe_id: Literal["agent_experiment_v1"] = "agent_experiment_v1"
+    execution_contract: StrictInt | None = None
     project_id: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_-]{0,63}$")
     workspace_mode: Literal["auto", "shared", "worktree"] = "auto"
     execution: ExecutionSettings | None = None
     reference_experiment_id: UUID | None = None
     model: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$")
     reasoning_effort: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_-]{0,29}$")
+
+    @model_validator(mode="after")
+    def explicit_contract_is_not_null(self):
+        if "execution_contract" in self.model_fields_set and self.execution_contract != 4:
+            raise ValueError("execution_contract must be 4 when specified")
+        return self
 
 
 class CreateProject(StrictModel):
