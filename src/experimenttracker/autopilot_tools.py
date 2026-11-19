@@ -73,6 +73,12 @@ class Review(Mutation):
     estimated_finish_at: float
 
 
+class ApproveObjective(Mutation):
+    experiment_id: UUID
+    approval_request_id: UUID
+    objective: str = Field(min_length=1, max_length=2000)
+
+
 class Control(Mutation):
     experiment_id: UUID
     operation: Literal["defer", "resume", "abandon", "steer"]
@@ -135,6 +141,7 @@ MODELS = {
     "get_document": DocumentRead,
     "create_experiment": Create,
     "review_experiment_plan": Review,
+    "approve_experiment_objective": ApproveObjective,
     "control_experiment": Control,
     "update_backlog": Backlog,
     "record_decision": Decision,
@@ -153,6 +160,7 @@ DESCRIPTIONS = {
     "get_document": "Read a registered immutable document version. Literature must distinguish verified full text and abstract access.",
     "create_experiment": "Delegate a question to existing experiment agents within saved authority; never submit compute yourself.",
     "review_experiment_plan": "Approve a linked plan with attributed scientific judgment inside the saved envelope; questions still need human review.",
+    "approve_experiment_objective": "Record project-orchestrator approval for the exact pending C4 objective; this is not an owner answer.",
     "control_experiment": "Defer/resume scoped work separately from user pauses, abandon using exact cancellation, or steer through the existing child agent.",
     "update_backlog": "Save a stable investigation question and concrete stop/review point before spending; do not rename questions to evade reviews.",
     "record_decision": "Record continue/narrow/pivot/stop or bounded borrowing, with rationale and dropped work.",

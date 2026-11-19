@@ -61,6 +61,15 @@ def approved(store, experiment_id, request_id, objective, *, now=None):
         return None
     if experiment["deleted_at"] is not None or experiment["contract"].get("execution_contract") != 4:
         return None
+    pending = experiment["pending_request"] or None
+    if (
+        not pending
+        or pending.get("id") != rid
+        or pending.get("kind") != "approval"
+        or pending.get("params", {}).get("objective") != objective
+        or pending.get("answer")
+    ):
+        return None
     member = store.one("SELECT * FROM autopilot_members WHERE experiment_id=?", (eid,))
     if not member:
         return None
@@ -88,7 +97,6 @@ def approved(store, experiment_id, request_id, objective, *, now=None):
         not run
         or run["status"] != "active"
         or member["project_id"] != run["project_id"]
-        or member["policy_revision"] != run["policy_revision"]
     ):
         return None
 
@@ -98,21 +106,35 @@ def approved(store, experiment_id, request_id, objective, *, now=None):
     if service.authority(eid, phase="compute", now=now) is not None:
         return None
 
-    matches = []
-    for action in store.rows(
-        "SELECT * FROM autopilot_actions WHERE run_id=? AND state='completed' AND result IS NOT NULL",
-        (run["id"],),
+    receipts = store.rows(
+        "SELECT r.result,r.author,r.payload,a.state,a.control_revision FROM autopilot_requests r "
+        "JOIN autopilot_actions a ON a.id=substr(r.author,7) "
+        "WHERE r.project_id=? AND r.run_id=? AND r.author LIKE 'agent:%' "
+        "AND json_extract(r.payload,'$.name')='approve_experiment_objective' "
+        "AND json_extract(r.payload,'$.arguments.experiment_id')=? "
+        "AND json_extract(r.payload,'$.arguments.approval_request_id')=? LIMIT 2",
+        (run["project_id"], run["id"], eid, rid),
+    )
+    if len(receipts) != 1:
+        return None
+    receipt = receipts[0]
+    if receipt["state"] != "completed" or receipt["control_revision"] != run["control_revision"]:
+        return None
+    try:
+        arguments = json.loads(receipt["payload"])["arguments"]
+    except (TypeError, ValueError, KeyError):
+        return None
+    if arguments.get("objective") != objective:
+        return None
+    proof = OrchestratorApproval.parse(receipt["result"])
+    if (
+        proof is None
+        or str(proof.request_id) != rid
+        or str(proof.experiment_id) != eid
+        or str(proof.run_id) != run["id"]
+        or proof.objective != objective
+        or proof.policy_revision != run["policy_revision"]
+        or proof.control_revision != run["control_revision"]
     ):
-        proof = OrchestratorApproval.parse(action["result"])
-        if (
-            proof is not None
-            and str(proof.request_id) == rid
-            and str(proof.experiment_id) == eid
-            and str(proof.run_id) == run["id"]
-            and proof.objective == objective
-            and proof.policy_revision == run["policy_revision"]
-            and proof.control_revision == run["control_revision"]
-            and action["control_revision"] == run["control_revision"]
-        ):
-            matches.append(proof)
-    return matches[0] if len(matches) == 1 else None
+        return None
+    return proof

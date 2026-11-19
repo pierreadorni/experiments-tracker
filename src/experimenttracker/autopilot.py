@@ -838,6 +838,64 @@ class Autopilot:
                     "autopilot_linked",
                     {"run_id": run["id"], "policy_revision": run["policy_revision"]},
                 )
+            elif name == "approve_experiment_objective":
+                eid = str(args.experiment_id)
+                member = self.member(eid)
+                if (
+                    not member
+                    or member["run_id"] != run["id"]
+                    or member["project_id"] != run["project_id"]
+                ):
+                    raise Conflict("C4 approval is outside this project's membership")
+                exp = self.store.experiment(eid)
+                if exp["contract"].get("execution_contract") != 4:
+                    raise Conflict("C4 approval requires a contract-4 experiment")
+                pending = exp["pending_request"] or None
+                if (
+                    not pending
+                    or pending.get("id") != str(args.approval_request_id)
+                    or pending.get("kind") != "approval"
+                    or pending.get("params", {}).get("objective") != args.objective
+                    or pending.get("answer")
+                ):
+                    raise Conflict("C4 approval request is not currently pending")
+                requests = db.execute(
+                    "SELECT payload FROM events WHERE experiment_id=? AND kind='owner_approval_requested' "
+                    "AND json_extract(payload,'$.request_id')=? LIMIT 2",
+                    (eid, str(args.approval_request_id)),
+                ).fetchall()
+                if len(requests) != 1:
+                    raise Conflict("approval request is not one exact saved C4 request")
+                requested = json.loads(requests[0]["payload"])
+                if (
+                    requested.get("experiment_id") != eid
+                    or requested.get("project_id") != run["project_id"]
+                    or requested.get("brief") != exp["brief"]
+                    or requested.get("objective") != args.objective
+                ):
+                    raise Conflict("approval does not match the saved request and objective")
+                existing = db.execute(
+                    "SELECT 1 FROM events WHERE experiment_id=? AND kind='autopilot_objective_approved' "
+                    "AND json_extract(payload,'$.request_id')=? LIMIT 1",
+                    (eid, str(args.approval_request_id)),
+                ).fetchone()
+                if existing:
+                    raise Conflict("this C4 request already has an orchestrator decision")
+                approval = {
+                    "request_id": str(args.approval_request_id),
+                    "experiment_id": eid,
+                    "run_id": run["id"],
+                    "policy_revision": run["policy_revision"],
+                    "control_revision": run["control_revision"],
+                    "objective": args.objective,
+                }
+                self.store.emit(
+                    db,
+                    eid,
+                    "autopilot_objective_approved",
+                    {**approval, "author": author, "action_id": action_id},
+                )
+                result = {"approval": approval}
             elif name == "review_experiment_plan":
                 eid = str(args.experiment_id)
                 member = self.member(eid)

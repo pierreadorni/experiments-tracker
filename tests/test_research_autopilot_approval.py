@@ -1,10 +1,13 @@
 import json
 from uuid import uuid4
 
+import pytest
+
 from experimenttracker.autopilot import Autopilot
 from experimenttracker.autopilot_budget import WEEK
 from experimenttracker.autopilot_models import AutopilotPolicy
 from experimenttracker.research.autopilot_approval import OrchestratorApproval, approved
+from experimenttracker.store import Conflict
 
 
 def test_orchestrator_approval_parser_requires_exact_shape():
@@ -60,7 +63,20 @@ def test_autopilot_approval_proof_is_exact_and_separate_from_owner_answer(runtim
     request_id = str(uuid4())
     objective = "Run the proposed CPU comparison"
     with store.tx() as db:
-        db.execute("UPDATE experiments SET contract=? WHERE id=?", (json.dumps(contract), eid))
+        db.execute(
+            "UPDATE experiments SET contract=?,pending_request=? WHERE id=?",
+            (
+                json.dumps(contract),
+                json.dumps(
+                    {
+                        "id": request_id,
+                        "kind": "approval",
+                        "params": {"objective": objective},
+                    }
+                ),
+                eid,
+            ),
+        )
         db.execute(
             "INSERT INTO autopilot_members VALUES(?,?,?,'question','exploration','test',0,1,0,NULL,'[]',?)",
             (eid, run["id"], "test-project", now),
@@ -79,23 +95,44 @@ def test_autopilot_approval_proof_is_exact_and_separate_from_owner_answer(runtim
         )
 
     action_id = str(uuid4())
-    proof = {
-        "request_id": request_id,
-        "experiment_id": eid,
-        "run_id": run["id"],
-        "policy_revision": run["policy_revision"],
-        "control_revision": run["control_revision"],
-        "objective": objective,
-    }
     with store.tx() as db:
         db.execute(
-            "INSERT INTO autopilot_actions(id,run_id,cursor,control_revision,state,result,created_at,updated_at) "
-            "VALUES(?,?,0,?,'completed',?,?,?)",
-            (action_id, run["id"], run["control_revision"], json.dumps({"approval": proof}), now, now),
+            "INSERT INTO autopilot_actions(id,run_id,cursor,control_revision,state,created_at,updated_at) "
+            "VALUES(?,?,0,?,'running',?,?)",
+            (action_id, run["id"], run["control_revision"], now, now),
         )
+    arguments = {
+        "request_id": str(uuid4()),
+        "expected_revision": run["revision"],
+        "experiment_id": eid,
+        "approval_request_id": request_id,
+        "objective": objective,
+    }
+    with pytest.raises(Conflict, match="revision is stale"):
+        service.invoke(
+            action_id,
+            "approve_experiment_objective",
+            {**arguments, "expected_revision": run["revision"] - 1},
+        )
+    with pytest.raises(Conflict, match="not currently pending"):
+        service.invoke(action_id, "approve_experiment_objective", {**arguments, "objective": "altered"})
+    with pytest.raises(Conflict, match="membership"):
+        service.invoke(
+            action_id,
+            "approve_experiment_objective",
+            {**arguments, "experiment_id": str(uuid4())},
+        )
+    result = service.invoke(action_id, "approve_experiment_objective", arguments)
+    assert result["approval"]["objective"] == objective
+    assert approved(store, eid, request_id, objective, now=now) is None
+    with store.tx() as db:
+        db.execute("UPDATE autopilot_actions SET state='completed' WHERE id=?", (action_id,))
 
-    assert approved(store, eid, request_id, objective, now=now) == OrchestratorApproval.model_validate(proof)
+    proof = OrchestratorApproval.model_validate(result["approval"])
+    assert approved(store, eid, request_id, objective, now=now) == proof
     assert approved(store, eid, request_id, "changed objective", now=now) is None
+    assert approved(store, str(uuid4()), request_id, objective, now=now) is None
+    assert approved(store, eid, str(uuid4()), objective, now=now) is None
     with store.tx() as db:
         db.execute("UPDATE autopilot_runs SET control_revision=control_revision+1 WHERE id=?", (run["id"],))
     assert approved(store, eid, request_id, objective, now=now) is None
