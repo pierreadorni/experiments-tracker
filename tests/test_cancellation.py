@@ -4,6 +4,7 @@ import asyncio
 from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3
 
 from experimenttracker.agent_pool import experiment_owner
 from experimenttracker.cancellation import process_cancellations
@@ -17,9 +18,7 @@ from experimenttracker.store import Conflict, Store
 
 
 def create(store):
-    return store.command(
-        uuid4(), "create", {"brief": "Synthetic cancellation test", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    return seed_saved_contract3(store, "Synthetic cancellation test.")
 
 
 def cancel(store, eid, request_id=None):

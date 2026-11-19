@@ -3,9 +3,9 @@
 import asyncio
 import hashlib
 from pathlib import Path
-from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3
 
 from experimenttracker.core import obligation_sources, transfer_obligations
 from experimenttracker.remote import RemoteSlurmScheduler, TransferCancelled, TransferPending
@@ -14,10 +14,7 @@ from experimenttracker.store import encode
 
 
 def create(store):
-    eid = store.command(
-        uuid4(), "create", {"brief": "Synthetic transfer", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
-    return store.experiment(eid)
+    return store.experiment(seed_saved_contract3(store, "Synthetic transfer."))
 
 
 def insert(store, identity, exp, *, state="pending", direction="up", payload='{"layout":{},"settings":{}}'):
