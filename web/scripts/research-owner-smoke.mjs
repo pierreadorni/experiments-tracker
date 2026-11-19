@@ -49,6 +49,16 @@ try {
   await page.goto(new URL(`/?experiment=${experimentId}`, target).href);
   await page.getByRole('heading', { name: 'Synthetic C4 approval UI acceptance.' }).waitFor();
   await page.getByRole('heading', { name: 'Research activity' }).waitFor();
+  await page.getByText('1 turn', { exact: true }).waitFor();
+  await page.getByText('Turn 1', { exact: true }).waitFor();
+  await page
+    .getByRole('region', { name: 'Checkpoint status' })
+    .getByText(/Version 1 · \d+ bytes · saved/)
+    .waitFor();
+  await page
+    .getByRole('region', { name: 'Research jobs' })
+    .getByText('No jobs submitted.')
+    .waitFor();
   await page.getByText('Proposed objective:', { exact: false }).waitFor();
   assert.equal(await page.getByText('May this exact objective proceed?').count(), 1);
   assert.equal(await page.getByText('Run the bounded synthetic CPU comparison only.').count(), 1);
