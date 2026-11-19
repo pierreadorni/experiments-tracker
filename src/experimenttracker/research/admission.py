@@ -102,12 +102,25 @@ def _check(workflow, experiment_id, action, request, db, *, remote_source=False,
         "WHERE experiment_id=? AND kind=? ORDER BY seq DESC LIMIT 1",
         (experiment_id, approval.REQUEST_EVENT),
     ).fetchone()
-    if (
-        latest is None
-        or latest[0] != str(request.approval_request_id)
-        or not approval.approved(store, experiment_id, request.approval_request_id, request.objective, db=db)
+    owner_approval = approval.approved(
+        store, experiment_id, request.approval_request_id, request.objective, db=db
+    )
+    orchestrator_approval = None
+    if not owner_approval:
+        from . import autopilot_approval
+
+        orchestrator_approval = autopilot_approval.approved(
+            store,
+            experiment_id,
+            request.approval_request_id,
+            request.objective,
+            db=db,
+            attributed_action_id=saved["id"],
+        )
+    if latest is None or latest[0] != str(request.approval_request_id) or not (
+        owner_approval or orchestrator_approval
     ):
-        raise ValueError("exact owner approval required")
+        raise ValueError("exact owner approval or attributed orchestrator approval required")
     if db.execute(
         "SELECT 1 FROM jobs WHERE experiment_id=? AND state='submitting' "
         "AND (? IS NULL OR intent_id!=?) LIMIT 1",

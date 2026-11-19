@@ -200,6 +200,7 @@ def test_autopilot_approval_proof_is_exact_and_separate_from_owner_answer(runtim
     assert wakeups.record(store, eid, wakeups.ORCHESTRATOR_APPROVAL, request_id, now=now) == recorded
     follow_up = follow_up_turn(store, eid, now=now + 60)
     assert follow_up is not None
+    assert store.experiment(eid)["pending_request"] is None
     assert "PROJECT ORCHESTRATOR APPROVAL" in follow_up["input"]
     assert "\nOWNER APPROVAL DECISION\n{" not in follow_up["input"]
     assert approved(store, eid, request_id, objective, now=now) is None
@@ -207,8 +208,62 @@ def test_autopilot_approval_proof_is_exact_and_separate_from_owner_answer(runtim
         store.one("SELECT state FROM agent_wakeups WHERE id=?", (recorded["wakeup_id"],))["state"] == "queued"
     )
     with store.tx() as db:
+        db.execute(
+            "UPDATE experiments SET contract=json_set(contract,'$.branch_workspace',1) WHERE id=?", (eid,)
+        )
+        db.execute(
+            "UPDATE agent_actions SET state='running',turn_id='follow-up-turn' WHERE id=?", (follow_up["id"],)
+        )
+    from experimenttracker.research.admission import preflight
+
+    submit = {
+        "request_id": str(uuid4()),
+        "approval_request_id": request_id,
+        "objective": objective,
+        "name": "fit",
+        "command": ["python", "fit.py"],
+        "resources": {"cpus_per_job": 1},
+    }
+    research_action = store.one("SELECT * FROM agent_actions WHERE id=?", (follow_up["id"],))
+    assert preflight(runtime[3], eid, research_action, submit)
+    with store.tx() as db:
+        db.execute("UPDATE autopilot_members SET deferred=1 WHERE experiment_id=?", (eid,))
+    with pytest.raises(ValueError, match="autopilot_deferred"):
+        preflight(runtime[3], eid, research_action, submit)
+    with store.tx() as db:
+        db.execute("UPDATE autopilot_members SET deferred=0 WHERE experiment_id=?", (eid,))
+        db.execute(
+            "UPDATE agent_wakeups SET action_id=? WHERE id=?", (predecessor["id"], recorded["wakeup_id"])
+        )
+    with pytest.raises(ValueError, match="exact owner approval or attributed"):
+        preflight(runtime[3], eid, research_action, submit)
+    with store.tx() as db:
+        db.execute(
+            "UPDATE agent_wakeups SET action_id=? WHERE id=?", (follow_up["id"], recorded["wakeup_id"])
+        )
+    commit = "a" * 40
+    with store.tx() as db:
+        db.execute(
+            "INSERT INTO experiment_branches VALUES(?,?,?,?,?,?,'active',NULL,0,0)",
+            (eid, "/synthetic", "exp/synthetic", "/synthetic/tree", commit, commit),
+        )
+    from experimenttracker.research.job_intent import save
+
+    job, created = save(
+        runtime[3],
+        eid,
+        research_action,
+        submit,
+        {"commit": commit, "script_hash": "b" * 64},
+    )
+    assert created and job["state"] == "submitting"
+    with pytest.raises(ValueError, match="exact owner approval or attributed"):
+        preflight(runtime[3], eid, research_action, {**submit, "objective": "altered"})
+    with store.tx() as db:
         db.execute("UPDATE autopilot_runs SET control_revision=control_revision+1 WHERE id=?", (run["id"],))
     assert approved(store, eid, request_id, objective, now=now) is None
+    with pytest.raises(ValueError, match="exact owner approval or attributed"):
+        preflight(runtime[3], eid, research_action, submit)
     assert (
         store.one(
             "SELECT 1 FROM commands WHERE experiment_id=? AND kind='answer' AND json_extract(payload,'$.pending_request_id')=?",

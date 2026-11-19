@@ -41,7 +41,7 @@ class OrchestratorApproval(StrictModel):
             return None
 
 
-def approved(store, experiment_id, request_id, objective, *, now=None, db=None):
+def approved(store, experiment_id, request_id, objective, *, now=None, db=None, attributed_action_id=None):
     """Return proof only for one completed, current orchestrator turn and exact C4 request.
 
     This is deliberately separate from ``research.approval.approved``: it neither
@@ -62,13 +62,14 @@ def approved(store, experiment_id, request_id, objective, *, now=None, db=None):
     if experiment["deleted_at"] is not None or experiment["contract"].get("execution_contract") != 4:
         return None
     pending = experiment["pending_request"] or None
-    if (
-        not pending
-        or pending.get("id") != rid
+    if pending is not None and (
+        pending.get("id") != rid
         or pending.get("kind") != "approval"
         or pending.get("params", {}).get("objective") != objective
         or (pending.get("answer") and pending.get("answer_source", {}).get("kind") != "orchestrator")
     ):
+        return None
+    if pending is None and attributed_action_id is None:
         return None
     member = store.one("SELECT * FROM autopilot_members WHERE experiment_id=?", (eid,))
     if not member:
@@ -134,4 +135,17 @@ def approved(store, experiment_id, request_id, objective, *, now=None, db=None):
         or proof.control_revision != run["control_revision"]
     ):
         return None
+    if attributed_action_id is not None:
+        wakeups = query(
+            "SELECT reason,action_id,state FROM agent_wakeups WHERE experiment_id=? "
+            "AND state IN ('queued','complete') AND action_id=?",
+            (eid, str(attributed_action_id)),
+        ).fetchall()
+        if not any(
+            (evidence := json.loads(row["reason"] or "null"))
+            and evidence.get("event") == "orchestrator_approval"
+            and evidence.get("source_id") == rid
+            for row in wakeups
+        ):
+            return None
     return proof
