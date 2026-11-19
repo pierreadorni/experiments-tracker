@@ -7,10 +7,13 @@ with raw SQL to reproduce a defect as the watchdog sees it.
 from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3
 from test_advancement_lifetime import cancel
 
+from experimenttracker import clock
 from experimenttracker.core import (
     action_obligations,
+    advancement_decisions,
     job_obligations,
     liveness,
     obligation_backfill,
@@ -27,8 +30,12 @@ def store(runtime):
 
 
 def create(store, brief="Synthetic liveness"):
-    payload = {"brief": brief, "recipe_id": "agent_experiment_v1"}
-    return store.command(uuid4(), "create", payload)["experiment_id"]
+    eid = seed_saved_contract3(store, brief)
+    with store.tx() as db:
+        now = clock.now()
+        db.execute("UPDATE experiments SET created_at=?,updated_at=? WHERE id=?", (now, now, eid))
+        advancement_decisions.open_lifetime(db, eid)
+    return eid
 
 
 def save_action(store, eid, *, state="pending", thread_id=None, turn_id=None):

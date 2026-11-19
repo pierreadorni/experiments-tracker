@@ -4,11 +4,13 @@ import time
 from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3
 from test_research_create import create as create_research
 from test_research_create import git_project
 
 from experimenttracker.core import (
     action_obligations,
+    advancement_decisions,
     job_obligations,
     liveness,
     transfer_obligations,
@@ -45,9 +47,9 @@ def store(tmp_path):
 
 
 def create(store, hold_reason="agent_stage_blocked", phase="preparing"):
-    eid = store.command(
-        uuid4(), "create", {"brief": "Synthetic watchdog test", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Synthetic watchdog test")
+    with store.tx() as db:
+        advancement_decisions.open_lifetime(db, eid)
     store.update(eid, phase=phase, hold_reason=hold_reason)
     return eid
 
