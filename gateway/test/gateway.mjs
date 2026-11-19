@@ -63,6 +63,98 @@ after(async () => {
   await mf?.dispose();
   if (directory) await rm(directory, { recursive: true, force: true });
 });
+test('explicit contract 4 creates preserve intent and require a fresh capable executor', async () => {
+  const db = await mf.getD1Database('DB');
+  const prior = await db.prepare('SELECT * FROM executor_status WHERE id=?').bind('acacia').first();
+  const restore = async () => {
+    await db.prepare('DELETE FROM executor_status WHERE id=?').bind('acacia').run();
+    if (prior)
+      await db
+        .prepare('INSERT INTO executor_status(id,payload,received_at) VALUES(?,?,?)')
+        .bind(prior.id, prior.payload, prior.received_at)
+        .run();
+  };
+  try {
+    await db.prepare('DELETE FROM executor_status WHERE id=?').bind('acacia').run();
+    const payload = {
+      schema_version: 1,
+      request_id: randomUUID(),
+      brief: 'Compare fixed synthetic linear and quadratic regression.',
+      recipe_id: 'agent_experiment_v1',
+      execution_contract: 4,
+    };
+    for (const bad of [null, 3, 5, '4']) {
+      assert.equal(
+        (
+          await req('/api/experiments', {
+            method: 'POST',
+            body: JSON.stringify({ ...payload, request_id: randomUUID(), execution_contract: bad }),
+          })
+        ).status,
+        422,
+      );
+    }
+    assert.equal(
+      (await req('/api/experiments', { method: 'POST', body: JSON.stringify(payload) })).status,
+      409,
+    );
+    await db
+      .prepare('INSERT INTO executor_status(id,payload,received_at) VALUES(?,?,?)')
+      .bind('acacia', JSON.stringify({ execution_contract_create: 4 }), Date.now() / 1000 - 91)
+      .run();
+    assert.equal(
+      (await req('/api/experiments', { method: 'POST', body: JSON.stringify(payload) })).status,
+      409,
+    );
+    await db
+      .prepare('UPDATE executor_status SET received_at=? WHERE id=?')
+      .bind(Date.now() / 1000, 'acacia')
+      .run();
+    const response = await req('/api/experiments', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    assert.equal(response.status, 202);
+    const result = await response.json();
+    const projection = await db
+      .prepare('SELECT payload FROM projections WHERE id=?')
+      .bind(result.experiment_id)
+      .first();
+    assert.equal(JSON.parse(projection.payload).contract.execution_contract, 4);
+    const commands = await req('/api/executor/commands', { token: executor });
+    assert.ok(
+      (await commands.json()).commands.some(
+        (command) => JSON.stringify(command.payload) === JSON.stringify(payload),
+      ),
+    );
+    await req('/api/executor/ack', {
+      token: executor,
+      method: 'POST',
+      body: JSON.stringify({ schema_version: 1, request_ids: [payload.request_id] }),
+    });
+    await db
+      .prepare('UPDATE executor_status SET received_at=? WHERE id=?')
+      .bind(Date.now() / 1000 - 91, 'acacia')
+      .run();
+    assert.deepEqual(
+      await (
+        await req('/api/experiments', { method: 'POST', body: JSON.stringify(payload) })
+      ).json(),
+      { ...result, state: 'applied' },
+    );
+    assert.equal(
+      (
+        await req('/api/experiments', {
+          method: 'POST',
+          body: JSON.stringify({ ...payload, brief: payload.brief + ' Changed.' }),
+        })
+      ).status,
+      409,
+    );
+  } finally {
+    await restore();
+  }
+});
 test('user and executor credentials cannot cross roles', async () => {
   assert.equal((await req('/api/experiments', { token: executor })).status, 401);
   assert.equal((await req('/api/executor/commands', { token: user })).status, 401);

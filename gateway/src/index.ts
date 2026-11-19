@@ -93,6 +93,7 @@ const createSchema = z
     workspace_mode: z.enum(['auto', 'shared', 'worktree']).optional(),
     brief: z.string().min(10).max(4000),
     recipe_id: z.literal('agent_experiment_v1'),
+    execution_contract: z.literal(4).optional(),
     model: z
       .string()
       .regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$/)
@@ -560,6 +561,7 @@ function waiting(
   referenceId?: string,
   agent?: { model?: string; reasoning_effort?: string },
   project = { id: 'test-project', name: 'Test project' },
+  executionContract = 3,
 ) {
   const now = Date.now() / 1000;
   return {
@@ -587,7 +589,7 @@ function waiting(
       schema_version: 1,
       project: { id: project.id, name: project.name },
       brief_driven: true,
-      execution_contract: 3,
+      execution_contract: executionContract,
       ...(agent ? { agent } : {}),
     },
     snapshot: null,
@@ -737,6 +739,22 @@ async function executorSupports(env: Env, capability: string) {
   const row = await first(env, 'SELECT payload FROM executor_status WHERE id=?', env.EXECUTOR_ID);
   return Boolean(row && JSON.parse(String(row.payload))[capability]);
 }
+async function executorRecentlySupportsCreateContractFour(env: Env) {
+  const row = await first(
+    env,
+    'SELECT payload,received_at FROM executor_status WHERE id=?',
+    env.EXECUTOR_ID,
+  );
+  if (!row || typeof row.received_at !== 'number' || !Number.isFinite(row.received_at))
+    return false;
+  const age = Date.now() / 1000 - row.received_at;
+  if (age < 0 || age > 90) return false;
+  try {
+    return JSON.parse(String(row.payload)).execution_contract_create === 4;
+  } catch {
+    return false;
+  }
+}
 async function enqueue(env: Env, kind: string, payload: Record<string, unknown>, eid?: string) {
   if (await first(env, 'SELECT 1 FROM settings_commands WHERE request_id=?', payload.request_id))
     throw new HttpError(409, 'request_id was already used for another command');
@@ -763,6 +781,13 @@ async function enqueue(env: Env, kind: string, payload: Record<string, unknown>,
       state: prior.state === 'acked' ? 'applied' : 'waiting_for_executor',
     };
   }
+  if (kind === 'create' && payload.execution_contract === 4) {
+    if (!(await executorRecentlySupportsCreateContractFour(env)))
+      throw new HttpError(
+        409,
+        'Install or refresh the executor update to create execution contract 4 experiments',
+      );
+  }
   const id = eid || crypto.randomUUID(),
     now = Date.now() / 1000;
   const statements = [];
@@ -784,6 +809,7 @@ async function enqueue(env: Env, kind: string, payload: Record<string, unknown>,
             (await projectCatalog(env)).find(
               (p) => p.id === (payload.project_id || 'test-project'),
             ),
+            payload.execution_contract === 4 ? 4 : 3,
           ),
         ),
         now,
