@@ -6,6 +6,23 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+from experimenttracker import creation_policy
+
+
+def test_demo_contract_selector_tracks_creation_cutover(monkeypatch):
+    monkeypatch.setattr(creation_policy, "MODE", "legacy")
+    assert creation_policy.select_demo_contract(None) == 3
+    assert creation_policy.select_demo_contract(3) == 3
+    assert creation_policy.select_demo_contract(4) == 4
+
+    monkeypatch.setattr(creation_policy, "MODE", "candidate")
+    assert creation_policy.select_demo_contract(None) == 4
+    assert creation_policy.select_demo_contract(4) == 4
+    with pytest.raises(ValueError, match="contract 3 demo is unavailable"):
+        creation_policy.select_demo_contract(3)
+
 
 def test_cli_contract4_demo_completes_in_isolated_temporary_state(tmp_path):
     config = tmp_path / "demo.yaml"

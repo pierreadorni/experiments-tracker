@@ -14,7 +14,7 @@ from zipfile import BadZipFile
 import uvicorn
 import yaml
 
-from . import clock
+from . import clock, creation_policy
 from .codex_client import CodexAgent, DemoAgent
 from .config import load_config
 from .projects import Projects
@@ -190,12 +190,20 @@ def main():
     init = sub.add_parser("init")
     init.add_argument("--mode", choices=["demo", "live"], default="demo")
     init.add_argument("--state-dir")
-    run = sub.add_parser("demo", help="submit one bounded synthetic experiment")
+    run = sub.add_parser(
+        "demo", help="run a bounded synthetic experiment (C3 in legacy mode; C4 during cutover)"
+    )
     run.add_argument(
         "--brief", default="Compare linear and quadratic regression on the fixed shared synthetic dataset."
     )
     run.add_argument("--max-seconds", type=int, default=900)
-    run.add_argument("--contract", type=int, choices=(3, 4), default=3)
+    run.add_argument(
+        "--contract",
+        type=int,
+        choices=(3, 4),
+        default=None,
+        help="execution contract (default follows the create cutover; C3 is refused during cutover)",
+    )
     serve = sub.add_parser("serve", help="run the single owning daemon and loopback API")
     serve.add_argument("--max-seconds", type=int, default=None)
     serve.add_argument("--release", help="exact tested software release to serve")
@@ -270,7 +278,11 @@ def main():
     if args.command == "demo":
         if args.max_seconds < 1:
             raise ValueError("max-seconds must be positive")
-        if args.contract == 4:
+        try:
+            contract = creation_policy.select_demo_contract(args.contract)
+        except ValueError as exc:
+            parser.error(str(exc))
+        if contract == 4:
             from .research.demo import run_contract4_demo
 
             raise SystemExit(asyncio.run(run_contract4_demo(config, args.max_seconds)))
