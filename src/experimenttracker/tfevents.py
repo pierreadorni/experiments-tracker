@@ -24,6 +24,9 @@ _CACHE = OrderedDict()
 
 
 def selection(manifest, stage_id):
+    research_selection = (manifest or {}).get("research_request", {}).get("tensorboard")
+    if research_selection is not None:
+        return research_selection
     return next(
         (
             s.get("tensorboard")

@@ -1,14 +1,19 @@
 """Read-only scheduler observation for saved contract 4 research jobs.
 
-This helper records only scheduler-terminal outcomes. It neither submits jobs nor
-reads outputs or advances the experiment graph.
+This helper records exact scheduler outcomes and optional local previews. It
+neither submits jobs nor advances the experiment graph.
 """
 
+import asyncio
 import json
+from pathlib import Path
 
 from .. import clock
 from ..core import job_obligations
 from ..remote import TransferPending
+from ..store import encode
+from ..tfevents import read_previews
+from ..tfevents import selection as tensorboard_selection
 from . import wakeups
 from .remote_route import validate_remote_route
 
@@ -75,6 +80,7 @@ async def observe(workflow, experiment, job):
         if job_obligations.locked_job(db, job, "state") is None:
             return None
     observed = await workflow.scheduler_for(experiment, job).observe(job["job_id"])
+    await _observe_tensorboard(workflow, job)
     if observed.state == "COMPLETED":
         if observed.exit_code is None:
             return None
@@ -94,6 +100,35 @@ async def observe(workflow, experiment, job):
         ended_at=observed.ended_at,
         error=error,
     )
+
+
+async def _observe_tensorboard(workflow, job):
+    """Persist an optional bounded local C4 preview without creating a wake."""
+    manifest = json.loads(job.get("execution_manifest") or "{}")
+    if not tensorboard_selection(manifest, job["stage_id"]) or not job.get("execution_root"):
+        return
+    if manifest.get("execution", {}).get("context", "acacia") != "acacia":
+        return
+    preview = await asyncio.to_thread(read_previews, Path(job["execution_root"]), job, manifest)
+    if preview is None:
+        return
+    previous = json.loads(job["tensorboard"]) if job.get("tensorboard") else None
+    if previous:
+        if not preview["image"]:
+            preview["image"] = previous["image"]
+        if preview["scalar"] and not preview["scalar"]["points"]:
+            preview["scalar"] = previous["scalar"]
+        preview["updated_at"] = max(preview["updated_at"], previous["updated_at"])
+        if preview["image"]:
+            preview["image_pending"] = False
+    if preview == previous:
+        return
+    with workflow.store.tx() as db:
+        saved = job_obligations.locked_job(db, job, "state", "execution_manifest", "tensorboard")
+        if saved is None:
+            return
+        db.execute("UPDATE jobs SET tensorboard=? WHERE intent_id=?", (encode(preview), job["intent_id"]))
+        workflow.store.emit(db, job["experiment_id"], "job_progress", {"job_id": job["job_id"]})
 
 
 async def observe_remote(workflow, experiment, job):

@@ -1,5 +1,6 @@
 import { Clock3 } from 'lucide-react';
 import type { Experiment } from './types';
+import { TensorBoard } from './TensorBoard';
 
 const date = (seconds: number) =>
   new Date(seconds * 1000).toLocaleString(undefined, {
@@ -81,6 +82,7 @@ export function ResearchProgress({ exp }: { exp: Experiment }) {
               </span>
               {job.job_id && <span>Job {job.job_id}</span>}
               {job.error && <p>{job.error}</p>}
+              <TensorBoard job={job} />
             </article>
           ))
         )}

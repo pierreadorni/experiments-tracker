@@ -7,9 +7,9 @@ from pydantic import ValidationError
 from test_research_job_source import setup_request
 
 from experimenttracker import controller
-from experimenttracker.research.admission import SubmitJobRequest
+from experimenttracker.research.admission import SubmitJobRequest, preflight
 from experimenttracker.slurm import SubmissionUncertain
-from experimenttracker.store import Conflict
+from experimenttracker.store import Conflict, encode
 
 
 def payload(request_id=None, approval_id=None):
@@ -38,16 +38,47 @@ def test_submit_job_schema_is_advertised_exactly():
 def test_submit_job_optional_result_file_preserves_historical_request_identity():
     request = payload()
     model = SubmitJobRequest.model_validate(request)
-    expected = model.model_dump(mode="json", exclude={"result_file"})
+    expected = model.model_dump(mode="json", exclude={"result_file", "tensorboard"})
     assert expected["resources"] != request["resources"]  # Historical receipts include defaults.
     assert model.saved_request() == expected
     assert SubmitJobRequest.model_validate({**request, "result_file": None}).saved_request() == expected
+    assert SubmitJobRequest.model_validate({**request, "tensorboard": None}).saved_request() == expected
     assert SubmitJobRequest.model_validate(
         {**request, "result_file": "metrics/result.json"}
     ).saved_request() == {**expected, "result_file": "metrics/result.json"}
+    tensorboard = {"log_dir": "tensorboard/fit", "scalar_tag": "loss/train", "image_tag": "prediction"}
+    assert SubmitJobRequest.model_validate({**request, "tensorboard": tensorboard}).saved_request() == {
+        **expected,
+        "tensorboard": tensorboard,
+    }
     for path in ("", "../outside.json", "/tmp/result.json", "C:\\\\result.json", "a\x00b", "x" * 1025):
         with pytest.raises(ValidationError):
             SubmitJobRequest.model_validate({**request, "result_file": path})
+    with pytest.raises(ValidationError):
+        SubmitJobRequest.model_validate({**request, "tensorboard": {"log_dir": "../outside"}})
+
+
+async def test_jean_zay_submit_rejects_unsupported_tensorboard_selection(runtime, tmp_path):
+    store, _, _, workflow = runtime
+    _, eid, action, request = setup_request(workflow, tmp_path)
+    exp = store.experiment(eid)
+    contract = dict(
+        exp["contract"],
+        execution={**exp["contract"].get("execution", {}), "context": "jean-zay"},
+    )
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(contract), eid))
+    request["result_file"] = "metrics/result.json"
+    request["tensorboard"] = {
+        "log_dir": "tensorboard/fit",
+        "scalar_tag": "loss/train",
+        "image_tag": None,
+    }
+
+    with pytest.raises(ValueError, match="TensorBoard previews are not supported for Jean Zay"):
+        preflight(workflow, eid, action, request, remote_source=True)
+
+    assert store.rows("SELECT * FROM jobs WHERE experiment_id=?", (eid,)) == []
 
 
 async def test_submit_job_refuses_before_approval(runtime, tmp_path, monkeypatch):

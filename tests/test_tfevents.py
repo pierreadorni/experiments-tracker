@@ -136,6 +136,23 @@ def test_legacy_and_tensor_summaries_selection_and_incremental_flush(events):
     assert "private" not in json.dumps(preview)
 
 
+def test_research_request_tensorboard_selection_reads_from_attempt_root(events):
+    root, job, _, path = events
+    path.write_bytes(record(event(1, Summary.Value(tag="loss", simple_value=2))))
+    manifest = {
+        "research_request": {
+            "tensorboard": {
+                "log_dir": "tensorboard/fit",
+                "scalar_tag": "loss",
+                "image_tag": None,
+            }
+        }
+    }
+    preview = read_previews(root, job, manifest)
+    assert preview["scalar"] == {"tag": "loss", "points": [[1, 2.0]]}
+    assert preview["image_pending"] is False
+
+
 def test_bad_records_symlinks_and_old_attempts_are_not_published(events, tmp_path):
     root, job, manifest, path = events
     path.write_bytes(

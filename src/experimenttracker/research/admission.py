@@ -8,6 +8,7 @@ from pydantic import Field, field_validator
 from ..config import JobResources, StrictModel
 from ..core import action_obligations
 from ..maintenance import blocked
+from ..models import TensorBoardDisplay
 from . import approval
 from .result_path import MAX_RESULT_PATH_CHARS, validate_remote_result_path, validate_result_path
 from .tools import require_live_research
@@ -21,6 +22,7 @@ class SubmitJobRequest(StrictModel):
     command: list[Annotated[str, Field(max_length=4096)]] = Field(min_length=1, max_length=128)
     resources: JobResources
     result_file: str | None = Field(default=None, max_length=MAX_RESULT_PATH_CHARS)
+    tensorboard: TensorBoardDisplay | None = None
 
     @field_validator("result_file")
     @classmethod
@@ -28,8 +30,9 @@ class SubmitJobRequest(StrictModel):
         return None if value is None else validate_result_path(value)
 
     def saved_request(self):
-        # Omit only the new field when absent; historical receipts included resource defaults.
-        return self.model_dump(mode="json", exclude={"result_file"} if self.result_file is None else set())
+        # Keep historical receipts stable when newer optional fields are absent.
+        absent = {name for name in ("result_file", "tensorboard") if getattr(self, name) is None}
+        return self.model_dump(mode="json", exclude=absent)
 
     @field_validator("command")
     @classmethod
@@ -94,6 +97,8 @@ def _check(workflow, experiment_id, action, request, db, *, remote_source=False,
     ):
         raise ValueError("submission requires a local named research workspace")
     if remote_source:
+        if request.tensorboard is not None:
+            raise ValueError("TensorBoard previews are not supported for Jean Zay submissions")
         if request.result_file is None:
             raise ValueError("remote submission requires a declared result_file")
         validate_remote_result_path(request.result_file)

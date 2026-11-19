@@ -1,9 +1,13 @@
 """Focused contract 4 scheduler observation tests using manually saved jobs."""
 
 import json
+import struct
 from types import SimpleNamespace
 
 import pytest
+from tensorboard.compat.proto.event_pb2 import Event
+from tensorboard.compat.proto.summary_pb2 import Summary
+from tensorboard.compat.tensorflow_stub.pywrap_tensorflow import masked_crc32c
 
 from experimenttracker.research import job_observe, wakeups
 from experimenttracker.store import encode
@@ -118,6 +122,50 @@ async def test_workflow_routes_healthy_contract4_without_wakeup(runtime):
 
     assert store.rows("SELECT * FROM agent_wakeups WHERE experiment_id=?", (exp["id"],)) == []
     assert store.one("SELECT state FROM jobs WHERE intent_id=?", (job["intent_id"],))["state"] == "submitted"
+
+
+@pytest.mark.asyncio
+async def test_healthy_local_c4_observation_persists_tensorboard_projection_without_wake(runtime, tmp_path):
+    store, _, _, workflow = runtime
+    exp, job = saved_job(store)
+    root = tmp_path / "attempt"
+    event_dir = root / "tensorboard" / "fit"
+    event_dir.mkdir(parents=True)
+    event = Event(
+        wall_time=10,
+        step=3,
+        summary=Summary(value=[Summary.Value(tag="loss/train", simple_value=0.25)]),
+    )
+    payload = event.SerializeToString()
+    size = struct.pack("<Q", len(payload))
+    (event_dir / "events.out.tfevents.test").write_bytes(
+        size + struct.pack("<I", masked_crc32c(size)) + payload + struct.pack("<I", masked_crc32c(payload))
+    )
+    manifest = {
+        "executor": "slurm",
+        "research_request": {
+            "tensorboard": {
+                "log_dir": "tensorboard/fit",
+                "scalar_tag": "loss/train",
+                "image_tag": None,
+            }
+        },
+    }
+    with store.tx() as db:
+        db.execute(
+            "UPDATE jobs SET execution_root=?,execution_manifest=? WHERE intent_id=?",
+            (str(root), encode(manifest), job["intent_id"]),
+        )
+    workflow.scheduler_for = lambda *_: FakeScheduler(
+        SimpleNamespace(state="RUNNING", exit_code=None, ended_at=None)
+    )
+
+    await workflow.observe_jobs()
+
+    projected = store.projection(exp["id"])["jobs"][0]
+    assert projected["tensorboard"]["scalar"] == {"tag": "loss/train", "points": [[3, 0.25]]}
+    assert projected["state"] == "submitted"
+    assert store.rows("SELECT * FROM agent_wakeups WHERE experiment_id=?", (exp["id"],)) == []
 
 
 async def test_missing_local_job_id_is_adopted_before_terminal_observation(runtime, monkeypatch):
