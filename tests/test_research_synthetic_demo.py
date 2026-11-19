@@ -14,6 +14,7 @@ from test_research_job_dispatch import FakeScheduler
 from test_research_write_tools import document
 
 from experimenttracker.autopilot import Autopilot
+from experimenttracker.research.demo_fixture import result_bytes
 from experimenttracker.research.dispatch import ResearchDispatch
 from experimenttracker.research.session import follow_up_turn
 from experimenttracker.research.settlement import complete
@@ -194,14 +195,8 @@ async def test_contract4_synthetic_gate_runs_dispatcher_to_done(runtime, config,
             if turn == 3:
                 job = store.one("SELECT * FROM jobs WHERE experiment_id=?", (eid,))
                 await asyncio.to_thread(
-                    Path(job["execution_root"], "results.json").write_text,
-                    json.dumps(
-                        {
-                            "schema_version": 1,
-                            "protocol": "synthetic",
-                            "metrics": [{"name": "mse", "variant": "toy", "value": 0.25, "unit": "fraction"}],
-                        }
-                    ),
+                    Path(job["execution_root"], "results.json").write_bytes,
+                    result_bytes(),
                 )
                 result = await workflow.controller.call(
                     eid,
@@ -214,7 +209,7 @@ async def test_contract4_synthetic_gate_runs_dispatcher_to_done(runtime, config,
                 )
                 assert result["intent_id"] == job["intent_id"]
                 report_document = document()
-                report_document["blocks"][1]["rows"][0][1]["metric"]["variant"] = "toy"
+                report_document["blocks"][1]["rows"][0][1]["metric"]["variant"] = "linear"
                 report = await workflow.controller.call(
                     eid, "update_report", {"request_id": str(uuid4()), "document": report_document}
                 )
