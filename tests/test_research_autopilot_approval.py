@@ -6,8 +6,10 @@ import pytest
 from experimenttracker.autopilot import Autopilot
 from experimenttracker.autopilot_budget import WEEK
 from experimenttracker.autopilot_models import AutopilotPolicy
+from experimenttracker.research import wakeups
 from experimenttracker.research.autopilot_approval import OrchestratorApproval, approved
-from experimenttracker.store import Conflict
+from experimenttracker.research.session import first_turn, follow_up_turn
+from experimenttracker.store import Conflict, encode
 
 
 def test_orchestrator_approval_parser_requires_exact_shape():
@@ -135,13 +137,75 @@ def test_autopilot_approval_proof_is_exact_and_separate_from_owner_answer(runtim
     assert result["approval"]["objective"] == objective
     assert approved(store, eid, request_id, objective, now=now) is None
     with store.tx() as db:
-        db.execute("UPDATE autopilot_actions SET state='completed' WHERE id=?", (action_id,))
+        db.execute(
+            "UPDATE autopilot_actions SET result=? WHERE id=?",
+            (
+                encode(
+                    {
+                        "summary": "Objective approved",
+                        "central_argument": "The bounded comparison is worthwhile.",
+                        "uncertainty": "Results remain unknown.",
+                        "outcome": "continue",
+                    }
+                ),
+                action_id,
+            ),
+        )
+    from experimenttracker.autopilot_controller import ResearchController
+
+    wake_id = wakeups.wakeup_id(eid, wakeups.ORCHESTRATOR_APPROVAL, request_id)
+    with store.tx() as db:
+        db.execute(
+            "INSERT INTO agent_wakeups(id,experiment_id,reason,due_at,created_at) VALUES(?,?,?,?,?)",
+            (wake_id, eid, encode({"event": "wrong", "source_id": request_id}), now + 60, now),
+        )
+    controller = ResearchController(runtime[3])
+    row = store.one("SELECT * FROM autopilot_actions WHERE id=?", (action_id,))
+    with pytest.raises(Conflict, match="reused for a different event"):
+        controller.complete(row)
+    assert store.one("SELECT state FROM autopilot_actions WHERE id=?", (action_id,))["state"] == "running"
+    assert store.experiment(eid)["pending_request"].get("answer") is None
+    with store.tx() as db:
+        db.execute("DELETE FROM agent_wakeups WHERE id=?", (wake_id,))
+    controller.complete(store.one("SELECT * FROM autopilot_actions WHERE id=?", (action_id,)))
 
     proof = OrchestratorApproval.model_validate(result["approval"])
     assert approved(store, eid, request_id, objective, now=now) == proof
+    from experimenttracker.research.approval import approved as owner_approved
+
+    assert owner_approved(store, eid, request_id, objective) is None
     assert approved(store, eid, request_id, "changed objective", now=now) is None
     assert approved(store, str(uuid4()), request_id, objective, now=now) is None
     assert approved(store, eid, str(uuid4()), objective, now=now) is None
+
+    predecessor = first_turn(store, eid)
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET thread_id='research-thread' WHERE id=?", (eid,))
+        db.execute(
+            "UPDATE agent_actions SET state='completed',thread_id='research-thread',turn_id='research-turn',result=? WHERE id=?",
+            (encode({"status": "wait", "summary": "awaiting approval", "next": "owner"}), predecessor["id"]),
+        )
+        saved = store.experiment(eid)["pending_request"]
+        saved.update(
+            action_id=predecessor["id"],
+            answer="Approved by the project orchestrator.",
+            answer_source={"kind": "orchestrator", "run_id": run["id"], "action_id": action_id},
+        )
+        db.execute("UPDATE experiments SET pending_request=? WHERE id=?", (encode(saved), eid))
+        from experimenttracker.core import request_obligations
+
+        request_obligations.sync_request(db, eid, before={"id": request_id})
+
+    recorded = wakeups.record(store, eid, wakeups.ORCHESTRATOR_APPROVAL, request_id, now=now)
+    assert wakeups.record(store, eid, wakeups.ORCHESTRATOR_APPROVAL, request_id, now=now) == recorded
+    follow_up = follow_up_turn(store, eid, now=now + 60)
+    assert follow_up is not None
+    assert "PROJECT ORCHESTRATOR APPROVAL" in follow_up["input"]
+    assert "\nOWNER APPROVAL DECISION\n{" not in follow_up["input"]
+    assert approved(store, eid, request_id, objective, now=now) is None
+    assert (
+        store.one("SELECT state FROM agent_wakeups WHERE id=?", (recorded["wakeup_id"],))["state"] == "queued"
+    )
     with store.tx() as db:
         db.execute("UPDATE autopilot_runs SET control_revision=control_revision+1 WHERE id=?", (run["id"],))
     assert approved(store, eid, request_id, objective, now=now) is None

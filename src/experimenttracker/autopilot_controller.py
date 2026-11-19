@@ -390,6 +390,59 @@ class ResearchController:
                 "UPDATE autopilot_actions SET state='completed',updated_at=? WHERE id=?",
                 (clock.now(), row["id"]),
             )
+            approvals = db.execute(
+                "SELECT payload FROM events WHERE kind='autopilot_objective_approved' "
+                "AND json_extract(payload,'$.action_id')=? ORDER BY seq",
+                (row["id"],),
+            ).fetchall()
+            from .core import request_obligations
+            from .research import wakeups
+
+            for saved in approvals:
+                approval = json.loads(saved["payload"])
+                eid, request_id = approval["experiment_id"], approval["request_id"]
+                exp = self.workflow.store.experiment(eid)
+                pending = exp["pending_request"]
+                proof = self.workflow.store.one(
+                    "SELECT 1 FROM events WHERE experiment_id=? AND kind='autopilot_objective_approved' "
+                    "AND json_extract(payload,'$.request_id')=? AND json_extract(payload,'$.action_id')=?",
+                    (eid, request_id, row["id"]),
+                )
+                if not proof or not pending or pending.get("id") != request_id:
+                    continue
+                from .research.autopilot_approval import approved
+
+                if (
+                    approved(
+                        self.workflow.store,
+                        eid,
+                        request_id,
+                        approval["objective"],
+                        now=clock.now(),
+                        db=db,
+                    )
+                    is None
+                ):
+                    continue
+                before = dict(pending)
+                pending["answer"] = "Approved by the project orchestrator."
+                pending["answer_source"] = {
+                    "kind": "orchestrator",
+                    "run_id": approval["run_id"],
+                    "action_id": row["id"],
+                }
+                db.execute(
+                    "UPDATE experiments SET pending_request=? WHERE id=?",
+                    (encode(pending), eid),
+                )
+                request_obligations.sync_request(db, eid, before=before)
+                wakeups.record(
+                    self.workflow.store,
+                    eid,
+                    wakeups.ORCHESTRATOR_APPROVAL,
+                    request_id,
+                    db=db,
+                )
 
     async def dispatch(self, slot, row):
         wf, agent = self.workflow, slot.agent

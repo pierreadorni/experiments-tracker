@@ -38,7 +38,7 @@ _MORE_OBLIGATIONS = "[more obligations omitted]"
 _INSTRUCTIONS = (
     "Work in this experiment's worktree. Use the turn tools for cluster, job,\n"
     "checkpoint, report, owner and integration actions; this prompt carries no\n"
-    "cluster context. If OWNER APPROVAL DECISION says accept, copy its approval_request_id and objective exactly into submit_job; do not rewrite either. The backend verifies approval.\n"
+    "cluster context. If OWNER APPROVAL DECISION or PROJECT ORCHESTRATOR APPROVAL authorizes an objective, copy its approval_request_id and objective exactly into submit_job; do not rewrite either. The backend verifies the source-specific proof.\n"
     "End every turn with one JSON object:\n"
     '{"status": "continue" | "wait" | "needs_owner" | "done",\n'
     ' "summary": "<nonblank>", "next": "<nonblank>",\n'
@@ -244,6 +244,22 @@ def approval_context(request_id, objective, answer):
     )
 
 
+def orchestrator_approval_context(request_id, objective):
+    """An approval attributed to the project orchestrator, not the human owner."""
+    return (
+        "\nPROJECT ORCHESTRATOR APPROVAL\n"
+        + json.dumps(
+            {
+                "approval_request_id": request_id,
+                "objective": objective,
+                "approved_by": "project orchestrator",
+            },
+            ensure_ascii=False,
+        )
+        + "\n"
+    )
+
+
 def turn_prompt(
     *,
     brief: str,
@@ -253,6 +269,7 @@ def turn_prompt(
     obligations: Sequence[str] = (),
     action_id: str | None = None,
     owner_approval: tuple[str, str, str] | None = None,
+    orchestrator_approval: tuple[str, str] | None = None,
 ) -> str:
     """Build one deterministic, bounded turn prompt from the saved turn inputs.
 
@@ -271,6 +288,8 @@ def turn_prompt(
 
     marker = _action_marker(action_id)
     approval = approval_context(*owner_approval) if owner_approval else ""
+    if orchestrator_approval:
+        approval += orchestrator_approval_context(*orchestrator_approval)
     if len(approval.encode()) > MAX_APPROVAL_CONTEXT_BYTES:
         # Older saved approvals may exceed the newer handoff bound. Do not
         # present a truncated objective as the exact value for submission.

@@ -27,9 +27,10 @@ DEBOUNCE_SECONDS = 60
 MAX_DUE_WAKEUPS = 32
 MAX_SOURCE_ID = 200
 OWNER_REQUEST_ANSWERED = "owner_request_answered"
+ORCHESTRATOR_APPROVAL = "orchestrator_approval"
 JOB_TERMINAL = "job_terminal"
 RESEARCH_TIMER = "research_timer"
-SUPPORTED_EVENTS = frozenset({OWNER_REQUEST_ANSWERED, JOB_TERMINAL, RESEARCH_TIMER})
+SUPPORTED_EVENTS = frozenset({OWNER_REQUEST_ANSWERED, ORCHESTRATOR_APPROVAL, JOB_TERMINAL, RESEARCH_TIMER})
 _NAMESPACE = UUID("0f4e1a2b-3c5d-4e6f-8a9b-1c2d3e4f5a6b")
 _TERMINAL_PHASES = frozenset({"complete", "failed", "cancelled"})
 # The terminal values saved in jobs.state; stage states are a different vocabulary.
@@ -95,6 +96,36 @@ def _answered_request(db, experiment, source_id):
         raise Conflict("the saved owner request obligation is not satisfied")
 
 
+def _orchestrator_approval(store, db, experiment, source_id, predecessor_id):
+    """Verify exact orchestrator proof and the turn that asked for this approval."""
+    pending = json.loads(experiment["pending_request"]) if experiment["pending_request"] else None
+    if (
+        not isinstance(pending, dict)
+        or pending.get("id") != source_id
+        or pending.get("kind") != "approval"
+        or pending.get("action_id") != predecessor_id
+        or pending.get("answer_source", {}).get("kind") != "orchestrator"
+    ):
+        raise Conflict("orchestrator approval does not name the requesting predecessor")
+    objective = (pending.get("params") or {}).get("objective")
+    from . import autopilot_approval
+
+    proof_event = db.execute(
+        "SELECT payload FROM events WHERE experiment_id=? AND kind='autopilot_objective_approved' "
+        "AND json_extract(payload,'$.request_id')=? LIMIT 2",
+        (experiment["id"], source_id),
+    ).fetchall()
+    source = pending["answer_source"]
+    saved_proof = json.loads(proof_event[0]["payload"]) if len(proof_event) == 1 else {}
+    if (
+        len(proof_event) != 1
+        or saved_proof.get("action_id") != source.get("action_id")
+        or saved_proof.get("run_id") != source.get("run_id")
+        or autopilot_approval.approved(store, experiment["id"], source_id, objective, db=db) is None
+    ):
+        raise Conflict("the exact orchestrator approval proof is not saved")
+
+
 def _pending_research_action(db, eid, action_id):
     """Refuse anything but this experiment's saved pending research action."""
     row = db.execute(
@@ -137,6 +168,11 @@ def record(store, eid, event, source_id, *, delay=None, db=None, now=None):
         return _evidence(prior)
     if event == OWNER_REQUEST_ANSWERED:
         _answered_request(db, experiment, source_id)
+    elif event == ORCHESTRATOR_APPROVAL:
+        pending = json.loads(experiment["pending_request"]) if experiment["pending_request"] else None
+        if not isinstance(pending, dict) or pending.get("id") != source_id:
+            raise Conflict("the saved approval request has another identity")
+        _orchestrator_approval(store, db, experiment, source_id, pending.get("action_id"))
     elif event == JOB_TERMINAL:
         job = db.execute(
             "SELECT state FROM jobs WHERE intent_id=? AND experiment_id=?", (source_id, eid)
@@ -167,9 +203,9 @@ def record(store, eid, event, source_id, *, delay=None, db=None, now=None):
     if event != RESEARCH_TIMER:
         pending = db.execute(
             "SELECT * FROM agent_wakeups WHERE experiment_id=? AND state='pending' AND due_at>? "
-            "AND CASE WHEN json_valid(reason) THEN json_extract(reason,'$.event') END IN (?,?) "
+            "AND CASE WHEN json_valid(reason) THEN json_extract(reason,'$.event') END IN (?,?,?) "
             "ORDER BY due_at,created_at,id LIMIT 1",
-            (eid, now, OWNER_REQUEST_ANSWERED, JOB_TERMINAL),
+            (eid, now, OWNER_REQUEST_ANSWERED, ORCHESTRATOR_APPROVAL, JOB_TERMINAL),
         ).fetchone()
         if pending is not None:
             due_at = pending["due_at"]
@@ -240,6 +276,12 @@ def consume(store, eid, wakeup_ids, action_id, *, db=None, now=None):
     now = clock.now() if now is None else now
     action_id = str(action_id)
     _pending_research_action(db, eid, action_id)
+    experiment = _live_experiment(db, eid)
+    predecessor = db.execute(
+        "SELECT id FROM agent_actions WHERE experiment_id=? AND phase=? AND state='completed' "
+        "ORDER BY created_at DESC,rowid DESC LIMIT 1",
+        (eid, PHASE),
+    ).fetchone()
     evidence = []
     for wakeup in ids:
         row = db.execute(
@@ -248,6 +290,10 @@ def consume(store, eid, wakeup_ids, action_id, *, db=None, now=None):
         saved = None if row is None else _evidence(row)
         if saved is None:
             raise Conflict("not this experiment's saved event wakeup")
+        if saved["event"] == ORCHESTRATOR_APPROVAL:
+            if predecessor is None:
+                raise Conflict("orchestrator approval has no completed requesting predecessor")
+            _orchestrator_approval(store, db, experiment, saved["source_id"], predecessor["id"])
         if saved["state"] == "pending":
             if saved["due_at"] > now:
                 raise Conflict("a wakeup before its coalescing window cannot be bound")

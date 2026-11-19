@@ -41,7 +41,7 @@ class OrchestratorApproval(StrictModel):
             return None
 
 
-def approved(store, experiment_id, request_id, objective, *, now=None):
+def approved(store, experiment_id, request_id, objective, *, now=None, db=None):
     """Return proof only for one completed, current orchestrator turn and exact C4 request.
 
     This is deliberately separate from ``research.approval.approved``: it neither
@@ -67,17 +67,18 @@ def approved(store, experiment_id, request_id, objective, *, now=None):
         or pending.get("id") != rid
         or pending.get("kind") != "approval"
         or pending.get("params", {}).get("objective") != objective
-        or pending.get("answer")
+        or (pending.get("answer") and pending.get("answer_source", {}).get("kind") != "orchestrator")
     ):
         return None
     member = store.one("SELECT * FROM autopilot_members WHERE experiment_id=?", (eid,))
     if not member:
         return None
-    requests = store.rows(
+    query = db.execute if db is not None else store.db.execute
+    requests = query(
         "SELECT payload FROM events WHERE experiment_id=? AND kind='owner_approval_requested' "
         "AND json_extract(payload,'$.request_id')=? LIMIT 2",
         (eid, rid),
-    )
+    ).fetchall()
     if len(requests) != 1:
         return None
     try:
@@ -93,11 +94,7 @@ def approved(store, experiment_id, request_id, objective, *, now=None):
     ):
         return None
     run = store.one("SELECT * FROM autopilot_runs WHERE id=?", (member["run_id"],))
-    if (
-        not run
-        or run["status"] != "active"
-        or member["project_id"] != run["project_id"]
-    ):
+    if not run or run["status"] != "active" or member["project_id"] != run["project_id"]:
         return None
 
     from ..autopilot import Autopilot

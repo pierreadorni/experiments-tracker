@@ -135,7 +135,15 @@ def first_turn(store, eid):
 
 
 def _queue(
-    store, db, experiment, owner_constraints, events=(), checkpoint=None, thread_id=None, owner_approval=None
+    store,
+    db,
+    experiment,
+    owner_constraints,
+    events=(),
+    checkpoint=None,
+    thread_id=None,
+    owner_approval=None,
+    orchestrator_approval=None,
 ):
     """Save one pending research action for this experiment and return it."""
     eid = experiment["id"]
@@ -147,6 +155,7 @@ def _queue(
         events=events,
         action_id=action_id,
         owner_approval=owner_approval,
+        orchestrator_approval=orchestrator_approval,
     )
     now = clock.now()
     db.execute(
@@ -231,22 +240,30 @@ def follow_up_turn(store, eid, *, now=None):
         if predecessor is None:
             return None
         events, bind = _job_events(db, experiment, predecessor, due)
-        pending = owner_approval = None
+        pending = owner_approval = orchestrator_approval = None
         if experiment["pending_request"]:
             answered = _saved_answer(experiment, predecessor)
             if answered is None:
                 return None
             pending, answer = answered
+            source = pending.get("answer_source") or {}
+            event_kind = (
+                wakeups.ORCHESTRATOR_APPROVAL
+                if source.get("kind") == "orchestrator"
+                else wakeups.OWNER_REQUEST_ANSWERED
+            )
             answer_ids = [
                 item["wakeup_id"]
                 for item in due
-                if item["event"] == wakeups.OWNER_REQUEST_ANSWERED and item["source_id"] == pending["id"]
+                if item["event"] == event_kind and item["source_id"] == pending["id"]
             ]
             if not answer_ids:
                 return None
             bind.extend(answer_ids)
             objective = (pending.get("params") or {}).get("objective")
-            if pending.get("kind") == "approval" and isinstance(objective, str):
+            if source.get("kind") == "orchestrator" and pending.get("kind") == "approval":
+                orchestrator_approval = (pending["id"], objective)
+            elif pending.get("kind") == "approval" and isinstance(objective, str):
                 owner_approval = (pending["id"], objective, answer)
             else:
                 events.append(_answer_line(pending, answer))
@@ -276,6 +293,7 @@ def follow_up_turn(store, eid, *, now=None):
             checkpoint=DEFERRED_CHECKPOINT,
             thread_id=experiment["thread_id"],
             owner_approval=owner_approval,
+            orchestrator_approval=orchestrator_approval,
         )
         wakeups.consume(store, eid, bind, action["id"], db=db, now=now)
         wakeups.supersede_timer(db, eid, predecessor["id"])
