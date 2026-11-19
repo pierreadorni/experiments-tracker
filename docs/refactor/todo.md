@@ -545,6 +545,9 @@ See [tool rollout and effect boundaries](notes/t4.2-rollout.md).
 - [x] `ask_owner` and `request_integration` through MCP. The manual approval gate is T4.4; answer wakeup is T4.3.
 - [x] `submit_job` for manually approved local CPU jobs. `register_result` advertises a usable JSON example without relaxing exact producer or metric validation. GPU admission is not enabled.
 - [x] A submission can declare a bounded `result_file`. The exact saved intent binds registration to that file; older undeclared submissions and replays retain their existing behavior.
+- [x] `depends_on` requires exact completed jobs in the same experiment before admission; it does not queue native Slurm dependencies.
+- [x] Local CPU jobs can select bounded TensorBoard previews without waking research. Jean Zay preview requests are explicitly refused.
+- Remaining: bounded registered-result `inputs` and acceptance; GPU admission remains disabled.
 - [x] Manually approved C4 CPU jobs can use the saved Jean Zay route. Scripted controller acceptance covers pinned staging, lost submission reply, exact adoption, delayed accounting, interrupted delivery and one result-ready wake. No live remote acceptance.
 `cluster_info`, `submit_job`, `job_status`/`job_logs`, `cancel_job` (reuse),
 `register_result`, `register_figure`, `update_report` (reuse), `save_checkpoint`,
@@ -603,6 +606,7 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 
 ## Log
 
+- **T4.2 optional job controls:** `0328afe` adds local TensorBoard previews (source +49/−4, tests +99/−3); isolated `make check` passed **1,440 Python, 37 web, and 51 gateway tests**. `7892455` adds exact completed-job dependencies (source +26/−1, tests +140/−1); 23 coordinator-selected tests passed. No live acceptance.
 - **T4.5 UI closeout:** `51c0763` extends local browser assertions for turn history, checkpoint metadata and the jobs panel (source 0; smoke script +10/−0). The isolated loopback browser acceptance passed with cached Chromium. The Worker/D1 tests retain hosted relay evidence; no private hosted or physical-device validation.
 - **T4.6 scenario closeout:** `cb841e8` covers idle C4 steering on the saved thread (source 0; tests +39/−0). Ruff and 44 coordinator-selected tests passed. The scripted remote lifecycle and lost-turn readback tests cover the remaining C12 cases. No live activation.
 - **T4.8 explicit create binding:** `ddfdbab` binds an explicit C4 create in the executor; `ae6b920` adds Worker validation, exact replay, and a 90-second capability gate for new explicit requests. In an isolated Node 24 checkout, all **1,436 Python, 37 web and 51 gateway tests** passed. Gateway formatting was corrected after the first `make check`; the remaining frontend and gateway checks then passed, including build and typecheck. No client or default switch; no deployment.
