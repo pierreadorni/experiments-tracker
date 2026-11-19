@@ -3,14 +3,13 @@
 from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3
 
 from experimenttracker.core import action_obligations
 
 
 def seed_experiment(store, brief):
-    return store.command(uuid4(), "create", {"brief": brief, "recipe_id": "agent_experiment_v1"})[
-        "experiment_id"
-    ]
+    return seed_saved_contract3(store, brief)
 
 
 def obligations(store, action_id):

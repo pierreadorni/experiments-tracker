@@ -7,6 +7,7 @@ import time
 from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3
 from PIL import Image
 from tensorboard.compat.proto.event_pb2 import Event
 from tensorboard.compat.proto.summary_pb2 import Summary
@@ -32,9 +33,7 @@ def png(color="red"):
 
 
 def tensorboard_experiment(store, workflow):
-    eid = store.command(
-        uuid4(), "create", {"brief": "Synthetic TensorBoard fixture", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Synthetic TensorBoard fixture")
     assert store.experiment(eid)["contract"]["execution_contract"] == 3
     root = workflow.root(eid)
     work = root / "work"

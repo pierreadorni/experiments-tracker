@@ -6,6 +6,7 @@ import time
 from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3
 from test_generic import PLAN, SOURCE
 
 from experimenttracker import artifacts
@@ -48,9 +49,7 @@ def historical_manifest(root, plan):
 @pytest.fixture
 def temporary_run(runtime):
     store, scheduler, agent, workflow = runtime
-    eid = store.command(
-        uuid4(), "create", {"brief": "Synthetic cache lifecycle", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Synthetic cache lifecycle")
     # Explicit static legacy state: this fixture never advances the experiment, so the
     # saved contract must not depend on the global downgrade removing the flag.
     contract = store.experiment(eid)["contract"]
