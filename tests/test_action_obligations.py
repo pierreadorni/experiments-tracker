@@ -3,6 +3,7 @@
 from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3
 
 from experimenttracker import clock
 from experimenttracker.codex_client import NeedsAttention
@@ -11,9 +12,7 @@ from experimenttracker.store import encode
 
 
 def seed_action(store, *, state="pending", phase="prepare", thread_id=None, turn_id=None, legacy=False):
-    eid = store.command(
-        uuid4(), "create", {"brief": "Synthetic obligation mapping", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Synthetic obligation mapping")
     if legacy:
         contract = store.experiment(eid)["contract"]
         contract.pop("execution_contract", None)

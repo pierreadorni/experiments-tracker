@@ -3,14 +3,13 @@
 from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3
 
 from experimenttracker.store import Conflict
 
 
 def create(store):
-    return store.command(
-        uuid4(), "create", {"brief": "Synthetic plan review", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    return seed_saved_contract3(store, "Synthetic plan review")
 
 
 def review(revision=1, state="awaiting_review", **extra):

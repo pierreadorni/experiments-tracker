@@ -4,12 +4,11 @@ import json
 from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3
 
 
 def create(store):
-    return store.command(
-        uuid4(), "create", {"brief": "Synthetic owner request", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    return seed_saved_contract3(store, "Synthetic owner request")
 
 
 def request(request_id="question", **extra):
