@@ -13,6 +13,8 @@ from . import approval
 from .result_path import MAX_RESULT_PATH_CHARS, validate_remote_result_path, validate_result_path
 from .tools import require_live_research
 
+MAX_DEPENDENCIES = 32
+
 
 class SubmitJobRequest(StrictModel):
     request_id: UUID
@@ -23,6 +25,14 @@ class SubmitJobRequest(StrictModel):
     resources: JobResources
     result_file: str | None = Field(default=None, max_length=MAX_RESULT_PATH_CHARS)
     tensorboard: TensorBoardDisplay | None = None
+    depends_on: list[UUID] = Field(default_factory=list, max_length=MAX_DEPENDENCIES)
+
+    @field_validator("depends_on")
+    @classmethod
+    def unique_dependencies(cls, values):
+        if len(set(values)) != len(values):
+            raise ValueError("depends_on must contain unique job intent UUIDs")
+        return values
 
     @field_validator("result_file")
     @classmethod
@@ -32,7 +42,10 @@ class SubmitJobRequest(StrictModel):
     def saved_request(self):
         # Keep historical receipts stable when newer optional fields are absent.
         absent = {name for name in ("result_file", "tensorboard") if getattr(self, name) is None}
-        return self.model_dump(mode="json", exclude=absent)
+        saved = self.model_dump(mode="json", exclude=absent)
+        if not saved["depends_on"]:
+            saved.pop("depends_on")
+        return saved
 
     @field_validator("command")
     @classmethod
@@ -85,6 +98,18 @@ def _check(workflow, experiment_id, action, request, db, *, remote_source=False,
         or saved["thread_id"] != experiment["thread_id"]
     ):
         raise ValueError("submission requires the exact running research turn")
+    for dependency in request.depends_on:
+        predecessor = db.execute(
+            "SELECT experiment_id,state FROM jobs WHERE intent_id=?", (str(dependency),)
+        ).fetchone()
+        if (
+            predecessor is None
+            or predecessor["experiment_id"] != experiment_id
+            or predecessor["state"] != "complete"
+        ):
+            raise ValueError(
+                "dependencies must be saved complete jobs; wait for the terminal wake, then request"
+            )
     if blocked(store) or experiment["pause_compute"]:
         raise ValueError("new compute is paused or maintenance is active")
     autopilot_hold = workflow.research.service.authority(experiment_id, phase="compute")
