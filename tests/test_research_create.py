@@ -131,7 +131,7 @@ def test_flagged_project_refuses_a_reference_snapshot_path(runtime, config, tmp_
     project.research_loop = True
     store.projects[project.id] = project
     with pytest.raises(Conflict, match="reference experiment snapshot"):
-        create(store, reference_experiment_id=parent)
+        create(store, execution_contract=4, reference_experiment_id=parent)
     assert [row["id"] for row in store.rows("SELECT id FROM experiments")] == [parent]
 
 
@@ -139,7 +139,7 @@ def test_flagged_project_refuses_shared_or_ineligible_creates(runtime, config, t
     store, _, _, _ = runtime
     git_project(config, store, tmp_path, research_loop=True)
     with pytest.raises(Conflict, match="named branch workspace"):
-        create(store, workspace_mode="shared")
+        create(store, execution_contract=4, workspace_mode="shared")
     assert store.rows("SELECT * FROM experiments") == []
 
     plain = tmp_path / "plain"
@@ -148,18 +148,18 @@ def test_flagged_project_refuses_shared_or_ineligible_creates(runtime, config, t
     config.projects[-1] = project
     store.projects[project.id] = project
     with pytest.raises(Conflict, match="main Git checkout"):
-        create(store)
+        create(store, execution_contract=4)
     # A client-supplied path never becomes project eligibility.
     eligible = tmp_path / "eligible"
     eligible.mkdir()
     initialize_project(eligible)
     with pytest.raises(Conflict, match="main Git checkout"):
-        create(store, checkout=str(eligible), folder=str(eligible))
+        create(store, execution_contract=4, checkout=str(eligible), folder=str(eligible))
     # A symlink is not the verified normal checkout path.
     project.checkout = tmp_path / "linked"
     (tmp_path / "linked").symlink_to(eligible)
     with pytest.raises(Conflict, match="main Git checkout"):
-        create(store)
+        create(store, execution_contract=4)
     assert store.rows("SELECT * FROM experiments") == []
     assert store.rows("SELECT * FROM commands") == []
 
@@ -171,7 +171,11 @@ def test_flagged_project_without_a_checkout_is_refused(runtime):
         store.command(
             uuid4(),
             "create",
-            {"brief": "Measure a project-specific method.", "recipe_id": "agent_experiment_v1"},
+            {
+                "brief": "Measure a project-specific method.",
+                "recipe_id": "agent_experiment_v1",
+                "execution_contract": 4,
+            },
         )
     assert store.rows("SELECT * FROM experiments") == []
 
