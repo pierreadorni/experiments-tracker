@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import pytest
 
+from experimenttracker import creation_policy
 from experimenttracker.config import ProjectConfig
 from experimenttracker.store import Conflict, Store
 from experimenttracker.workspaces import initialize_project
@@ -67,6 +68,46 @@ def test_unflagged_project_keeps_the_contract_3_stage_create(runtime, config, tm
         "SELECT * FROM experiment_workspaces WHERE experiment_id=?", (receipt["experiment_id"],)
     )
     assert workspace["folder"] == str(checkout.resolve())
+
+
+def test_create_policy_candidate_selects_c4_only_for_eligible_named_repo(
+    runtime, config, tmp_path, monkeypatch
+):
+    store, _, _, _ = runtime
+    git_project(config, store, tmp_path, research_loop=False)
+    monkeypatch.setattr(creation_policy, "MODE", "candidate")
+
+    _, _, receipt = create(store)
+    assert store.projection(receipt["experiment_id"])["contract"]["execution_contract"] == 4
+
+
+def test_candidate_create_refuses_local_project_without_c4_eligibility(runtime, monkeypatch):
+    store, _, _, _ = runtime
+    monkeypatch.setattr(creation_policy, "MODE", "candidate")
+    with pytest.raises(Conflict, match="writable Git project checkout"):
+        store.command(
+            uuid4(),
+            "create",
+            {"brief": "Create against an incompatible local project.", "recipe_id": "agent_experiment_v1"},
+        )
+    assert store.rows("SELECT * FROM experiments") == []
+
+
+def test_saved_c3_create_replays_unchanged_after_candidate_policy(runtime, monkeypatch):
+    store, _, _, _ = runtime
+    request_id = str(uuid4())
+    payload = {
+        "brief": "Preserve a previously saved contract-three create.",
+        "recipe_id": "agent_experiment_v1",
+    }
+    original = store.command(request_id, "create", payload)
+    eid = original["experiment_id"]
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
+
+    monkeypatch.setattr(creation_policy, "MODE", "candidate")
+    assert store.command(request_id, "create", payload) == original
+    assert store.experiment(eid)["contract"]["execution_contract"] == 3
+    assert len(store.rows("SELECT * FROM experiments")) == 1
 
 
 def test_explicit_contract4_is_exact_and_requires_project_opt_in(runtime, config, tmp_path):

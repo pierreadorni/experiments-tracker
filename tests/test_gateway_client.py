@@ -5,15 +5,15 @@ import httpx
 import pytest
 from test_integration_commands import awaiting, saved, seed_branch
 
-from experimenttracker import store as store_module
+from experimenttracker import creation_policy
 from experimenttracker.config import GatewayConfig, ProjectConfig
 from experimenttracker.gateway_client import GatewayClient
 from experimenttracker.workspaces import initialize_project
 
 
 async def test_lost_ack_redelivery_and_publication_retry(config, runtime, tmp_path, monkeypatch):
-    # Preserve explicit legacy-mode coverage; the cutover default rejects unbound creates.
-    monkeypatch.setattr(store_module, "_REFUSE_UNBOUND_HOSTED_CREATES", False)
+    # Preserve explicit legacy-mode coverage while the cutover remains candidate-only.
+    monkeypatch.setattr(creation_policy, "MODE", "legacy")
     store, _, _, _ = runtime
     credential = tmp_path / "executor-token"
     credential.write_text("e" * 40)
@@ -124,7 +124,7 @@ async def test_hosted_create_replay_keeps_saved_contract_after_project_flag_chan
 
         project.research_loop = False
         store.projects[project.id] = project
-        monkeypatch.setattr(store_module, "_REFUSE_UNBOUND_HOSTED_CREATES", True)
+        monkeypatch.setattr(creation_policy, "MODE", "candidate")
         await client.commands()
 
         assert store.experiment(experiment_id)["contract"]["execution_contract"] == 4
@@ -179,12 +179,12 @@ async def test_gateway_explicit_contract4_cannot_fall_back_for_ineligible_projec
 
 @pytest.mark.parametrize("refuse_unbound", [False, True], ids=["legacy-mode", "cutover-mode"])
 async def test_hosted_unbound_create_cutover_modes(config, runtime, tmp_path, monkeypatch, refuse_unbound):
-    assert store_module._REFUSE_UNBOUND_HOSTED_CREATES is True
+    assert creation_policy.MODE == "legacy"
     store, _, _, _ = runtime
     token = tmp_path / "token"
     token.write_text("e" * 40)
     config.gateway = GatewayConfig(url="https://gateway.example", credential_file=token)
-    monkeypatch.setattr(store_module, "_REFUSE_UNBOUND_HOSTED_CREATES", refuse_unbound)
+    monkeypatch.setattr(creation_policy, "MODE", "candidate" if refuse_unbound else "legacy")
     request_id, experiment_id = str(uuid4()), str(uuid4())
     command = {
         "request_id": request_id,
@@ -216,7 +216,7 @@ async def test_hosted_unbound_create_cutover_modes(config, runtime, tmp_path, mo
         await client.commands()
         if not refuse_unbound:
             # Once applied, an unbound create replays its saved result across the cutover.
-            monkeypatch.setattr(store_module, "_REFUSE_UNBOUND_HOSTED_CREATES", True)
+            monkeypatch.setattr(creation_policy, "MODE", "candidate")
             await client.commands()
     finally:
         await client.close()

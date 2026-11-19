@@ -8,7 +8,7 @@ import threading
 from pathlib import Path
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from . import clock
+from . import clock, creation_policy
 from .config import ProjectConfig
 from .core import (
     action_obligations,
@@ -35,9 +35,6 @@ def encode(value):
 # Named experiment branches start from the project's single main base branch.
 _INTEGRATION_BASE = "main"
 _INTEGRATION_VERSION = 1
-
-# Refuse delayed hosted creates without a saved contract intent after the cutover.
-_REFUSE_UNBOUND_HOSTED_CREATES = True
 
 
 def _integration_request(exp, branch, kind, *, merge_commit=None, reason=None):
@@ -1120,19 +1117,10 @@ class Store:
             return False
         return branch_eligible(project.checkout)
 
-    def research_loop_for(self, payload, *, branch_workspace):
-        """Decide once, at creation, whether this experiment runs the contract-4 loop.
-
-        The owner's project flag enables the loop, and eligibility comes from the
-        create-time ``branch_workspace`` derived from the configured checkout's verified
-        normal path, never from client input. A flagged project that cannot host the
-        named branch loop is refused; it never silently falls back to a contract-3
-        experiment.
-        """
+    def require_research_workspace(self, payload, *, branch_workspace):
+        """Refuse an incompatible C4 create without falling back to the stage engine."""
         project = self.projects.get(payload.get("project_id") or "test-project")
-        if not project or not project.research_loop:
-            return False
-        if not project.writable or not project.checkout:
+        if not project or not project.writable or not project.checkout:
             raise Conflict("the research loop needs a writable Git project checkout")
         if payload.get("reference_experiment_id"):
             raise Conflict("the research loop does not copy a reference experiment snapshot")
@@ -1140,7 +1128,6 @@ class Store:
             raise Conflict("the research loop needs its own named branch workspace")
         if not branch_workspace:
             raise Conflict("the research loop needs the project's main Git checkout and base branch")
-        return True
 
     def _integration_branch(self, exp):
         """Return this experiment's exact saved named branch, or refuse.
@@ -1303,7 +1290,7 @@ class Store:
                 kind == "create"
                 and origin == "gateway"
                 and "execution_contract" not in payload
-                and _REFUSE_UNBOUND_HOSTED_CREATES
+                and creation_policy.refuses_unbound_hosted_create()
             ):
                 raise Conflict(
                     "unbound hosted creates are refused at the contract cutover; resubmit explicitly"
@@ -1365,11 +1352,18 @@ class Store:
                 # The checkout is decided once, at creation, and saved in the contract:
                 # an existing run keeps its own path and a busy project never decides it.
                 branch_workspace = self.branch_workspace_for(payload)
-                research_loop = self.research_loop_for(payload, branch_workspace=branch_workspace)
-                if payload.get("execution_contract") == 4 and not research_loop:
-                    raise Conflict(
-                        "explicit execution contract 4 is not enabled and eligible for this project"
-                    )
+                project = self.projects.get(payload.get("project_id") or "test-project")
+                opted_in = bool(project and project.research_loop)
+                selected_contract = creation_policy.select_contract(
+                    requested=payload.get("execution_contract"), opted_in=opted_in
+                )
+                research_loop = selected_contract == 4
+                if research_loop:
+                    if not opted_in and not creation_policy.defaults_to_research_loop():
+                        raise Conflict(
+                            "explicit execution contract 4 is not enabled and eligible for this project"
+                        )
+                    self.require_research_workspace(payload, branch_workspace=branch_workspace)
                 contract = {
                     "schema_version": 1,
                     "recipe_id": "agent_experiment_v1",
@@ -1378,7 +1372,7 @@ class Store:
                     "brief_driven": True,
                     "reporting_version": 1,
                     "planning_version": 1,
-                    "execution_contract": 4 if research_loop else 3,
+                    "execution_contract": selected_contract,
                     "workspace_mode": payload.get("workspace_mode", "auto"),
                 }
                 if research_loop:
