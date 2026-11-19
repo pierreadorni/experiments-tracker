@@ -606,6 +606,7 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 
 ## Log
 
+- **T4.8 browser create binding:** `a219e67` submits explicit C4 only with current project and executor support, without a C3 fallback (source +97/−2, tests +76/−0). Isolated Node 24 `make check` passed **1,440 Python, 41 web, and 51 gateway tests**; loopback owner acceptance also passed. The late unbound hosted-create refusal in `a8a8d4f` remains disabled until cutover.
 - **T4.2 optional job controls:** `0328afe` adds local TensorBoard previews (source +49/−4, tests +99/−3); isolated `make check` passed **1,440 Python, 37 web, and 51 gateway tests**. `7892455` adds exact completed-job dependencies (source +26/−1, tests +140/−1); 23 coordinator-selected tests passed. No live acceptance.
 - **T4.5 UI closeout:** `51c0763` extends local browser assertions for turn history, checkpoint metadata and the jobs panel (source 0; smoke script +10/−0). The isolated loopback browser acceptance passed with cached Chromium. The Worker/D1 tests retain hosted relay evidence; no private hosted or physical-device validation.
 - **T4.6 scenario closeout:** `cb841e8` covers idle C4 steering on the saved thread (source 0; tests +39/−0). Ruff and 44 coordinator-selected tests passed. The scripted remote lifecycle and lost-turn readback tests cover the remaining C12 cases. No live activation.
