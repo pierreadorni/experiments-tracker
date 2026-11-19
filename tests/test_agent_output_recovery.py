@@ -8,7 +8,7 @@ from uuid import uuid4
 
 import pytest
 from helpers import PLAN as CURRENT_PLAN
-from helpers import IterationAgent
+from helpers import IterationAgent, seed_saved_contract3
 from helpers import until as until_current
 from pydantic import ValidationError
 from test_dag import PLAN as DAG_PLAN
@@ -70,11 +70,7 @@ async def saved_plan_failure(runtime):
     store, scheduler, _, old = runtime
     agent = PlanOnlyAgent()
     workflow = Workflow(old.config, store, scheduler, agent)
-    eid = store.command(
-        uuid4(),
-        "create",
-        {"brief": "Test an entirely new method and show its frontier.", "recipe_id": "agent_experiment_v1"},
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Test an entirely new method and show its frontier.")
     assert store.experiment(eid)["contract"]["execution_contract"] == 3
     await until_current(workflow, store, eid, lambda e: e["hold_reason"] == "plan_review")
     action = store.one("SELECT * FROM agent_actions WHERE experiment_id=? AND phase='plan'", (eid,))
@@ -113,7 +109,7 @@ async def test_revalidate_exact_plan_is_idempotent_and_survives_restart(runtime)
 
 
 @pytest.mark.parametrize("block", ["uncertain", "mismatch", "nonterminal", "steering"])
-async def test_output_recovery_refuses_unestablished_outcomes(runtime, block):
+async def test_output_recovery_refuses_unestablished_outcomes(runtime, block, monkeypatch):
     store, scheduler, agent, workflow, eid, action = await saved_plan_failure(runtime)
     calls = agent.calls
     if block == "uncertain":
@@ -126,7 +122,12 @@ async def test_output_recovery_refuses_unestablished_outcomes(runtime, block):
     elif block == "nonterminal":
         agent.read_turn = AsyncMock(side_effect=ValueError("turn is still running"))
     else:
-        store.command(uuid4(), "steer", {"text": "Change the experiment", "mode": "restart"}, eid=eid)
+        from experimenttracker import creation_policy
+
+        # The outstanding restart was accepted under C3 before any cutover.
+        with monkeypatch.context() as patch:
+            patch.setattr(creation_policy, "MODE", "legacy")
+            store.command(uuid4(), "steer", {"text": "Change the experiment", "mode": "restart"}, eid=eid)
     with pytest.raises(ValueError):
         await workflow.reconcile_agent_output(eid)
     assert store.experiment(eid)["phase"] == "failed"
@@ -153,9 +154,7 @@ async def test_archived_agent_output_reconciliation_refuses_adoption(runtime):
 
 def test_repair_can_reuse_only_exact_saved_runtime_from_its_own_experiment(runtime, tmp_path):
     store, _, _, workflow = runtime
-    eid = store.command(
-        uuid4(), "create", {"brief": "Test runtime reuse.", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Test runtime reuse.")
     base = workflow.projects.base_root(eid)
     python = base / "repairs/2/work/runtime-env/bin/python"
     python.parent.mkdir(parents=True)
@@ -178,9 +177,7 @@ def test_repair_can_reuse_only_exact_saved_runtime_from_its_own_experiment(runti
 
 def test_success_cleanup_keeps_the_runtime_used_by_current_results(runtime):
     store, _, _, workflow = runtime
-    eid = store.command(
-        uuid4(), "create", {"brief": "Test runtime retention.", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Test runtime retention.")
     base = workflow.projects.base_root(eid)
     python = base / "work/runtime-env/bin/python"
     python.parent.mkdir(parents=True)

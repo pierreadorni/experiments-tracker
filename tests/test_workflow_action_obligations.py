@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3
 
 from experimenttracker.codex_client import NeedsAttention
 from experimenttracker.core import action_obligations
@@ -42,9 +43,7 @@ async def make_title_action(store, workflow, monkeypatch, eid):
 @pytest.mark.asyncio
 async def test_workflow_action_creation_opens_admission_obligation(runtime, monkeypatch):
     store, _, _, workflow = runtime
-    eid = store.command(uuid4(), "create", {"brief": "A new brief", "recipe_id": "agent_experiment_v1"})[
-        "experiment_id"
-    ]
+    eid = seed_saved_contract3(store, "A new brief")
     monkeypatch.setattr(workflow, "prompt", lambda exp, phase: f"saved {phase} prompt")
     monkeypatch.setattr(workflow.research.service, "authority", lambda *args: "quota_hold")
     await workflow.agent_stage(store.experiment(eid), "plan")
@@ -66,9 +65,7 @@ async def test_workflow_action_creation_opens_admission_obligation(runtime, monk
 @pytest.mark.asyncio
 async def test_title_dispatch_records_handoffs_terminal_result_and_replay(runtime, monkeypatch):
     store, _, agent, workflow = runtime
-    eid = store.command(
-        uuid4(), "create", {"brief": "A concise research title", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "A concise research title")
     action = await make_title_action(store, workflow, monkeypatch, eid)
     assert obligations_for(store, action["id"])[0]["wait"] == "admission"
     monkeypatch.setattr("experimenttracker.workflow.blocked", lambda store: False)
@@ -114,9 +111,7 @@ async def test_title_dispatch_records_handoffs_terminal_result_and_replay(runtim
 @pytest.mark.asyncio
 async def test_completion_after_await_cannot_settle_replaced_saved_turn(runtime, monkeypatch):
     store, _, agent, workflow = runtime
-    eid = store.command(
-        uuid4(), "create", {"brief": "Reject stale turn completion", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Reject stale turn completion")
     action = await make_title_action(store, workflow, monkeypatch, eid)
     monkeypatch.setattr("experimenttracker.workflow.blocked", lambda store: False)
     monkeypatch.setattr(
@@ -160,9 +155,7 @@ async def test_completion_after_await_cannot_settle_replaced_saved_turn(runtime,
 @pytest.mark.asyncio
 async def test_exact_completed_callback_replay_keeps_event_and_obligation(runtime, monkeypatch):
     store, _, _, workflow = runtime
-    eid = store.command(
-        uuid4(), "create", {"brief": "Replay exact completed turn", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Replay exact completed turn")
     action = await make_title_action(store, workflow, monkeypatch, eid)
     with store.tx() as db:
         before = dict(db.execute("SELECT * FROM agent_actions WHERE id=?", (action["id"],)).fetchone())
@@ -197,9 +190,7 @@ async def test_exact_completed_callback_replay_keeps_event_and_obligation(runtim
 @pytest.mark.asyncio
 async def test_action_source_event_and_obligation_rollback_together(runtime, monkeypatch):
     store, _, _, workflow = runtime
-    eid = store.command(
-        uuid4(), "create", {"brief": "Rollback a saved action", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Rollback a saved action")
     action = await make_title_action(store, workflow, monkeypatch, eid)
     before_events = store.rows("SELECT * FROM events WHERE experiment_id=?", (eid,))
     before_obligations = obligations_for(store, action["id"])
@@ -220,9 +211,7 @@ async def test_action_source_event_and_obligation_rollback_together(runtime, mon
 @pytest.mark.asyncio
 async def test_exact_discussion_reconciliation_satisfies_existing_episode(runtime, monkeypatch):
     store, _, agent, workflow = runtime
-    eid = store.command(
-        uuid4(), "create", {"brief": "Keep a completed reader", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Keep a completed reader")
     action_id = str(uuid4())
     with store.tx() as db:
         db.execute(

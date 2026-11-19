@@ -8,6 +8,7 @@ import json
 from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3
 from scenario import (
     FakeClock,
     FakeCodexBackend,
@@ -59,9 +60,7 @@ def events(store, eid, kind):
 
 def saved_intent(store, *, created_at=None):
     """One durable submission intent without a scheduler identity, as observation read it."""
-    eid = store.command(
-        uuid4(), "create", {"brief": "Synthetic submission race", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Synthetic submission race")
     intent_id = str(uuid4())
     with store.tx() as db:
         db.execute(
@@ -135,9 +134,7 @@ async def tick_until_gated(scenario, gate, *, attempts=10, timeout=GATE_SECONDS)
 async def planned(scenario, brief):
     """Create one synthetic experiment and approve its plan; nothing is submitted yet."""
     store = scenario.store
-    eid = store.command(uuid4(), "create", {"brief": brief, "recipe_id": "agent_experiment_v1"})[
-        "experiment_id"
-    ]
+    eid = seed_saved_contract3(store, brief)
     scenario.agent.script("plan", turn=plan_turn, turns=1)
     scenario.agent.script("prepare", turn=prepare_turn, turns=1)
     scenario.agent.script("interpret", turn=interpret_turn, turns=1)
