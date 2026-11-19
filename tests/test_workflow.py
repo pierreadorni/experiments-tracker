@@ -4,7 +4,7 @@ import json
 from uuid import uuid4
 
 import pytest
-from helpers import prepared, until
+from helpers import prepared, seed_saved_contract3, until
 
 from experimenttracker import artifacts
 from experimenttracker.codex_client import NeedsAttention
@@ -13,16 +13,7 @@ from experimenttracker.store import Conflict, Store
 
 
 def submit(store):
-    eid = store.command(
-        uuid4(),
-        "create",
-        {
-            "brief": "Compare linear and quadratic models on shared synthetic data.",
-            "recipe_id": "agent_experiment_v1",
-        },
-    )["experiment_id"]
-    assert store.experiment(eid)["contract"]["execution_contract"] == 3
-    return eid
+    return seed_saved_contract3(store, "Compare linear and quadratic models on shared synthetic data.")
 
 
 def test_commands_are_idempotent_and_conflicts_rejected(runtime):

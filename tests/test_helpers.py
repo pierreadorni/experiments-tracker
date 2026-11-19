@@ -5,7 +5,33 @@ import time
 from types import SimpleNamespace
 
 import pytest
-from helpers import wait_for_experiment, wait_until
+from helpers import PLAN, prepared, wait_for_experiment, wait_until
+
+
+@pytest.mark.parametrize("mode", ["legacy", "candidate"])
+async def test_prepared_seeds_historical_contract3_under_each_create_policy(runtime, monkeypatch, mode):
+    from experimenttracker import creation_policy
+
+    monkeypatch.setattr(creation_policy, "MODE", mode)
+    store, _, _, workflow, eid = await prepared(runtime)
+    experiment = store.experiment(eid)
+
+    assert creation_policy.MODE == mode
+    assert experiment["contract"]["execution_contract"] == 3
+    assert experiment["contract"]["planning_version"] == 1
+    assert "branch_workspace" not in experiment["contract"]
+    assert experiment["plan_review"]["state"] == "approved"
+    assert experiment["plan_review"]["summary"] == PLAN["summary"]
+    assert experiment["plan_review"]["protocol"] == PLAN["protocol"]
+    assert [stage["id"] for stage in experiment["plan_review"]["stages"]] == [
+        stage["id"] for stage in PLAN["stages"]
+    ]
+    assert store.one("SELECT COUNT(*) AS count FROM commands WHERE experiment_id=?", (eid,))["count"] == 1
+    assert store.one("SELECT COUNT(*) AS count FROM jobs WHERE experiment_id=?", (eid,))["count"] == 0
+    assert [stage["id"] for stage in store.projection(eid)["stages"]] == [
+        "plan", "prepare", "interpret", "publish"
+    ]
+    await workflow.close()
 
 
 async def test_satisfied_predicate_returns_without_ticking():

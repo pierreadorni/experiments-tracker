@@ -30,6 +30,7 @@ import pytest
 
 from experimenttracker.codex_client import DemoAgent
 from experimenttracker.config import JobResources
+from experimenttracker.store import encode
 from experimenttracker.workflow import Workflow
 
 POLL_SECONDS = 0.01
@@ -231,15 +232,42 @@ class IterationAgent(DemoAgent):
         return turn
 
 
+def seed_saved_contract3(store, brief="Exercise synthetic iteration mechanisms."):
+    """Insert the minimal saved C3 shape directly, without invoking current create policy."""
+    from experimenttracker.execution_settings import ExecutionSettings
+
+    eid = str(uuid4())
+    project = store.projects["test-project"]
+    contract = {
+        "schema_version": 1,
+        "recipe_id": "agent_experiment_v1",
+        "resource_policy_version": 2,
+        "recovery_turns": 1,
+        "brief_driven": True,
+        "reporting_version": 1,
+        "planning_version": 1,
+        "execution_contract": 3,
+        "workspace_mode": "auto",
+        "execution": ExecutionSettings().model_dump(),
+        "project": {"id": project.id, "name": project.name},
+    }
+    with store.tx() as db:
+        db.execute(
+            "INSERT INTO experiments(id,brief,recipe_id,contract,created_at,updated_at) VALUES(?,?,?,?,0,0)",
+            (eid, brief, "agent_experiment_v1", encode(contract)),
+        )
+        db.executemany(
+            "INSERT INTO stages(experiment_id,id,updated_at,ordinal) VALUES(?,?,0,?)",
+            [(eid, stage, ordinal) for ordinal, stage in enumerate(("plan", "prepare", "interpret", "publish"))],
+        )
+    assert store.experiment(eid)["contract"] == contract
+    return eid
+
+
 async def prepared(runtime, fail_plot=False):
     store, scheduler, _, old = runtime
     agent = IterationAgent(fail_plot)
     wf = Workflow(old.config, store, scheduler, agent)
-    eid = store.command(
-        uuid4(),
-        "create",
-        {"brief": "Exercise synthetic iteration mechanisms.", "recipe_id": "agent_experiment_v1"},
-    )["experiment_id"]
-    assert store.experiment(eid)["contract"]["execution_contract"] == 3
+    eid = seed_saved_contract3(store)
     await approve_plan(wf, store, eid)
     return store, scheduler, agent, wf, eid

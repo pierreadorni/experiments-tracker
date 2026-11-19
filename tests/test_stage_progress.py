@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
-from helpers import PLAN
+from helpers import PLAN, seed_saved_contract3
 
 from experimenttracker import artifacts
 from experimenttracker.models import Implementation
@@ -17,10 +17,7 @@ from experimenttracker.store import Store, encode
 
 
 def progress_experiment(store, workflow):
-    eid = store.command(
-        uuid4(), "create", {"brief": "Synthetic progress", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
-    assert store.experiment(eid)["contract"]["execution_contract"] == 3
+    eid = seed_saved_contract3(store, "Synthetic progress")
     root = workflow.root(eid)
     work = root / "work"
     work.mkdir(parents=True, exist_ok=True)
