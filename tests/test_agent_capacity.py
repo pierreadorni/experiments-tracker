@@ -12,7 +12,7 @@ import json
 from uuid import uuid4
 
 import pytest
-from helpers import wait_until
+from helpers import seed_saved_contract3, wait_until
 from test_iteration_autopilot import activated
 from test_knowledge import completed
 
@@ -65,9 +65,7 @@ class GatedAgent(DemoAgent):
 
 
 def create(store):
-    return store.command(
-        uuid4(), "create", {"brief": "Share synthetic configured turns.", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    return seed_saved_contract3(store, "Share synthetic configured turns.")
 
 
 def insert_action(store, eid, state, *, phase="title", thread=None, turn=None, created_at=0):
@@ -267,6 +265,9 @@ async def test_priority_orders_research_before_a_weekly_project_turn(runtime, mo
     project = ProjectConfig(id="weekly-project", name="weekly-project", checkout=checkout, writable=False)
     wf.config.projects.append(project)
     store.projects[project.id] = project
+    from experimenttracker import creation_policy
+
+    monkeypatch.setattr(creation_policy, "MODE", "legacy")
     completed(store, project=project.id)
     memory = wf.supervisor.memory
     memory.refresh()

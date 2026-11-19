@@ -10,6 +10,7 @@ import json
 from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3
 from test_iteration_autopilot import activated, command
 
 from experimenttracker import clock
@@ -40,9 +41,7 @@ async def pooled(runtime):
 
 
 def create(store):
-    return store.command(
-        uuid4(), "create", {"brief": "Route synthetic callbacks.", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    return seed_saved_contract3(store, "Route synthetic callbacks.")
 
 
 def live_action(store, eid, *, phase="prepare", thread="thread", turn="turn"):

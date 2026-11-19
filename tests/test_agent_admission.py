@@ -11,6 +11,7 @@ import asyncio
 from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3
 
 from experimenttracker.agent_pool import (
     CONVERSATION_PRIORITY,
@@ -25,9 +26,7 @@ from experimenttracker.workflow import Workflow
 
 
 def create(store):
-    return store.command(
-        uuid4(), "create", {"brief": "Offer synthetic turns.", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    return seed_saved_contract3(store, "Offer synthetic turns.")
 
 
 def saved_action(store, eid, *, state="pending", created_at=0):

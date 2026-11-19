@@ -1,9 +1,9 @@
 """Bugs hold one experiment; only an explicit ExperimentFailure ends it."""
 
 import time
-from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3
 
 from experimenttracker.errors import ExperimentFailure
 from experimenttracker.projects import ProjectUnavailable
@@ -12,16 +12,7 @@ from experimenttracker.workflow import Workflow
 
 
 def submit(store):
-    eid = store.command(
-        uuid4(),
-        "create",
-        {
-            "brief": "Compare linear and quadratic models on shared synthetic data.",
-            "recipe_id": "agent_experiment_v1",
-        },
-    )["experiment_id"]
-    assert store.experiment(eid)["contract"]["execution_contract"] == 3
-    return eid
+    return seed_saved_contract3(store, "Compare linear and quadratic models on shared synthetic data.")
 
 
 def raising(exc):

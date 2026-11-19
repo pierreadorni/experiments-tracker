@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from helpers import IterationAgent, role_step, wait_until
+from helpers import IterationAgent, role_step, seed_saved_contract3, wait_until
 from helpers import approve_plan as approve_current_plan
 from helpers import until as until_current
 
@@ -23,6 +23,10 @@ from experimenttracker.workflow import Workflow
 
 
 def create(store):
+    return seed_saved_contract3(store, "Test an entirely new method and show its frontier.")
+
+
+def create_public(store):
     return store.command(
         uuid4(),
         "create",
@@ -57,7 +61,10 @@ class PermissionAgent(IterationAgent):
 
 async def test_slow_shared_backup_keeps_owner_commands_and_event_loop_responsive(runtime, monkeypatch):
     store, _, _, wf = runtime
-    eid = create(store)
+    from experimenttracker import creation_policy
+
+    monkeypatch.setattr(creation_policy, "MODE", "legacy")
+    eid = create_public(store)
     assert store.experiment(eid)["contract"]["execution_contract"] == 3
     entered, release = threading.Event(), threading.Event()
     from experimenttracker import store as store_module
