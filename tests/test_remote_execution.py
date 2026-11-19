@@ -12,9 +12,10 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3, seed_saved_contract4
 from pydantic import ValidationError
 
-from experimenttracker import artifacts, iteration, remote
+from experimenttracker import artifacts, creation_policy, iteration, remote
 from experimenttracker.config import JobResources, ProjectConfig
 from experimenttracker.execution_settings import ExecutionSettings
 from experimenttracker.models import Implementation
@@ -66,15 +67,11 @@ def prepared(runtime, tmp_path):
     values = settings(
         wf, cfg.id, context="jean-zay", remote_project=str(tmp_path / "remote"), rsync_up=UP, rsync_down=DOWN
     )
-    eid = store.command(
-        uuid4(),
-        "create",
-        {
-            "brief": "Synthetic remote transport acceptance",
-            "recipe_id": "agent_experiment_v1",
-            "project_id": cfg.id,
-        },
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Synthetic remote transport acceptance.", project_id=cfg.id)
+    exp = store.experiment(eid)
+    contract = {**exp["contract"], "execution": values["execution"]}
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET contract=? WHERE id=?", (json.dumps(contract), eid))
     exp = store.experiment(eid)
     assert exp["contract"]["execution_contract"] == 3
     work = wf.working_directory(exp)
@@ -183,16 +180,43 @@ class Machines:
         return await command("/bin/bash", "-c", script, **kwargs)
 
 
-def test_project_context_is_saved_and_old_experiments_stay_local(runtime):
+@pytest.mark.parametrize("mode", ["legacy", "candidate"])
+def test_remote_c3_fixture_preserves_its_saved_route_under_each_create_policy(
+    runtime, tmp_path, monkeypatch, mode
+):
+    monkeypatch.setattr(creation_policy, "MODE", mode)
+    wf, exp, values = prepared(runtime, tmp_path)
+
+    assert creation_policy.MODE == mode
+    assert exp["contract"]["execution_contract"] == 3
+    assert exp["contract"]["execution"]["context"] == "jean-zay"
+    assert exp["contract"]["execution"] == values["execution"]
+
+
+def test_project_context_is_saved_and_old_experiments_stay_local(runtime, monkeypatch):
+    monkeypatch.setattr(creation_policy, "MODE", "legacy")
     store, _, _, wf = runtime
+    original_execution = wf.projects.settings("test-project")["execution"]
     before = store.command(
-        uuid4(), "create", {"brief": "A local synthetic check", "recipe_id": "agent_experiment_v1"}
+        uuid4(),
+        "create",
+        {
+            "brief": "A local synthetic check",
+            "recipe_id": "agent_experiment_v1",
+            "execution": original_execution,
+        },
     )["experiment_id"]
     payload = settings(
         wf, "test-project", context="jean-zay", remote_project="$WORK/example", rsync_up=UP, rsync_down=DOWN
     )
     after = store.command(
-        uuid4(), "create", {"brief": "A remote synthetic check", "recipe_id": "agent_experiment_v1"}
+        uuid4(),
+        "create",
+        {
+            "brief": "A remote synthetic check",
+            "recipe_id": "agent_experiment_v1",
+            "execution": payload["execution"],
+        },
     )["experiment_id"]
     wf.projects.enqueue_settings("test-project", payload)
     wf.projects.settings_tick()
@@ -288,16 +312,24 @@ async def test_remote_roundtrip_seals_checkpoints_without_downloading_bytes(runt
     assert isinstance(wf.scheduler_for(wf.store.experiment(exp["id"]), job), RemoteSlurmScheduler)
 
 
+@pytest.mark.parametrize("mode", ["legacy", "candidate"])
 async def test_c4_remote_result_transfer_replays_and_recovers_interrupted_download(
-    runtime, tmp_path, monkeypatch
+    runtime, tmp_path, monkeypatch, mode
 ):
-    wf, exp, _ = prepared(runtime, tmp_path)
-    machines = Machines(monkeypatch, wf.store)
+    monkeypatch.setattr(creation_policy, "MODE", mode)
+    store, _, _, wf = runtime
+    wf.config.mode = "live"
+    values = settings(
+        wf, "test-project", context="jean-zay", remote_project="$WORK/example", rsync_up=UP, rsync_down=DOWN
+    )
+    eid = seed_saved_contract4(store, "Synthetic remote result delivery.")
+    exp = store.experiment(eid)
+    contract = {**exp["contract"], "execution": values["execution"]}
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET contract=? WHERE id=?", (json.dumps(contract), eid))
+    exp = store.experiment(eid)
+    machines = Machines(monkeypatch, store)
     intent = str(uuid4())
-    contract = {**exp["contract"], "execution_contract": 4}
-    with wf.store.tx() as db:
-        db.execute("UPDATE experiments SET contract=? WHERE id=?", (json.dumps(contract), exp["id"]))
-    exp = wf.store.experiment(exp["id"])
     base = Path(wf.projects.base_root(exp["id"]))
     root = base / "attempts" / intent
     root.mkdir(parents=True)
@@ -557,7 +589,8 @@ async def test_remote_successful_checkpoint_reuse_stays_remote(runtime, tmp_path
     )
 
 
-def test_browser_creation_preserves_the_selected_execution_snapshot(runtime):
+def test_browser_creation_preserves_the_selected_execution_snapshot(runtime, monkeypatch):
+    monkeypatch.setattr(creation_policy, "MODE", "legacy")
     store, _, _, wf = runtime
     values = settings(
         wf, "test-project", context="jean-zay", remote_project="$WORK/example", rsync_up=UP, rsync_down=DOWN
