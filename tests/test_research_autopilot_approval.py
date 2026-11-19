@@ -2,12 +2,14 @@ import json
 from uuid import uuid4
 
 import pytest
+from test_iteration_autopilot import activated
 
 from experimenttracker.autopilot import Autopilot
 from experimenttracker.autopilot_budget import WEEK
 from experimenttracker.autopilot_models import AutopilotPolicy
 from experimenttracker.research import wakeups
 from experimenttracker.research.autopilot_approval import OrchestratorApproval, approved
+from experimenttracker.research.owner_tool import AskOwnerQuestion, ask_owner
 from experimenttracker.research.session import first_turn, follow_up_turn
 from experimenttracker.store import Conflict, encode
 
@@ -26,6 +28,67 @@ def test_orchestrator_approval_parser_requires_exact_shape():
     assert OrchestratorApproval.parse({"approval": {**approval, "objective": " "}}) is None
     assert OrchestratorApproval.parse({"summary": "approved"}) is None
     assert OrchestratorApproval.parse("not JSON") is None
+
+
+async def test_c4_approval_request_schedules_project_turn_with_exact_objective(runtime, monkeypatch):
+    store, _, agent, wf = runtime
+    service, run = activated(runtime, monkeypatch)
+    eid = store.command(
+        uuid4(), "create", {"brief": "Synthetic C4 scheduling fixture", "recipe_id": "agent_experiment_v1"}
+    )["experiment_id"]
+    experiment = store.experiment(eid)
+    contract = experiment["contract"]
+    contract.update(execution_contract=4, project={"id": "test-project"})
+    action_id, request_id = str(uuid4()), uuid4()
+    with store.tx() as db:
+        db.execute(
+            "UPDATE experiments SET contract=?,thread_id='research-thread' WHERE id=?",
+            (encode(contract), eid),
+        )
+        db.execute(
+            "INSERT INTO autopilot_members VALUES(?,?,?,'question','exploration','test',0,1,0,NULL,'[]',?)",
+            (eid, run["id"], "test-project", 1_000_000),
+        )
+        db.execute(
+            "INSERT INTO agent_actions(id,experiment_id,phase,evidence_revision,state,thread_id,turn_id,input,created_at,updated_at) "
+            "VALUES(?,?, 'research',0,'running','research-thread','research-turn','{}',1000000,1000000)",
+            (action_id, eid),
+        )
+    objective = "Run the exact synthetic CPU comparison"
+    ask_owner(
+        store,
+        store.one("SELECT * FROM agent_actions WHERE id=?", (action_id,)),
+        AskOwnerQuestion(
+            request_id=request_id,
+            question="May the synthetic CPU comparison proceed?",
+            kind="approval",
+            objective=objective,
+        ),
+    )
+    scheduled = service.run(run_id=run["id"])
+    assert scheduled["input_cursor"] == run["input_cursor"] + 1
+    wake = store.one(
+        "SELECT document FROM autopilot_inputs WHERE run_id=? ORDER BY seq DESC LIMIT 1", (run["id"],)
+    )
+    assert json.loads(wake["document"]) == {
+        "experiment_id": eid,
+        "request_id": str(request_id),
+        "objective": objective,
+    }
+    wf.agent_ready = True
+    wf.gate.update(await agent.quota())
+    agent.resolved_model = "demo"
+    agent.models = [{"id": "demo", "reasoning_efforts": ["medium"], "default_effort": "medium"}]
+    await wf.research.advance()
+    project_action = store.one(
+        "SELECT * FROM autopilot_actions WHERE run_id=? AND cursor=? ORDER BY created_at DESC LIMIT 1",
+        (run["id"], scheduled["input_cursor"]),
+    )
+    assert project_action["state"] == "pending"
+    prompt = wf.research.prompt(project_action)
+    assert str(request_id) in prompt
+    assert objective in prompt
+    assert "PENDING C4 OBJECTIVES" in prompt
 
 
 def test_autopilot_approval_proof_is_exact_and_separate_from_owner_answer(runtime, monkeypatch):

@@ -76,6 +76,26 @@ class ResearchController:
 
     def prompt(self, row):
         run = self.service.run(run_id=row["run_id"])
+        pending_objectives = []
+        for experiment in self.workflow.store.rows(
+            "SELECT e.id,e.pending_request FROM experiments e JOIN autopilot_members m "
+            "ON m.experiment_id=e.id WHERE m.run_id=? AND e.pending_request IS NOT NULL",
+            (run["id"],),
+        ):
+            pending = json.loads(experiment["pending_request"])
+            if pending.get("kind") == "approval" and not pending.get("answer"):
+                pending_objectives.append(
+                    {
+                        "experiment_id": experiment["id"],
+                        "request_id": pending["id"],
+                        "objective": pending.get("params", {}).get("objective"),
+                    }
+                )
+        context = encode(self.service.context(run))
+        if pending_objectives:
+            context += "\nPENDING C4 OBJECTIVES (approve only these exact requests):\n" + encode(
+                pending_objectives
+            )
         return (
             "You are the project research controller. Your project tools delegate implementation and Slurm work "
             "to existing experiment agents. Never implement scientific code, submit jobs directly, use local GPUs, "
@@ -105,7 +125,7 @@ class ResearchController:
             "instructions, contribution/usage summary, verified venue AI-disclosure rules. Submission is human. "
             "Answer researcher questions directly in summary and distinguish advice from accepted changed-plan tools. Return ProjectDecision JSON after a small set of concrete accepted actions. "
             "Use project request_researcher_input for questions. A readiness judgment never certifies scientific merit.\nPROJECT:\n"
-            + encode(self.service.context(run))
+            + context
         )
 
     async def request(self, message, reservation):

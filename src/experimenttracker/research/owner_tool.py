@@ -207,6 +207,26 @@ def ask_owner(store, expected_action, question):
                     "objective": question.objective,
                 },
             )
+            from ..autopilot import Autopilot
+
+            orchestrator = Autopilot(store)
+            if orchestrator.enabled(project_id):
+                member = db.execute(
+                    "SELECT run_id FROM autopilot_members WHERE experiment_id=? AND project_id=?",
+                    (experiment["id"], project_id),
+                ).fetchone()
+                if member:
+                    orchestrator.wake(
+                        db,
+                        member["run_id"],
+                        request_id,
+                        "experiment_approval_requested",
+                        {
+                            "experiment_id": experiment["id"],
+                            "request_id": request_id,
+                            "objective": question.objective,
+                        },
+                    )
         before = request_obligations.saved_pending(db, experiment["id"])
         now = clock.now()
         db.execute(
