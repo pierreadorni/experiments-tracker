@@ -2,11 +2,14 @@
 
 from pathlib import Path
 
+import pytest
 from legacy_fixture import load_legacy_completed
 from test_conversation import send
 
+from experimenttracker import creation_policy
 from experimenttracker.config import ProjectConfig
-from experimenttracker.store import encode
+from experimenttracker.store import Conflict, encode
+from experimenttracker.workspaces import initialize_project
 
 
 def saved_evidence(store, eid):
@@ -34,6 +37,48 @@ def followup_brief(agent):
         return turn
 
     agent.begin = create
+
+
+async def test_candidate_followup_reference_refusal_is_durable_and_replay_does_not_create(
+    runtime, tmp_path, monkeypatch
+):
+    store, scheduler, agent, workflow = runtime
+    eid = load_legacy_completed(store, workflow)
+    checkout = tmp_path / "research"
+    checkout.mkdir()
+    initialize_project(checkout)
+    project = ProjectConfig(id="anyup-rs", name="anyup-rs", checkout=checkout, writable=True)
+    workflow.config.projects.append(project)
+    store.projects[project.id] = project
+    contract = store.experiment(eid)["contract"]
+    contract["project"] = {"id": project.id, "name": project.name}
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(contract), eid))
+    monkeypatch.setattr(creation_policy, "MODE", "candidate")
+    followup_brief(agent)
+    identity = send(store, eid, "Start a follow-up with new seeds")
+    await workflow.tick(force_observe=True)
+    await workflow.agent_task
+
+    message = store.one("SELECT * FROM discussions WHERE id=?", (identity,))
+    action = store.one("SELECT * FROM agent_actions WHERE id=?", (message["action_id"],))
+    assert action["state"] == "completed"
+    await workflow.conversation.advance()
+
+    failed = store.one("SELECT * FROM discussions WHERE id=?", (identity,))
+    assert failed["state"] == "failed"
+    assert "does not copy a reference experiment snapshot" in failed["error"]
+    assert failed["followup_experiment_id"] is None
+    assert store.rows("SELECT * FROM commands WHERE origin='discussion'") == []
+    assert len(store.rows("SELECT * FROM experiments")) == 1
+
+    # Replaying the exact saved model result cannot turn the refusal into a create.
+    with pytest.raises(Conflict, match="does not copy a reference experiment snapshot"):
+        workflow.conversation.complete(message, action)
+    assert store.rows("SELECT * FROM commands WHERE origin='discussion'") == []
+    assert len(store.rows("SELECT * FROM experiments")) == 1
+    assert scheduler.submissions == 0 and agent.calls == 1
+    await workflow.close()
 
 
 async def test_completed_legacy_discussion_creates_current_contract_followup(runtime, tmp_path):
