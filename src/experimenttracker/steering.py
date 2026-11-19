@@ -5,7 +5,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 from . import clock, iteration
 from .core import advancement_decisions, job_obligations
-from .store import encode
+from .store import Conflict, encode
 
 TERMINAL_JOBS = (
     "COMPLETED",
@@ -30,6 +30,12 @@ async def process_restarts(workflow):
         # Restart steering replaces a contract-3 stage run; contract 4 keeps one session
         # and takes owner guidance as a message in its next turn instead.
         if not iteration.enabled(exp):
+            continue
+        try:
+            store.require_restart_replacement(exp, item)
+        except Conflict:
+            # Delayed legacy requests may cross the cutover. Keep their saved identity
+            # pending and untouched; never cancel work for a replacement we cannot create.
             continue
         if (
             not exp["snapshot"]
@@ -136,30 +142,9 @@ async def process_restarts(workflow):
 
 def _create_replacement(store, exp, item):
     eid = exp["id"]
-    request_id = str(uuid5(NAMESPACE_URL, f"experiment-restart:{item['request_id']}"))
+    payload = store.restart_replacement_payload(exp, item)
+    request_id = payload["request_id"]
     replacement_id = str(uuid5(NAMESPACE_URL, f"experiment-replacement:{item['request_id']}"))
-    correction = "\n\nResearcher correction for this run: " + item["text"]
-    if len(correction) >= 4000:
-        brief = item["text"][:4000]
-    else:
-        brief = exp["brief"][: 4000 - len(correction)] + correction
-    agent = exp["contract"].get("agent", {})
-    payload = {
-        "schema_version": 1,
-        "request_id": request_id,
-        "brief": brief,
-        "recipe_id": exp["recipe_id"],
-        "workspace_mode": exp["contract"].get("workspace_mode", "auto"),
-        **({"execution": exp["contract"]["execution"]} if exp["contract"].get("execution") else {}),
-        "project_id": exp["contract"].get("project", {}).get("id", "test-project"),
-        **({"model": agent["model"]} if agent.get("model") else {}),
-        **({"reasoning_effort": agent["reasoning_effort"]} if agent.get("reasoning_effort") else {}),
-        **(
-            {"reference_experiment_id": exp["reference_experiment_id"]}
-            if exp["reference_experiment_id"]
-            else {}
-        ),
-    }
     with store.tx() as db:
         store.command(request_id, "create", payload, experiment_id=replacement_id, _db=db)
         child = db.execute("SELECT contract FROM experiments WHERE id=?", (replacement_id,)).fetchone()

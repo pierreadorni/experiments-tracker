@@ -1129,6 +1129,42 @@ class Store:
         if not branch_workspace:
             raise Conflict("the research loop needs the project's main Git checkout and base branch")
 
+    def restart_replacement_payload(self, exp, item):
+        """Rebuild the exact create request that restart steering will submit."""
+        correction = "\n\nResearcher correction for this run: " + item["text"]
+        brief = (
+            item["text"][:4000]
+            if len(correction) >= 4000
+            else exp["brief"][: 4000 - len(correction)] + correction
+        )
+        agent = exp["contract"].get("agent", {})
+        return {
+            "schema_version": 1,
+            "request_id": str(uuid5(NAMESPACE_URL, f"experiment-restart:{item['request_id']}")),
+            "brief": brief,
+            "recipe_id": exp["recipe_id"],
+            "workspace_mode": exp["contract"].get("workspace_mode", "auto"),
+            **({"execution": exp["contract"]["execution"]} if exp["contract"].get("execution") else {}),
+            "project_id": exp["contract"].get("project", {}).get("id", "test-project"),
+            **({"model": agent["model"]} if agent.get("model") else {}),
+            **({"reasoning_effort": agent["reasoning_effort"]} if agent.get("reasoning_effort") else {}),
+            **(
+                {"reference_experiment_id": exp["reference_experiment_id"]}
+                if exp["reference_experiment_id"]
+                else {}
+            ),
+        }
+
+    def require_restart_replacement(self, exp, item):
+        """Validate the selected replacement before any original job can be cancelled."""
+        payload = self.restart_replacement_payload(exp, item)
+        project = self.projects.get(payload["project_id"])
+        if (
+            creation_policy.select_contract(requested=None, opted_in=bool(project and project.research_loop))
+            == 4
+        ):
+            self.require_research_workspace(payload, branch_workspace=self.branch_workspace_for(payload))
+
     def _integration_branch(self, exp):
         """Return this experiment's exact saved named branch, or refuse.
 
@@ -1905,6 +1941,8 @@ class Store:
                         raise Conflict("a restart is already pending for this experiment")
                     if mode not in ("later", "restart"):
                         raise Conflict("unknown steering mode")
+                    if mode == "restart":
+                        self.require_restart_replacement(exp, {"request_id": request_id, "text": text})
                     if (
                         db.execute(
                             "SELECT COUNT(*) FROM steering WHERE experiment_id=? AND state='pending'",

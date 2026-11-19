@@ -6,11 +6,15 @@ from uuid import uuid4
 import pytest
 from helpers import IterationAgent, approve_plan, seed_saved_contract3, wait_for_experiment
 
+from experimenttracker import creation_policy
 from experimenttracker.codex_client import DemoAgent
+from experimenttracker.config import ProjectConfig
 from experimenttracker.models import SteerCommand
 from experimenttracker.slurm import Observation
+from experimenttracker.steering import process_restarts
 from experimenttracker.store import Conflict
 from experimenttracker.workflow import Workflow
+from experimenttracker.workspaces import initialize_project
 
 
 async def wait_for(workflow, store, eid, predicate):
@@ -503,3 +507,115 @@ def test_manual_retry_consumes_later_feedback_for_other_known_failures(blocked_s
     if not session:
         assert resumed["previous_action_id"] == identity and error in resumed["error"]
     assert store.one("SELECT state FROM steering WHERE request_id=?", (steering,))["state"] == "applied"
+
+
+def test_restart_admission_preserves_legacy_but_refuses_incompatible_candidate(runtime, monkeypatch):
+    store, _, _, _ = runtime
+    eid = seed_saved_contract3(store)
+    request, payload = str(uuid4()), {"text": "Replace this run", "mode": "restart"}
+
+    monkeypatch.setattr(creation_policy, "MODE", "legacy")
+    result = store.command(request, "steer", payload, eid=eid)
+    assert result["state"] == "applied"
+    assert store.experiment(eid)["pause_compute"] is True
+
+    # An independent experiment proves the same fresh request is rejected before
+    # its command receipt, steering row, or compute pause can be written.
+    other = seed_saved_contract3(store)
+    monkeypatch.setattr(creation_policy, "MODE", "candidate")
+    with pytest.raises(Conflict, match="writable Git project checkout"):
+        store.command(uuid4(), "steer", payload, eid=other)
+    assert store.experiment(other)["pause_compute"] is False
+    assert not store.rows("SELECT * FROM steering WHERE experiment_id=?", (other,))
+
+
+@pytest.mark.parametrize(
+    ("workspace_mode", "reference"),
+    [("shared", False), ("auto", True)],
+)
+def test_candidate_restart_refuses_shared_or_reference_replacement(
+    runtime, config, tmp_path, monkeypatch, workspace_mode, reference
+):
+    store, _, _, _ = runtime
+    checkout = tmp_path / "compatible-project"
+    checkout.mkdir()
+    initialize_project(checkout)
+    project = ProjectConfig(id="test-project", name="Test project", checkout=checkout, research_loop=True)
+    config.projects = [project]
+    store.projects[project.id] = project
+    eid = seed_saved_contract3(store)
+    exp = store.experiment(eid)
+    contract = exp["contract"]
+    contract["workspace_mode"] = workspace_mode
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET contract=? WHERE id=?", (json.dumps(contract), eid))
+    if reference:
+        reference_id = seed_saved_contract3(store)
+        store.update(reference_id, phase="complete", snapshot={"plan": {"schema_version": 3}})
+        store.db.execute("UPDATE experiments SET reference_experiment_id=? WHERE id=?", (reference_id, eid))
+    monkeypatch.setattr(creation_policy, "MODE", "candidate")
+
+    message = "does not copy a reference" if reference else "own named branch"
+    with pytest.raises(Conflict, match=message):
+        store.command(uuid4(), "steer", {"text": "Replace this run", "mode": "restart"}, eid=eid)
+    assert not store.rows("SELECT * FROM steering WHERE experiment_id=?", (eid,))
+    assert store.experiment(eid)["pause_compute"] is False
+
+
+@pytest.mark.asyncio
+async def test_delayed_restart_does_not_cancel_when_replacement_became_incompatible(runtime, monkeypatch):
+    store, scheduler, _, workflow = runtime
+    eid = seed_saved_contract3(store)
+    store.update(eid, snapshot={"plan": {"schema_version": 3, "stages": []}})
+    with store.tx() as db:
+        db.execute(
+            "INSERT INTO jobs(intent_id,experiment_id,stage_id,state,job_id,script_hash,resources,snapshot_hash,created_at) "
+            "VALUES('saved-intent',?,'prepare','submitted','saved-job','hash','{}','snapshot',0)",
+            (eid,),
+        )
+    cancelled = []
+
+    async def cancel(job_id, intent_id):
+        cancelled.append((job_id, intent_id))
+
+    scheduler.cancel = cancel
+    request = str(uuid4())
+    monkeypatch.setattr(creation_policy, "MODE", "legacy")
+    store.command(request, "steer", {"text": "Replace this run", "mode": "restart"}, eid=eid)
+    monkeypatch.setattr(creation_policy, "MODE", "candidate")
+
+    await process_restarts(workflow)
+
+    assert cancelled == []
+    assert store.experiment(eid)["phase"] != "cancelled"
+    assert store.one("SELECT state FROM steering WHERE request_id=?", (request,))["state"] == "pending"
+    assert not store.rows("SELECT * FROM experiments WHERE replaces_experiment_id=?", (eid,))
+    assert not store.rows(
+        "SELECT 1 FROM events WHERE experiment_id=? AND kind='job_cancellation_intent'", (eid,)
+    )
+
+
+@pytest.mark.asyncio
+async def test_candidate_restart_creates_eligible_contract_four_replacement(
+    runtime, config, tmp_path, monkeypatch
+):
+    store, _, _, workflow = runtime
+    checkout = tmp_path / "restart-project"
+    checkout.mkdir()
+    initialize_project(checkout)
+    project = ProjectConfig(id="test-project", name="Test project", checkout=checkout, research_loop=True)
+    config.projects = [project]
+    store.projects[project.id] = project
+    eid = seed_saved_contract3(store)
+    store.update(eid, snapshot={"plan": {"schema_version": 3, "stages": []}})
+    request = str(uuid4())
+    monkeypatch.setattr(creation_policy, "MODE", "candidate")
+    store.command(request, "steer", {"text": "Use a separate branch", "mode": "restart"}, eid=eid)
+
+    await workflow.tick()
+
+    steering = store.one("SELECT * FROM steering WHERE request_id=?", (request,))
+    replacement = store.experiment(steering["replacement_experiment_id"])
+    assert replacement["contract"]["execution_contract"] == 4
+    assert replacement["replaces_experiment_id"] == eid
+    assert steering["state"] == "applied"
