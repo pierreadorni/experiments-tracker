@@ -74,7 +74,7 @@ async def test_lost_ack_redelivery_and_publication_retry(config, runtime, tmp_pa
         await client.close()
 
 
-async def test_hosted_create_replay_keeps_saved_contract_after_project_flag_changes(
+async def test_hosted_explicit_contract4_replays_for_non_opted_in_project(
     config, runtime, tmp_path, monkeypatch
 ):
     store, _, _, _ = runtime
@@ -85,7 +85,7 @@ async def test_hosted_create_replay_keeps_saved_contract_after_project_flag_chan
     checkout.mkdir()
     initialize_project(checkout)
     project = ProjectConfig(
-        id="hosted-research", name="Hosted research", checkout=checkout, research_loop=True
+        id="hosted-research", name="Hosted research", checkout=checkout, research_loop=False
     )
     config.projects.append(project)
     store.projects[project.id] = project
@@ -106,6 +106,7 @@ async def test_hosted_create_replay_keeps_saved_contract_after_project_flag_chan
     }
 
     ack_requests = []
+    monkeypatch.setattr(creation_policy, "MODE", "candidate")
 
     async def handler(request):
         if request.url.path == "/api/executor/commands":
@@ -122,11 +123,10 @@ async def test_hosted_create_replay_keeps_saved_contract_after_project_flag_chan
         assert applied["state"] == "applied"
         assert store.experiment(experiment_id)["contract"]["execution_contract"] == 4
 
-        project.research_loop = False
-        store.projects[project.id] = project
-        monkeypatch.setattr(creation_policy, "MODE", "candidate")
+        monkeypatch.setattr(creation_policy, "MODE", "legacy")
         await client.commands()
 
+        assert project.research_loop is False
         assert store.experiment(experiment_id)["contract"]["execution_contract"] == 4
         assert store.projection(experiment_id)["stages"] == []
         assert store.one("SELECT * FROM commands WHERE request_id=?", (request_id,)) == applied
@@ -199,8 +199,10 @@ async def test_hosted_unbound_create_cutover_modes(config, runtime, tmp_path, mo
         },
     }
     outcomes = []
+    rejection_attempts = 0
 
     async def handler(request):
+        nonlocal rejection_attempts
         if request.url.path == "/api/executor/commands":
             return httpx.Response(200, json={"schema_version": 1, "commands": [command]})
         if request.url.path == "/api/executor/ack":
@@ -208,13 +210,21 @@ async def test_hosted_unbound_create_cutover_modes(config, runtime, tmp_path, mo
             return httpx.Response(200, json={"schema_version": 1, "acknowledged": [request_id]})
         if request.url.path == "/api/executor/reject":
             outcomes.append(("reject", json.loads(request.content)))
+            rejection_attempts += 1
+            if refuse_unbound and rejection_attempts == 1:
+                raise httpx.ConnectError("rejection response lost")
             return httpx.Response(200, json={"schema_version": 1, "rejected": [request_id]})
         raise AssertionError(f"unexpected gateway endpoint {request.url.path}")
 
     client = GatewayClient(config, store, transport=httpx.MockTransport(handler))
     try:
-        await client.commands()
-        if not refuse_unbound:
+        if refuse_unbound:
+            with pytest.raises(httpx.ConnectError, match="rejection response lost"):
+                await client.commands()
+            assert store.one("SELECT * FROM rejected_gateway_commands WHERE request_id=?", (request_id,))
+            await client.commands()
+        else:
+            await client.commands()
             # Once applied, an unbound create replays its saved result across the cutover.
             monkeypatch.setattr(creation_policy, "MODE", "candidate")
             await client.commands()
@@ -222,6 +232,8 @@ async def test_hosted_unbound_create_cutover_modes(config, runtime, tmp_path, mo
         await client.close()
 
     if refuse_unbound:
+        assert len(outcomes) == rejection_attempts == 2
+        assert outcomes[0] == outcomes[1]
         assert outcomes[0][0] == "reject"
         assert "unbound hosted creates" in outcomes[0][1]["rejections"][0]["reason"]
         assert store.rows("SELECT * FROM experiments") == []
