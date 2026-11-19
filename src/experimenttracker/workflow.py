@@ -340,6 +340,9 @@ class Workflow:
             "implementation_repair": True,
             "branch_integration": True,
             "execution_contract_create": 4,
+            "research_loop_projects": [
+                project.id for project in self.config.projects if project.research_loop
+            ],
             "autopilot": {"available": True, "schema_version": 1},
             "maintenance": self.maintenance.status(self),
             "projects": self.projects.catalog() if projects is None else projects,

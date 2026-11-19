@@ -258,6 +258,9 @@ export type ModelOption = {
 };
 export type Status = {
   autopilot?: { available: boolean; schema_version: number };
+  execution_contract_create?: number;
+  heartbeat_received_at?: number | null;
+  research_loop_projects?: string[];
   experiment_cancellation?: boolean;
   implementation_repair?: boolean;
   branch_integration?: boolean;

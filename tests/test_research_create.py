@@ -36,6 +36,19 @@ def test_research_loop_defaults_off():
     assert project.research_loop is False
 
 
+def test_status_advertises_only_opted_in_research_loop_projects(config, runtime, tmp_path):
+    _, _, _, workflow = runtime
+    config.projects.extend(
+        [
+            ProjectConfig(id="anyup-rs", name="Research", checkout=tmp_path / "research", research_loop=True),
+            ProjectConfig(id="legacy", name="Legacy", checkout=tmp_path / "legacy"),
+        ]
+    )
+    status = workflow.status(None)
+    assert status["execution_contract_create"] == 4
+    assert status["research_loop_projects"] == ["anyup-rs"]
+
+
 def test_unflagged_project_keeps_the_contract_3_stage_create(runtime, config, tmp_path):
     store, _, _, _ = runtime
     _, checkout = git_project(config, store, tmp_path, research_loop=False)

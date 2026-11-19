@@ -29,6 +29,7 @@ import {
   X,
 } from 'lucide-react';
 import { api, command, Unauthorized } from './api';
+import { contractFourCreateIssue, contractFourForProject } from './createContract.mjs';
 import type { Experiment, InboxEntry, Status } from './types';
 import './style.css';
 import { registerWorkspaceTools } from './webmcp';
@@ -355,6 +356,13 @@ function App() {
     { id: 'test-project', name: 'Test project', available: true },
   ];
   const currentProject = projects.find((p) => p.id === projectId);
+  const researchLoopProject = status?.research_loop_projects?.includes(projectId) === true;
+  const contractFourAvailable = contractFourForProject(status, projectId);
+  const researchLoopInputError = researchLoopProject
+    ? !contractFourAvailable
+      ? 'Contract 4 is enabled for this project, but the gateway has not recently observed an executor advertising contract-4 create support. Refresh status or ask the administrator to update the executor; no contract-3 fallback will be used.'
+      : contractFourCreateIssue(status, projectId, workspaceMode, referenceId)
+    : null;
   const projectOptions = [
     ...projects.map((p) => ({
       value: p.id,
@@ -1760,6 +1768,23 @@ function App() {
               onSubmit={(e) => {
                 e.preventDefault();
                 void act(async () => {
+                  const freshStatus = await api<Status>('/api/status');
+                  setStatus(freshStatus);
+                  // Keep a displayed C4 intent even if the project setting changes mid-form.
+                  const explicitContractFour =
+                    researchLoopProject || freshStatus.research_loop_projects?.includes(projectId);
+                  if (explicitContractFour) {
+                    const issue = contractFourCreateIssue(
+                      freshStatus,
+                      projectId,
+                      workspaceMode,
+                      referenceId,
+                    );
+                    if (issue)
+                      throw new Error(
+                        `${issue} The explicit contract-4 create was refused; no contract-3 retry was made.`,
+                      );
+                  }
                   const result = await command<{ experiment_id: string }>('/api/experiments', {
                     brief,
                     project_id: projectId,
@@ -1767,7 +1792,14 @@ function App() {
                     workspace_mode: workspaceMode,
                     ...(model ? { model, reasoning_effort: effort } : {}),
                     recipe_id: 'agent_experiment_v1',
+                    ...(explicitContractFour ? { execution_contract: 4 } : {}),
                     ...(referenceId ? { reference_experiment_id: referenceId } : {}),
+                  }).catch((error: unknown) => {
+                    if (!explicitContractFour) throw error;
+                    const detail = error instanceof Error ? error.message : String(error);
+                    throw new Error(
+                      `The explicit contract-4 create was refused. No contract-3 retry was made. Check project eligibility and update the gateway if it does not accept this intent. ${detail}`,
+                    );
                   });
                   setCreating(false);
                   choose(result.experiment_id);
@@ -1777,8 +1809,15 @@ function App() {
               <p className="brief-guidance" id="brief-guidance">
                 {status?.mode === 'demo'
                   ? 'Synthetic demonstration. No model calls or Slurm jobs.'
-                  : 'Describe what you want to learn. You’ll review the plan before implementation starts.'}
+                  : researchLoopProject
+                    ? 'Describe the research question, approach, data and evidence that would answer it. The research loop works through the investigation in this project workspace and may pause for your input.'
+                    : 'Describe what you want to learn. You’ll review the plan before implementation starts.'}
               </p>
+              {researchLoopProject && researchLoopInputError && (
+                <p className="error" role="alert">
+                  {researchLoopInputError}
+                </p>
+              )}
               <label htmlFor="brief">Research brief</label>
               <textarea
                 id="brief"
@@ -1899,7 +1938,9 @@ function App() {
               )}
               <button
                 className="primary full"
-                disabled={busy || !model || !currentProject?.available}
+                disabled={
+                  busy || !model || !currentProject?.available || Boolean(researchLoopInputError)
+                }
               >
                 {busy
                   ? 'Submitting…'
