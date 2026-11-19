@@ -178,7 +178,12 @@ async def test_gateway_explicit_contract4_cannot_fall_back_for_ineligible_projec
         await client.commands()
         assert store.rows("SELECT * FROM experiments") == []
         assert store.one("SELECT * FROM rejected_gateway_commands WHERE request_id=?", (request_id,))
-        assert rejected[0][0]["reason"]
+        expected = (
+            "writable Git project checkout"
+            if creation_policy.defaults_to_research_loop()
+            else "explicit execution contract 4 is not enabled and eligible"
+        )
+        assert expected in rejected[0][0]["reason"]
     finally:
         await client.close()
 

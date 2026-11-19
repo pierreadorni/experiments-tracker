@@ -196,14 +196,12 @@ def test_remote_c3_fixture_preserves_its_saved_route_under_each_create_policy(
 def test_project_context_is_saved_and_old_experiments_stay_local(runtime, monkeypatch):
     monkeypatch.setattr(creation_policy, "MODE", "legacy")
     store, _, _, wf = runtime
-    original_execution = wf.projects.settings("test-project")["execution"]
     before = store.command(
         uuid4(),
         "create",
         {
             "brief": "A local synthetic check",
             "recipe_id": "agent_experiment_v1",
-            "execution": original_execution,
         },
     )["experiment_id"]
     payload = settings(
@@ -215,7 +213,6 @@ def test_project_context_is_saved_and_old_experiments_stay_local(runtime, monkey
         {
             "brief": "A remote synthetic check",
             "recipe_id": "agent_experiment_v1",
-            "execution": payload["execution"],
         },
     )["experiment_id"]
     wf.projects.enqueue_settings("test-project", payload)
