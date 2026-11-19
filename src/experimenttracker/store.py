@@ -36,6 +36,9 @@ def encode(value):
 _INTEGRATION_BASE = "main"
 _INTEGRATION_VERSION = 1
 
+# Flip only at the owner-authorized hosted-create cutover; local and explicit creates are unaffected.
+_REFUSE_UNBOUND_HOSTED_CREATES = False
+
 
 def _integration_request(exp, branch, kind, *, merge_commit=None, reason=None):
     """Build the bounded queue request from the saved branch, never from client input."""
@@ -1296,6 +1299,15 @@ class Store:
                 requested_contract = payload["execution_contract"]
                 if type(requested_contract) is not int or requested_contract != 4:
                     raise Conflict("only explicit execution contract 4 is supported")
+            if (
+                kind == "create"
+                and origin == "gateway"
+                and "execution_contract" not in payload
+                and _REFUSE_UNBOUND_HOSTED_CREATES
+            ):
+                raise Conflict(
+                    "unbound hosted creates are refused at the contract cutover; resubmit explicitly"
+                )
             if db.execute("SELECT 1 FROM autopilot_requests WHERE request_id=?", (request_id,)).fetchone():
                 raise Conflict("request_id was already used for an Autopilot command")
             if (

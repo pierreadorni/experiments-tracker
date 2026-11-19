@@ -5,6 +5,7 @@ import httpx
 import pytest
 from test_integration_commands import awaiting, saved, seed_branch
 
+from experimenttracker import store as store_module
 from experimenttracker.config import GatewayConfig, ProjectConfig
 from experimenttracker.gateway_client import GatewayClient
 from experimenttracker.workspaces import initialize_project
@@ -72,7 +73,7 @@ async def test_lost_ack_redelivery_and_publication_retry(config, runtime, tmp_pa
 
 
 async def test_hosted_create_replay_keeps_saved_contract_after_project_flag_changes(
-    config, runtime, tmp_path
+    config, runtime, tmp_path, monkeypatch
 ):
     store, _, _, _ = runtime
     credential = tmp_path / "executor-token"
@@ -121,6 +122,7 @@ async def test_hosted_create_replay_keeps_saved_contract_after_project_flag_chan
 
         project.research_loop = False
         store.projects[project.id] = project
+        monkeypatch.setattr(store_module, "_REFUSE_UNBOUND_HOSTED_CREATES", True)
         await client.commands()
 
         assert store.experiment(experiment_id)["contract"]["execution_contract"] == 4
@@ -171,6 +173,65 @@ async def test_gateway_explicit_contract4_cannot_fall_back_for_ineligible_projec
         assert "explicit execution contract 4" in rejected[0][0]["reason"]
     finally:
         await client.close()
+
+
+@pytest.mark.parametrize("refuse_unbound", [False, True], ids=["legacy-mode", "cutover-mode"])
+async def test_hosted_unbound_create_cutover_modes(config, runtime, tmp_path, monkeypatch, refuse_unbound):
+    store, _, _, _ = runtime
+    token = tmp_path / "token"
+    token.write_text("e" * 40)
+    config.gateway = GatewayConfig(url="https://gateway.example", credential_file=token)
+    monkeypatch.setattr(store_module, "_REFUSE_UNBOUND_HOSTED_CREATES", refuse_unbound)
+    request_id, experiment_id = str(uuid4()), str(uuid4())
+    command = {
+        "request_id": request_id,
+        "experiment_id": experiment_id,
+        "executor_id": "acacia",
+        "kind": "create",
+        "payload": {
+            "schema_version": 1,
+            "request_id": request_id,
+            "brief": "Compare the fixed synthetic models.",
+            "recipe_id": "agent_experiment_v1",
+        },
+    }
+    outcomes = []
+
+    async def handler(request):
+        if request.url.path == "/api/executor/commands":
+            return httpx.Response(200, json={"schema_version": 1, "commands": [command]})
+        if request.url.path == "/api/executor/ack":
+            outcomes.append(("ack", json.loads(request.content)))
+            return httpx.Response(200, json={"schema_version": 1, "acknowledged": [request_id]})
+        if request.url.path == "/api/executor/reject":
+            outcomes.append(("reject", json.loads(request.content)))
+            return httpx.Response(200, json={"schema_version": 1, "rejected": [request_id]})
+        raise AssertionError(f"unexpected gateway endpoint {request.url.path}")
+
+    client = GatewayClient(config, store, transport=httpx.MockTransport(handler))
+    try:
+        await client.commands()
+        if not refuse_unbound:
+            # Once applied, an unbound create replays its saved result across the cutover.
+            monkeypatch.setattr(store_module, "_REFUSE_UNBOUND_HOSTED_CREATES", True)
+            await client.commands()
+    finally:
+        await client.close()
+
+    if refuse_unbound:
+        assert outcomes[0][0] == "reject"
+        assert "unbound hosted creates" in outcomes[0][1]["rejections"][0]["reason"]
+        assert store.rows("SELECT * FROM experiments") == []
+        assert store.one("SELECT * FROM rejected_gateway_commands WHERE request_id=?", (request_id,))
+        assert not store.one("SELECT * FROM commands WHERE request_id=?", (request_id,))
+    else:
+        assert outcomes == [
+            ("ack", {"schema_version": 1, "request_ids": [request_id]}),
+            ("ack", {"schema_version": 1, "request_ids": [request_id]}),
+        ]
+        assert store.experiment(experiment_id)["contract"]["execution_contract"] == 3
+        assert store.one("SELECT * FROM commands WHERE request_id=?", (request_id,))["state"] == "applied"
+        assert len(store.rows("SELECT * FROM experiments")) == 1
 
 
 async def test_expired_command_refusal_is_durable_before_lost_ack(config, runtime, tmp_path):
