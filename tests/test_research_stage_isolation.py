@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3
 
 from experimenttracker import controller, legacy_archive, steering
 from experimenttracker.store import encode
@@ -21,9 +22,7 @@ from experimenttracker.store import encode
 
 def saved(store, *, contract=4, phase="training", hold_reason=None, snapshot=None):
     """Create a real saved experiment, then rewrite only its saved contract."""
-    eid = store.command(uuid4(), "create", {"brief": "Saved run", "recipe_id": "agent_experiment_v1"})[
-        "experiment_id"
-    ]
+    eid = seed_saved_contract3(store, "Saved run")
     with store.tx() as db:
         row = db.execute("SELECT contract FROM experiments WHERE id=?", (eid,)).fetchone()
         value = json.loads(row["contract"])

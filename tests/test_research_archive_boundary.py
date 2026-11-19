@@ -3,6 +3,7 @@
 from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3
 
 from experimenttracker import legacy_archive
 from experimenttracker.core import action_obligations
@@ -11,9 +12,7 @@ from experimenttracker.store import encode
 
 def saved_experiment(store, contract, *, phase="training"):
     """Create one saved fixture, then hand-edit the contract the way history did."""
-    eid = store.command(
-        uuid4(), "create", {"brief": "Synthetic archive boundary.", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Synthetic archive boundary.")
     value = {
         key: item for key, item in store.experiment(eid)["contract"].items() if key != "execution_contract"
     }

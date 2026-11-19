@@ -1,6 +1,5 @@
-from uuid import uuid4
-
 import pytest
+from helpers import seed_saved_contract3
 
 from experimenttracker import legacy_archive
 from experimenttracker import remote as remote_module
@@ -27,11 +26,7 @@ def test_archive_predicates_match_saved_contract_boundary(contract, phase, delet
 
 
 def legacy_job(store):
-    eid = store.command(
-        uuid4(),
-        "create",
-        {"brief": "Synthetic archived fixture.", "recipe_id": "agent_experiment_v1"},
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Synthetic archived fixture.")
     exp = store.experiment(eid)
     contract = {**exp["contract"], "execution_contract": 2}
     store.update(eid, phase="training", hold_reason="legacy_contract_archived")

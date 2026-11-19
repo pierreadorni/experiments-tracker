@@ -3,6 +3,7 @@ import json
 from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3
 
 from experimenttracker import legacy_archive
 from experimenttracker.agent_pool import experiment_owner
@@ -13,9 +14,7 @@ from experimenttracker.watchdog import engine_watchdog
 
 
 def legacy_experiment(store):
-    eid = store.command(
-        uuid4(), "create", {"brief": "synthetic archive activation", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "synthetic archive activation")
     exp = store.experiment(eid)
     contract = {**exp["contract"], "execution_contract": 2}
     with store.tx() as db:
