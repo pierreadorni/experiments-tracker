@@ -9,6 +9,8 @@ compares the whole contract with the one it started from.
 import json
 from uuid import uuid4
 
+from helpers import seed_saved_contract3
+
 MANIFEST = {
     "snapshot_hash": "synthetic-contract-immutability",
     "parameters": {},
@@ -17,9 +19,7 @@ MANIFEST = {
 
 
 def create(store):
-    return store.command(
-        uuid4(), "create", {"brief": "Synthetic contract immutability", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    return seed_saved_contract3(store, "Synthetic contract immutability")
 
 
 def action(store, eid, phase, **extra):

@@ -1,7 +1,8 @@
 """Engine wall-clock time comes from the clock seam; this test replaces that seam."""
 
 import time
-from uuid import uuid4
+
+from helpers import seed_saved_contract3
 
 from experimenttracker import clock
 
@@ -14,9 +15,7 @@ def test_now_and_monotonic_read_the_standard_clocks():
 
 def test_patching_now_controls_stored_timestamps(runtime, monkeypatch):
     store = runtime[0]
-    eid = store.command(
-        uuid4(), "create", {"brief": "Synthetic clock test", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Synthetic clock test")
     monkeypatch.setattr(clock, "now", lambda: 1234.0)
     store.notify(eid, "required_decision", "synthetic")
     rows = store.rows("SELECT created_at FROM inbox WHERE experiment_id=?", (eid,))

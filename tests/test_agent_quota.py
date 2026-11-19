@@ -10,7 +10,7 @@ SQLite, so no managed turn is sent.
 import asyncio
 from uuid import uuid4
 
-from helpers import role_step
+from helpers import role_step, seed_saved_contract3
 from test_iteration_autopilot import activated
 
 from experimenttracker.agent_pool import WEEKLY_PLENTY_REASON
@@ -43,9 +43,7 @@ def hold_session(agent, entered, release):
 
 def member(store, run):
     """Save the member row an activated run uses to own an experiment."""
-    eid = store.command(
-        uuid4(), "create", {"brief": "Synthetic member.", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Synthetic member.")
     with store.tx() as db:
         db.execute(
             "INSERT INTO autopilot_members VALUES(?,?,?,'question','exploration','test',0,1,0,NULL,'[]',?)",
@@ -83,9 +81,7 @@ def test_autopilot_member_turns_take_their_run_reserves(runtime, monkeypatch):
     service, run = activated(runtime, monkeypatch)
     store, _, _, wf = runtime
     member_eid = member(store, run)
-    other = store.command(uuid4(), "create", {"brief": "Unrelated.", "recipe_id": "agent_experiment_v1"})[
-        "experiment_id"
-    ]
+    other = seed_saved_contract3(store, "Unrelated.")
     # 45% of the five-hour window is left: the ordinary threshold admits, the run's
     # 50% reserve does not.
     wf.gate.update(snapshot(five=55))

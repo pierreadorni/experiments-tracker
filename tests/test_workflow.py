@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import pytest
 from helpers import prepared, seed_saved_contract3, until
+from test_research_create import git_project
 
 from experimenttracker import artifacts
 from experimenttracker.codex_client import NeedsAttention
@@ -16,13 +17,19 @@ def submit(store):
     return seed_saved_contract3(store, "Compare linear and quadratic models on shared synthetic data.")
 
 
-def test_commands_are_idempotent_and_conflicts_rejected(runtime):
+def test_commands_are_idempotent_and_conflicts_rejected(runtime, config, tmp_path):
     store, _, _, _ = runtime
+    project, _ = git_project(config, store, tmp_path, research_loop=True)
     request_id = uuid4()
-    payload = {"brief": "Compare the two synthetic models.", "recipe_id": "agent_experiment_v1"}
+    payload = {
+        "brief": "Compare the two synthetic models.",
+        "recipe_id": "agent_experiment_v1",
+        "execution_contract": 4,
+        "project_id": project.id,
+    }
     first = store.command(request_id, "create", payload)
     assert store.command(request_id, "create", payload) == first
-    assert store.experiment(first["experiment_id"])["contract"]["execution_contract"] == 3
+    assert store.experiment(first["experiment_id"])["contract"]["execution_contract"] == 4
     assert len(store.rows("SELECT * FROM experiments")) == 1
     with pytest.raises(Conflict):
         store.command(request_id, "create", {**payload, "brief": "Different brief"})
