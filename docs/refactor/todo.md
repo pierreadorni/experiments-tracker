@@ -536,7 +536,7 @@ role busy flags it still writes. All retire with the contract-3 engine in T4.8.
   builder (under 8 KB) and the turn-end schema with the enforcement rules.
   Contract 4 skips `advance()` entirely.
 
-### [~] T4.2a–j Tools, one per task · F (+R for submit_job) · S–M each
+### [x] T4.2a–j Tools, one per task · F (+R for submit_job) · S–M each
 See [tool rollout and effect boundaries](notes/t4.2-rollout.md).
 - [x] T4.2a `cluster_info` and scoped MCP bridge; T4.2b `job_status`/`job_logs`.
 - [x] `save_checkpoint`, `update_report` and `register_figure` through MCP.
@@ -546,10 +546,10 @@ See [tool rollout and effect boundaries](notes/t4.2-rollout.md).
 - [x] `submit_job` for manually approved local CPU jobs. `register_result` advertises a usable JSON example without relaxing exact producer or metric validation. GPU admission is not enabled.
 - [x] A submission can declare a bounded `result_file`. The exact saved intent binds registration to that file; older undeclared submissions and replays retain their existing behavior.
 - [x] `depends_on` requires exact completed jobs in the same experiment before admission; it does not queue native Slurm dependencies.
-- [x] Local CPU jobs can select bounded TensorBoard previews without waking research. Jean Zay preview requests are explicitly refused.
+- [x] Local and Jean Zay CPU jobs can select bounded TensorBoard previews without waking research or blocking terminal delivery.
 - [x] Local CPU jobs can stage bounded `inputs` from exact registered results and read their staged paths through `EXPERIMENT_INPUTS`.
 - [x] Jean Zay CPU jobs stage verified registered inputs with the pinned source and expose their exact remote paths through `EXPERIMENT_INPUTS`.
-- Remaining: Jean Zay TensorBoard previews. GPU admission remains disabled pending reservation/accounting; live remote acceptance is separate.
+- Tool acceptance is complete for the CPU routes. GPU admission remains disabled pending reservation/accounting; live remote acceptance is separate.
 - [x] Manually approved C4 CPU jobs can use the saved Jean Zay route. Scripted controller acceptance covers pinned staging, lost submission reply, exact adoption, delayed accounting, interrupted delivery and one result-ready wake. No live remote acceptance.
 `cluster_info`, `submit_job`, `job_status`/`job_logs`, `cancel_job` (reuse),
 `register_result`, `register_figure`, `update_report` (reuse), `save_checkpoint`,
@@ -608,6 +608,7 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 
 ## Log
 
+- **T4.2 tool closeout:** `8a8fd09` adds bounded Jean Zay previews, reusing C4 projection publication without agent wakeups (source +91/−12; tests +88/−3). Ruff, 59 focused tests and all **1,458 Python tests** passed in isolated shards. No live remote acceptance or GPU activation.
 - **T4.8 opt-in C4 CLI demo:** `4fc9c59` and its fixture prerequisites run the real C4 dispatcher through exact approval, one synthetic CPU job and a ready report, using private temporary state with the gateway disabled. The C3 CLI default is unchanged. Ruff, five focused tests and all **1,454 Python tests** passed in isolated shards. No live activation.
 - **T4.2 remote registered inputs:** `52298f8` reuses saved receipts and bounded file reads to stage exact bytes with the pinned remote source (source +118/−47; tests +75/−3). Ruff and 41 focused tests passed, including scripted transport. No live activation.
 - **T4.2 registered-result inputs:** `d345db4`, `0059442` bind local input receipts to exact completed producers and verify the bytes the wrapper consumes (source +104/−3; tests +132/−1). Ruff, 38 focused tests and all **1,451 Python tests** passed in isolated shards. Remote input requests refuse before staging.
