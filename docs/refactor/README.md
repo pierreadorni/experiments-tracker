@@ -134,9 +134,9 @@ Stop and ask if: acceptance conflicts with existing tests in a way the card does
 
 ## Order
 
-**Phase 3 (T3) is complete at the source/test level.** The final results are in
-[the task log](todo.md#log). Phase 4 (execution contract 4) is next; source
-publication does not authorize live activation.
+**T4.8 is current.** Contract 4 is the default for new experiments. Contract 3
+retirement still requires fresh drain evidence and a separate archive step. Phase 5
+follows retirement. See [the task cards](todo.md#phase-4--research-loop-execution-contract-4-c7).
 
 T1 is complete under the owner-approved scope cut; see
 [notes/t1-acceptance.md](notes/t1-acceptance.md). Historical handoff notes describe
