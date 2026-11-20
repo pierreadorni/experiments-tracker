@@ -11,6 +11,7 @@ from uuid import uuid4
 
 import pytest
 
+from experimenttracker import legacy_archive
 from experimenttracker.codex_client import CodexAgent
 from experimenttracker.store import Store
 from experimenttracker.workflow import Workflow
@@ -103,6 +104,12 @@ class Scenario:
         """Close the current workflow once; the engine's own flag marks it closed."""
         if not self.workflow.closing:
             await self.workflow.close()
+
+
+@pytest.fixture
+def contract_three_engine(monkeypatch):
+    """Enable the retired stage engine for its specific compatibility scenarios."""
+    monkeypatch.setattr(legacy_archive, "SUPPORTED_EXECUTION_CONTRACTS", (3, 4))
 
 
 @pytest.fixture

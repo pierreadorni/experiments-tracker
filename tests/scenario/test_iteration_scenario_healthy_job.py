@@ -1,4 +1,4 @@
-"""Healthy long job: engine-driven RUNNING telemetry never opens an extra agent turn.
+"""Contract 3 monitor scenario: healthy telemetry never opens an extra agent turn.
 
 Synthetic mechanism acceptance only: no live scheduler, model runtime or research.
 """
@@ -96,7 +96,7 @@ async def steps(scenario, count):
 
 
 @pytest.mark.parametrize("progress", [True, False])
-async def test_healthy_long_job_makes_zero_additional_agent_turns(scenario, progress):
+async def test_healthy_long_job_makes_zero_additional_agent_turns(scenario, progress, contract_three_engine):
     store, slurm_backend, agent_backend = scenario.store, scenario.slurm_backend, scenario.agent_backend
     eid = seed_saved_contract3(store, "Synthetic healthy long job.")
     assert store.experiment(eid)["contract"]["execution_contract"] == 3

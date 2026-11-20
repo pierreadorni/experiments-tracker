@@ -258,6 +258,8 @@ class FakeCodex:
 
     def payload(self, prompt):
         """The structured input the engine appended; a role may carry its own marker."""
+        if prompt.startswith("RESEARCH TURN\n"):
+            return {"phase": "experiment_research"}
         # rsplit keeps an earlier "PAYLOAD:" in prose intact.
         return json.loads(prompt.rsplit("\nPAYLOAD:\n", 1)[1])
 

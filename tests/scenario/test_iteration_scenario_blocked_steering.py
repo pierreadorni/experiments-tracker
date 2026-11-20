@@ -1,4 +1,4 @@
-"""Blocked agent stage plus later steering: one continuation keeps the saved attempt.
+"""Contract 3 blocked-stage steering preserves the saved attempt.
 
 Synthetic mechanism acceptance only: no live scheduler, model runtime or research.
 """
@@ -65,7 +65,9 @@ def blocked_turn(payload, workspace):
     return {"outcome": "blocked", "summary": BLOCKED}
 
 
-async def test_blocked_agent_stage_steering_queues_one_continuation_on_the_saved_attempt(scenario):
+async def test_blocked_agent_stage_steering_queues_one_continuation_on_the_saved_attempt(
+    scenario, contract_three_engine
+):
     store, agent_backend = scenario.store, scenario.agent_backend
     eid = seed_saved_contract3(store, "Synthetic blocked agent stage.")
     assert store.experiment(eid)["contract"]["execution_contract"] == 3
