@@ -5,9 +5,9 @@ from uuid import uuid4
 import pytest
 from helpers import seed_saved_contract3
 
-from experimenttracker import legacy_archive
+from experimenttracker import iteration, legacy_archive
 from experimenttracker.core import action_obligations
-from experimenttracker.store import encode
+from experimenttracker.store import Conflict, encode
 
 
 def saved_experiment(store, contract, *, phase="training"):
@@ -182,6 +182,37 @@ def test_contract_three_only_pending_stage_action_is_not_admitted_on_contract_fo
     assert store.one("SELECT state FROM agent_actions WHERE id=?", (action,))["state"] == "pending"
 
 
+async def test_frozen_contract_three_keeps_stage_writers_inert(runtime, monkeypatch):
+    store, _, _, workflow = runtime
+    eid = saved_experiment(store, 3, phase="preparing")
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET pending_request=NULL WHERE id=?", (eid,))
+    identity = pending_action(store, eid, "prepare")
+    action = store.one("SELECT * FROM agent_actions WHERE id=?", (identity,))
+    before = store.experiment(eid)
+    stages = store.rows("SELECT * FROM stages WHERE experiment_id=?", (eid,))
+    monkeypatch.setattr(legacy_archive, "SUPPORTED_EXECUTION_CONTRACTS", (4,))
+
+    assert iteration.enabled(before)
+    assert not iteration.runnable(before)
+    await workflow.step_control_advance()
+    await workflow.advance(eid)
+    await workflow.dispatch(action, workflow.agent_pool.primary)
+    await workflow.publish(before)
+
+    assert store.experiment(eid) == before
+    assert store.rows("SELECT * FROM stages WHERE experiment_id=?", (eid,)) == stages
+    assert store.one("SELECT * FROM agent_actions WHERE id=?", (identity,)) == action
+
+
+def test_frozen_terminal_contract_three_refuses_stage_repair(runtime, monkeypatch):
+    store, *_ = runtime
+    eid = saved_experiment(store, 3, phase="failed")
+    monkeypatch.setattr(legacy_archive, "SUPPORTED_EXECUTION_CONTRACTS", (4,))
+    with pytest.raises(Conflict, match="legacy execution is archived"):
+        store.command(str(uuid4()), "action", {"action": "repair_implementation"}, eid=eid)
+
+
 def add_artifact(store, eid, name, evidence_revision):
     with store.tx() as db:
         db.execute(
@@ -226,11 +257,12 @@ def add_job(store, eid, attempt, commit):
         )
 
 
-def test_projection_keeps_contract_four_out_of_archived_evidence_layout(runtime):
+@pytest.mark.parametrize("contract", [3, 4])
+def test_projection_preserves_revisions_for_contract_three_and_four(runtime, monkeypatch, contract):
     store, *_ = runtime
-    four = saved_experiment(store, 4)
+    retained = saved_experiment(store, contract)
     archived = saved_experiment(store, 2)
-    for eid in (four, archived):
+    for eid in (retained, archived):
         save_contract(store, eid, {**store.experiment(eid)["contract"], "auto_repair": {"revision": 2}})
         add_artifact(store, eid, "current.json", 2)
         add_artifact(store, eid, "retired.json", 0)
@@ -239,12 +271,14 @@ def test_projection_keeps_contract_four_out_of_archived_evidence_layout(runtime)
         with store.tx() as db:
             db.execute("UPDATE experiments SET evidence_revision=2 WHERE id=?", (eid,))
 
-    four_view = store.projection(four)
+    monkeypatch.setattr(legacy_archive, "SUPPORTED_EXECUTION_CONTRACTS", (4,))
+    assert legacy_archive.execution_frozen(store.experiment(retained)) is (contract == 3)
+    retained_view = store.projection(retained)
     archived_view = store.projection(archived)
 
-    assert {artifact["name"] for artifact in four_view["artifacts"]} == {"current.json", "retired.json"}
+    assert {artifact["name"] for artifact in retained_view["artifacts"]} == {"current.json", "retired.json"}
     assert {artifact["name"] for artifact in archived_view["artifacts"]} == {"current.json"}
-    assert sorted(job["attempt"] for job in four_view["jobs"]) == [1, 2]
+    assert sorted(job["attempt"] for job in retained_view["jobs"]) == [1, 2]
     assert sorted(job["attempt"] for job in archived_view["jobs"]) == [2]
-    assert next(job for job in four_view["jobs"] if job["attempt"] == 2)["commit"] == "d" * 40
+    assert next(job for job in retained_view["jobs"] if job["attempt"] == 2)["commit"] == "d" * 40
     assert "commit" not in archived_view["jobs"][0]

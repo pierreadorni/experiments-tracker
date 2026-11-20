@@ -63,6 +63,18 @@ def test_local_inventory_reads_saved_contracts_and_exact_pending_work(tmp_path):
             )
             db.execute("INSERT INTO outbox(id,payload,attempts,next_attempt_at) VALUES('evt','private',2,90)")
             db.execute(
+                "INSERT INTO agent_wakeups(id,experiment_id,reason,due_at,state,action_id,created_at) "
+                "VALUES('wake','c3-deleted','private',2,'queued','uncertain',1)"
+            )
+            db.execute(
+                "UPDATE experiments SET contract=json_set(contract,'$.job_cancellations',json(?)) "
+                "WHERE id='c3-deleted'",
+                (
+                    '{"cancel-req":{"intent_id":"lag","job_id":"801","state":"uncertain"},'
+                    '"settled-req":{"state":"terminal"}}',
+                ),
+            )
+            db.execute(
                 "INSERT INTO output_refs VALUES('result','c3-deleted','agent','metric','acacia','local',"
                 "'/private/result','metrics',1)"
             )
@@ -96,6 +108,16 @@ def test_local_inventory_reads_saved_contracts_and_exact_pending_work(tmp_path):
     }
     assert [(row["id"], row["turn_id"]) for row in report["c3_open_actions"]] == [("uncertain", "turn")]
     assert report["c3_open_transfers"][0]["id"] == "transfer"
+    assert report["c3_open_wakeups"][0]["action_id"] == "uncertain"
+    assert report["c3_open_job_cancellations"] == [
+        {
+            "request_id": "cancel-req",
+            "experiment_id": "c3-deleted",
+            "intent_id": "lag",
+            "job_id": "801",
+            "state": "uncertain",
+        }
+    ]
     assert report["c3_open_obligations"][0]["id"] == "integration:req:1"
     assert report["c3_reports"][0]["state"] == "publishing"
     assert report["c3_undelivered_events"][0]["attempts"] == 2

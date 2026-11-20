@@ -20,6 +20,7 @@ from .core import (
 )
 from .engine import integration_queue
 from .legacy_archive import (
+    ALL_REVISIONS_EVIDENCE_CONTRACTS,
     SUPPORTED_EXECUTION_CONTRACTS,
     archive_active,
     execution_frozen,
@@ -652,7 +653,7 @@ class Store:
     def projection(self, eid):
         result = self.experiment(eid)
         result["project_id"] = result["contract"].get("project", {}).get("id", "test-project")
-        live = not execution_frozen(result)
+        all_revisions = result["contract"].get("execution_contract") in ALL_REVISIONS_EVIDENCE_CONTRACTS
         if self.one("SELECT 1 FROM sqlite_master WHERE name='autopilot_runs'"):
             result["autopilot_stage_holds"] = self.rows(
                 "SELECT stage_id,attempt,reason,detail FROM autopilot_stage_holds WHERE experiment_id=?",
@@ -683,9 +684,9 @@ class Store:
                 else ""
             )
             condition = " AND phase NOT LIKE 'discuss:%'" if table == "agent_actions" else ""
-            if table == "artifacts" and not live:
+            if table == "artifacts" and not all_revisions:
                 condition = f" AND evidence_revision={int(result['evidence_revision'])}"
-            elif table == "jobs" and result["contract"].get("auto_repair") and not live:
+            elif table == "jobs" and result["contract"].get("auto_repair") and not all_revisions:
                 reused = result["contract"].get("reused_job_intents", [])
                 condition = f" AND (attempt={int(result['evidence_revision'])}"
                 if reused:
@@ -741,7 +742,7 @@ class Store:
         for job in result["jobs"]:
             job.pop("execution_root", None)
             manifest = job.pop("execution_manifest", None)
-            if live:
+            if all_revisions:
                 commit = (json.loads(manifest) if manifest else {}).get("commit")
                 if _exact_commit(commit):
                     job["commit"] = commit
@@ -820,7 +821,7 @@ class Store:
             else []
         )
         result["schema_version"] = 1
-        if live:
+        if all_revisions:
             branch = self._projected_branch(eid)
             if branch:
                 result["branch"] = branch["branch"]
@@ -1478,7 +1479,11 @@ class Store:
                 ):
                     raise Conflict("legacy execution is archived; only cancellation is available")
                 if execution_frozen(exp) and (
-                    (kind == "action" and payload.get("action") in ("retry_agent", "summarize_title"))
+                    (
+                        kind == "action"
+                        and payload.get("action")
+                        in ("retry_agent", "repair_implementation", "summarize_title")
+                    )
                     or kind == "steer"
                     or (kind == "plan_review" and payload.get("decision") in ("approve", "revise"))
                 ):

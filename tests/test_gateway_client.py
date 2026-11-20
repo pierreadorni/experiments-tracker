@@ -745,9 +745,9 @@ async def test_failed_bridge_operations_do_not_block_other_experiments_or_heartb
 
 @pytest.mark.parametrize("execution_contract", [2, 3, 4])
 async def test_artifacts_wait_for_registration_and_failed_upload_cannot_starve_siblings(
-    config, runtime, tmp_path, execution_contract
+    config, runtime, tmp_path, monkeypatch, execution_contract
 ):
-    from experimenttracker import artifacts
+    from experimenttracker import artifacts, legacy_archive
 
     store, _, _, workflow = runtime
     eid = publication_experiment(store)
@@ -766,6 +766,8 @@ async def test_artifacts_wait_for_registration_and_failed_upload_cannot_starve_s
     artifacts.register(store, eid, "prepare", root, names)
     store.db.execute("UPDATE artifacts SET evidence_revision=0 WHERE name='retired.json'")
     store.update(eid, error="Registration pending")
+    monkeypatch.setattr(legacy_archive, "SUPPORTED_EXECUTION_CONTRACTS", (4,))
+    assert legacy_archive.execution_frozen(store.experiment(eid)) is (execution_contract != 4)
     uploads = []
     bad_id = store.one("SELECT id FROM artifacts WHERE name='bad.json'")["id"]
 

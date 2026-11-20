@@ -160,6 +160,38 @@ async def test_observation_error_only_records_job_error(runtime):
     assert store.experiment(exp["id"])["hold_reason"] == "legacy_contract_archived"
 
 
+async def test_archived_contract_three_records_late_accounting_without_revalidating(runtime, monkeypatch):
+    store, _, _, workflow = runtime
+    exp, job = legacy_job(store)
+    with store.tx() as db:
+        db.execute(
+            "UPDATE experiments SET contract=json_set(contract,'$.execution_contract',3) WHERE id=?",
+            (exp["id"],),
+        )
+        db.execute(
+            "UPDATE jobs SET state='failed',error='validation failure' WHERE intent_id=?", (job["intent_id"],)
+        )
+    monkeypatch.setattr(legacy_archive, "SUPPORTED_EXECUTION_CONTRACTS", (4,))
+    stages = store.rows("SELECT * FROM stages WHERE experiment_id=?", (exp["id"],))
+    scheduler = Scheduler(Observation("COMPLETED", "0:0"))
+    workflow.scheduler_for = lambda *_: scheduler
+
+    await workflow.observe_jobs()
+    await workflow.observe_jobs()
+
+    assert scheduler.observed == ["123"]
+    assert scheduler.submitted == 0
+    assert store.one("SELECT job_id,state,scheduler_state,exit_code,error FROM jobs") == {
+        "job_id": "123",
+        "state": "failed",
+        "scheduler_state": "COMPLETED",
+        "exit_code": "0:0",
+        "error": "validation failure",
+    }
+    assert store.experiment(exp["id"])["phase"] == "training"
+    assert store.rows("SELECT * FROM stages WHERE experiment_id=?", (exp["id"],)) == stages
+
+
 async def test_terminal_source_and_obligation_roll_back_with_existing_event(runtime, monkeypatch):
     store, _, _, workflow = runtime
     exp, job = legacy_job(store)

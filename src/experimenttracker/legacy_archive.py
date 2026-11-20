@@ -5,6 +5,8 @@ from .core import job_obligations
 
 # Execution contracts this engine still runs; every other saved value is archived.
 SUPPORTED_EXECUTION_CONTRACTS = (3, 4)
+# These formats retain every evidence revision, including after execution is frozen.
+ALL_REVISIONS_EVIDENCE_CONTRACTS = (3, 4)
 
 TERMINAL_BAD = {
     "FAILED",
@@ -42,11 +44,17 @@ def archive_active(exp):
 
 async def settle_job(workflow, exp, job):
     """Record scheduler facts for one saved legacy job without advancing its stage."""
+    failed_with_pending_accounting = (
+        exp["contract"].get("execution_contract") == 3
+        and job["state"] == "failed"
+        and bool(job["job_id"])
+        and (job["scheduler_state"] not in TERMINAL_BAD | {"COMPLETED"} or job["exit_code"] is None)
+    )
     if (
         not execution_frozen(exp)
         or exp.get("deleted_at") is not None
         or exp["phase"] == "cancelled"
-        or job["state"] not in ("submitting", "submitted")
+        or (job["state"] not in ("submitting", "submitted") and not failed_with_pending_accounting)
     ):
         return False
 
@@ -89,6 +97,9 @@ async def settle_job(workflow, exp, job):
                 state, error = "failed", f"job exit {observed.exit_code}"
         elif observed.state in TERMINAL_BAD:
             state, error = "failed", f"{observed.state}: {observed.exit_code}"
+        if failed_with_pending_accounting:
+            # A scheduler success cannot certify historical output validation.
+            state, error = "failed", job["error"]
 
         changed = any(
             job.get(field) != value

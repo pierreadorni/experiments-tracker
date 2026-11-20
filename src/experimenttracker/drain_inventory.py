@@ -109,6 +109,23 @@ def local_inventory(path: Path):
                     FROM steering s JOIN c3 ON c3.id=s.experiment_id
                     WHERE s.state IN ('pending','cancelling') ORDER BY s.request_id"""
             ),
+            "c3_open_wakeups": rows(
+                _C3
+                + """SELECT w.id, w.experiment_id, w.action_id, w.state
+                    FROM agent_wakeups w JOIN c3 ON c3.id=w.experiment_id
+                    WHERE w.state IN ('pending','queued') ORDER BY w.id"""
+            ),
+            "c3_open_job_cancellations": rows(
+                _C3
+                + """SELECT cancellation.key AS request_id, c3.id AS experiment_id,
+                    CASE WHEN cancellation.type='object' THEN json_extract(cancellation.value,'$.intent_id') END AS intent_id,
+                    CASE WHEN cancellation.type='object' THEN json_extract(cancellation.value,'$.job_id') END AS job_id,
+                    CASE WHEN cancellation.type='object' THEN json_extract(cancellation.value,'$.state') END AS state
+                    FROM experiments e JOIN c3 ON c3.id=e.id,
+                    json_each(CASE WHEN json_valid(e.contract) THEN e.contract END, '$.job_cancellations')
+                    AS cancellation
+                    WHERE state IS NOT 'terminal' ORDER BY experiment_id,request_id"""
+            ),
             "c3_open_obligations": rows(
                 _C3
                 + """SELECT o.id, o.experiment_id, o.kind, o.target, o.owner

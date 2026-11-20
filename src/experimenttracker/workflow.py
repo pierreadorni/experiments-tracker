@@ -762,6 +762,8 @@ class Workflow:
         await process_restarts(self)
         await self.repair_failed_experiments()
         await self.advance_reports()
+        if 3 not in legacy_archive.SUPPORTED_EXECUTION_CONTRACTS:
+            return
         rows = self.store.rows(
             "SELECT e.id FROM experiments e LEFT JOIN autopilot_members m ON m.experiment_id=e.id "
             "WHERE e.deleted_at IS NULL AND e.phase NOT IN ('complete','failed','cancelled') "
@@ -974,7 +976,7 @@ class Workflow:
             "SELECT * FROM agent_actions WHERE phase='summarize_title' AND state='pending' ORDER BY created_at"
         ):
             exp = self.store.experiment(action["experiment_id"])
-            if not iteration.enabled(exp):
+            if not iteration.runnable(exp):
                 continue
             if not self.title_applicable(exp, action, dispatch=True) or exp["pause_agent"]:
                 continue
@@ -1004,7 +1006,7 @@ class Workflow:
             "AND phase='preparing' ORDER BY created_at"
         ):
             exp = self.store.experiment(row["id"])
-            if not iteration.enabled(exp):
+            if not iteration.runnable(exp):
                 continue
             review = exp["plan_review"] or {}
             if review.get("state") != "awaiting_review" or review.get("questions") or exp["pause_agent"]:
@@ -1057,7 +1059,7 @@ class Workflow:
     def title_applicable(exp, action, *, dispatch=False):
         # The separate title turn summarises a contract-3 plan review; contract 4 takes
         # its title from the first summary instead.
-        if exp["deleted_at"] or not iteration.enabled(exp):
+        if exp["deleted_at"] or not iteration.runnable(exp):
             return False
         if action["phase"] == "summarize_title":
             return True
@@ -1076,7 +1078,7 @@ class Workflow:
         expected = action
         try:
             exp = self.store.experiment(eid)
-            if not iteration.enabled(exp):
+            if not iteration.runnable(exp):
                 return
             await self.refresh_quota(slot)
             if blocked(self.store):
@@ -1155,7 +1157,7 @@ class Workflow:
         ):
             exp = self.store.experiment(row["id"])
             if (
-                not iteration.enabled(exp)
+                not iteration.runnable(exp)
                 or exp["recipe_id"] != "agent_experiment_v1"
                 or exp["pending_request"]
             ):
@@ -1214,7 +1216,7 @@ class Workflow:
         ):
             eid = row["id"]
             exp = self.store.experiment(eid)
-            if not iteration.enabled(exp):
+            if not iteration.runnable(exp):
                 continue
             if self.config.mode != "live" or exp["recipe_id"] != "agent_experiment_v1" or not exp["snapshot"]:
                 continue
@@ -1435,7 +1437,7 @@ class Workflow:
             exp = self.store.experiment(eid)
             # Plan-revision feedback is part of the contract-3 planning stage; contract 4
             # steering becomes an owner message in its next turn instead.
-            if not iteration.enabled(exp):
+            if not iteration.runnable(exp):
                 continue
             review = exp["plan_review"]
             if (
@@ -1478,7 +1480,7 @@ class Workflow:
         exp = self.store.experiment(eid)
         # The stage graph is contract-3-only: archived legacy contracts and a future
         # contract 4 both stop here, whatever the archive predicate admits.
-        if not iteration.enabled(exp):
+        if not iteration.runnable(exp):
             return
         if exp["phase"] == "cancelled" or exp["hold_reason"] in (
             "automatic_repair_pending",
@@ -1663,7 +1665,7 @@ class Workflow:
         eid = exp["id"]
         exp = self.store.experiment(eid)
         if (
-            not iteration.enabled(exp)
+            not iteration.runnable(exp)
             or not exp["snapshot"]
             or exp["phase"]
             in (
@@ -2380,7 +2382,7 @@ class Workflow:
         # awaited filesystem work. Never overwrite that terminal admission hold.
         exp = self.store.experiment(eid)
         # A saved contract 4 has no plan/prepare/interpret stage to open a turn for.
-        if not iteration.enabled(exp) or exp["phase"] in ("complete", "failed", "cancelled"):
+        if not iteration.runnable(exp) or exp["phase"] in ("complete", "failed", "cancelled"):
             return
         self.store.update(
             eid,
@@ -3697,7 +3699,7 @@ class Workflow:
             exp = self.store.experiment(eid)
             # Stage and monitor turns are contract-3 entrances; contract 4 dispatches
             # its own research turns.
-            if not iteration.enabled(exp):
+            if not iteration.runnable(exp):
                 return
             await self.refresh_quota(slot)
             decision = self.agent_pool.quota(eid=eid)
@@ -3980,7 +3982,7 @@ class Workflow:
 
     async def publish(self, exp):
         eid = exp["id"]
-        if self.store.experiment(eid)["phase"] == "cancelled":
+        if not iteration.runnable(exp) or self.store.experiment(eid)["phase"] == "cancelled":
             return
         root = self.root(eid)
         self.store.update(eid, phase="publishing", hold_reason="publication_pending")

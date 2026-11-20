@@ -726,7 +726,7 @@ class Controller:
         ):
             eid = row["experiment_id"]
             exp = wf.store.experiment(eid)
-            if not iteration.enabled(exp):
+            if not iteration.runnable(exp):
                 continue
             if not wf.store.one(
                 "SELECT 1 FROM agent_wakeups WHERE experiment_id=? AND state IN ('pending','queued')", (eid,)
@@ -735,7 +735,7 @@ class Controller:
         # Coalesce backlog from older owners without discarding queued outcomes.
         for row in wf.store.rows("SELECT DISTINCT experiment_id FROM agent_wakeups WHERE state='pending'"):
             exp = wf.store.experiment(row["experiment_id"])
-            if not iteration.enabled(exp):
+            if not iteration.runnable(exp):
                 continue
             pending = wf.store.rows(
                 "SELECT id FROM agent_wakeups WHERE experiment_id=? AND state='pending' ORDER BY due_at,created_at,id",
@@ -751,7 +751,7 @@ class Controller:
             exp = wf.store.experiment(wake["experiment_id"])
             # Monitor turns are contract-3 controller steering; contract 4 wakes on
             # events and its own timer instead.
-            if not iteration.enabled(exp):
+            if not iteration.runnable(exp):
                 continue
             terminal = exp["deleted_at"] or exp["phase"] in ("complete", "failed", "cancelled")
             if terminal and wake["state"] == "pending":

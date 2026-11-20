@@ -3,7 +3,7 @@
 import json
 from uuid import NAMESPACE_URL, uuid5
 
-from . import clock, iteration
+from . import clock, iteration, legacy_archive
 from .core import advancement_decisions, job_obligations
 from .store import Conflict, encode
 
@@ -29,7 +29,7 @@ async def process_restarts(workflow):
         exp = store.experiment(eid)
         # Restart steering replaces a contract-3 stage run; contract 4 keeps one session
         # and takes owner guidance as a message in its next turn instead.
-        if not iteration.enabled(exp):
+        if not iteration.runnable(exp):
             continue
         try:
             store.require_restart_replacement(exp, item)
@@ -191,6 +191,8 @@ def queue_late_reports(workflow):
         "WHERE s.mode='later' AND s.state='pending' AND e.phase='complete' AND e.deleted_at IS NULL ORDER BY s.created_at"
     ):
         exp = store.experiment(item["experiment_id"])
+        if legacy_archive.execution_frozen(exp):
+            continue
         identity = str(uuid5(NAMESPACE_URL, f"steering-discussion:{item['request_id']}"))
         selection = exp["contract"].get("agent", {})
         payload = {

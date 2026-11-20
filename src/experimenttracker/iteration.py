@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
 
-from . import artifacts, clock
+from . import artifacts, clock, legacy_archive
 from .core import advancement_decisions
 from .models import ExperimentResult
 from .store import encode
@@ -22,6 +22,11 @@ SOURCE_BUDGET = 16 * 1024 * 1024
 
 def enabled(exp):
     return exp["contract"].get("execution_contract") == 3
+
+
+def runnable(exp):
+    """The stage engine also requires that this saved format is still active."""
+    return enabled(exp) and not legacy_archive.execution_frozen(exp)
 
 
 def manifest_mode(manifest):
