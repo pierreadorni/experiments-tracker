@@ -35,6 +35,7 @@ const executionSettingsSchema = z
     rsync_up: z.string().max(8000),
     rsync_down: z.string().max(8000),
     poll_seconds: z.number().int().min(600).max(86400),
+    accounting_lag_seconds: z.number().int().min(60).max(86400).optional(),
   })
   .strict();
 const publicProject = z

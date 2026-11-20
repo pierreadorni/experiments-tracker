@@ -1626,7 +1626,21 @@ test('PWA manifest and phone icons are served with intact binary bytes and refre
 test('configured projects persist through waiting, delivery and publication; references cannot cross projects', async () => {
   const projects = [
     { id: 'test-project', name: 'Test project', available: true },
-    { id: 'anyup-rs', name: 'anyup-rs', available: true, supports_worktrees: false },
+    {
+      id: 'anyup-rs',
+      name: 'anyup-rs',
+      available: true,
+      supports_worktrees: false,
+      execution: {
+        context: 'acacia',
+        ssh_host: 'jz',
+        remote_project: '',
+        rsync_up: '',
+        rsync_down: '',
+        poll_seconds: 600,
+        accounting_lag_seconds: 900,
+      },
+    },
   ];
   const heartbeat = async (projects) =>
     req('/api/executor/publish', {
@@ -1641,7 +1655,9 @@ test('configured projects persist through waiting, delivery and publication; ref
     });
   assert.equal((await heartbeat(projects)).status, 200);
   try {
-    assert.deepEqual((await (await req('/api/status')).json()).projects, projects);
+    const status = await req('/api/status');
+    assert.equal(status.status, 200);
+    assert.deepEqual((await status.json()).projects, projects);
     const { result, payload } = await create({
       project_id: 'anyup-rs',
       recipe_id: 'agent_experiment_v1',
