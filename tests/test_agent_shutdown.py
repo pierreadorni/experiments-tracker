@@ -9,6 +9,8 @@ import asyncio
 import json
 from uuid import uuid4
 
+from helpers import seed_saved_contract3
+
 from experimenttracker.agent_pool import experiment_owner, project_owner
 from experimenttracker.codex_client import DemoAgent, NeedsAttention
 from experimenttracker.workflow import Workflow
@@ -43,11 +45,7 @@ class ReadbackAgent(LaneAgent):
 
 
 def create(store):
-    return store.command(
-        uuid4(),
-        "create",
-        {"brief": "Exercise synthetic agent ownership.", "recipe_id": "agent_experiment_v1"},
-    )["experiment_id"]
+    return seed_saved_contract3(store, "Exercise synthetic agent ownership.")
 
 
 def insert_action(store, eid, state, *, phase="prepare", thread=None, turn=None):

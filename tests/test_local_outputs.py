@@ -6,6 +6,7 @@ import time
 from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3
 from test_dag import PLAN as DAG_PLAN
 from test_generic import PLAN, SOURCE
 
@@ -88,9 +89,7 @@ def test_sealed_directory_detects_content_and_membership_changes(tmp_path, chang
 @pytest.fixture
 def failed_directory_run(runtime):
     store, _, agent, workflow = runtime
-    eid = store.command(
-        uuid4(), "create", {"brief": "Synthetic recovery check", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Synthetic recovery check")
     # Explicit static legacy state: this fixture never advances the experiment, so the
     # saved contract must not depend on the global downgrade removing the flag.
     contract = store.experiment(eid)["contract"]

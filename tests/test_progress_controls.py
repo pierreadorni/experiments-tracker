@@ -4,27 +4,49 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from helpers import IterationAgent, approve_plan, wait_for_experiment
+from helpers import IterationAgent, approve_plan, seed_saved_contract3, wait_for_experiment
 
 from experimenttracker.agent_pool import experiment_owner
 from experimenttracker.api import create_app
 from experimenttracker.progress import describe_item
 from experimenttracker.slurm import SlurmScheduler, scheduler_time
-from experimenttracker.store import Conflict, Store
+from experimenttracker.store import Conflict, Store, encode
 from experimenttracker.workflow import Workflow
 
 
 def create(store, **extra):
-    eid = store.command(
-        uuid4(),
-        "create",
-        {
-            "brief": "Compare the fixed synthetic models.",
-            "recipe_id": "agent_experiment_v1",
-            **extra,
-        },
-    )["experiment_id"]
-    assert store.experiment(eid)["contract"]["execution_contract"] == 3
+    reference_id = extra.get("reference_experiment_id")
+    reference = None
+    if reference_id:
+        try:
+            reference = store.experiment(reference_id)
+        except KeyError:
+            raise Conflict("unknown reference experiment") from None
+        if reference["deleted_at"] or reference["phase"] != "complete" or not reference["snapshot"]:
+            raise Conflict("reference must be a completed experiment with a frozen protocol")
+    eid = seed_saved_contract3(store, "Compare the fixed synthetic models.")
+    contract = store.experiment(eid)["contract"]
+    if extra.get("model") or extra.get("reasoning_effort"):
+        contract["agent"] = {
+            "model": extra.get("model"),
+            "reasoning_effort": extra.get("reasoning_effort"),
+        }
+    if reference_id:
+        contract["reference"] = {
+            "experiment_id": reference_id,
+            **{
+                field: reference["snapshot"].get(field)
+                for field in ("snapshot_hash", "parameters_hash", "data_hash", "test_hash")
+            },
+        }
+        with store.tx() as db:
+            db.execute(
+                "UPDATE experiments SET contract=?,reference_experiment_id=? WHERE id=?",
+                (encode(contract), reference_id, eid),
+            )
+    elif "agent" in contract:
+        with store.tx() as db:
+            db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(contract), eid))
     return eid
 
 

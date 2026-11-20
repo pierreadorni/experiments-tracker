@@ -5,7 +5,7 @@ import json
 from uuid import uuid4
 
 import pytest
-from helpers import IterationAgent, wait_for_experiment, wait_until
+from helpers import IterationAgent, seed_saved_contract3, wait_for_experiment, wait_until
 from pydantic import ValidationError
 from test_generic import approve_plan
 
@@ -204,11 +204,7 @@ async def test_gpu_plan_persists_before_dispatch_and_restart_never_resubmits(run
     scheduler = RecordedScheduler(config.state_dir / "resource-fixture", store)
     agent = GPUAgent()
     workflow = Workflow(config, store, scheduler, agent)
-    eid = store.command(
-        uuid4(),
-        "create",
-        {"brief": "Exercise synthetic iteration mechanisms.", "recipe_id": "agent_experiment_v1"},
-    )["experiment_id"]
+    eid = seed_saved_contract3(store)
     assert store.experiment(eid)["contract"]["execution_contract"] == 3
     await approve_plan(workflow, store, eid)
     assert store.experiment(eid)["plan_review"]["schema_version"] == 3
@@ -253,11 +249,7 @@ async def test_unavailable_preflight_creates_no_submission_intent_and_no_duplica
     scheduler.preflight = unavailable
     agent = GPUAgent()
     workflow = Workflow(config, store, scheduler, agent)
-    eid = store.command(
-        uuid4(),
-        "create",
-        {"brief": "Exercise synthetic iteration mechanisms.", "recipe_id": "agent_experiment_v1"},
-    )["experiment_id"]
+    eid = seed_saved_contract3(store)
     assert store.experiment(eid)["contract"]["execution_contract"] == 3
     await approve_plan(workflow, store, eid)
     await wait_for_experiment(workflow, store, eid, lambda e: e["hold_reason"] == "resources_unavailable")
@@ -326,11 +318,7 @@ async def test_plan_can_exceed_three_stages_and_owner_gpu_hour_budget_is_enforce
             ],
         }
     )
-    eid = store.command(
-        uuid4(),
-        "create",
-        {"brief": "Exercise synthetic iteration mechanisms.", "recipe_id": "agent_experiment_v1"},
-    )["experiment_id"]
+    eid = seed_saved_contract3(store)
     assert store.experiment(eid)["contract"]["execution_contract"] == 3
     workflow.config = workflow.config.model_copy(
         update={"mode": "live", "slurm": SlurmConfig(limits=ResourceLimits(gpu_hours_per_experiment=24))}
