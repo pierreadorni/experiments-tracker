@@ -8,7 +8,7 @@ import threading
 from pathlib import Path
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from . import clock, creation_policy
+from . import clock, creation_policy, legacy_archive
 from .config import ProjectConfig
 from .core import (
     action_obligations,
@@ -21,7 +21,6 @@ from .core import (
 from .engine import integration_queue
 from .legacy_archive import (
     ALL_REVISIONS_EVIDENCE_CONTRACTS,
-    SUPPORTED_EXECUTION_CONTRACTS,
     archive_active,
     execution_frozen,
 )
@@ -923,13 +922,14 @@ class Store:
             "saved in-flight work can only be settled against its exact identity."
         )
         with self.tx() as db:
-            supported = ",".join("?" for _ in SUPPORTED_EXECUTION_CONTRACTS)
+            contracts = legacy_archive.SUPPORTED_EXECUTION_CONTRACTS
+            supported = ",".join("?" for _ in contracts)
             rows = db.execute(
                 "SELECT id FROM experiments WHERE deleted_at IS NULL "
                 "AND phase NOT IN ('complete','failed','cancelled') "
                 f"AND COALESCE(json_extract(contract,'$.execution_contract'),0) NOT IN ({supported}) "
                 "AND hold_reason IS NOT 'legacy_contract_archived'",
-                SUPPORTED_EXECUTION_CONTRACTS,
+                contracts,
             ).fetchall()
             for row in rows:
                 eid = row["id"]

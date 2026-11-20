@@ -48,8 +48,8 @@ async def test_settles_exact_raw_legacy_turn_outcomes_and_replays(runtime, monke
     missing = action(store, eid, "monitor:daily", "running", thread=None, turn=None)
     terminal = archived(store, 2, "failed")
     terminal_action = action(store, terminal, "monitor:terminal")
-    current = archived(store, 3)
-    current_action = action(store, current, "prepare")
+    current = archived(store, 4)
+    current_action = action(store, current, "research")
     discussion = action(store, eid, "discuss:1")
     live = action(store, eid, "publish")
     workflow.agent_task = asyncio.create_task(asyncio.Event().wait())
@@ -122,7 +122,7 @@ async def test_settles_exact_raw_legacy_turn_outcomes_and_replays(runtime, monke
 async def test_drains_only_completed_checks_for_active_archived_legacy(runtime):
     store, _, _, workflow = runtime
     eid = archived(store, 2)
-    current = archived(store, 3)
+    current = archived(store, 4)
     terminal = archived(store, 1, "failed")
     loop = asyncio.get_running_loop()
     done = loop.create_future()

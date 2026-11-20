@@ -14,7 +14,6 @@ from experimenttracker.store import encode
         ({}, "training", None, True, True),
         ({"execution_contract": 1}, "training", None, True, True),
         ({"execution_contract": 2}, "training", None, True, True),
-        ({"execution_contract": 3}, "training", None, False, False),
         ({"execution_contract": 2}, "failed", None, True, False),
         ({"execution_contract": 2}, "training", 0, True, False),
     ],

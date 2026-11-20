@@ -596,7 +596,8 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 - [x] Run the owner-authorized production drain check and review the registered hosted queues. The window and per-ID evidence are recorded privately.
 - [x] Separate retained C3 evidence from stage execution. A simulated archive preserves projections, artifact uploads and exact scheduler settlement while preventing stage advancement and dispatch.
 - [x] Align the executor, Worker and browser on the archive decision advertised by the executor. Keep exact replay and bound discussion replies, and preserve historical views.
-- [ ] Run the archive candidate against saved C3 read and settlement scenarios, and classify stage-engine tests before changing the default archive boundary.
+- [x] Run the archive candidate against saved C3 startup, reads and settlement, with the C4 synthetic flow still active.
+- [ ] Migrate shared recovery scenarios off the C3 stage engine and classify the remaining stage-specific fixtures before switching the default archive boundary. The broad archive-on probe identified 25 failing scenarios in `test_iteration_scenario_*`, `test_mixed_role_*`, and `test_resolver_scenarios.py`.
 - [ ] Refresh drain evidence at activation. Then archive C3 and remove the old engine in reviewed slices. See the [retirement sequence](notes/t4.8-rollout.md#3-verify-drain-on-the-actual-installation-retire-separately).
 
 ---
@@ -613,6 +614,7 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 
 ## Log
 
+- **T4.8 archive startup:** the sweep reads the same supported-contract set as dispatch. With C3 archived in a disposable checkout, all 49 focused startup, historical-read, settlement and C4 demo tests passed. The earlier broader probe found 25 scenario failures in addition to four archive assertions corrected by this card. The final isolated suite passed 1,481 Python tests. Source +4/−4 and tests/docs +32/−12.
 - **T4.8 archive controls:** the executor publishes the archive decision, the Worker preserves exact replay and bound discussion answers, and the browser gates stage controls without hiding evidence. Source +49/−22 and tests/docs +101/−2. Isolated Node 24 `make check` passed 1,482 Python, 42 web, and 52 gateway tests.
 - **T4.8 archive preparation:** separates evidence format from stage authority and preserves late scheduler accounting without certifying failed historical results. The inventory now includes saved selective cancellations and monitor wakeups. Isolated Ruff, 125 focused tests and all 1,481 Python tests passed. Source +70/−28 and tests/docs +107/−13. The archive predicate is still opt-in in the synthetic tests.
 - **T4.8 drain inventory:** adds a read-only report for saved C3 work and the exact executor's D1 queues (source +230/−0, tests/docs +205/−37). `status` and `inspect` omit global queues, so the new command queries copies of both databases. Isolated Node 24 checks passed with 1,477 Python, 42 web, and 51 gateway tests. The final staged Python suite also passed in six shards. The synthetic C4 demo reached a ready report, and the inventory CLI passed against synthetic SQLite and D1 copies. Fresh production drain evidence remains pending.

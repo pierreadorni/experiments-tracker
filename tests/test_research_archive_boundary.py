@@ -55,7 +55,6 @@ def sync_action(store, action_id):
         ({"execution_contract": None}, True, True),
         ({"execution_contract": 1}, True, True),
         ({"execution_contract": 2}, True, True),
-        ({"execution_contract": 3}, False, False),
         ({"execution_contract": 4}, False, False),
         ({"execution_contract": 5}, True, True),
     ],
@@ -66,9 +65,14 @@ def test_execution_frozen_keeps_contract_four_live(contract, frozen, active):
     assert legacy_archive.archive_active(exp) is active
 
 
-def test_startup_sweep_classifies_supported_and_unsupported_saved_contracts(runtime):
+@pytest.mark.parametrize("archive_three", [False, True])
+def test_startup_sweep_classifies_supported_and_unsupported_saved_contracts(
+    runtime, monkeypatch, archive_three
+):
     store, *_ = runtime
-    live = [saved_experiment(store, contract) for contract in (3, 4)]
+    supported = (4,) if archive_three else (3, 4)
+    monkeypatch.setattr(legacy_archive, "SUPPORTED_EXECUTION_CONTRACTS", supported)
+    live = [saved_experiment(store, contract) for contract in supported]
     explicit_null = saved_experiment(store, 5)
     save_contract(
         store, explicit_null, {**store.experiment(explicit_null)["contract"], "execution_contract": None}
@@ -80,6 +84,8 @@ def test_startup_sweep_classifies_supported_and_unsupported_saved_contracts(runt
         saved_experiment(store, 2),
         saved_experiment(store, 5),
     ]
+    if archive_three:
+        archived.append(saved_experiment(store, 3))
 
     store.archive_legacy_experiments()
 
@@ -148,15 +154,28 @@ def test_archived_discussion_action_keeps_its_admission_obligation(runtime):
     )
 
 
-@pytest.mark.parametrize("contract", [3, 4])
-@pytest.mark.parametrize("phase", ["discuss:question", "integration:request"])
-def test_shared_pending_actions_keep_admission_on_supported_contracts(runtime, contract, phase):
+@pytest.mark.parametrize(
+    ("contract", "phase", "admitted"),
+    [
+        (3, "discuss:question", True),
+        (3, "integration:request", False),
+        (4, "discuss:question", True),
+        (4, "integration:request", True),
+    ],
+)
+def test_archive_preserves_pending_discussions_and_contract_four_integration(
+    runtime, monkeypatch, contract, phase, admitted
+):
     store, *_ = runtime
-    eid = saved_experiment(store, contract)
+    eid = saved_experiment(store, contract, phase="complete")
     action = pending_action(store, eid, phase=phase)
+    monkeypatch.setattr(legacy_archive, "SUPPORTED_EXECUTION_CONTRACTS", (4,))
 
     obligation = sync_action(store, action)
 
+    if not admitted:
+        assert obligation is None
+        return
     assert (obligation["state"], obligation["owner"], obligation["kind"], obligation["wait"]) == (
         "open",
         "backend",
