@@ -5,7 +5,7 @@ configuration option. Candidate mode is exercised by focused tests before it is
 selected for normal creates.
 """
 
-MODE = "legacy"
+MODE = "candidate"
 
 
 def defaults_to_research_loop():
