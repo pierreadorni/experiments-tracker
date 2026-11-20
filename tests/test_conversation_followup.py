@@ -81,7 +81,10 @@ async def test_candidate_followup_reference_refusal_is_durable_and_replay_does_n
     await workflow.close()
 
 
-async def test_completed_legacy_discussion_creates_current_contract_followup(runtime, tmp_path):
+async def test_legacy_policy_creates_a_referenced_followup_from_completed_discussion(
+    runtime, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(creation_policy, "MODE", "legacy")
     store, scheduler, agent, workflow = runtime
     eid = load_legacy_completed(store, workflow)
     checkout = tmp_path / "research"

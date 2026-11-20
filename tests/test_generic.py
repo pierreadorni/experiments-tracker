@@ -1,10 +1,9 @@
 """The planner supplies methods and graph; the executor never selects a model family."""
 
 import json
-from uuid import uuid4
 
 import pytest
-from helpers import IterationAgent, approve_plan, wait_for_experiment
+from helpers import IterationAgent, approve_plan, seed_saved_contract3, wait_for_experiment
 from pydantic import ValidationError
 
 from experimenttracker import artifacts
@@ -198,14 +197,7 @@ async def test_invalid_prepared_source_fails_bounded_repair_before_compute(runti
     store, scheduler, _, old = runtime
     agent = BrokenSourceAgent()
     workflow = Workflow(old.config, store, scheduler, agent)
-    eid = store.command(
-        uuid4(),
-        "create",
-        {
-            "brief": "Exercise synthetic iteration mechanisms.",
-            "recipe_id": "agent_experiment_v1",
-        },
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Exercise synthetic iteration mechanisms.")
     assert store.experiment(eid)["contract"]["execution_contract"] == 3
     await approve_plan(workflow, store, eid)
     await wait_for_experiment(workflow, store, eid, lambda e: e["phase"] == "failed")

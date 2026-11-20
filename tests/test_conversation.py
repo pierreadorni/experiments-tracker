@@ -108,7 +108,13 @@ def nested_histories(store, workflow, eid):
     artifacts.register(store, eid, "fit", root, ["histories.json"])
 
 
-async def test_arbitrary_script_plot_recovery_provenance_and_exactly_once_followup(runtime, tmp_path):
+async def test_arbitrary_script_plot_recovery_provenance_and_exactly_once_followup(
+    runtime, tmp_path, monkeypatch
+):
+    from experimenttracker import creation_policy
+
+    # The historical follow-up carries a reference, which C4 deliberately refuses.
+    monkeypatch.setattr(creation_policy, "MODE", "legacy")
     store, scheduler, agent, workflow = runtime
     checkout = tmp_path / "research"
     checkout.mkdir()

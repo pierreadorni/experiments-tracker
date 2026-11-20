@@ -13,7 +13,7 @@ from test_generic import approve_plan
 from test_iteration import PLAN, IterationAgent
 from test_workflow import until
 
-from experimenttracker import iteration
+from experimenttracker import creation_policy, iteration
 from experimenttracker.codex_client import NeedsAttention, TransportError
 from experimenttracker.models import Implementation, ResearchPlan
 from experimenttracker.store import Conflict
@@ -236,7 +236,13 @@ def resume_with_feedback(store, eid, trigger):
 
 @pytest.mark.parametrize("trigger", ["retry_agent", "later", "restart", "answer"])
 @pytest.mark.parametrize("outcome", ["blocked", "failed"])
-async def test_blocked_stage_holds_dependencies_and_resumes_exact_attempt(runtime, trigger, outcome):
+async def test_blocked_stage_holds_dependencies_and_resumes_exact_attempt(
+    runtime, trigger, outcome, monkeypatch
+):
+    if trigger == "restart":
+        # Exercise the historical restart command on a project ineligible for C4 creation.
+        monkeypatch.setattr(creation_policy, "MODE", "legacy")
+
     class BlockedAgent(MixedAgent):
         async def begin(self, thread_id, prompt, schema, *, workspace=None, **kwargs):
             payload = json.loads(prompt.split("\nPAYLOAD:\n", 1)[1])
@@ -278,7 +284,10 @@ async def test_blocked_stage_holds_dependencies_and_resumes_exact_attempt(runtim
 
 
 @pytest.mark.parametrize("trigger", ["retry_agent", "later", "restart", "answer"])
-async def test_blocked_implementation_is_not_accepted_and_retry_resumes_it(runtime, trigger):
+async def test_blocked_implementation_is_not_accepted_and_retry_resumes_it(runtime, trigger, monkeypatch):
+    if trigger == "restart":
+        monkeypatch.setattr(creation_policy, "MODE", "legacy")
+
     class BlockedImplementation(MixedAgent):
         blocked_once = False
 

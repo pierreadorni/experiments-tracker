@@ -78,7 +78,11 @@ async def test_cancel_supersedes_pending_action_obligation_atomically_and_replay
 @pytest.mark.parametrize(
     "phase", ["preparing", "training", "evaluating", "validating", "interpreting", "publishing", "failed"]
 )
-async def test_cancel_any_phase_retires_only_its_queue_and_survives_restart(runtime, phase):
+async def test_cancel_any_phase_retires_only_its_queue_and_survives_restart(runtime, phase, monkeypatch):
+    from experimenttracker import creation_policy
+
+    if phase == "failed":
+        monkeypatch.setattr(creation_policy, "MODE", "legacy")
     store, _, _, wf = runtime
     eid, other = create(store), create(store)
     store.update(eid, phase=phase, pending_request={"id": "approval"})
