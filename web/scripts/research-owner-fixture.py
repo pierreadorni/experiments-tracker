@@ -10,13 +10,14 @@ import uvicorn
 
 from experimenttracker.api import create_app
 from experimenttracker.codex_client import DemoAgent
-from experimenttracker.config import Config
+from experimenttracker.config import Config, ProjectConfig
 from experimenttracker.research.checkpoints import SaveCheckpoint, save_checkpoint
 from experimenttracker.research.owner_tool import AskOwnerQuestion, ask_owner
 from experimenttracker.research.session import first_turn
 from experimenttracker.slurm import DemoScheduler
-from experimenttracker.store import Store, encode
+from experimenttracker.store import Store
 from experimenttracker.workflow import Workflow
+from experimenttracker.workspaces import initialize_project
 
 
 def main():
@@ -31,8 +32,13 @@ def main():
     token_file = root / "api-token"
     with open(token_file, "x", opener=lambda path, flags: os.open(path, flags, 0o600)) as token:
         token.write(secrets.token_urlsafe(32))
+    checkout = root / "project"
+    checkout.mkdir()
+    initialize_project(checkout)
+    project = ProjectConfig(id="test-project", name="C4 acceptance", checkout=checkout, research_loop=True)
     config = Config(
         mode="demo",
+        projects=[project],
         state_dir=root / "state",
         job_output_root=root / "outputs",
         backup_dir=root / "backups",
@@ -48,15 +54,14 @@ def main():
     eid = store.command(
         uuid4(),
         "create",
-        {"brief": "Synthetic C4 approval UI acceptance.", "recipe_id": "agent_experiment_v1"},
+        {
+            "brief": "Synthetic C4 approval UI acceptance.",
+            "recipe_id": "agent_experiment_v1",
+            "project_id": project.id,
+            "execution_contract": 4,
+        },
     )["experiment_id"]
-    exp = store.experiment(eid)
-    exp["contract"]["execution_contract"] = 4
-    with store.tx() as db:
-        db.execute(
-            "UPDATE experiments SET contract=?,phase='research' WHERE id=?",
-            (encode(exp["contract"]), eid),
-        )
+    assert store.experiment(eid)["contract"]["execution_contract"] == 4
     action = first_turn(store, eid)
     if action is None:
         raise RuntimeError(f"failed to seed contract-4 research turn for {eid}")
