@@ -16,20 +16,7 @@ from experimenttracker.workspaces import Workspaces, WorkspaceUnavailable, git, 
 
 def experiment(store):
     """Seed saved C3 state without invoking today's create policy."""
-    eid = seed_saved_contract3(store, project_id="anyup-rs")
-    saved = store.experiment(eid)
-    saved["contract"]["project"]["writable"] = True
-    project = store.projects["anyup-rs"]
-    folder = project.checkout.resolve(strict=True)
-    info = folder.stat()
-    root = folder / ".experimenttracker" / "experiments" / eid
-    with store.tx() as db:
-        db.execute("UPDATE experiments SET contract=? WHERE id=?", (json.dumps(saved["contract"]), eid))
-        db.execute(
-            "INSERT INTO experiment_workspaces VALUES(?,?,?,?,?)",
-            (eid, str(folder), info.st_dev, info.st_ino, str(root)),
-        )
-    return eid
+    return seed_saved_contract3(store, project_id="anyup-rs")
 
 
 def source_repo(config, store, tmp_path):
