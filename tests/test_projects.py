@@ -3,6 +3,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3
 from pydantic import ValidationError
 
 from experimenttracker.config import Config, ProjectConfig
@@ -25,9 +26,21 @@ def create(store, **extra):
     return store.command(uuid4(), "create", payload)["experiment_id"]
 
 
+def saved_c3(store, **extra):
+    """Build historical stage-engine state without invoking the current create policy."""
+    return seed_saved_contract3(store, project_id=extra.get("project_id", "test-project"))
+
+
 def test_project_identity_survives_restart_and_receipts(config, runtime, tmp_path):
     store, _, _, _ = runtime
-    register(config, store, tmp_path)
+    checkout = register(config, store, tmp_path)
+    from experimenttracker.workspaces import git, initialize_project
+
+    initialize_project(checkout)
+    (checkout / "source.py").write_text("value = 1\n")
+    git(checkout, "add", "--", "source.py")
+    git(checkout, "-c", "user.name=Test", "-c", "user.email=test@localhost", "commit", "-m", "Source")
+    store.projects["anyup-rs"].research_loop = True
     request = str(uuid4())
     payload = {
         "brief": "Measure a project-specific method.",
@@ -36,6 +49,7 @@ def test_project_identity_survives_restart_and_receipts(config, runtime, tmp_pat
     }
     receipt = store.command(request, "create", payload)
     eid = receipt["experiment_id"]
+    assert store.experiment(eid)["contract"]["execution_contract"] == 4
     store.close()
     reopened = Store(config.state_dir / "workflow.sqlite")
     try:
@@ -53,7 +67,7 @@ def test_project_identity_survives_restart_and_receipts(config, runtime, tmp_pat
 def test_cross_project_references_and_missing_checkouts_are_atomic(config, runtime, tmp_path):
     store, _, _, _ = runtime
     checkout = register(config, store, tmp_path)
-    parent = create(store)
+    parent = saved_c3(store)
     store.update(parent, phase="complete", snapshot={"snapshot_hash": "test"})
     before = {
         table: len(store.rows(f"SELECT * FROM {table}"))
@@ -83,7 +97,7 @@ def test_project_prompt_and_public_catalog(config, runtime, tmp_path):
         },
     )
     workflow.projects.settings_tick()
-    eid = create(store, project_id="anyup-rs")
+    eid = saved_c3(store, project_id="anyup-rs")
     current = store.experiment(eid)
     assert current["contract"]["execution_contract"] == 3
     prompt = workflow.prompt(current, "prepare")
@@ -102,7 +116,7 @@ def test_project_prompt_and_public_catalog(config, runtime, tmp_path):
     assert "project_id" not in CreateExperiment(
         request_id=uuid4(), brief="Legacy pending command"
     ).model_dump(mode="json", exclude_none=True)
-    legacy = create(store)
+    legacy = saved_c3(store)
     # A saved historical contract without project metadata still belongs to the test
     # project. It is static legacy state: no execution_contract, and it is never advanced.
     exp = store.experiment(legacy)
@@ -211,7 +225,7 @@ def test_existing_nonempty_symlink_folder_and_replacement_identity(config, runti
     done = workflow.projects.receipt(payload["request_id"])
     assert done["state"] == "applied" and done["project"]["non_empty"]
     assert source.read_text() == "original = True\n"
-    eid = create(store, project_id=receipt["project_id"])
+    eid = saved_c3(store, project_id=receipt["project_id"])
     assert workflow.root(eid) == folder / ".experimenttracker" / "experiments" / eid
     assert workflow.project_context(store.experiment(eid))["access"] == "read-write"
     duplicate, duplicate_payload = project_request(workflow, name="Duplicate", mode="existing", folder=folder)
@@ -308,15 +322,7 @@ async def test_agent_edits_selected_folder_and_freezes_project_run_evidence(conf
 
     agent = EditingAgent()
     workflow = Workflow(config, store, scheduler, agent)
-    eid = store.command(
-        uuid4(),
-        "create",
-        {
-            "brief": "Test an entirely new method and show its frontier.",
-            "recipe_id": "agent_experiment_v1",
-            "project_id": receipt["project_id"],
-        },
-    )["experiment_id"]
+    eid = saved_c3(store, project_id=receipt["project_id"])
     try:
         assert store.experiment(eid)["contract"]["execution_contract"] == 3
         await approve_plan(workflow, store, eid)
@@ -380,7 +386,7 @@ async def test_changed_project_folder_holds_without_turn_or_job(runtime, tmp_pat
     folder.mkdir()
     receipt, payload = project_request(workflow, mode="existing", folder=folder)
     workflow.projects.tick()
-    eid = create(store, project_id=receipt["project_id"])
+    eid = saved_c3(store, project_id=receipt["project_id"])
     assert store.experiment(eid)["contract"]["execution_contract"] == 3
     saved = tmp_path / "saved-project"
     folder.rename(saved)
@@ -418,7 +424,7 @@ def test_delete_project_is_durable_and_preserves_files(config, runtime, tmp_path
 
 def test_delete_project_rejects_visible_experiments_and_pending_agent_work(config, runtime):
     store, _, _, workflow = runtime
-    create(store)
+    saved_c3(store)
     payload = {"request_id": str(uuid4()), "instructions": "", "delete": True}
     workflow.projects.enqueue_settings("test-project", payload)
     workflow.projects.settings_tick()

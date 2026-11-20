@@ -279,8 +279,7 @@ def _seed_saved_experiment(
             "INSERT INTO experiments(id,brief,recipe_id,contract,created_at,updated_at) VALUES(?,?,?,?,0,0)",
             (eid, brief, "agent_experiment_v1", encode(contract)),
         )
-        if execution_contract == 3 and branch_workspace:
-            assert project.writable and project.checkout is not None
+        if execution_contract == 3 and project.writable and project.checkout is not None:
             folder = project.checkout.resolve(strict=True)
             info = folder.stat()
             db.execute(

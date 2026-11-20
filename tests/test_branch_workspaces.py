@@ -8,11 +8,12 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from helpers import PLAN, IterationAgent, approve_plan, until
+from helpers import PLAN, IterationAgent, approve_plan, seed_saved_contract3, until
 from test_projects import register
 
 from experimenttracker import clock, early_repair, iteration
 from experimenttracker.engine import gitworkspace
+from experimenttracker.engine.gitworkspace import branch_eligible
 from experimenttracker.models import Implementation
 from experimenttracker.store import encode
 from experimenttracker.workflow import Workflow
@@ -30,16 +31,22 @@ def git_project(workflow, store, tmp_path):
 
 
 def create(store, **extra):
-    return store.command(
-        uuid4(),
-        "create",
-        {
-            "brief": "Test an entirely new method and show its frontier.",
-            "recipe_id": "agent_experiment_v1",
-            "project_id": "anyup-rs",
-            **extra,
-        },
-    )["experiment_id"]
+    """Seed a saved historical C3 row for stage-engine workspace regression tests."""
+    project_id = extra.get("project_id", "anyup-rs")
+    project = store.projects.get(project_id)
+    branch_workspace = bool(
+        project
+        and project.checkout
+        and extra.get("workspace_mode", "auto") != "shared"
+        and branch_eligible(project.checkout)
+    )
+    return seed_saved_contract3(
+        store,
+        "Test an entirely new method and show its frontier.",
+        project_id=project_id,
+        branch_workspace=branch_workspace,
+        workspace_mode=extra.get("workspace_mode", "auto"),
+    )
 
 
 async def branch_experiment(runtime, tmp_path, monkeypatch):
