@@ -45,7 +45,13 @@ test('integrate needs a capable executor, a live branch and no pending or applie
   );
   assert.match(
     integrateBlockedReason(experiment({ contract: { execution_contract: 2 } }), status),
-    /contract-3/,
+    /archived/,
+  );
+  const archiveStatus = { ...status, execution_contract_3_archived: true };
+  assert.match(integrateBlockedReason(experiment(), archiveStatus), /archived/);
+  assert.equal(
+    integrateBlockedReason(experiment({ contract: { execution_contract: 4 } }), archiveStatus),
+    null,
   );
   assert.match(
     integrateBlockedReason(experiment({ head_commit: 'abc' }), status),

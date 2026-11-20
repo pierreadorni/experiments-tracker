@@ -739,6 +739,22 @@ class Store:
         for action in result["agent_actions"]:
             action.pop("input")
             action.pop("result")
+        pending = result["pending_request"]
+        if (
+            result["contract"].get("execution_contract") == 3
+            and execution_frozen(result)
+            and result["phase"] == "complete"
+            and pending
+            and not pending.get("expired")
+        ):
+            # The gateway only needs the exact currently answerable discussion action.
+            discussion = self.one(
+                "SELECT id,phase,state,created_at,updated_at FROM agent_actions WHERE experiment_id=? "
+                "AND id=? AND phase LIKE 'discuss:%' AND state IN ('dispatching','running')",
+                (eid, pending.get("action_id")),
+            )
+            if discussion:
+                result["agent_actions"].append(discussion)
         for job in result["jobs"]:
             job.pop("execution_root", None)
             manifest = job.pop("execution_manifest", None)

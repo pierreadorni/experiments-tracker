@@ -68,8 +68,9 @@ export function dontMerge(exp: Experiment) {
 function supported(exp: Experiment, status: Status | null) {
   if (!status?.branch_integration)
     return 'Install the executor update to enable branch integration';
-  if (exp.contract.execution_contract !== 3)
-    return 'Branch integration applies to contract-3 experiments';
+  const contract = exp.contract.execution_contract;
+  if (contract !== 4 && (contract !== 3 || status.execution_contract_3_archived))
+    return 'Branch integration is unavailable for archived experiments';
   if (!exp.branch || !exactCommit(exp.head_commit))
     return 'This experiment has no saved Git branch';
   return null;

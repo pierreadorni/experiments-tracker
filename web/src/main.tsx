@@ -318,6 +318,8 @@ function App() {
     setConversationOpen(window.innerWidth >= 1360);
   };
   const exp = experiments.find((e) => e.id === selected);
+  const stageExecutionAvailable =
+    exp?.contract.execution_contract === 3 && !status?.execution_contract_3_archived;
   useEffect(() => {
     if (!notificationLink.current || auth !== true) return;
     const target = allExperiments.find((e) => e.id === notificationLink.current);
@@ -858,7 +860,7 @@ function App() {
                       className="text-button"
                       disabled={
                         busy ||
-                        exp.contract?.execution_contract !== 3 ||
+                        !stageExecutionAvailable ||
                         exp.pending_commands?.some((c) => c.action === 'summarize_title') ||
                         exp.agent_actions.some(
                           (a) =>
@@ -1150,7 +1152,7 @@ function App() {
                           exp={exp}
                           busy={
                             busy ||
-                            exp.contract?.execution_contract !== 3 ||
+                            !stageExecutionAvailable ||
                             Boolean(exp.pending_commands?.some((c) => c.kind === 'plan_review'))
                           }
                           onDecision={(decision, feedback) =>
@@ -1184,7 +1186,7 @@ function App() {
                           exp={exp}
                           busy={
                             busy ||
-                            exp.contract?.execution_contract !== 3 ||
+                            !stageExecutionAvailable ||
                             Boolean(exp.pending_commands?.some((c) => c.kind === 'steer'))
                           }
                           onSend={(text, mode) =>
@@ -1218,7 +1220,7 @@ function App() {
                               <button
                                 disabled={
                                   busy ||
-                                  exp.contract?.execution_contract !== 3 ||
+                                  !stageExecutionAvailable ||
                                   Boolean(
                                     exp.pending_commands?.some((c) => c.action === 'retry_agent'),
                                   )
@@ -1238,7 +1240,7 @@ function App() {
                             {['agent_stage_blocked', 'agent_stage_failed'].includes(
                               exp.hold_reason || '',
                             ) &&
-                              exp.contract?.execution_contract === 3 && (
+                              stageExecutionAvailable && (
                                 <button
                                   disabled={
                                     busy ||
@@ -1264,11 +1266,7 @@ function App() {
                             {!terminal.includes(exp.phase) && (
                               <>
                                 <button
-                                  disabled={
-                                    busy ||
-                                    (exp.contract?.execution_contract !== 3 &&
-                                      !terminal.includes(exp.phase))
-                                  }
+                                  disabled={busy || !stageExecutionAvailable}
                                   onClick={() =>
                                     void act(async () => {
                                       await command(`/api/experiments/${exp.id}/actions`, {
@@ -1281,11 +1279,7 @@ function App() {
                                   {exp.pause_agent ? 'Resume agent work' : 'Pause agent work'}
                                 </button>
                                 <button
-                                  disabled={
-                                    busy ||
-                                    (exp.contract?.execution_contract !== 3 &&
-                                      !terminal.includes(exp.phase))
-                                  }
+                                  disabled={busy || !stageExecutionAvailable}
                                   onClick={() =>
                                     void act(async () => {
                                       await command(`/api/experiments/${exp.id}/actions`, {

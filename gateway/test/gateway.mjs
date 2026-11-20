@@ -2042,6 +2042,75 @@ test('active archived commands stay cancel-only', async () => {
   else await db.prepare('DELETE FROM executor_status WHERE id=?').bind('acacia').run();
 });
 
+test('executor archive policy blocks fresh contract-three mutations and preserves receipts', async () => {
+  const { result } = await create({ brief: 'Contract three archive transition' });
+  const eid = result.experiment_id;
+  const db = await mf.getD1Database('DB');
+  const exp = await (await req(`/api/experiments/${eid}`)).json();
+  exp.contract.execution_contract = 3;
+  exp.phase = 'training';
+  const save = () =>
+    db.prepare('UPDATE projections SET payload=? WHERE id=?').bind(JSON.stringify(exp), eid).run();
+  await save();
+  const post = (path, body) =>
+    req(`/api/experiments/${eid}/${path}`, {
+      method: 'POST',
+      body: JSON.stringify({ schema_version: 1, request_id: randomUUID(), ...body }),
+    });
+  const pause = { action: 'pause_agent', request_id: randomUUID() };
+  const earlier = await post('actions', pause);
+  assert.equal(earlier.status, 202);
+  const receipt = await earlier.json();
+  const status = await db
+    .prepare('SELECT * FROM executor_status WHERE id=?')
+    .bind('acacia')
+    .first();
+  await db
+    .prepare('INSERT OR REPLACE INTO executor_status VALUES(?,?,?)')
+    .bind(
+      'acacia',
+      JSON.stringify({ execution_contract_3_archived: true, experiment_cancellation: true }),
+      Date.now() / 1000,
+    )
+    .run();
+
+  try {
+    const replay = await post('actions', pause);
+    assert.equal(replay.status, 202);
+    assert.deepEqual(await replay.json(), receipt);
+    assert.equal((await post('actions', { action: 'resume_agent' })).status, 409);
+    assert.equal((await post('actions', { action: 'cancel' })).status, 202);
+    exp.phase = 'complete';
+    await save();
+    assert.equal((await post('actions', { action: 'summarize_title' })).status, 409);
+    assert.equal((await post('integrate', {})).status, 409);
+    const action = { id: randomUUID(), phase: 'discuss:results', state: 'running' };
+    exp.agent_actions = [action];
+    exp.pending_request = {
+      id: 'discussion-request',
+      action_id: action.id,
+      method: 'item/tool/requestUserInput',
+      params: {},
+      expired: false,
+    };
+    await save();
+    assert.equal(
+      (await post('answers', { pending_request_id: 'discussion-request', answer: 'Yes' })).status,
+      202,
+    );
+    const view = await (await req(`/api/experiments/${eid}`)).json();
+    assert.equal(view.contract.execution_contract, 3);
+    assert.equal(view.phase, 'complete');
+  } finally {
+    if (status)
+      await db
+        .prepare('INSERT OR REPLACE INTO executor_status VALUES(?,?,?)')
+        .bind(status.id, status.payload, status.received_at)
+        .run();
+    else await db.prepare('DELETE FROM executor_status WHERE id=?').bind('acacia').run();
+  }
+});
+
 test('frozen completed replies require an exact saved discussion action', async () => {
   const db = await mf.getD1Database('DB');
   for (const binding of ['valid', 'unbound', 'expired']) {

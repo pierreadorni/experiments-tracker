@@ -336,10 +336,12 @@ class Workflow:
         return str(exc) or type(exc).__name__
 
     def status(self, last_tick, executor_error=None, *, projects=None):
+        contract_three_archived = 3 not in legacy_archive.SUPPORTED_EXECUTION_CONTRACTS
         return {
             "experiment_cancellation": True,
-            "implementation_repair": True,
+            "implementation_repair": not contract_three_archived,
             "branch_integration": True,
+            "execution_contract_3_archived": contract_three_archived,
             "execution_contract_create": 4,
             **(
                 {"execution_contract_create_default": 4}

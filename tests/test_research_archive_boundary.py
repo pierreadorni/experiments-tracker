@@ -213,6 +213,24 @@ def test_frozen_terminal_contract_three_refuses_stage_repair(runtime, monkeypatc
         store.command(str(uuid4()), "action", {"action": "repair_implementation"}, eid=eid)
 
 
+def test_frozen_contract_three_projects_only_the_exact_pending_discussion_action(runtime, monkeypatch):
+    store, *_ = runtime
+    eid = saved_experiment(store, 3, phase="complete")
+    active = pending_action(store, eid, "discuss:active")
+    pending_action(store, eid, "discuss:other")
+    with store.tx() as db:
+        db.execute("UPDATE agent_actions SET state='running' WHERE id=?", (active,))
+        db.execute(
+            "UPDATE experiments SET pending_request=? WHERE id=?",
+            (encode({"id": "current", "action_id": active}), eid),
+        )
+    monkeypatch.setattr(legacy_archive, "SUPPORTED_EXECUTION_CONTRACTS", (4,))
+
+    assert store.projection(eid)["agent_actions"] == [
+        {"id": active, "phase": "discuss:active", "state": "running", "created_at": 1, "updated_at": 1}
+    ]
+
+
 def add_artifact(store, eid, name, evidence_revision):
     with store.tx() as db:
         db.execute(

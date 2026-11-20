@@ -836,8 +836,13 @@ async function enqueue(env: Env, kind: string, payload: Record<string, unknown>,
     const exp = JSON.parse(String(row.payload));
     const contract = exp.contract?.execution_contract;
     const research = contract === 4;
+    const archivedContractThree =
+      contract === 3 && (await executorSupports(env, 'execution_contract_3_archived'));
+    const stageExecutionAvailable = contract === 3 && !archivedContractThree;
     const archiveActive =
-      contract !== 3 && !exp.deleted_at && !['complete', 'failed', 'cancelled'].includes(exp.phase);
+      !stageExecutionAvailable &&
+      !exp.deleted_at &&
+      !['complete', 'failed', 'cancelled'].includes(exp.phase);
     const researchAction =
       research &&
       ['pause_agent', 'resume_agent', 'pause_new_compute', 'resume_new_compute'].includes(
@@ -858,8 +863,11 @@ async function enqueue(env: Env, kind: string, payload: Record<string, unknown>,
           : 'Legacy execution is archived; only cancellation is available',
       );
     if (
-      contract !== 3 &&
-      ((kind === 'action' && ['retry_agent', 'summarize_title'].includes(String(payload.action))) ||
+      !stageExecutionAvailable &&
+      ((kind === 'action' &&
+        ['retry_agent', 'repair_implementation', 'summarize_title'].includes(
+          String(payload.action),
+        )) ||
         (kind === 'steer' && !research) ||
         (kind === 'plan_review' && ['approve', 'revise'].includes(String(payload.decision))))
     )
@@ -902,6 +910,8 @@ async function enqueue(env: Env, kind: string, payload: Record<string, unknown>,
         throw new HttpError(409, 'Install the executor update to enable implementation repair');
     }
     if (['integrate', 'revert_integration', 'dont_merge', 'approve_integration'].includes(kind)) {
+      if (archivedContractThree)
+        throw new HttpError(409, 'Legacy execution is archived; integration is unavailable');
       if (!(await executorSupports(env, 'branch_integration')))
         throw new HttpError(409, 'Install the executor update to enable branch integration');
     }
@@ -2366,8 +2376,11 @@ async function route(request: Request, env: Env): Promise<Response> {
         const savedAction = pending.action_id
           ? (projected.agent_actions || []).find((action: any) => action.id === pending.action_id)
           : null;
+        const stageExecutionAvailable =
+          projected.contract?.execution_contract === 3 &&
+          !(await executorSupports(env, 'execution_contract_3_archived'));
         if (
-          projected.contract?.execution_contract !== 3 &&
+          !stageExecutionAvailable &&
           !durableContractFourAnswer(projected, pending) &&
           !(
             projected.phase === 'complete' &&
