@@ -16,6 +16,7 @@ from itertools import count
 from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3, seed_saved_contract4
 from test_knowledge import completed
 
 import experimenttracker.workflow as workflow_module
@@ -25,10 +26,11 @@ from experimenttracker.codex_client import CodexAgent, NeedsAttention, Transport
 from experimenttracker.store import Store
 from experimenttracker.workflow import Workflow
 from scenario import FakeClock, FakeSlurm, settle
-from scenario.test_iteration_scenario_healthy_job import plan_turn
 from scenario.test_mixed_role_overlap import (
+    EXPERIMENT_PHASE,
     connection_evidence,
     create,
+    experiment_turn,
     saved,
     synthesize_turn,
     turn_task,
@@ -74,6 +76,8 @@ def insert_action(store, eid, state, *, phase, thread, turn):
             "VALUES(?,?,?,1,?,?,?,'synthetic prompt',?,0)",
             (action_id, eid, phase, state, thread, turn, clock.now()),
         )
+        if phase == "research":
+            db.execute("UPDATE experiments SET thread_id=? WHERE id=?", (thread, eid))
     return store.one("SELECT * FROM agent_actions WHERE id=?", (action_id,))
 
 
@@ -91,7 +95,7 @@ def save_dispatch_intent(store, action, prompt_sha256="synthetic-prompt"):
 def seed_turn(backend, thread, turn, result):
     """Program the external runtime's saved completed turn for a direct-SQL source row."""
     backend.turns[(thread, turn)] = {
-        "record": {"phase": "title", "thread_id": thread, "turn_id": turn, "prompt_sha256": ""},
+        "record": {"phase": EXPERIMENT_PHASE, "thread_id": thread, "turn_id": turn, "prompt_sha256": ""},
         "result": result,
         "state": "completed",
     }
@@ -106,12 +110,15 @@ async def steps(scenario, ticks, *, gates=()):
 
 
 async def lost_begin(scenario, brief):
-    """Create an experiment whose plan turn the runtime accepted without a response."""
+    """Create an experiment whose research turn the runtime accepted without a response."""
     scenario.agent.script(
-        "plan", turn=plan_turn, begin_error=TransportError("turn/start response lost"), turns=1
+        EXPERIMENT_PHASE,
+        turn=experiment_turn,
+        begin_error=TransportError("turn/start response lost"),
+        turns=1,
     )
     eid = create(scenario.store, brief)
-    await scenario.run(lambda: scenario.store.experiment(eid)["hold_reason"] == "agent_dispatch_uncertain")
+    await scenario.run(lambda: saved(scenario.store, "agent_actions", experiment_id=eid, state="uncertain"))
     [action] = actions(scenario.store, eid)
     return eid, action
 
@@ -133,6 +140,8 @@ async def test_lost_begin_survives_a_restart_of_the_same_pool_size(multi_scenari
     # One of two configured turns is owed to the unknown action, and its owner is excluded.
     assert wf.agent_pool.turn_capacity() == 1
     assert not wf.agent_pool.owner_free(experiment_owner(eid))
+    await wf.step_resolver()
+    assert saved(store, "agent_actions", id=lost["id"], state="uncertain")
 
     # A restart reuses the saved database and the same external backend, never the process.
     await scenario.restart()
@@ -152,9 +161,9 @@ async def test_lost_begin_survives_a_restart_of_the_same_pool_size(multi_scenari
 
     # The accepted turn really completes: exact readback adopts it on a restarted connection.
     backend.turns[(sent["thread_id"], sent["turn_id"])].update(
-        result=plan_turn(None, None), state="completed"
+        result=experiment_turn(None, None), state="completed"
     )
-    await scenario.run(lambda: (store.experiment(eid)["plan_review"] or {}).get("state") == "awaiting_review")
+    await scenario.run(lambda: saved(store, "agent_actions", id=lost["id"], state="completed"))
     [adopted] = actions(store, eid)
     assert (adopted["id"], adopted["state"], adopted["thread_id"], adopted["turn_id"]) == (
         lost["id"],
@@ -216,18 +225,18 @@ async def test_two_unknown_begins_survive_a_shrunken_pool_without_a_duplicate(mu
     assert [slot.agent.instance for slot in wf.agent_pool.slots] == ["synthetic-agent-3"]
     assert wf.agent_pool.turn_capacity() == -1
     third = create(store, "Synthetic third experiment after shrink.")
-    gate = scenario.gate("plan")
-    scenario.agent.script("plan", turn=plan_turn, turns=1)
+    gate = scenario.gate(EXPERIMENT_PHASE)
+    scenario.agent.script(EXPERIMENT_PHASE, turn=experiment_turn, turns=1)
     await steps(scenario, 2, gates=[gate])
     assert not any(action["turn_id"] for action in actions(store, third))
     assert (backend.turns_started, len(slots.named("begin"))) == (2, 2)
 
     # Exact readback settles one saved turn, never starts one, and frees exactly one unit.
     backend.turns[(sent[0]["thread_id"], sent[0]["turn_id"])].update(
-        result=plan_turn(None, None), state="completed"
+        result=experiment_turn(None, None), state="completed"
     )
     await scenario.run(
-        lambda: (store.experiment(first[0])["plan_review"] or {}).get("state") == "awaiting_review",
+        lambda: saved(store, "agent_actions", id=first[1]["id"], state="completed"),
         gates=[gate],
     )
     assert wf.agent_pool.turn_capacity() == 0
@@ -235,14 +244,14 @@ async def test_two_unknown_begins_survive_a_shrunken_pool_without_a_duplicate(mu
     assert not any(action["turn_id"] for action in actions(store, third))
 
     backend.turns[(sent[1]["thread_id"], sent[1]["turn_id"])].update(
-        result=plan_turn(None, None), state="completed"
+        result=experiment_turn(None, None), state="completed"
     )
     await scenario.run(
-        lambda: (store.experiment(second[0])["plan_review"] or {}).get("state") == "awaiting_review",
+        lambda: saved(store, "agent_actions", id=second[1]["id"], state="completed"),
         gates=[gate],
     )
     started = await scenario.run(
-        lambda: saved(store, "agent_actions", experiment_id=third, phase="plan", state="running"),
+        lambda: saved(store, "agent_actions", experiment_id=third, phase="research", state="running"),
         gates=[gate],
     )
     # Both pre-restart identities settled exactly; the freed configured turn serves the
@@ -268,11 +277,12 @@ async def test_unreadable_outcomes_keep_debt_while_another_owner_progresses(mult
     # A direct-SQL source row: this case proves saved-state capacity and readback.
     blocked_eid = create(store, "Synthetic unreadable owner.")
     blocked = insert_action(
-        store, blocked_eid, "uncertain", phase="plan", thread="hidden-thread", turn="hidden-turn"
+        store, blocked_eid, "uncertain", phase="research", thread="hidden-thread", turn="hidden-turn"
     )
     save_dispatch_intent(store, blocked)
     backend.unreadable["hidden-thread"] = TransportError("thread/read transport closed")
     wf = await scenario.started()
+    wf.workspaces.ensure_branch(blocked_eid)
     assert wf.agent_pool.turn_debt() == {("agent_actions", blocked["id"])}
     assert wf.agent_pool.turn_capacity() == 1
     assert not wf.agent_pool.owner_free(experiment_owner(blocked_eid))
@@ -310,15 +320,20 @@ async def test_unreadable_outcomes_keep_debt_while_another_owner_progresses(mult
     # Two saved outcomes whose exit is unproven exhaust both configured turns, and a
     # received result excludes its owner without consuming a turn of its own.
     third = create(store, "Synthetic waiting experiment.")
-    ready = insert_action(store, third, "running", phase="title", thread="ready-thread", turn="ready-turn")
-    seed_turn(backend, "ready-thread", "ready-turn", {"title": "Synthetic readback title"})
+    recoverable = create(store, "Synthetic saved outcome.")
+    wf.workspaces.ensure_branch(recoverable)
+    ready = insert_action(
+        store, recoverable, "running", phase="research", thread="ready-thread", turn="ready-turn"
+    )
+    save_dispatch_intent(store, ready)
+    seed_turn(backend, "ready-thread", "ready-turn", experiment_turn(None, None))
     wf.agent_pool.reconstruct()
-    received_eid = create(store, "Synthetic received owner.")
+    received_eid = seed_saved_contract3(store, "Synthetic historical received owner.")
     insert_action(
         store, received_eid, "received", phase="prepare", thread="received-thread", turn="received-turn"
     )
-    plan_gate = scenario.gate("plan")
-    scenario.agent.script("plan", turn=plan_turn, turns=1)
+    plan_gate = scenario.gate(EXPERIMENT_PHASE)
+    scenario.agent.script(EXPERIMENT_PHASE, turn=experiment_turn, turns=1)
     assert wf.agent_pool.turn_capacity() == 0
     assert not wf.agent_pool.owner_free(experiment_owner(received_eid))
     assert wf.agent_pool.turn_debt() == {("agent_actions", blocked["id"]), ("agent_actions", ready["id"])}
@@ -330,7 +345,7 @@ async def test_unreadable_outcomes_keep_debt_while_another_owner_progresses(mult
     assert wf.agent_pool.turn_capacity() == -1
     assert (backend.turns_started, len(slots.named("begin"))) == (1, 1)
     # Role readback at negative capacity settles exactly the saved ready turn.
-    await wf.advance_title()
+    await wf.step_resolver()
     assert saved(store, "agent_actions", id=ready["id"], state="completed")["result"]
     assert wf.agent_pool.turn_capacity() == 0
     assert (backend.turns_started, len(slots.named("begin"))) == (1, 1)
@@ -342,7 +357,7 @@ async def test_unreadable_outcomes_keep_debt_while_another_owner_progresses(mult
         action["turn_id"]
         for eid in (third, received_eid)
         for action in actions(store, eid)
-        if action["phase"] == "plan"
+        if action["phase"] == "research"
     )
     assert (backend.turns_started, len(slots.named("begin"))) == (1, 1)
     assert not wf.agent_pool.owner_free(experiment_owner(received_eid))
@@ -352,17 +367,17 @@ async def test_unreadable_outcomes_keep_debt_while_another_owner_progresses(mult
     del backend.unreadable["hidden-thread"]
     backend.turns[("hidden-thread", "hidden-turn")] = {
         "record": {
-            "phase": "plan",
+            "phase": EXPERIMENT_PHASE,
             "thread_id": "hidden-thread",
             "turn_id": "hidden-turn",
             "prompt_sha256": "",
         },
-        "result": plan_turn(None, None),
+        "result": experiment_turn(None, None),
         "state": "completed",
     }
     scenario.clock.advance(310)  # the production retry backoff expires in fake time only
     started = await scenario.run(
-        lambda: saved(store, "agent_actions", experiment_id=third, phase="plan", state="running"),
+        lambda: saved(store, "agent_actions", experiment_id=third, phase="research", state="running"),
         gates=[plan_gate],
     )
     adopted = saved(store, "agent_actions", id=blocked["id"])
@@ -378,7 +393,9 @@ async def test_unreadable_outcomes_keep_debt_while_another_owner_progresses(mult
     assert [call["instance"] for call in slots.named("begin", turn=started["turn_id"])] == [
         "synthetic-agent-3"
     ]
-    assert not any(action["turn_id"] for action in actions(store, received_eid) if action["phase"] == "plan")
+    assert not any(
+        action["turn_id"] for action in actions(store, received_eid) if action["phase"] == "research"
+    )
     assert (backend.turns_started, wf.agent_pool.turn_capacity()) == (2, 0)
     plan_gate.release.set()
     await turn_task(wf, "agent_actions", started)
@@ -464,10 +481,11 @@ async def test_production_generation_routes_callbacks_to_the_exact_live_process(
             (1, 1),
             (1, 1),
         ]
-        eid, other = create(store, "Synthetic callback owner."), create(store, "Synthetic other owner.")
+        eid = seed_saved_contract4(store, "Synthetic callback owner.")
+        other = seed_saved_contract4(store, "Synthetic other owner.")
         # Direct-SQL saved rows: routing and generation are what this case proves.
-        left = await routed_turn(store, wf, first, eid, "prepare")
-        right = await routed_turn(store, wf, second, other, "prepare")
+        left = await routed_turn(store, wf, first, eid, "research")
+        right = await routed_turn(store, wf, second, other, "research")
         assert [
             wf.agent_pool.lookup("agent_actions", row["id"]).connection.slot for row in (left, right)
         ] == [0, 1]

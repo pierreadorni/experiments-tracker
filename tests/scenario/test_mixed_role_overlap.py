@@ -10,14 +10,14 @@ account, socket runtime or research.
 import json
 from uuid import uuid4
 
-from helpers import seed_saved_contract3
 from legacy_fixture import load_legacy_completed
 from test_iteration_autopilot import command, policy
 from test_knowledge import completed
 
+from experimenttracker import clock
 from experimenttracker.agent_pool import experiment_owner, project_owner
 from experimenttracker.autopilot import Autopilot
-from scenario.test_iteration_scenario_healthy_job import plan_turn, prepare_turn
+from experimenttracker.workspaces import initialize_project
 
 DECISION = {
     "summary": "Synthetic checkpoint.",
@@ -25,16 +25,11 @@ DECISION = {
     "uncertainty": "Real retrieval remains a live prerequisite.",
     "outcome": "wait",
 }
-LUNA = {
-    "id": "gpt-6-luna",
-    "name": "Synthetic Luna title model",
-    "reasoning_efforts": ["low"],
-    "default_effort": "low",
-}
+EXPERIMENT_PHASE = "experiment_research"
 
 
-def title_turn(payload, workspace):
-    return {"title": "Synthetic mixed-role title"}
+def experiment_turn(payload, workspace):
+    return {"status": "wait", "summary": "Synthetic experiment turn.", "next": "timer:3600"}
 
 
 def research_turn(payload, workspace):
@@ -68,7 +63,33 @@ def discuss_turn(payload, workspace):
 
 
 def create(store, brief="Synthetic mixed-role overlap."):
-    return seed_saved_contract3(store, brief)
+    project = store.projects["test-project"]
+    if project.checkout is None:
+        checkout = store.path.parent.parent / "scenario-project"
+        checkout.mkdir()
+        initialize_project(checkout)
+        info = checkout.stat()
+        # This saved project identity also works when the fixture reopens its
+        # workflow and rebuilds the in-memory project catalog.
+        with store.tx() as db:
+            db.execute(
+                "INSERT INTO projects(id,name,folder,device,inode,non_empty,created_at) VALUES(?,?,?,?,?,1,?)",
+                (project.id, project.name, str(checkout), info.st_dev, info.st_ino, clock.now()),
+            )
+        store.projects[project.id] = project.model_copy(update={"checkout": checkout, "research_loop": True})
+    result = store.command(
+        uuid4(),
+        "create",
+        {
+            "brief": brief,
+            "recipe_id": "agent_experiment_v1",
+            "project_id": project.id,
+            "execution_contract": 4,
+        },
+    )
+    eid = result["experiment_id"]
+    assert store.experiment(eid)["contract"]["execution_contract"] == 4
+    return eid
 
 
 def saved(store, table, **where):
@@ -133,25 +154,25 @@ async def test_two_slots_overlap_an_experiment_and_a_research_decision(multi_sce
     service, run = activated(scenario)
     with store.tx() as db:
         service.wake(db, run["id"], "synthetic-input", "experiment_change", {"synthetic": True})
-    plan_gate, research_gate = scenario.gate("plan"), scenario.gate("research")
-    scenario.agent.script("plan", turn=plan_turn, turns=1)
+    experiment_gate, research_gate = scenario.gate(EXPERIMENT_PHASE), scenario.gate("research")
+    scenario.agent.script(EXPERIMENT_PHASE, turn=experiment_turn, turns=1)
     scenario.agent.script("research", turn=research_turn, turns=1)
     eid = create(store)
 
     def both_running():
-        plan = saved(store, "agent_actions", experiment_id=eid, phase="plan", state="running")
+        turn = saved(store, "agent_actions", experiment_id=eid, phase="research", state="running")
         decision = saved(store, "autopilot_actions", run_id=run["id"], state="running")
-        return (plan, decision) if plan and decision else None
+        return (turn, decision) if turn and decision else None
 
-    plan, decision = await scenario.run(both_running, gates=[plan_gate, research_gate])
-    live_both(scenario, wf, ("agent_actions", plan), ("autopilot_actions", decision))
+    turn, decision = await scenario.run(both_running, gates=[experiment_gate, research_gate])
+    live_both(scenario, wf, ("agent_actions", turn), ("autopilot_actions", decision))
     assert backend.turns_started == 2
 
     # The experiment's own saved turn finishes while research stays live.
-    plan_gate.release.set()
-    await turn_task(wf, "agent_actions", plan)
+    experiment_gate.release.set()
+    await turn_task(wf, "agent_actions", turn)
     await scenario.run(
-        lambda: (store.experiment(eid)["plan_review"] or {}).get("state") == "awaiting_review",
+        lambda: saved(store, "agent_actions", id=turn["id"], state="completed"),
         gates=[research_gate],
     )
     assert saved(store, "autopilot_actions", id=decision["id"])["state"] == "running"
@@ -171,16 +192,16 @@ async def test_two_slots_overlap_an_experiment_and_a_research_decision(multi_sce
     # and the next admitted turn records exactly that generation.
     wf.agent_ready = False
     scenario.clock.advance(120)
-    scenario.agent.script("plan", turn=plan_turn, turns=1)
-    gate = scenario.gate("plan")
+    scenario.agent.script(EXPERIMENT_PHASE, turn=experiment_turn, turns=1)
+    gate = scenario.gate(EXPERIMENT_PHASE)
     second = create(store, "Synthetic second experiment.")
-    plan2 = await scenario.run(
-        lambda: saved(store, "agent_actions", experiment_id=second, phase="plan", state="running"),
-        gates=[plan_gate, gate],
+    second_turn = await scenario.run(
+        lambda: saved(store, "agent_actions", experiment_id=second, phase="research", state="running"),
+        gates=[experiment_gate, gate],
     )
-    assert connection_evidence(scenario, wf, "agent_actions", plan2).start == 2
+    assert connection_evidence(scenario, wf, "agent_actions", second_turn).start == 2
     gate.release.set()
-    await turn_task(wf, "agent_actions", plan2)
+    await turn_task(wf, "agent_actions", second_turn)
     await wf.close()
 
 
@@ -200,40 +221,40 @@ async def test_two_slots_overlap_an_experiment_and_a_weekly_synthesis(multi_scen
     assert waiting["hold_reason"] == "quota_hold" and not begin_turns(scenario, "project_synthesize")
 
     backend.weekly_used_percent = 0
-    plan_gate, synthesis_gate = scenario.gate("plan"), scenario.gate("project_synthesize")
-    scenario.agent.script("plan", turn=plan_turn, turns=1)
+    experiment_gate, synthesis_gate = scenario.gate(EXPERIMENT_PHASE), scenario.gate("project_synthesize")
+    scenario.agent.script(EXPERIMENT_PHASE, turn=experiment_turn, turns=1)
     scenario.agent.script("project_synthesize", turn=synthesize_turn, turns=1)
     eid = create(store)
 
     def both_running():
-        plan = saved(store, "agent_actions", experiment_id=eid, phase="plan", state="running")
+        turn = saved(store, "agent_actions", experiment_id=eid, phase="research", state="running")
         weekly = saved(store, "project_turns", id=identity, state="running")
-        return (plan, weekly) if plan and weekly else None
+        return (turn, weekly) if turn and weekly else None
 
-    plan, weekly = await scenario.run(both_running, gates=[plan_gate, synthesis_gate])
-    live_both(scenario, wf, ("agent_actions", plan), ("project_turns", weekly))
+    turn, weekly = await scenario.run(both_running, gates=[experiment_gate, synthesis_gate])
+    live_both(scenario, wf, ("agent_actions", turn), ("project_turns", weekly))
     # One project holds an experiment turn and a project turn: distinct typed owners.
-    assert wf.agent_pool.lookup("agent_actions", plan["id"]).owner == experiment_owner(eid)
+    assert wf.agent_pool.lookup("agent_actions", turn["id"]).owner == experiment_owner(eid)
     assert wf.agent_pool.lookup("project_turns", identity).owner == project_owner("test-project")
 
     # The weekly synthesis applies its saved report while the experiment stays live.
     synthesis_gate.release.set()
     await turn_task(wf, "project_turns", weekly)
     done = await scenario.run(
-        lambda: saved(store, "project_turns", id=identity, state="completed"), gates=[plan_gate]
+        lambda: saved(store, "project_turns", id=identity, state="completed"), gates=[experiment_gate]
     )
     assert done["report_version"] == 1
     report = memory.report("test-project")
     assert (report["version"], report["document"]["source_scope"]) == (1, "synthetic")
-    assert saved(store, "agent_actions", id=plan["id"])["state"] == "running"
+    assert saved(store, "agent_actions", id=turn["id"])["state"] == "running"
 
-    plan_gate.release.set()
-    await turn_task(wf, "agent_actions", plan)
+    experiment_gate.release.set()
+    await turn_task(wf, "agent_actions", turn)
     await scenario.run(
-        lambda: (store.experiment(eid)["plan_review"] or {}).get("state") == "awaiting_review",
+        lambda: saved(store, "agent_actions", id=turn["id"], state="completed"),
         gates=[synthesis_gate],
     )
-    assert saved(store, "agent_actions", id=plan["id"])["state"] == "completed"
+    assert saved(store, "agent_actions", id=turn["id"])["state"] == "completed"
     await wf.close()
 
 
@@ -245,34 +266,34 @@ async def test_two_slots_overlap_a_discussion_and_an_unrelated_experiment(multi_
     identity = store.command(uuid4(), "discuss", {"text": "Explain the synthetic result"}, eid=parent)[
         "request_id"
     ]
-    discussion_gate, plan_gate = scenario.gate("discuss"), scenario.gate("plan")
+    discussion_gate, experiment_gate = scenario.gate("discuss"), scenario.gate(EXPERIMENT_PHASE)
     scenario.agent.script("discuss", turn=discuss_turn, turns=1)
-    scenario.agent.script("plan", turn=plan_turn, turns=1)
+    scenario.agent.script(EXPERIMENT_PHASE, turn=experiment_turn, turns=1)
     eid = create(store, "Synthetic unrelated experiment.")
     action = "discuss:" + identity
 
     def both_running():
         discussion = saved(store, "agent_actions", experiment_id=parent, phase=action, state="running")
-        plan = saved(store, "agent_actions", experiment_id=eid, phase="plan", state="running")
-        return (discussion, plan) if discussion and plan else None
+        turn = saved(store, "agent_actions", experiment_id=eid, phase="research", state="running")
+        return (discussion, turn) if discussion and turn else None
 
-    discussion, plan = await scenario.run(both_running, gates=[discussion_gate, plan_gate])
-    live_both(scenario, wf, ("agent_actions", discussion), ("agent_actions", plan))
+    discussion, turn = await scenario.run(both_running, gates=[discussion_gate, experiment_gate])
+    live_both(scenario, wf, ("agent_actions", discussion), ("agent_actions", turn))
 
     # The discussion keeps its queued identity and evidence, and completes alone.
     discussion_gate.release.set()
     await turn_task(wf, "agent_actions", discussion)
     done = await scenario.run(
-        lambda: saved(store, "discussions", id=identity, state="completed"), gates=[plan_gate]
+        lambda: saved(store, "discussions", id=identity, state="completed"), gates=[experiment_gate]
     )
     assert (done["action_id"], done["report_version"]) == (discussion["id"], None)
     assert (done["reply"], json.loads(done["evidence_ids"])) == ("Synthetic discussion reply.", [])
-    assert saved(store, "agent_actions", id=plan["id"])["state"] == "running"
+    assert saved(store, "agent_actions", id=turn["id"])["state"] == "running"
 
-    plan_gate.release.set()
-    await turn_task(wf, "agent_actions", plan)
+    experiment_gate.release.set()
+    await turn_task(wf, "agent_actions", turn)
     await scenario.run(
-        lambda: (store.experiment(eid)["plan_review"] or {}).get("state") == "awaiting_review",
+        lambda: saved(store, "agent_actions", id=turn["id"], state="completed"),
         gates=[discussion_gate],
     )
     assert saved(store, "agent_actions", id=discussion["id"])["state"] == "completed"
@@ -287,13 +308,13 @@ async def test_one_slot_serializes_mixed_roles_without_a_hidden_agent(scenario):
     identity = memory.enqueue(
         "test-project", {"request_id": str(uuid4()), "kind": "synthesize"}, origin="weekly"
     )["request_id"]
-    plan_gate, synthesis_gate = scenario.gate("plan"), scenario.gate("project_synthesize")
-    scenario.agent.script("plan", turn=plan_turn, turns=1)
+    experiment_gate, synthesis_gate = scenario.gate(EXPERIMENT_PHASE), scenario.gate("project_synthesize")
+    scenario.agent.script(EXPERIMENT_PHASE, turn=experiment_turn, turns=1)
     scenario.agent.script("project_synthesize", turn=synthesize_turn, turns=1)
     eid = create(store)
-    await scenario.run(
-        lambda: saved(store, "agent_actions", experiment_id=eid, phase="plan", state="running"),
-        gates=[plan_gate, synthesis_gate],
+    turn = await scenario.run(
+        lambda: saved(store, "agent_actions", experiment_id=eid, phase="research", state="running"),
+        gates=[experiment_gate, synthesis_gate],
     )
     # One configured connection: the weekly turn keeps its saved place, nothing else starts.
     scenario.one_session()
@@ -301,71 +322,72 @@ async def test_one_slot_serializes_mixed_roles_without_a_hidden_agent(scenario):
     assert scenario.workflow.supervisor.task is None and scenario.workflow.research.task is None
     assert scenario.agent_backend.turns_started == 1 and scenario.agent.start_count == 1
 
-    plan_gate.release.set()
-    await scenario.workflow.agent_task
+    experiment_gate.release.set()
+    await turn_task(scenario.workflow, "agent_actions", turn)
     weekly = await scenario.run(
         lambda: saved(store, "project_turns", id=identity, state="running"),
-        gates=[plan_gate, synthesis_gate],
+        gates=[experiment_gate, synthesis_gate],
     )
     # The next admitted source keeps its exact saved identity on the freed connection.
     reservation = scenario.workflow.agent_pool.lookup("project_turns", weekly["id"])
     assert (reservation.connection.slot, reservation.connection.start) == (0, 1)
-    assert [start["phase"] for start in backend.starts] == ["plan", "project_synthesize"]
+    assert [start["phase"] for start in backend.starts] == [EXPERIMENT_PHASE, "project_synthesize"]
     assert [(weekly["thread_id"], weekly["turn_id"])] == [
         (start["thread_id"], start["turn_id"]) for start in backend.starts[1:]
     ]
     await scenario.close()
 
 
-async def test_same_owner_holds_implementation_while_a_spare_slot_serves_another(multi_scenario):
+async def test_same_experiment_serializes_steering_while_a_spare_slot_serves_supervision(multi_scenario):
     scenario = multi_scenario
     wf = await scenario.started()
     store = scenario.store
-    scenario.slots.agent.models = [*scenario.agent.models, LUNA]
     completed(store, summary="Synthetic completed source.")
     memory = wf.supervisor.memory
     memory.refresh()
-    title_gate, synthesis_gate = scenario.gate("title"), scenario.gate("project_synthesize")
-    scenario.agent.script("plan", turn=plan_turn, turns=1)
-    scenario.agent.script("title", turn=title_turn, turns=1)
+    first_gate = scenario.gate(EXPERIMENT_PHASE)
+    synthesis_gate = scenario.gate("project_synthesize")
+    scenario.agent.script(EXPERIMENT_PHASE, turn=experiment_turn, turns=2)
     scenario.agent.script("project_synthesize", turn=synthesize_turn, turns=1)
-    scenario.agent.script("prepare", turn=prepare_turn, turns=1)
     eid = create(store)
-    title = await scenario.run(
-        lambda: saved(store, "agent_actions", experiment_id=eid, phase="title", state="running"),
-        gates=[title_gate, synthesis_gate],
+    first = await scenario.run(
+        lambda: saved(store, "agent_actions", experiment_id=eid, phase="research", state="running"),
+        gates=[first_gate, synthesis_gate],
     )
-    assert connection_evidence(scenario, wf, "agent_actions", title).slot == 0
-    review = store.experiment(eid)["plan_review"]
-    assert review["state"] == "awaiting_review"
-    # Approving by the normal command makes implementation eligible for this owner.
-    store.command(
-        uuid4(), "plan_review", {"decision": "approve", "plan_revision": review["revision"]}, eid=eid
-    )
+    assert connection_evidence(scenario, wf, "agent_actions", first).slot == 0
+
+    # A steering command wakes this saved experiment without starting another
+    # turn while its exact thread is still occupied.
+    guidance = "Use the held-out synthetic examples."
+    steer_id = str(uuid4())
+    store.command(steer_id, "steer", {"text": guidance, "mode": "later"}, eid=eid)
     identity = memory.enqueue(
         "test-project", {"request_id": str(uuid4()), "kind": "synthesize"}, origin="weekly"
     )["request_id"]
     weekly = await scenario.run(
         lambda: saved(store, "project_turns", id=identity, state="running"),
-        gates=[title_gate, synthesis_gate],
+        gates=[first_gate, synthesis_gate],
     )
-    # The spare slot serves another typed owner of the same project, so the
-    # experiment's own wait is an owner exclusion rather than a stuck engine.
     assert connection_evidence(scenario, wf, "project_turns", weekly).slot == 1
     assert wf.agent_pool.lookup("project_turns", identity).owner == project_owner("test-project")
-    assert saved(store, "agent_actions", experiment_id=eid, phase="prepare")["turn_id"] is None
-    assert begin_turns(scenario, "prepare") == []
+    assert store.rows("SELECT id,state FROM agent_actions WHERE experiment_id=?", (eid,)) == [
+        {"id": first["id"], "state": "running"}
+    ]
+    assert begin_turns(scenario, EXPERIMENT_PHASE) == [first["turn_id"]]
 
-    # Once the title settles, implementation for that experiment begins exactly once.
-    def prepared():
-        row = saved(store, "agent_actions", experiment_id=eid, phase="prepare")
-        return row if row and row["turn_id"] else None
-
-    title_gate.release.set()
-    await turn_task(wf, "agent_actions", title)
-    prepare = await scenario.run(prepared, gates=[title_gate, synthesis_gate])
-    assert prepare["phase"] == "prepare" and begin_turns(scenario, "prepare") == [prepare["turn_id"]]
-    assert saved(store, "experiments", id=eid)["title"] == "Synthetic mixed-role title"
+    first_gate.release.set()
+    await turn_task(wf, "agent_actions", first)
+    next_gate = scenario.gate(EXPERIMENT_PHASE)
+    next_turn = await scenario.run(
+        lambda: saved(store, "agent_actions", experiment_id=eid, phase="research", state="running"),
+        gates=[next_gate, synthesis_gate],
+    )
+    assert next_turn["id"] != first["id"]
+    assert next_turn["thread_id"] == first["thread_id"]
+    assert begin_turns(scenario, EXPERIMENT_PHASE) == [first["turn_id"], next_turn["turn_id"]]
+    assert guidance in next_turn["input"]
+    assert saved(store, "steering", request_id=steer_id)["state"] == "applied"
+    assert saved(store, "project_turns", id=identity)["state"] == "running"
     await wf.close()
 
 

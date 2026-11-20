@@ -113,7 +113,7 @@ async def resolve(workflow, exp, job):
     # so absence is provable only inside that window.
     if waited <= lag or waited > ACCOUNTING_WINDOW_SECONDS:
         return _waiting(workflow, eid, job, WAITING_ERROR)
-    return _not_submitted(store, eid, job, lag)
+    return _not_submitted(store, eid, job, lag, research=exp["contract"].get("execution_contract") == 4)
 
 
 def _waiting(workflow, eid, job, error):
@@ -149,7 +149,7 @@ def _quarantine(workflow, eid, job, error):
     return None
 
 
-def _not_submitted(store, eid, job, lag):
+def _not_submitted(store, eid, job, lag, *, research):
     """No record after the accounting lag: write the receipt and end the intent."""
     intent_id = job["intent_id"]
     with store.tx() as db:
@@ -178,6 +178,10 @@ def _not_submitted(store, eid, job, lag):
                 },
             },
         )
+        if research:
+            from .research import wakeups
+
+            wakeups.record(store, eid, wakeups.JOB_TERMINAL, intent_id, db=db)
     store.update(eid, hold_reason=None, error=None)
     return None
 
@@ -208,7 +212,10 @@ class TurnResolver:
             if reservation.source_table == "agent_actions"
         }
         for action in self.workflow.store.rows(
-            "SELECT * FROM agent_actions WHERE state='uncertain' ORDER BY created_at"
+            "SELECT a.* FROM agent_actions a JOIN experiments e ON e.id=a.experiment_id "
+            "WHERE a.state='uncertain' OR (a.phase='research' "
+            "AND a.state IN ('dispatching','running') AND e.deleted_at IS NULL "
+            "AND json_extract(e.contract,'$.execution_contract') IS 4) ORDER BY a.created_at"
         ):
             if action["id"] in owned:
                 continue
@@ -240,6 +247,8 @@ class TurnResolver:
             prompt_hash = self.workflow.dispatch_prompt_hash(action)
             turns = await slot.agent.read_thread(action["thread_id"])
         except Exception as exc:
+            if action["phase"] == "research" and action["state"] != "uncertain":
+                self.workflow._action_state(action["id"], "uncertain", error=str(exc), expected=action)
             self.retry_unreadable(action, exp, exc)
             return
         if action["turn_id"]:

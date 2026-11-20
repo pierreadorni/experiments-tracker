@@ -22,12 +22,13 @@ from test_knowledge import completed
 
 from experimenttracker.codex_client import TransportError
 from scenario import FakeGate
-from scenario.test_iteration_scenario_healthy_job import plan_turn
 from scenario.test_mixed_role_overlap import (
     DECISION,
+    EXPERIMENT_PHASE,
     activated,
     begin_turns,
     create,
+    experiment_turn,
     live_both,
     research_turn,
     saved,
@@ -41,7 +42,7 @@ DENIED = 95  # both synthetic windows below the ordinary reserve
 
 @dataclass(frozen=True)
 class Occupied:
-    """Two live role turns: a saved experiment plan row and one project-role row."""
+    """Two live role turns: a saved experiment research turn and one project-role row."""
 
     experiment: dict
     experiment_gate: FakeGate
@@ -84,13 +85,13 @@ async def both_occupied(scenario, wf, second="weekly"):
         with store.tx() as db:
             service.wake(db, run["id"], "synthetic-input", "experiment_change", {"synthetic": True})
         table, phase, turn, match = "autopilot_actions", "research", research_turn, {"run_id": run["id"]}
-    plan_gate, project_gate = scenario.gate("plan"), scenario.gate(phase)
-    scenario.agent.script("plan", turn=plan_turn, turns=1)
+    plan_gate, project_gate = scenario.gate(EXPERIMENT_PHASE), scenario.gate(phase)
+    scenario.agent.script(EXPERIMENT_PHASE, turn=experiment_turn, turns=1)
     scenario.agent.script(phase, turn=turn, turns=1)
     eid = create(store)
 
     def both_running():
-        plan = saved(store, "agent_actions", experiment_id=eid, phase="plan", state="running")
+        plan = saved(store, "agent_actions", experiment_id=eid, phase="research", state="running")
         project = saved(store, table, state="running", **match)
         return (plan, project) if plan and project else None
 
@@ -123,11 +124,11 @@ async def test_a_fresh_denial_after_the_cached_admit_never_reaches_begin(multi_s
     session_gate = FakeGate()
     hold_session(monkeypatch, scenario, session_gate)
     if source == "agent_actions":
-        scenario.agent.script("plan", turn=plan_turn, turns=1)
+        scenario.agent.script(EXPERIMENT_PHASE, turn=experiment_turn, turns=1)
         experiment = create(store, "Synthetic refused binding.")
 
         def claimed_row():
-            return saved(store, "agent_actions", experiment_id=experiment, phase="plan")
+            return saved(store, "agent_actions", experiment_id=experiment, phase="research")
 
     else:
         completed(store, summary="Synthetic completed source.")
@@ -161,7 +162,7 @@ async def test_a_fresh_denial_after_the_cached_admit_never_reaches_begin(multi_s
     expected = ("pending", None) if source == "agent_actions" else ("waiting", None)
     assert final["id"] == claimed["id"] and (final["state"], final["turn_id"]) == expected
     if source == "agent_actions":
-        assert store.experiment(experiment)["hold_reason"] == "quota_hold"
+        assert not wf.agent_pool.quota(eid=experiment).admitted
         slot = wf.agent_pool.slots[reservation.slot]
         assert (slot.agent_task, slot.active_action) == (None, None)
     else:
@@ -318,9 +319,7 @@ async def test_denied_quota_interrupts_each_occupied_role_through_its_own_proces
     occupied.experiment_gate.release.set()
     await turn_task(wf, "agent_actions", plan)
     await scenario.run(
-        lambda: (
-            (store.experiment(plan["experiment_id"])["plan_review"] or {}).get("state") == "awaiting_review"
-        ),
+        lambda: saved(store, "agent_actions", id=plan["id"], state="completed"),
         gates=[occupied.project_gate],
     )
     settled = saved(store, "agent_actions", id=plan["id"])
@@ -331,9 +330,9 @@ async def test_denied_quota_interrupts_each_occupied_role_through_its_own_proces
     )
     assert (backend.turns_started, len(slots.named("begin"))) == (2, 2)
     # The freed configured turn serves the waiting source exactly once.
-    scenario.agent.script("plan", turn=plan_turn, turns=1)
+    scenario.agent.script(EXPERIMENT_PHASE, turn=experiment_turn, turns=1)
     await scenario.run(
-        lambda: (store.experiment(waiting)["plan_review"] or {}).get("state") == "awaiting_review",
+        lambda: saved(store, "agent_actions", experiment_id=waiting, phase="research", state="completed"),
         gates=[occupied.project_gate],
     )
     assert (backend.turns_started, len(slots.named("begin"))) == (3, 3)
@@ -400,14 +399,9 @@ async def test_unreadable_turns_are_not_declared_stopped_by_shutdown_or_fresh_qu
     # its uncertainty and its saved debt.
     del backend.unreadable[experiment["thread_id"]]
     backend.turns[(experiment["thread_id"], experiment["turn_id"])].update(
-        result=plan_turn(None, None), state="completed"
+        result=experiment_turn(None, None), state="completed"
     )
-    await scenario.run(
-        lambda: (
-            (store.experiment(experiment["experiment_id"])["plan_review"] or {}).get("state")
-            == "awaiting_review"
-        )
-    )
+    await scenario.run(lambda: saved(store, "agent_actions", id=experiment["id"], state="completed"))
     assert saved(store, "agent_actions", id=experiment["id"])["state"] == "completed"
     assert saved(store, occupied.project_table, id=project["id"])["state"] == "uncertain"
     assert (backend.turns_started, len(slots.named("begin"))) == (2, 2)

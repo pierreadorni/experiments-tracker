@@ -19,7 +19,7 @@ import json
 from uuid import uuid4
 
 from .. import clock
-from ..core import action_obligations, request_obligations
+from ..core import action_obligations, job_obligations, request_obligations
 from ..maintenance import blocked
 from . import wakeups
 from .prompt import DEFERRED_CHECKPOINT, turn_prompt
@@ -209,13 +209,18 @@ def _job_events(db, experiment, predecessor, due):
         if item["event"] != wakeups.JOB_TERMINAL:
             continue
         job = db.execute(
-            "SELECT state,exit_code FROM jobs WHERE experiment_id=? AND intent_id=? "
-            "AND job_id IS NOT NULL AND state IN ('complete','failed','cancelled')",
+            "SELECT state,exit_code,job_id,scheduler_state,error FROM jobs WHERE experiment_id=? "
+            "AND intent_id=? AND state IN ('complete','failed','cancelled')",
             (experiment["id"], item["source_id"]),
         ).fetchone()
         if job is None:
             continue
-        events.append(f"Job {item['source_id']}: {job['state']} (exit {job['exit_code'] or 'unknown'})")
+        if job["job_id"] is not None:
+            events.append(f"Job {item['source_id']}: {job['state']} (exit {job['exit_code'] or 'unknown'})")
+        elif job_obligations.not_submitted(job):
+            events.append(f"Job {item['source_id']}: confirmed not submitted after accounting lag")
+        else:
+            continue
         bind.append(item["wakeup_id"])
     return events, bind
 
