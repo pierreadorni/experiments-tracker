@@ -597,7 +597,8 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 - [x] Separate retained C3 evidence from stage execution. A simulated archive preserves projections, artifact uploads and exact scheduler settlement while preventing stage advancement and dispatch.
 - [x] Align the executor, Worker and browser on the archive decision advertised by the executor. Keep exact replay and bound discussion replies, and preserve historical views.
 - [x] Run the archive candidate against saved C3 startup, reads and settlement, with the C4 synthetic flow still active.
-- [ ] Migrate shared recovery scenarios off the C3 stage engine and classify the remaining stage-specific fixtures before switching the default archive boundary. The broad archive-on probe identified 25 failing scenarios in `test_iteration_scenario_*`, `test_mixed_role_*`, and `test_resolver_scenarios.py`.
+- [x] Resolve the 25 scenario failures in the archive-on probe. Shared turn, scheduler, quota and mixed-role recovery use C4. The blocked-stage continuation and progress/monitor fixtures explicitly enable the C3 engine.
+- [ ] Run the full suite with the archive boundary switched in an isolated checkout. Classify any remaining stage-specific tests before switching the default archive boundary.
 - [ ] Refresh drain evidence at activation. Then archive C3 and remove the old engine in reviewed slices. See the [retirement sequence](notes/t4.8-rollout.md#3-verify-drain-on-the-actual-installation-retire-separately).
 
 ---
@@ -614,6 +615,7 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 
 ## Log
 
+- **T4.8 recovery scenarios:** migrates shared recovery to C4, and isolates three C3-specific stage and monitor cases. C4 now reads back saved turns after restart and wakes on resolver-proven submission absence. Ruff and the normal full suite (1,481 Python tests in isolated shards) passed. The archive-on scenario, historical compatibility and C4 synthetic group passed all 88 tests. Source +21/−7 and tests/docs +458/−494 across the three migration cards.
 - **T4.8 archive startup:** the sweep reads the same supported-contract set as dispatch. With C3 archived in a disposable checkout, all 49 focused startup, historical-read, settlement and C4 demo tests passed. The earlier broader probe found 25 scenario failures in addition to four archive assertions corrected by this card. The final isolated suite passed 1,481 Python tests. Source +4/−4 and tests/docs +32/−12.
 - **T4.8 archive controls:** the executor publishes the archive decision, the Worker preserves exact replay and bound discussion answers, and the browser gates stage controls without hiding evidence. Source +49/−22 and tests/docs +101/−2. Isolated Node 24 `make check` passed 1,482 Python, 42 web, and 52 gateway tests.
 - **T4.8 archive preparation:** separates evidence format from stage authority and preserves late scheduler accounting without certifying failed historical results. The inventory now includes saved selective cancellations and monitor wakeups. Isolated Ruff, 125 focused tests and all 1,481 Python tests passed. Source +70/−28 and tests/docs +107/−13. The archive predicate is still opt-in in the synthetic tests.

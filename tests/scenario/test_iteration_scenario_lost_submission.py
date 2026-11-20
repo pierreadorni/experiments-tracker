@@ -1,145 +1,93 @@
-"""Lost-submission scenario: durable intent, lost response, lag, restart and exact adoption.
-
-Synthetic mechanism acceptance only: no live scheduler, model runtime or research.
-"""
+"""Contract 4 durable submission recovery with a synthetic scheduler."""
 
 import json
-import sys
 
-from helpers import seed_saved_contract3
+import pytest
+from test_research_job_dispatch import accept
+from test_research_job_source import setup_request
 
-from experimenttracker.config import JobResources
-from experimenttracker.slurm import Observation
-from scenario import settle
-
-PLAN = {
-    "schema_version": 3,
-    "summary": "Synthetic lost-submission scenario.",
-    "protocol": "Synthetic mechanism check, not scientific research.",
-    "synthetic_demo": True,
-    "parameters_json": "{}",
-    "files": ["recipe.py"],
-    "figures": [],
-    "stages": [
-        {
-            "id": "train",
-            "title": "Synthetic training",
-            "needs": [],
-            "outputs": ["metrics.json"],
-            "result_file": "metrics.json",
-            "resources": JobResources().model_dump(),
-        }
-    ],
-}
-SOURCE = "print('synthetic scenario recipe')\n"
+from experimenttracker.research.job_dispatch import dispatch
+from experimenttracker.research.settlement import complete
+from experimenttracker.slurm import Observation, SubmissionUncertain
 
 
-def plan_turn(payload, workspace):
-    return {
-        "schema_version": 3,
-        "title": "Synthetic scenario",
-        "summary": PLAN["summary"],
-        "protocol": PLAN["protocol"],
-        "stages": [
-            {
-                "id": "train",
-                "title": "Synthetic training",
-                "summary": "Synthetic task.",
-                "needs": [],
-                "resources": JobResources().model_dump(),
-            }
-        ],
-    }
-
-
-def prepare_turn(payload, workspace):
-    runtime = workspace / "runtime/bin/python"
-    runtime.parent.mkdir(parents=True, exist_ok=True)
-    if not runtime.exists():
-        runtime.symlink_to(sys.executable)
-    (workspace / "recipe.py").write_text(SOURCE)
-    return {**PLAN, "python_executable": str(runtime)}
-
-
-def interpret_turn(payload, workspace):
-    """The report result shape; adoption ends this scenario before it is dispatched."""
-    return {
-        "title": "Synthetic result",
-        "summary": "Synthetic scenario result.",
-        "observations": [{"text": "Synthetic.", "evidence_ids": [payload["evidence_ids"][0]]}],
-        "limitations": ["Synthetic infrastructure only."],
-        "next_ideas": [],
-        "scientific_outcome": "inconclusive",
-    }
-
-
-async def steps(scenario, count):
-    """Advance through explicit ticks only; a condition is never inferred from yields."""
+async def observe_steps(scenario, count):
     for _ in range(count):
-        await scenario.workflow.tick(force_observe=True)
-        await settle(scenario.workflow)
+        await scenario.workflow.observe_jobs()
         scenario.clock.advance(scenario.step)
 
 
-async def test_lost_submission_intent_survives_lag_and_restart_then_reconciles_exactly(scenario):
-    store, backend = scenario.store, scenario.slurm_backend
-    eid = seed_saved_contract3(store, "Synthetic lost-submission response.")
-    assert store.experiment(eid)["contract"]["execution_contract"] == 3
-    scenario.agent.script("plan", turn=plan_turn, turns=1)
-    scenario.agent.script("prepare", turn=prepare_turn, turns=1)
-    scenario.agent.script("interpret", turn=interpret_turn, turns=1)
-    await scenario.approve_plan(eid)
+async def lost_submission(scenario, tmp_path):
+    """Submit from one exact approved research turn and lose its scheduler reply."""
+    workflow, backend = scenario.workflow, scenario.slurm_backend
+    store = workflow.store
+    _, eid, action, request = setup_request(workflow, tmp_path)
+    assert store.experiment(eid)["contract"]["execution_contract"] == 4
+    assert not store.rows("SELECT * FROM stages WHERE experiment_id=?", (eid,))
+    accept(store, eid, request)
     scenario.one_session()
 
-    # The scheduler accepts the job externally, then the response is lost and the
-    # accepted identity stays invisible to accounting queries.
+    async def synthetic_preflight(intent, script, root, resources):
+        assert script.is_file() and script.parent == root
+        assert not resources.gpus_per_job
+        assert not store.one("SELECT 1 FROM jobs WHERE intent_id=?", (intent,))
+
+    scenario.slurm.preflight = synthetic_preflight
     backend.lose_response = backend.lag = True
-    await scenario.run(lambda: store.experiment(eid)["hold_reason"] == "submission_uncertain")
+    with pytest.raises(SubmissionUncertain, match="synthetic sbatch response lost"):
+        await dispatch(workflow, eid, action, request)
+    intent = store.one("SELECT * FROM jobs WHERE intent_id=?", (request["request_id"],))
+    assert (await dispatch(workflow, eid, action, request)) == intent
+    await workflow.observe_jobs()
+    assert store.experiment(eid)["hold_reason"] == "submission_uncertain"
+    return eid, intent, action, request
+
+
+async def test_lost_submission_intent_survives_lag_and_restart_then_reconciles_exactly(scenario, tmp_path):
+    store, backend = scenario.store, scenario.slurm_backend
+    eid, intent, action, _ = await lost_submission(scenario, tmp_path)
 
     [accepted] = backend.accepted
-    intent = store.one("SELECT * FROM jobs WHERE experiment_id=?", (eid,))
-    assert accepted["intent_saved"] is True  # committed before acceptance, on a separate connection
+    assert accepted["intent_saved"] is True  # Visible on a separate read-only connection before send.
     assert accepted["intent_id"] == intent["intent_id"]
     assert (intent["state"], intent["job_id"]) == ("submitting", None)
-    assert store.experiment(eid)["hold_reason"] == "submission_uncertain"
     assert backend.submit_calls == [intent["intent_id"]]
 
-    await steps(scenario, 3)
+    await observe_steps(scenario, 3)
     still_uncertain = store.one("SELECT state,job_id FROM jobs WHERE intent_id=?", (intent["intent_id"],))
-    assert (still_uncertain["state"], still_uncertain["job_id"]) == ("submitting", None)
-    # A missing scheduler match is accounting lag: the engine records uncertainty, not absence.
+    assert still_uncertain == {"state": "submitting", "job_id": None}
     assert "No matching job found" in store.experiment(eid)["error"]
     assert backend.submit_calls == [intent["intent_id"]]
 
-    # A replacement workflow reuses the same SQLite state and the same fake backend.
+    settled = await complete(
+        scenario.workflow, action, {"status": "wait", "summary": "Job pending", "next": "Wait for accounting"}
+    )
+    assert settled["state"] == "completed"
     stopped = scenario.workflow
     replacement = await scenario.restart()
     assert stopped is not replacement and stopped.closing and replacement.store is store
     assert scenario.slurm.backend is backend and scenario.agent.backend is scenario.agent_backend
-    assert (
-        store.one("SELECT state FROM jobs WHERE intent_id=?", (intent["intent_id"],))["state"] == "submitting"
-    )
-    await steps(scenario, 2)
+    assert store.one("SELECT state FROM jobs WHERE intent_id=?", (intent["intent_id"],)) == {
+        "state": "submitting"
+    }
+    await replacement.tick(force_observe=True)
+    await observe_steps(scenario, 2)
     assert backend.submit_calls == [intent["intent_id"]]
 
-    saved_job_id = backend.matches[intent["intent_id"]][0]
+    saved_job_id = accepted["job_id"]
     backend.observations[saved_job_id] = Observation("PENDING", pending_reason="Synthetic queue")
     backend.reveal()
-    await scenario.run(
-        lambda: (
-            store.one("SELECT job_id FROM jobs WHERE intent_id=?", (intent["intent_id"],))["job_id"]
-            == saved_job_id
-        )
-    )
+    await observe_steps(scenario, 2)
 
     adopted = store.one("SELECT * FROM jobs WHERE intent_id=?", (intent["intent_id"],))
-    assert adopted["job_id"] == saved_job_id and adopted["state"] == "submitted"
+    assert (adopted["job_id"], adopted["state"]) == (saved_job_id, "submitted")
     assert store.experiment(eid)["hold_reason"] is None
-    reconciled = store.rows(
+    [reconciled] = store.rows(
         "SELECT payload FROM events WHERE experiment_id=? AND kind='job_reconciled'", (eid,)
     )
-    assert len(reconciled) == 1
-    assert json.loads(reconciled[0]["payload"])["job_id"] == saved_job_id
-    assert backend.submit_calls == [intent["intent_id"]]  # one submission for the exact intent
-    assert scenario.agent_backend.turns_started == 2  # plan and prepare only; adoption ends the run
-    assert scenario.agent_backend.scripts["interpret"]["seen"] == 0
+    assert json.loads(reconciled["payload"])["job_id"] == saved_job_id
+    assert backend.submit_calls == [intent["intent_id"]]
+    assert store.rows("SELECT id,state FROM agent_actions WHERE experiment_id=?", (eid,)) == [
+        {"id": action["id"], "state": "completed"}
+    ]
+    assert scenario.agent_backend.turns_started == 0

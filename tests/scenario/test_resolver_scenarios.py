@@ -4,38 +4,16 @@ Synthetic mechanism acceptance only: no live scheduler, model runtime or researc
 """
 
 import json
+from uuid import uuid4
 
-from helpers import seed_saved_contract3
+import pytest
 
-from experimenttracker import early_repair
 from experimenttracker.core import job_obligations
-from experimenttracker.models import Implementation
+from experimenttracker.research.job_dispatch import dispatch
+from experimenttracker.research.session import follow_up_turn
+from experimenttracker.research.settlement import complete
 from experimenttracker.slurm import Observation
-from experimenttracker.store import encode
-from scenario import settle
-from scenario.test_iteration_scenario_lost_submission import interpret_turn, plan_turn, prepare_turn
-
-
-async def steps(scenario, count):
-    """Advance through explicit ticks only; a condition is never inferred from yields."""
-    for _ in range(count):
-        await scenario.workflow.tick(force_observe=True)
-        await settle(scenario.workflow)
-        scenario.clock.advance(scenario.step)
-
-
-async def lost_submission(scenario):
-    """Drive one synthetic experiment to a saved intent whose sbatch response was lost."""
-    store, backend = scenario.store, scenario.slurm_backend
-    eid = seed_saved_contract3(store, "Synthetic resolver scenario.")
-    scenario.agent.script("plan", turn=plan_turn, turns=1)
-    scenario.agent.script("prepare", turn=prepare_turn, turns=1)
-    scenario.agent.script("interpret", turn=interpret_turn, turns=1)
-    await scenario.approve_plan(eid)
-    scenario.one_session()
-    backend.lose_response = backend.lag = True
-    await scenario.run(lambda: store.experiment(eid)["hold_reason"] == "submission_uncertain")
-    return eid, store.one("SELECT * FROM jobs WHERE experiment_id=?", (eid,))
+from scenario.test_iteration_scenario_lost_submission import lost_submission, observe_steps
 
 
 def receipts(store, eid):
@@ -47,49 +25,13 @@ def receipts(store, eid):
     ]
 
 
-def retry_revision(workflow, eid, intent_id):
-    """Save the selective-repair revision that follows a proven-absence compute failure."""
-    store = workflow.store
-    exp = store.experiment(eid)
-    revision = exp["evidence_revision"] + 1
-    contract = exp["contract"]
-    contract["repair_count"] = contract.get("repair_count", 0) + 1
-    contract["early_repair"] = {
-        "state": "preparing",
-        "revision": revision,
-        "failed_intents": [intent_id],
-        "error": exp["error"],
-    }
-    with store.tx() as db:
-        db.execute(
-            "UPDATE experiments SET contract=?,evidence_revision=?,phase='preparing',hold_reason='automatic_repair' WHERE id=?",
-            (encode(contract), revision, eid),
-        )
-    exp = store.experiment(eid)
-    plan = Implementation.model_validate(
-        {
-            **exp["snapshot"]["plan"],
-            "reuse_rationale": "A proven absence reuses no compute.",
-            "repair_decisions": [
-                {
-                    "stage_id": "train",
-                    "decision": "retry",
-                    "rationale": "The scheduler never received the first intent.",
-                }
-            ],
-        }
-    )
-    early_repair.apply(workflow, exp, plan, {**exp["snapshot"], "plan": plan.model_dump()})
-    return revision
-
-
-async def test_lost_response_adopts_one_match_exactly_once(scenario):
+async def test_lost_response_adopts_one_match_exactly_once(scenario, tmp_path):
     store, backend = scenario.store, scenario.slurm_backend
-    eid, intent = await lost_submission(scenario)
+    eid, intent, _, _ = await lost_submission(scenario, tmp_path)
     assert (intent["state"], intent["job_id"]) == ("submitting", None)
 
     # Before the accounting lag a missing match is uncertainty, not absence.
-    await steps(scenario, 2)
+    await observe_steps(scenario, 2)
     waiting = store.one("SELECT state,job_id FROM jobs WHERE intent_id=?", (intent["intent_id"],))
     assert waiting == {"state": "submitting", "job_id": None}
     assert store.experiment(eid)["error"] == "No matching job found; operator reconciliation required"
@@ -98,12 +40,7 @@ async def test_lost_response_adopts_one_match_exactly_once(scenario):
     saved_job_id = backend.matches[intent["intent_id"]][0]
     backend.observations[saved_job_id] = Observation("PENDING", pending_reason="Synthetic queue")
     backend.reveal()
-    await scenario.run(
-        lambda: (
-            store.one("SELECT job_id FROM jobs WHERE intent_id=?", (intent["intent_id"],))["job_id"]
-            == saved_job_id
-        )
-    )
+    await observe_steps(scenario, 2)
 
     adopted = store.one("SELECT state,job_id FROM jobs WHERE intent_id=?", (intent["intent_id"],))
     assert adopted == {"state": "submitted", "job_id": saved_job_id}
@@ -117,13 +54,20 @@ async def test_lost_response_adopts_one_match_exactly_once(scenario):
     assert backend.submit_calls == [intent["intent_id"]]
 
 
-async def test_absent_after_the_accounting_lag_records_a_receipt_and_the_next_attempt_is_new(scenario):
+async def test_absent_after_the_accounting_lag_records_a_receipt_and_the_next_attempt_is_new(
+    scenario, tmp_path
+):
     store, backend = scenario.store, scenario.slurm_backend
-    eid, intent = await lost_submission(scenario)
+    eid, intent, action, request = await lost_submission(scenario, tmp_path)
     assert backend.matches[intent["intent_id"]]  # accepted externally, invisible to accounting
+    fresh_request = {**request, "request_id": str(uuid4())}
+    with pytest.raises(ValueError, match="uncertain outcome"):
+        await dispatch(scenario.workflow, eid, action, fresh_request)
+    assert not store.one("SELECT 1 FROM jobs WHERE intent_id=?", (fresh_request["request_id"],))
+    assert backend.submit_calls == [intent["intent_id"]]
 
     scenario.clock.advance(601)
-    await steps(scenario, 1)
+    await observe_steps(scenario, 1)
 
     saved = store.one("SELECT * FROM jobs WHERE intent_id=?", (intent["intent_id"],))
     assert (saved["state"], saved["job_id"]) == ("failed", None)
@@ -140,29 +84,42 @@ async def test_absent_after_the_accounting_lag_records_a_receipt_and_the_next_at
 
     # A scheduler record that appears afterwards never revives the abandoned intent.
     backend.reveal()
-    await steps(scenario, 2)
+    await observe_steps(scenario, 2)
     assert store.one("SELECT job_id FROM jobs WHERE intent_id=?", (intent["intent_id"],))["job_id"] is None
     assert len(receipts(store, eid)) == 1
     assert backend.submit_calls == [intent["intent_id"]]
 
-    # The next admission is a new attempt: one new intent, never the abandoned one.
-    assert store.experiment(eid)["hold_reason"] == "compute_failed"
-    revision = retry_revision(scenario.workflow, eid, intent["intent_id"])
-    await steps(scenario, 3)
-    submitted = store.rows("SELECT * FROM jobs WHERE experiment_id=? ORDER BY attempt", (eid,))
-    assert len(submitted) == 2
-    retried = [job for job in submitted if job["intent_id"] != intent["intent_id"]]
-    assert [job["attempt"] for job in retried] == [revision]
-    assert backend.submit_calls == [intent["intent_id"], retried[0]["intent_id"]]
+    # C4 requires an explicit request from an authorized turn for new compute.
+    replay = await dispatch(scenario.workflow, eid, action, request)
+    assert replay == saved
+    assert backend.submit_calls == [intent["intent_id"]]
+    backend.lose_response = backend.lag = False
+    retried = await dispatch(scenario.workflow, eid, action, fresh_request)
+    assert retried["intent_id"] == fresh_request["request_id"]
+    assert retried["job_id"] != backend.matches[intent["intent_id"]][0]
+    assert retried["state"] == "submitted"
+    assert set(
+        job["intent_id"] for job in store.rows("SELECT intent_id FROM jobs WHERE experiment_id=?", (eid,))
+    ) == {intent["intent_id"], retried["intent_id"]}
+    assert backend.submit_calls == [intent["intent_id"], retried["intent_id"]]
+    settled = await complete(
+        scenario.workflow, action, {"status": "wait", "summary": "Wait for compute", "next": "Observe job"}
+    )
+    assert settled["state"] == "completed"
+    scenario.clock.advance(60)
+    follow_up = follow_up_turn(store, eid)
+    assert f"Job {intent['intent_id']}: confirmed not submitted after accounting lag" in follow_up["input"]
+    assert follow_up["thread_id"] == action["thread_id"]
+    assert follow_up_turn(store, eid) is None
 
 
-async def test_several_matches_quarantine_the_intent_without_adopting_it(scenario):
+async def test_several_matches_quarantine_the_intent_without_adopting_it(scenario, tmp_path):
     store, backend = scenario.store, scenario.slurm_backend
-    eid, intent = await lost_submission(scenario)
+    eid, intent, _, _ = await lost_submission(scenario, tmp_path)
 
     backend.accept(intent["intent_id"], True)  # a second scheduler job for one intent
     backend.reveal()
-    await steps(scenario, 2)
+    await observe_steps(scenario, 2)
 
     saved = store.one("SELECT state,job_id,error FROM jobs WHERE intent_id=?", (intent["intent_id"],))
     assert saved == {"state": "submitting", "job_id": None, "error": None}
@@ -182,13 +139,13 @@ async def test_several_matches_quarantine_the_intent_without_adopting_it(scenari
     assert backend.submit_calls == [intent["intent_id"]]
 
 
-async def test_unreadable_scheduler_concludes_nothing(scenario):
+async def test_unreadable_scheduler_concludes_nothing(scenario, tmp_path):
     store, backend = scenario.store, scenario.slurm_backend
-    eid, intent = await lost_submission(scenario)
+    eid, intent, _, _ = await lost_submission(scenario, tmp_path)
 
     backend.unreachable_intents[intent["intent_id"]] = TimeoutError("synthetic sacct timed out")
     scenario.clock.advance(601)
-    await steps(scenario, 2)
+    await observe_steps(scenario, 2)
 
     saved = store.one("SELECT state,job_id,error FROM jobs WHERE intent_id=?", (intent["intent_id"],))
     assert saved == {"state": "submitting", "job_id": None, "error": None}

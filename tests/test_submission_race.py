@@ -5,6 +5,7 @@ Synthetic mechanism acceptance only: no live scheduler, model runtime or researc
 
 import asyncio
 import json
+import sys
 from uuid import uuid4
 
 import pytest
@@ -19,18 +20,75 @@ from scenario import (
     settle,
 )
 from scenario.conftest import Scenario
-from scenario.test_iteration_scenario_lost_submission import (
-    interpret_turn,
-    plan_turn,
-    prepare_turn,
-)
 
 from experimenttracker import clock, resolver
+from experimenttracker.config import JobResources
 from experimenttracker.core import job_obligations
 from experimenttracker.slurm import Observation
 from experimenttracker.store import Store
 
 GATE_SECONDS = 20.0  # a real-time failure bound, never a progress condition
+
+
+PLAN = {
+    "schema_version": 3,
+    "summary": "Synthetic lost-submission scenario.",
+    "protocol": "Synthetic mechanism check, not scientific research.",
+    "synthetic_demo": True,
+    "parameters_json": "{}",
+    "files": ["recipe.py"],
+    "figures": [],
+    "stages": [
+        {
+            "id": "train",
+            "title": "Synthetic training",
+            "needs": [],
+            "outputs": ["metrics.json"],
+            "result_file": "metrics.json",
+            "resources": JobResources().model_dump(),
+        }
+    ],
+}
+SOURCE = "print('synthetic scenario recipe')\n"
+
+
+def plan_turn(payload, workspace):
+    return {
+        "schema_version": 3,
+        "title": "Synthetic scenario",
+        "summary": PLAN["summary"],
+        "protocol": PLAN["protocol"],
+        "stages": [
+            {
+                "id": "train",
+                "title": "Synthetic training",
+                "summary": "Synthetic task.",
+                "needs": [],
+                "resources": JobResources().model_dump(),
+            }
+        ],
+    }
+
+
+def prepare_turn(payload, workspace):
+    runtime = workspace / "runtime/bin/python"
+    runtime.parent.mkdir(parents=True, exist_ok=True)
+    if not runtime.exists():
+        runtime.symlink_to(sys.executable)
+    (workspace / "recipe.py").write_text(SOURCE)
+    return {**PLAN, "python_executable": str(runtime)}
+
+
+def interpret_turn(payload, workspace):
+    """The report result shape; adoption ends this scenario before it is dispatched."""
+    return {
+        "title": "Synthetic result",
+        "summary": "Synthetic scenario result.",
+        "observations": [{"text": "Synthetic.", "evidence_ids": [payload["evidence_ids"][0]]}],
+        "limitations": ["Synthetic infrastructure only."],
+        "next_ideas": [],
+        "scientific_outcome": "inconclusive",
+    }
 
 
 @pytest.fixture
