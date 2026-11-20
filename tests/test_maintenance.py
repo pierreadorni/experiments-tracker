@@ -14,6 +14,7 @@ import httpx
 import pytest
 import yaml
 from fastapi.testclient import TestClient
+from helpers import seed_saved_contract3
 
 from experimenttracker.api import create_app
 from experimenttracker.maintenance import (
@@ -56,7 +57,7 @@ def release(config, commit=COMMIT, *, runnable=False):
     (root / ".venv/lib").symlink_to(Path(sys.prefix) / "lib", target_is_directory=True)
     if runnable:
         shutil.copytree(ROOT / "src", root / "src", ignore=shutil.ignore_patterns("__pycache__"))
-        shutil.copytree(ROOT / "recipes", root / "recipes")
+        (root / "recipes").mkdir()
     else:
         (root / "src").mkdir()
         (root / "src/example.py").write_text("pass\n")
@@ -246,9 +247,7 @@ def test_real_demo_process_handover_without_model_or_scheduler(config, tmp_path)
     config_path.chmod(0o600)
     root = release(config, runnable=True)
     seed = Store(config.state_dir / "workflow.sqlite")
-    eid = seed.command(
-        uuid4(), "create", {"brief": "Synthetic preserved history", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    eid = seed_saved_contract3(seed, "Synthetic preserved history")
     contract = seed.experiment(eid)["contract"]
     contract.pop("execution_contract")
     seed.update(eid, phase="complete", pause_agent=1, pause_compute=1)

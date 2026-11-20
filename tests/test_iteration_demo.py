@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
 
-from experimenttracker import artifacts, cli
+from experimenttracker import artifacts, cli, creation_policy
 from experimenttracker.codex_client import DEMO_AGENT_SOURCE
 from experimenttracker.store import Store
 
@@ -34,6 +34,7 @@ def read_store(config):
 
 
 def test_demo_runs_the_current_contract_end_to_end(monkeypatch, config):
+    monkeypatch.setattr(creation_policy, "MODE", "legacy")
     forbid_scientific_traversal(monkeypatch)
     assert run_demo(config, SUPPORTED_BRIEF) == 0
     store = read_store(config)
@@ -112,6 +113,7 @@ def test_demo_refuses_a_live_configuration(monkeypatch, config):
 
 
 def test_demo_asks_before_running_an_unsupported_brief(monkeypatch, config):
+    monkeypatch.setattr(creation_policy, "MODE", "legacy")
     forbid_scientific_traversal(monkeypatch)
     assert run_demo(config, UNSUPPORTED_BRIEF) == 1
     store = read_store(config)

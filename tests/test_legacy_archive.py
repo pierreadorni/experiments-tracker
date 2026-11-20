@@ -2,14 +2,13 @@ import json
 from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3
 
 from experimenttracker import clock
 
 
 def legacy(store, contract="missing", phase="training", deleted=False):
-    eid = store.command(uuid4(), "create", {"brief": "saved run", "recipe_id": "agent_experiment_v1"})[
-        "experiment_id"
-    ]
+    eid = seed_saved_contract3(store, "saved run")
     with store.tx() as db:
         row = db.execute("SELECT contract FROM experiments WHERE id=?", (eid,)).fetchone()
         value = json.loads(row[0])

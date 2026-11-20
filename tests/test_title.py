@@ -2,7 +2,7 @@ import asyncio
 from uuid import uuid4
 
 import pytest
-from helpers import IterationAgent
+from helpers import IterationAgent, seed_saved_contract3
 from pydantic import ValidationError
 from test_generic import ImplementationAgent
 from test_steering import wait_for
@@ -58,11 +58,7 @@ async def test_saved_luna_turn_is_reconciled_after_plan_approval(runtime):
 
     agent = TitleAgent()
     workflow = Workflow(old.config, store, scheduler, agent)
-    eid = store.command(
-        uuid4(),
-        "create",
-        {"brief": "Test an entirely new method and show its frontier.", "recipe_id": "agent_experiment_v1"},
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Test an entirely new method and show its frontier.")
     assert store.experiment(eid)["contract"]["execution_contract"] == 3
     await wait_for(
         workflow,
@@ -105,9 +101,7 @@ async def test_current3_manual_summary_updates_failed_run_without_restarting_it(
 
     agent = SummaryAgent()
     workflow = Workflow(old.config, store, scheduler, agent)
-    eid = store.command(
-        uuid4(), "create", {"brief": "Frozen DINOv3 baseline", "recipe_id": "agent_experiment_v1"}
-    )["experiment_id"]
+    eid = seed_saved_contract3(store, "Frozen DINOv3 baseline")
     store.update(eid, phase="failed", error="Existing pipeline failure")
     identity = str(uuid4())
     payload = {"action": "summarize_title"}

@@ -3,10 +3,9 @@
 import hashlib
 import json
 from pathlib import Path
-from uuid import uuid4
 
 import pytest
-from helpers import PLAN, IterationAgent, approve_plan, until
+from helpers import PLAN, IterationAgent, approve_plan, seed_saved_contract3, until
 
 from experimenttracker import artifacts, iteration
 from experimenttracker.models import Implementation, ResearchPlan
@@ -14,11 +13,7 @@ from experimenttracker.workflow import Workflow
 
 
 def create(store):
-    return store.command(
-        uuid4(),
-        "create",
-        {"brief": "Test an entirely new method and show its frontier.", "recipe_id": "agent_experiment_v1"},
-    )["experiment_id"]
+    return seed_saved_contract3(store, "Test an entirely new method and show its frontier.")
 
 
 def test_compact_reference_retains_protocol_and_full_pointers(runtime):

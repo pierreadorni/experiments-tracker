@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from helpers import seed_saved_contract3
 
 from experimenttracker.agent_pool import AgentSlot, experiment_owner
 from experimenttracker.codex_client import TerminalTurnError
@@ -11,9 +12,7 @@ from experimenttracker.legacy_archive_actions import settle_actions
 
 
 def archived(store, contract=1, phase="training"):
-    eid = store.command(uuid4(), "create", {"brief": "saved fixture", "recipe_id": "agent_experiment_v1"})[
-        "experiment_id"
-    ]
+    eid = seed_saved_contract3(store, "saved fixture")
     with store.tx() as db:
         value = json.loads(db.execute("SELECT contract FROM experiments WHERE id=?", (eid,)).fetchone()[0])
         if contract is None:
