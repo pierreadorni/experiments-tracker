@@ -40,7 +40,6 @@ import { currentReport, availableReports } from './reports';
 import { StageTimeline } from './Progress';
 import { ResearchProgress } from './ResearchProgress';
 import { timelineStages, experimentStatus } from './progress';
-import { PlanReview, Steering } from './PlanReview';
 import { Conversation } from './Conversation';
 import { Select } from './Select';
 import { Report } from './Report';
@@ -1175,24 +1174,6 @@ function App() {
                     )}
                     {tab === 'Progress' && exp.contract?.execution_contract !== 4 && (
                       <div className="progress-view">
-                        <PlanReview
-                          key={`${exp.id}:${exp.plan_review?.revision || 0}`}
-                          exp={exp}
-                          busy={
-                            busy ||
-                            !stageExecutionAvailable ||
-                            Boolean(exp.pending_commands?.some((c) => c.kind === 'plan_review'))
-                          }
-                          onDecision={(decision, feedback) =>
-                            act(async () => {
-                              await command(`/api/experiments/${exp.id}/plan-review`, {
-                                decision,
-                                plan_revision: exp.plan_review!.revision,
-                                ...(feedback ? { feedback } : {}),
-                              });
-                            })
-                          }
-                        />
                         <section className="panel progress-panel" aria-label="Progress">
                           <div className="section-heading">
                             <span className="muted">
@@ -1209,88 +1190,9 @@ function App() {
                           </div>
                           <StageTimeline key={exp.id} exp={exp} status={status} />
                         </section>
-                        <Steering
-                          key={exp.id}
-                          exp={exp}
-                          busy={
-                            busy ||
-                            !stageExecutionAvailable ||
-                            Boolean(exp.pending_commands?.some((c) => c.kind === 'steer'))
-                          }
-                          onSend={(text, mode) =>
-                            act(async () => {
-                              await command(`/api/experiments/${exp.id}/steering`, { text, mode });
-                            })
-                          }
-                        />
                         {!['complete', 'cancelled'].includes(exp.phase) && (
                           <section className="panel control-panel">
                             <h3>Automation controls</h3>
-                            {([
-                              'agent_session_unavailable',
-                              'agent_stage_blocked',
-                              'agent_stage_failed',
-                              'implementation_blocked',
-                            ].includes(exp.hold_reason || '') ||
-                              (exp.phase === 'failed' &&
-                                exp.recipe_id === 'agent_experiment_v1' &&
-                                ((exp.snapshot &&
-                                  [
-                                    'compute_failed',
-                                    'validation_failed',
-                                    'agent_recovery_exhausted',
-                                  ].includes(exp.hold_reason || '')) ||
-                                  [
-                                    'agent_recovery_exhausted',
-                                    'agent_correction_stalled',
-                                    'agent_budget_exhausted',
-                                  ].includes(exp.hold_reason || '')))) && (
-                              <button
-                                disabled={
-                                  busy ||
-                                  !stageExecutionAvailable ||
-                                  Boolean(
-                                    exp.pending_commands?.some((c) => c.action === 'retry_agent'),
-                                  )
-                                }
-                                onClick={() =>
-                                  void act(async () => {
-                                    await command(`/api/experiments/${exp.id}/actions`, {
-                                      action: 'retry_agent',
-                                    });
-                                  })
-                                }
-                              >
-                                <Play size={16} />
-                                Retry with agent
-                              </button>
-                            )}
-                            {['agent_stage_blocked', 'agent_stage_failed'].includes(
-                              exp.hold_reason || '',
-                            ) &&
-                              stageExecutionAvailable && (
-                                <button
-                                  disabled={
-                                    busy ||
-                                    !status?.implementation_repair ||
-                                    Boolean(
-                                      exp.pending_commands?.some(
-                                        (c) => c.action === 'repair_implementation',
-                                      ),
-                                    )
-                                  }
-                                  onClick={() =>
-                                    void act(async () => {
-                                      await command(`/api/experiments/${exp.id}/actions`, {
-                                        action: 'repair_implementation',
-                                      });
-                                    })
-                                  }
-                                >
-                                  <Play size={16} />
-                                  Repair implementation
-                                </button>
-                              )}
                             {!terminal.includes(exp.phase) && (
                               <>
                                 <button
