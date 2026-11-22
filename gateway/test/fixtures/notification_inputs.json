@@ -1,321 +1,321 @@
 {
- "base": {
-  "id": "11111111-1111-4111-8111-111111111111",
-  "revision": 3,
-  "phase": "running",
-  "hold_reason": null,
-  "brief": "Compare optimizers",
-  "contract": {
-   "project": {
-    "id": "my project/a"
-   }
-  }
- },
- "cases": {
-  "plain_running_phase": {},
-  "pending_request": {
-   "pending_request": {
-    "id": "req-1"
-   }
-  },
-  "answered_request": {
-   "pending_request": {
-    "id": "req-1",
-    "answer": "yes"
-   }
-  },
-  "expired_request": {
-   "pending_request": {
-    "id": "req-1",
-    "expired": true
-   },
-   "hold_reason": "waiting_for_quota"
-  },
-  "request_on_failed": {
-   "phase": "failed",
-   "pending_request": {
-    "id": "req-1"
-   }
-  },
-  "complete_with_report": {
-   "phase": "complete",
-   "active_report_id": "rep-9",
-   "stages": [
-    {
-     "id": "a",
-     "state": "complete"
-    }
-   ]
-  },
-  "complete_by_version": {
-   "phase": "complete",
-   "report_versions": [
-    {
-     "version": 2,
-     "state": "ready"
-    },
-    {
-     "version": 5,
-     "state": "draft"
-    },
-    {
-     "version": 4,
-     "state": "ready"
-    }
-   ]
-  },
-  "complete_no_reports": {
-   "phase": "complete"
-  },
-  "failed": {
-   "phase": "failed",
-   "stages": [
-    {
-     "id": "a",
-     "state": "complete"
-    },
-    {
-     "id": "b",
-     "state": "failed"
-    }
-   ]
-  },
-  "cancelled": {
-   "phase": "cancelled"
-  },
-  "plan_review": {
-   "plan_review": {
-    "state": "awaiting_review",
-    "revision": 7
-   }
-  },
-  "hold": {
-   "hold_reason": "agent_quota_low"
-  },
-  "demo_title_analysis": {
-   "title": null,
-   "analysis": {
-    "title": "Analysed title"
-   },
-   "brief": "",
-   "contract": {
-    "synthetic_demo": true
-   }
-  },
-  "empty_everything": {
-   "brief": "",
-   "contract": null
-  },
-  "running_job": {
-   "stages": [
-    {
-     "id": "fit_model",
-     "state": "running"
-    },
-    {
-     "id": "eval",
-     "state": "pending"
-    }
-   ],
-   "jobs": [
-    {
-     "stage_id": "fit_model",
-     "state": "submitted",
-     "scheduler_state": "RUNNING"
-    }
-   ],
-   "snapshot": {
-    "plan": {
-     "stages": [
-      {
-       "id": "fit_model",
-       "title": "Fit model"
+  "base": {
+    "id": "11111111-1111-4111-8111-111111111111",
+    "revision": 3,
+    "phase": "running",
+    "hold_reason": null,
+    "brief": "Compare optimizers",
+    "contract": {
+      "project": {
+        "id": "my project/a"
       }
-     ]
     }
-   }
   },
-  "queued_job_review_title": {
-   "stages": [
-    {
-     "id": "s1",
-     "state": "running"
-    }
-   ],
-   "jobs": [
-    {
-     "stage_id": "s1",
-     "state": "submitted",
-     "scheduler_state": "PENDING"
-    }
-   ],
-   "plan_review": {
-    "state": "approved",
-    "revision": 1,
-    "stages": [
-     {
-      "id": "s1",
-      "title": "Review title"
-     }
-    ]
-   }
-  },
-  "submitting_job": {
-   "stages": [
-    {
-     "id": "s_x",
-     "state": "submitting"
-    }
-   ],
-   "jobs": [
-    {
-     "stage_id": "s_x",
-     "state": "submitting",
-     "scheduler_state": null
-    }
-   ]
-  },
-  "no_scheduler_state": {
-   "stages": [
-    {
-     "id": "s_x",
-     "state": "running"
-    }
-   ],
-   "jobs": [
-    {
-     "stage_id": "s_x",
-     "state": "submitted",
-     "scheduler_state": null
-    }
-   ]
-  },
-  "accounting": {
-   "stages": [
-    {
-     "id": "s_x",
-     "state": "running"
-    }
-   ],
-   "jobs": [
-    {
-     "stage_id": "s_x",
-     "state": "submitted",
-     "scheduler_state": "COMPLETED"
-    }
-   ]
-  },
-  "completing": {
-   "stages": [
-    {
-     "id": "s_x",
-     "state": "running"
-    }
-   ],
-   "jobs": [
-    {
-     "stage_id": "s_x",
-     "state": "submitted",
-     "scheduler_state": "COMPLETING"
-    }
-   ]
-  },
-  "other_scheduler_state": {
-   "stages": [
-    {
-     "id": "s_x",
-     "state": "running"
-    }
-   ],
-   "jobs": [
-    {
-     "stage_id": "s_x",
-     "state": "submitted",
-     "scheduler_state": "NODE_FAIL"
-    }
-   ]
-  },
-  "running_prefers_over_queued": {
-   "stages": [
-    {
-     "id": "a",
-     "state": "running"
+  "cases": {
+    "plain_running_phase": {},
+    "pending_request": {
+      "pending_request": {
+        "id": "req-1"
+      }
     },
-    {
-     "id": "b",
-     "state": "running"
-    }
-   ],
-   "jobs": [
-    {
-     "stage_id": "a",
-     "state": "submitted",
-     "scheduler_state": "PENDING"
+    "answered_request": {
+      "pending_request": {
+        "id": "req-1",
+        "answer": "yes"
+      }
     },
-    {
-     "stage_id": "b",
-     "state": "submitted",
-     "scheduler_state": "RUNNING"
-    }
-   ]
-  },
-  "stage_without_job": {
-   "stages": [
-    {
-     "id": "s_x",
-     "state": "running"
+    "expired_request": {
+      "pending_request": {
+        "id": "req-1",
+        "expired": true
+      },
+      "hold_reason": "waiting_for_quota"
     },
-    {
-     "id": "s_y",
-     "state": "complete"
+    "request_on_failed": {
+      "phase": "failed",
+      "pending_request": {
+        "id": "req-1"
+      }
+    },
+    "complete_with_report": {
+      "phase": "complete",
+      "active_report_id": "rep-9",
+      "stages": [
+        {
+          "id": "a",
+          "state": "complete"
+        }
+      ]
+    },
+    "complete_by_version": {
+      "phase": "complete",
+      "report_versions": [
+        {
+          "version": 2,
+          "state": "ready"
+        },
+        {
+          "version": 5,
+          "state": "draft"
+        },
+        {
+          "version": 4,
+          "state": "ready"
+        }
+      ]
+    },
+    "complete_no_reports": {
+      "phase": "complete"
+    },
+    "failed": {
+      "phase": "failed",
+      "stages": [
+        {
+          "id": "a",
+          "state": "complete"
+        },
+        {
+          "id": "b",
+          "state": "failed"
+        }
+      ]
+    },
+    "cancelled": {
+      "phase": "cancelled"
+    },
+    "plan_review": {
+      "plan_review": {
+        "state": "awaiting_review",
+        "revision": 7
+      }
+    },
+    "hold": {
+      "hold_reason": "agent_quota_low"
+    },
+    "demo_title_analysis": {
+      "title": null,
+      "analysis": {
+        "title": "Analysed title"
+      },
+      "brief": "",
+      "contract": {
+        "synthetic_demo": true
+      }
+    },
+    "empty_everything": {
+      "brief": "",
+      "contract": null
+    },
+    "running_job": {
+      "stages": [
+        {
+          "id": "fit_model",
+          "state": "running"
+        },
+        {
+          "id": "eval",
+          "state": "pending"
+        }
+      ],
+      "jobs": [
+        {
+          "stage_id": "fit_model",
+          "state": "submitted",
+          "scheduler_state": "RUNNING"
+        }
+      ],
+      "snapshot": {
+        "plan": {
+          "stages": [
+            {
+              "id": "fit_model",
+              "title": "Fit model"
+            }
+          ]
+        }
+      }
+    },
+    "queued_job_review_title": {
+      "stages": [
+        {
+          "id": "s1",
+          "state": "running"
+        }
+      ],
+      "jobs": [
+        {
+          "stage_id": "s1",
+          "state": "submitted",
+          "scheduler_state": "PENDING"
+        }
+      ],
+      "plan_review": {
+        "state": "approved",
+        "revision": 1,
+        "stages": [
+          {
+            "id": "s1",
+            "title": "Review title"
+          }
+        ]
+      }
+    },
+    "submitting_job": {
+      "stages": [
+        {
+          "id": "s_x",
+          "state": "submitting"
+        }
+      ],
+      "jobs": [
+        {
+          "stage_id": "s_x",
+          "state": "submitting",
+          "scheduler_state": null
+        }
+      ]
+    },
+    "no_scheduler_state": {
+      "stages": [
+        {
+          "id": "s_x",
+          "state": "running"
+        }
+      ],
+      "jobs": [
+        {
+          "stage_id": "s_x",
+          "state": "submitted",
+          "scheduler_state": null
+        }
+      ]
+    },
+    "accounting": {
+      "stages": [
+        {
+          "id": "s_x",
+          "state": "running"
+        }
+      ],
+      "jobs": [
+        {
+          "stage_id": "s_x",
+          "state": "submitted",
+          "scheduler_state": "COMPLETED"
+        }
+      ]
+    },
+    "completing": {
+      "stages": [
+        {
+          "id": "s_x",
+          "state": "running"
+        }
+      ],
+      "jobs": [
+        {
+          "stage_id": "s_x",
+          "state": "submitted",
+          "scheduler_state": "COMPLETING"
+        }
+      ]
+    },
+    "other_scheduler_state": {
+      "stages": [
+        {
+          "id": "s_x",
+          "state": "running"
+        }
+      ],
+      "jobs": [
+        {
+          "stage_id": "s_x",
+          "state": "submitted",
+          "scheduler_state": "NODE_FAIL"
+        }
+      ]
+    },
+    "running_prefers_over_queued": {
+      "stages": [
+        {
+          "id": "a",
+          "state": "running"
+        },
+        {
+          "id": "b",
+          "state": "running"
+        }
+      ],
+      "jobs": [
+        {
+          "stage_id": "a",
+          "state": "submitted",
+          "scheduler_state": "PENDING"
+        },
+        {
+          "stage_id": "b",
+          "state": "submitted",
+          "scheduler_state": "RUNNING"
+        }
+      ]
+    },
+    "stage_without_job": {
+      "stages": [
+        {
+          "id": "s_x",
+          "state": "running"
+        },
+        {
+          "id": "s_y",
+          "state": "complete"
+        }
+      ]
+    },
+    "checking_outputs": {
+      "stages": [
+        {
+          "id": "s_x",
+          "state": "running"
+        }
+      ],
+      "jobs": [
+        {
+          "stage_id": "s_x",
+          "state": "complete",
+          "scheduler_state": "COMPLETED"
+        }
+      ]
+    },
+    "job_without_stage_row": {
+      "stages": [],
+      "jobs": [
+        {
+          "stage_id": "orphan_stage",
+          "state": "submitted",
+          "scheduler_state": "RUNNING"
+        }
+      ]
+    },
+    "unicode_and_truncation": {
+      "title": "T\u00e9st \ud83d\ude00 title",
+      "hold_reason": "r",
+      "stages": [
+        {
+          "id": "a",
+          "state": "complete"
+        }
+      ]
+    },
+    "long_title_surrogate_cut": {
+      "title": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\ud83d\ude00z"
+    },
+    "long_body_surrogate_cut": {
+      "hold_reason": "hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh\ud83d\ude00zz"
+    },
+    "control_chars": {
+      "pending_request": {
+        "id": "a\"b\\c\n\u0001\u007f"
+      }
     }
-   ]
-  },
-  "checking_outputs": {
-   "stages": [
-    {
-     "id": "s_x",
-     "state": "running"
-    }
-   ],
-   "jobs": [
-    {
-     "stage_id": "s_x",
-     "state": "complete",
-     "scheduler_state": "COMPLETED"
-    }
-   ]
-  },
-  "job_without_stage_row": {
-   "stages": [],
-   "jobs": [
-    {
-     "stage_id": "orphan_stage",
-     "state": "submitted",
-     "scheduler_state": "RUNNING"
-    }
-   ]
-  },
-  "unicode_and_truncation": {
-   "title": "T\u00e9st \ud83d\ude00 title",
-   "hold_reason": "r",
-   "stages": [
-    {
-     "id": "a",
-     "state": "complete"
-    }
-   ]
-  },
-  "long_title_surrogate_cut": {
-   "title": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\ud83d\ude00z"
-  },
-  "long_body_surrogate_cut": {
-   "hold_reason": "hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh\ud83d\ude00zz"
-  },
-  "control_chars": {
-   "pending_request": {
-    "id": "a\"b\\c\n\u0001\u007f"
-   }
   }
- }
 }

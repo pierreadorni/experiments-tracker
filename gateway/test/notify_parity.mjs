@@ -12,10 +12,14 @@ const compute = () =>
   Object.fromEntries(
     Object.entries(cases).map(([name, patch]) => {
       const { data, fingerprint } = experimentNotification({ ...base, ...patch });
-      return [name, { fingerprint, title: data.title, body: data.body, url: data.url, alert: data.alert }];
+      return [
+        name,
+        { fingerprint, title: data.title, body: data.body, url: data.url, alert: data.alert },
+      ];
     }),
   );
-if (process.argv.includes('--write')) writeFileSync(golden, JSON.stringify(compute(), null, 1) + '\n');
+if (process.argv.includes('--write'))
+  writeFileSync(golden, JSON.stringify(compute(), null, 1) + '\n');
 test('TypeScript notifications equal the shared golden file', () => {
   assert.deepEqual(compute(), JSON.parse(readFileSync(golden, 'utf8')));
 });

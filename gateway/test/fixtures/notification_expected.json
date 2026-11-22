@@ -1,205 +1,205 @@
 {
- "plain_running_phase": {
-  "fingerprint": "[\"running\",\"\"]",
-  "title": "Compare optimizers",
-  "body": "running",
-  "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
-  "alert": false
- },
- "pending_request": {
-  "fingerprint": "[\"Your response is needed\",\"req-1\"]",
-  "title": "Compare optimizers",
-  "body": "Your response is needed",
-  "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
-  "alert": true
- },
- "answered_request": {
-  "fingerprint": "[\"running\",\"\"]",
-  "title": "Compare optimizers",
-  "body": "running",
-  "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
-  "alert": false
- },
- "expired_request": {
-  "fingerprint": "[\"On hold · waiting for quota\",\"\"]",
-  "title": "Compare optimizers",
-  "body": "On hold · waiting for quota",
-  "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
-  "alert": false
- },
- "request_on_failed": {
-  "fingerprint": "[\"Experiment failed\",\"\"]",
-  "title": "Compare optimizers",
-  "body": "Experiment failed",
-  "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
-  "alert": true
- },
- "complete_with_report": {
-  "fingerprint": "[\"Report ready\",\"rep-9\"]",
-  "title": "Compare optimizers",
-  "body": "Report ready",
-  "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
-  "alert": true
- },
- "complete_by_version": {
-  "fingerprint": "[\"Report ready\",\"4\"]",
-  "title": "Compare optimizers",
-  "body": "Report ready",
-  "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
-  "alert": true
- },
- "complete_no_reports": {
-  "fingerprint": "[\"Report ready\",\"1\"]",
-  "title": "Compare optimizers",
-  "body": "Report ready",
-  "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
-  "alert": true
- },
- "failed": {
-  "fingerprint": "[\"Experiment failed · 1/2 stages complete\",\"\"]",
-  "title": "Compare optimizers",
-  "body": "Experiment failed · 1/2 stages complete",
-  "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
-  "alert": true
- },
- "cancelled": {
-  "fingerprint": "[\"Experiment cancelled\",\"\"]",
-  "title": "Compare optimizers",
-  "body": "Experiment cancelled",
-  "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
-  "alert": false
- },
- "plan_review": {
-  "fingerprint": "[\"Plan ready for your approval\",\"7\"]",
-  "title": "Compare optimizers",
-  "body": "Plan ready for your approval",
-  "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
-  "alert": true
- },
- "hold": {
-  "fingerprint": "[\"On hold · agent quota low\",\"\"]",
-  "title": "Compare optimizers",
-  "body": "On hold · agent quota low",
-  "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
-  "alert": false
- },
- "demo_title_analysis": {
-  "fingerprint": "[\"Demo · running\",\"\"]",
-  "title": "Analysed title",
-  "body": "Demo · running",
-  "url": "/?project=test-project&experiment=11111111-1111-4111-8111-111111111111",
-  "alert": false
- },
- "empty_everything": {
-  "fingerprint": "[\"running\",\"\"]",
-  "title": "ExperimentTracker",
-  "body": "running",
-  "url": "/?project=test-project&experiment=11111111-1111-4111-8111-111111111111",
-  "alert": false
- },
- "running_job": {
-  "fingerprint": "[\"Fit model · Running · 0/2 stages complete\",\"\"]",
-  "title": "Compare optimizers",
-  "body": "Fit model · Running · 0/2 stages complete",
-  "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
-  "alert": false
- },
- "queued_job_review_title": {
-  "fingerprint": "[\"Review title · Queued · 0/1 stages complete\",\"\"]",
-  "title": "Compare optimizers",
-  "body": "Review title · Queued · 0/1 stages complete",
-  "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
-  "alert": false
- },
- "submitting_job": {
-  "fingerprint": "[\"s x · Submitting · 0/1 stages complete\",\"\"]",
-  "title": "Compare optimizers",
-  "body": "s x · Submitting · 0/1 stages complete",
-  "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
-  "alert": false
- },
- "no_scheduler_state": {
-  "fingerprint": "[\"s x · Waiting for scheduler · 0/1 stages complete\",\"\"]",
-  "title": "Compare optimizers",
-  "body": "s x · Waiting for scheduler · 0/1 stages complete",
-  "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
-  "alert": false
- },
- "accounting": {
-  "fingerprint": "[\"s x · Waiting for accounting · 0/1 stages complete\",\"\"]",
-  "title": "Compare optimizers",
-  "body": "s x · Waiting for accounting · 0/1 stages complete",
-  "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
-  "alert": false
- },
- "completing": {
-  "fingerprint": "[\"s x · Finishing · 0/1 stages complete\",\"\"]",
-  "title": "Compare optimizers",
-  "body": "s x · Finishing · 0/1 stages complete",
-  "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
-  "alert": false
- },
- "other_scheduler_state": {
-  "fingerprint": "[\"s x · Scheduler: node fail · 0/1 stages complete\",\"\"]",
-  "title": "Compare optimizers",
-  "body": "s x · Scheduler: node fail · 0/1 stages complete",
-  "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
-  "alert": false
- },
- "running_prefers_over_queued": {
-  "fingerprint": "[\"b · Running · 0/2 stages complete\",\"\"]",
-  "title": "Compare optimizers",
-  "body": "b · Running · 0/2 stages complete",
-  "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
-  "alert": false
- },
- "stage_without_job": {
-  "fingerprint": "[\"s x · Running · 1/2 stages complete\",\"\"]",
-  "title": "Compare optimizers",
-  "body": "s x · Running · 1/2 stages complete",
-  "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
-  "alert": false
- },
- "checking_outputs": {
-  "fingerprint": "[\"s x · Checking outputs · 0/1 stages complete\",\"\"]",
-  "title": "Compare optimizers",
-  "body": "s x · Checking outputs · 0/1 stages complete",
-  "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
-  "alert": false
- },
- "job_without_stage_row": {
-  "fingerprint": "[\"orphan stage · Running\",\"\"]",
-  "title": "Compare optimizers",
-  "body": "orphan stage · Running",
-  "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
-  "alert": false
- },
- "unicode_and_truncation": {
-  "fingerprint": "[\"On hold · r · 1/1 stages complete\",\"\"]",
-  "title": "Tést 😀 title",
-  "body": "On hold · r · 1/1 stages complete",
-  "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
-  "alert": false
- },
- "long_title_surrogate_cut": {
-  "fingerprint": "[\"running\",\"\"]",
-  "title": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\ud83d",
-  "body": "running",
-  "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
-  "alert": false
- },
- "long_body_surrogate_cut": {
-  "fingerprint": "[\"On hold · hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh\\ud83d\",\"\"]",
-  "title": "Compare optimizers",
-  "body": "On hold · hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh\ud83d",
-  "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
-  "alert": false
- },
- "control_chars": {
-  "fingerprint": "[\"Your response is needed\",\"a\\\"b\\\\c\\n\\u0001\"]",
-  "title": "Compare optimizers",
-  "body": "Your response is needed",
-  "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
-  "alert": true
- }
+  "plain_running_phase": {
+    "fingerprint": "[\"running\",\"\"]",
+    "title": "Compare optimizers",
+    "body": "running",
+    "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
+    "alert": false
+  },
+  "pending_request": {
+    "fingerprint": "[\"Your response is needed\",\"req-1\"]",
+    "title": "Compare optimizers",
+    "body": "Your response is needed",
+    "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
+    "alert": true
+  },
+  "answered_request": {
+    "fingerprint": "[\"running\",\"\"]",
+    "title": "Compare optimizers",
+    "body": "running",
+    "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
+    "alert": false
+  },
+  "expired_request": {
+    "fingerprint": "[\"On hold · waiting for quota\",\"\"]",
+    "title": "Compare optimizers",
+    "body": "On hold · waiting for quota",
+    "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
+    "alert": false
+  },
+  "request_on_failed": {
+    "fingerprint": "[\"Experiment failed\",\"\"]",
+    "title": "Compare optimizers",
+    "body": "Experiment failed",
+    "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
+    "alert": true
+  },
+  "complete_with_report": {
+    "fingerprint": "[\"Report ready\",\"rep-9\"]",
+    "title": "Compare optimizers",
+    "body": "Report ready",
+    "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
+    "alert": true
+  },
+  "complete_by_version": {
+    "fingerprint": "[\"Report ready\",\"4\"]",
+    "title": "Compare optimizers",
+    "body": "Report ready",
+    "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
+    "alert": true
+  },
+  "complete_no_reports": {
+    "fingerprint": "[\"Report ready\",\"1\"]",
+    "title": "Compare optimizers",
+    "body": "Report ready",
+    "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
+    "alert": true
+  },
+  "failed": {
+    "fingerprint": "[\"Experiment failed · 1/2 stages complete\",\"\"]",
+    "title": "Compare optimizers",
+    "body": "Experiment failed · 1/2 stages complete",
+    "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
+    "alert": true
+  },
+  "cancelled": {
+    "fingerprint": "[\"Experiment cancelled\",\"\"]",
+    "title": "Compare optimizers",
+    "body": "Experiment cancelled",
+    "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
+    "alert": false
+  },
+  "plan_review": {
+    "fingerprint": "[\"Plan ready for your approval\",\"7\"]",
+    "title": "Compare optimizers",
+    "body": "Plan ready for your approval",
+    "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
+    "alert": true
+  },
+  "hold": {
+    "fingerprint": "[\"On hold · agent quota low\",\"\"]",
+    "title": "Compare optimizers",
+    "body": "On hold · agent quota low",
+    "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
+    "alert": false
+  },
+  "demo_title_analysis": {
+    "fingerprint": "[\"Demo · running\",\"\"]",
+    "title": "Analysed title",
+    "body": "Demo · running",
+    "url": "/?project=test-project&experiment=11111111-1111-4111-8111-111111111111",
+    "alert": false
+  },
+  "empty_everything": {
+    "fingerprint": "[\"running\",\"\"]",
+    "title": "ExperimentTracker",
+    "body": "running",
+    "url": "/?project=test-project&experiment=11111111-1111-4111-8111-111111111111",
+    "alert": false
+  },
+  "running_job": {
+    "fingerprint": "[\"Fit model · Running · 0/2 stages complete\",\"\"]",
+    "title": "Compare optimizers",
+    "body": "Fit model · Running · 0/2 stages complete",
+    "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
+    "alert": false
+  },
+  "queued_job_review_title": {
+    "fingerprint": "[\"Review title · Queued · 0/1 stages complete\",\"\"]",
+    "title": "Compare optimizers",
+    "body": "Review title · Queued · 0/1 stages complete",
+    "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
+    "alert": false
+  },
+  "submitting_job": {
+    "fingerprint": "[\"s x · Submitting · 0/1 stages complete\",\"\"]",
+    "title": "Compare optimizers",
+    "body": "s x · Submitting · 0/1 stages complete",
+    "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
+    "alert": false
+  },
+  "no_scheduler_state": {
+    "fingerprint": "[\"s x · Waiting for scheduler · 0/1 stages complete\",\"\"]",
+    "title": "Compare optimizers",
+    "body": "s x · Waiting for scheduler · 0/1 stages complete",
+    "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
+    "alert": false
+  },
+  "accounting": {
+    "fingerprint": "[\"s x · Waiting for accounting · 0/1 stages complete\",\"\"]",
+    "title": "Compare optimizers",
+    "body": "s x · Waiting for accounting · 0/1 stages complete",
+    "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
+    "alert": false
+  },
+  "completing": {
+    "fingerprint": "[\"s x · Finishing · 0/1 stages complete\",\"\"]",
+    "title": "Compare optimizers",
+    "body": "s x · Finishing · 0/1 stages complete",
+    "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
+    "alert": false
+  },
+  "other_scheduler_state": {
+    "fingerprint": "[\"s x · Scheduler: node fail · 0/1 stages complete\",\"\"]",
+    "title": "Compare optimizers",
+    "body": "s x · Scheduler: node fail · 0/1 stages complete",
+    "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
+    "alert": false
+  },
+  "running_prefers_over_queued": {
+    "fingerprint": "[\"b · Running · 0/2 stages complete\",\"\"]",
+    "title": "Compare optimizers",
+    "body": "b · Running · 0/2 stages complete",
+    "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
+    "alert": false
+  },
+  "stage_without_job": {
+    "fingerprint": "[\"s x · Running · 1/2 stages complete\",\"\"]",
+    "title": "Compare optimizers",
+    "body": "s x · Running · 1/2 stages complete",
+    "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
+    "alert": false
+  },
+  "checking_outputs": {
+    "fingerprint": "[\"s x · Checking outputs · 0/1 stages complete\",\"\"]",
+    "title": "Compare optimizers",
+    "body": "s x · Checking outputs · 0/1 stages complete",
+    "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
+    "alert": false
+  },
+  "job_without_stage_row": {
+    "fingerprint": "[\"orphan stage · Running\",\"\"]",
+    "title": "Compare optimizers",
+    "body": "orphan stage · Running",
+    "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
+    "alert": false
+  },
+  "unicode_and_truncation": {
+    "fingerprint": "[\"On hold · r · 1/1 stages complete\",\"\"]",
+    "title": "Tést 😀 title",
+    "body": "On hold · r · 1/1 stages complete",
+    "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
+    "alert": false
+  },
+  "long_title_surrogate_cut": {
+    "fingerprint": "[\"running\",\"\"]",
+    "title": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\ud83d",
+    "body": "running",
+    "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
+    "alert": false
+  },
+  "long_body_surrogate_cut": {
+    "fingerprint": "[\"On hold · hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh\\ud83d\",\"\"]",
+    "title": "Compare optimizers",
+    "body": "On hold · hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh\ud83d",
+    "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
+    "alert": false
+  },
+  "control_chars": {
+    "fingerprint": "[\"Your response is needed\",\"a\\\"b\\\\c\\n\\u0001\"]",
+    "title": "Compare optimizers",
+    "body": "Your response is needed",
+    "url": "/?project=my%20project%2Fa&experiment=11111111-1111-4111-8111-111111111111",
+    "alert": true
+  }
 }
