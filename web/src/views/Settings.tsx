@@ -1,5 +1,6 @@
 import { ExecutorUpdate } from '../ExecutorUpdate';
-import { api, command } from '../api';
+import { api } from '../api';
+import { send } from '../relay';
 import { age } from '../format';
 import { Status } from '../types';
 import { useEffect, useState } from 'react';
@@ -39,9 +40,10 @@ export function Settings(
             status={status}
             busy={busy}
             onSave={async (five_hour_percent, weekly_percent) => {
-              let receipt: { state: string; request_id: string; error?: string } | null = null;
+              let receipt: { state: string; request_id: string; error?: string | null } | null =
+                null;
               const saved = await act(async () => {
-                receipt = await command('/api/quota/reserve', {
+                receipt = await send('reserve', null, {
                   five_hour_percent,
                   weekly_percent,
                 });
@@ -67,7 +69,7 @@ function Quota({
   onSave: (
     fiveHour: number,
     weekly: number,
-  ) => Promise<{ state: string; request_id: string; error?: string } | null>;
+  ) => Promise<{ state: string; request_id: string; error?: string | null } | null>;
   onRefresh: () => Promise<void>;
 }) {
   const [draft, setDraft] = useState<{ fiveHour: number; weekly: number } | null>(null);
@@ -88,7 +90,9 @@ function Quota({
     if (!pendingId) return;
     const poll = async () => {
       try {
-        const receipt = await api<{ state: string; error?: string }>(`/api/commands/${pendingId}`);
+        const receipt = await api<{ state: string; error?: string | null }>(
+          `/api/commands/${pendingId}`,
+        );
         if (receipt.state === 'rejected') {
           setSaveError(receipt.error || 'The executor rejected the reserve change.');
           setPendingId(null);

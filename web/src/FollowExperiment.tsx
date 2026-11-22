@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Bell, BellOff } from 'lucide-react';
-import { api, command, RequestError } from './api';
+import { api, RequestError } from './api';
 
 export async function forgetNotificationDevice() {
   if (!('serviceWorker' in navigator)) return;
@@ -106,9 +106,14 @@ export function FollowExperiment({ id }: { id: string }) {
         setFollowing(false);
         return;
       }
-      const result = await command<{ following: boolean }>(`/api/experiments/${id}/push`, {
-        subscription: subscription.toJSON(),
-        following: !following,
+      const result = await api<{ following: boolean }>(`/api/experiments/${id}/push`, {
+        method: 'POST',
+        body: JSON.stringify({
+          schema_version: 1,
+          request_id: crypto.randomUUID(),
+          subscription: subscription.toJSON(),
+          following: !following,
+        }),
       });
       setFollowing(result.following);
       if (!result.following)

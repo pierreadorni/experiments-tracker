@@ -1,6 +1,7 @@
 import { Badge } from '../Badge';
 import { date, experimentTitle } from '../format';
 import { ArrowRight, Beaker, Check, ChevronRight, Plus, Search } from 'lucide-react';
+import { usePendingCommands } from '../relay';
 import type { ViewProps } from './props';
 
 export function ExperimentList(
@@ -12,6 +13,7 @@ export function ExperimentList(
     | 'completed'
     | 'experiments'
     | 'filter'
+    | 'projectId'
     | 'search'
     | 'setCreating'
     | 'setFilter'
@@ -26,12 +28,17 @@ export function ExperimentList(
     completed,
     experiments,
     filter,
+    projectId,
     search,
     setCreating,
     setFilter,
     setSearch,
     visibleExperiments,
   } = props;
+  // A hosted create has no projection until the executor applies it, so the queue shows it.
+  const creates = usePendingCommands().filter(
+    (c) => c.kind === 'create' && (!c.payload?.project_id || c.payload.project_id === projectId),
+  );
   return (
     <>
       <div className="page-heading">
@@ -76,6 +83,19 @@ export function ExperimentList(
         </label>
       </div>
       <div className="experiment-list">
+        {creates.map((c) => (
+          <div className="experiment-row" key={c.request_id} role="status">
+            <span className="experiment-icon">
+              <Beaker size={20} />
+            </span>
+            <div className="row-description">
+              <strong>
+                {typeof c.payload?.brief === 'string' ? c.payload.brief : 'New experiment'}
+              </strong>
+              <small>Waiting for the executor · {date(c.received_at)}</small>
+            </div>
+          </div>
+        ))}
         {visibleExperiments.map((e) => (
           <button className="experiment-row" key={e.id} onClick={() => choose(e.id)}>
             <span className={`experiment-icon ${e.phase === 'complete' ? 'complete-icon' : ''}`}>
@@ -126,7 +146,7 @@ export function ExperimentList(
             </button>
           </div>
         )}
-        {experiments.length === 0 && (
+        {experiments.length === 0 && creates.length === 0 && (
           <div className="empty">
             <Beaker size={36} />
             <h3>No experiments yet.</h3>

@@ -62,7 +62,7 @@ export function Report({ id, theme }: { id: string; theme: Theme }) {
       ref={frame}
       title="Experiment report"
       sandbox="allow-same-origin"
-      src={`/api/artifacts/${id}`}
+      src={`/api/blobs/${id}`}
       style={{ height }}
       onLoad={() => {
         cleanup.current();

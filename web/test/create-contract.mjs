@@ -5,7 +5,7 @@ import { contractFourCreateIssue, contractFourForProject } from '../src/createCo
 const status = {
   execution_contract_create: 4,
   research_loop_projects: ['loop-project'],
-  mode: 'gateway',
+  host: 'gateway',
   heartbeat_received_at: 1_000,
 };
 
@@ -80,7 +80,7 @@ test('contract-4 submit validation rechecks capability and refuses unsupported i
 test('local advertised support does not depend on Worker heartbeat fields', () => {
   assert.equal(
     contractFourForProject(
-      { ...status, mode: 'live', heartbeat_received_at: null },
+      { ...status, host: 'local', heartbeat_received_at: null },
       'loop-project',
       10_000,
     ),

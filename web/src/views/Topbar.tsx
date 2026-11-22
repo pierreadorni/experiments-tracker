@@ -61,7 +61,7 @@ export function Topbar(
         <span className="mode-label">
           {status?.mode === 'demo'
             ? 'Synthetic demo'
-            : status?.mode === 'gateway'
+            : status?.host === 'gateway'
               ? 'Private workspace'
               : 'Live executor'}
         </span>

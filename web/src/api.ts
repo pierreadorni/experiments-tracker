@@ -7,7 +7,6 @@ export class RequestError extends Error {
   }
 }
 export class Unauthorized extends Error {}
-const pending = new Map<string, string>();
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
     signal: AbortSignal.timeout(15000),
@@ -24,15 +23,4 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
     );
   }
   return response.json();
-}
-export async function command<T>(path: string, payload: Record<string, unknown>): Promise<T> {
-  const key = path + JSON.stringify(payload);
-  const request_id = pending.get(key) || crypto.randomUUID();
-  pending.set(key, request_id);
-  const result = await api<T>(path, {
-    method: 'POST',
-    body: JSON.stringify({ schema_version: 1, request_id, ...payload }),
-  });
-  pending.delete(key);
-  return result;
 }

@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { api, RequestError } from './api';
+import { send, type Receipt } from './relay';
 import { Select } from './Select';
 import { useDialog } from './useDialog';
-import type { Project, ProjectReceipt } from './types';
+import type { Project } from './types';
 
 export function NewProject({
   onClose,
@@ -43,15 +44,15 @@ export function NewProject({
     let active = true;
     const poll = async () => {
       try {
-        const receipt = await api<ProjectReceipt>(`/api/projects/requests/${requestId}`);
+        const receipt = await api<Receipt>(`/api/commands/${requestId}`);
         if (!active) return;
-        setState(receipt.state);
+        setState(receipt.state === 'pending' ? 'waiting_for_executor' : receipt.state);
         if (receipt.state === 'rejected') {
           setError(receipt.error || 'The project could not be added.');
           clearRequest();
-        } else if (receipt.state === 'applied' && receipt.project) {
+        } else if (receipt.state === 'applied' && receipt.result?.project) {
           clearRequest();
-          await ready.current(receipt.project);
+          await ready.current(receipt.result.project);
         }
       } catch (e) {
         if (active && e instanceof RequestError && e.status === 404 && !submitting.current) {
@@ -109,18 +110,23 @@ export function NewProject({
               submitting.current = true;
               setRequestId(id);
               setState('waiting_for_executor');
-              void api<ProjectReceipt>('/api/projects', {
-                method: 'POST',
-                body: JSON.stringify({
-                  schema_version: 1,
-                  request_id: id,
+              void send(
+                'project_create',
+                null,
+                {
                   name: name.trim(),
                   mode,
                   ...(mode === 'existing' ? { folder: folder.trim() } : {}),
                   allow_edits: true,
                   instructions: instructions.trim(),
-                }),
-              })
+                },
+                id,
+              )
+                .then(async (receipt) => {
+                  if (receipt.state !== 'applied' || !receipt.result?.project) return;
+                  clearRequest();
+                  await ready.current(receipt.result.project);
+                })
                 .catch((e) => {
                   setError(e instanceof Error ? e.message : String(e));
                   if (e instanceof RequestError && e.status >= 400 && e.status < 500)

@@ -12,7 +12,18 @@ import { Settings } from './views/Settings';
 import { NewExperiment } from './views/NewExperiment';
 import type { Page } from './views/props';
 import { X } from 'lucide-react';
-import { api, command, Unauthorized } from './api';
+import { Unauthorized } from './api';
+import {
+  experimentKey,
+  getProjection,
+  listProjections,
+  loadStatus,
+  onRejection,
+  refreshPending,
+  send,
+  usePendingCommands,
+  withPending,
+} from './relay';
 import { contractFourCreateIssue, contractFourForProject } from './createContract.mjs';
 import type { Experiment, InboxEntry, Status } from './types';
 import { registerWorkspaceTools } from './webmcp';
@@ -48,9 +59,14 @@ export function App() {
     () =>
       new URLSearchParams(location.search).get('project') || readLastProject() || 'test-project',
   );
+  const pendingCommands = usePendingCommands();
   const experiments = useMemo(
-    () => allExperiments.filter((e) => (e.project_id || 'test-project') === projectId),
-    [allExperiments, projectId],
+    () =>
+      withPending(
+        allExperiments.filter((e) => (e.project_id || 'test-project') === projectId),
+        pendingCommands,
+      ),
+    [allExperiments, projectId, pendingCommands],
   );
   const [status, setStatus] = useState<Status | null>(null);
   const [inbox, setInbox] = useState<InboxEntry[]>([]);
@@ -154,10 +170,10 @@ export function App() {
       );
     return registerWorkspaceTools({
       async list() {
-        const value = await api<{ experiments: Experiment[] }>('/api/experiments');
-        setExperiments(value.experiments);
+        const value = (await listProjections<Experiment>('experiment:')).map((p) => p.document);
+        setExperiments(value);
         await rendered();
-        return value.experiments
+        return value
           .filter((e) => (e.project_id || 'test-project') === projectId)
           .map((e) => ({
             id: e.id,
@@ -168,7 +184,7 @@ export function App() {
           }));
       },
       async open(id) {
-        const e = await api<Experiment>(`/api/experiments/${id}`);
+        const e = (await getProjection<Experiment>(experimentKey(id))).document;
         setExperiments((list) =>
           list.some((item) => item.id === id)
             ? list.map((item) => (item.id === id ? e : item))
@@ -194,13 +210,14 @@ export function App() {
     fetching.current = true;
     try {
       const [list, stat, entries] = await Promise.all([
-        api<{ experiments: Experiment[] }>('/api/experiments'),
-        api<Status>('/api/status'),
-        api<{ entries: InboxEntry[] }>('/api/inbox'),
+        listProjections<Experiment>('experiment:'),
+        loadStatus(),
+        getProjection<{ entries: InboxEntry[] }>('inbox'),
+        refreshPending(),
       ]);
-      setExperiments(list.experiments);
+      setExperiments(list.map((p) => p.document));
       setStatus(stat);
-      setInbox(entries.entries);
+      setInbox(entries.document.entries);
       setAuth(true);
       setOffline(false);
     } catch (e) {
@@ -275,19 +292,21 @@ export function App() {
       setDeleting(null);
       return;
     }
-    let current = true;
-    void api<{ state: string; error?: string }>(`/api/commands/${deleting.requestId}`)
-      .then((receipt) => {
-        if (current && receipt.state === 'rejected') {
-          setError(receipt.error || 'The executor rejected deletion. Check the experiment status.');
-          setDeleting(null);
-        }
-      })
-      .catch(() => {});
-    return () => {
-      current = false;
-    };
+    return onRejection((receipt) => {
+      if (receipt.request_id !== deleting.requestId) return;
+      setError(receipt.error || 'The executor rejected deletion. Check the experiment status.');
+      setDeleting(null);
+    });
   }, [deleting, allExperiments]);
+  useEffect(
+    () =>
+      onRejection((receipt) => {
+        // Conversation messages and deletions report their own refusal.
+        if (receipt.kind !== 'discuss' && receipt.kind !== 'delete')
+          setError(receipt.error || `The executor refused the ${receipt.kind} command.`);
+      }),
+    [],
+  );
   const projects = status?.projects || [
     { id: 'test-project', name: 'Test project', available: true },
   ];
@@ -305,7 +324,7 @@ export function App() {
     ...projects.map((p) => ({
       value: p.id,
       label: p.name,
-      description: p.available ? p.folder : 'Folder unavailable',
+      description: p.available ? undefined : 'Folder unavailable',
     })),
     { value: '__new_project', label: 'New project…' },
     ...(currentProject ? [{ value: '__project_settings', label: 'Project settings…' }] : []),
@@ -453,6 +472,7 @@ export function App() {
               completed={completed}
               experiments={experiments}
               filter={filter}
+              projectId={projectId}
               search={search}
               setCreating={setCreating}
               setFilter={setFilter}
@@ -543,7 +563,7 @@ export function App() {
           onClose={() => setCancelTarget(null)}
           onConfirm={async () => {
             await act(async () => {
-              await command(`/api/experiments/${cancelTarget.id}/actions`, { action: 'cancel' });
+              await send('action', experimentKey(cancelTarget.id), { action: 'cancel' });
               setCancelTarget(null);
             });
           }}
@@ -557,10 +577,7 @@ export function App() {
           onClose={() => setDeleteTarget(null)}
           onConfirm={async () => {
             await act(async () => {
-              const result = await command<{ state: string; request_id: string }>(
-                `/api/experiments/${deleteTarget.id}/delete`,
-                {},
-              );
+              const result = await send('delete', experimentKey(deleteTarget.id));
               if (result.state === 'applied') setSelected(null);
               else setDeleting({ eid: deleteTarget.id, requestId: result.request_id });
               setDeleteTarget(null);

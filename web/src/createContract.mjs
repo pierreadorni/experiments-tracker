@@ -8,7 +8,7 @@ export function contractFourForProject(status, projectId, nowSeconds = Date.now(
     )
   )
     return false;
-  if (status.mode !== 'gateway') return true;
+  if (status.host !== 'gateway') return true;
   const observedAt = status.heartbeat_received_at;
   const age = nowSeconds - observedAt;
   return Number.isFinite(observedAt) && age >= 0 && age <= 90;

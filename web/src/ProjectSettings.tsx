@@ -1,21 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { api, RequestError } from './api';
+import { projectKey, send, type Receipt } from './relay';
 import { useDialog } from './useDialog';
 import { defaultExecution, type ExecutionSettings, type Project } from './types';
 
-type SettingsReceipt = {
-  schema_version: 1;
-  request_id: string;
-  project_id: string;
-  state: 'waiting_for_executor' | 'applied' | 'rejected';
-  error: string | null;
-  settings: {
-    instructions: string;
-    revision: number;
-    execution?: ExecutionSettings;
-    deleted?: boolean;
-  } | null;
+type SettingsResult = {
+  instructions: string;
+  revision: number;
+  execution?: ExecutionSettings;
+  deleted?: boolean;
 };
 
 export function ProjectSettings({
@@ -61,25 +55,26 @@ export function ProjectSettings({
     let active = true;
     const poll = async () => {
       try {
-        const receipt = await api<SettingsReceipt>(`/api/projects/settings/requests/${requestId}`);
+        const receipt = await api<Receipt>(`/api/commands/${requestId}`);
         if (!active) return;
-        if (receipt.project_id !== project.id) {
+        if (receipt.target !== projectKey('knowledge', project.id)) {
           setError('This saved request belongs to another project.');
           clearRequest();
           return;
         }
-        setState(receipt.state);
+        setState(receipt.state === 'pending' ? 'waiting_for_executor' : receipt.state);
         if (receipt.state === 'rejected') {
           setError(receipt.error || 'Project settings could not be saved.');
           clearRequest();
-        } else if (receipt.state === 'applied' && receipt.settings) {
-          if (receipt.settings.deleted) {
+        } else if (receipt.state === 'applied' && receipt.result) {
+          const settings = receipt.result as SettingsResult;
+          if (settings.deleted) {
             clearRequest();
             await deleted.current();
             return;
           }
-          setInstructions(receipt.settings.instructions);
-          setExecution(receipt.settings.execution || defaultExecution);
+          setInstructions(settings.instructions);
+          setExecution(settings.execution || defaultExecution);
           clearRequest();
           await saved.current();
         }
@@ -138,19 +133,18 @@ export function ProjectSettings({
               submitting.current = true;
               setRequestId(id);
               setState('waiting_for_executor');
-              void api<SettingsReceipt>(
-                `/api/projects/${encodeURIComponent(project.id)}/settings`,
-                {
-                  method: 'PATCH',
-                  body: JSON.stringify({
-                    schema_version: 1,
-                    request_id: id,
-                    instructions,
-                    execution,
-                    delete: confirmDelete,
-                  }),
-                },
+              void send(
+                'project_settings',
+                projectKey('knowledge', project.id),
+                { instructions, execution, delete: confirmDelete },
+                id,
               )
+                .then(async (receipt) => {
+                  if (receipt.state !== 'applied') return;
+                  clearRequest();
+                  if (confirmDelete) await deleted.current();
+                  else await saved.current();
+                })
                 .catch((e) => {
                   setError(e instanceof Error ? e.message : String(e));
                   if (e instanceof RequestError && e.status >= 400 && e.status < 500)

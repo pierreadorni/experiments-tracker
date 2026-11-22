@@ -1,5 +1,5 @@
 import { Select } from '../Select';
-import { api, command } from '../api';
+import { loadStatus, send } from '../relay';
 import { contractFourCreateIssue } from '../createContract.mjs';
 import { experimentTitle } from '../format';
 import { Status } from '../types';
@@ -91,7 +91,7 @@ export function NewExperiment(
           onSubmit={(e) => {
             e.preventDefault();
             void act(async () => {
-              const freshStatus = await api<Status>('/api/status');
+              const freshStatus = await loadStatus();
               setStatus(freshStatus);
               // Keep a displayed C4 intent even if the project setting changes mid-form.
               const explicitContractFour =
@@ -110,7 +110,7 @@ export function NewExperiment(
                     `${issue} The explicit contract-4 create was refused; no contract-3 retry was made.`,
                   );
               }
-              const result = await command<{ experiment_id: string }>('/api/experiments', {
+              const receipt = await send('create', null, {
                 brief,
                 project_id: projectId,
                 execution: currentProject?.execution,
@@ -127,7 +127,8 @@ export function NewExperiment(
                 );
               });
               setCreating(false);
-              choose(result.experiment_id);
+              // A hosted create is still pending; its row shows in the list until it applies.
+              if (receipt.result?.experiment_id) choose(receipt.result.experiment_id);
             });
           }}
         >

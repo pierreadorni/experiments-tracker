@@ -16,7 +16,7 @@ export async function checkedBytes(artifact: Artifact, bytes: Uint8Array): Promi
 }
 
 export async function fetchEvidence(artifact: Artifact): Promise<Uint8Array> {
-  const response = await fetch(`/api/artifacts/${artifact.id}`, {
+  const response = await fetch(`/api/blobs/${artifact.id}`, {
     credentials: 'same-origin',
     signal: AbortSignal.timeout(30000),
     cache: 'no-store',

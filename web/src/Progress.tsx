@@ -338,7 +338,7 @@ export function StageTimeline({ exp, status }: { exp: Experiment; status: Status
                           {outputs.map((a) => (
                             <a
                               key={a.id}
-                              href={`/api/artifacts/${a.id}`}
+                              href={`/api/blobs/${a.id}`}
                               target="_blank"
                               rel="noreferrer"
                             >

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { LoaderCircle, RefreshCw, X } from 'lucide-react';
-import { api, command } from './api';
+import { api } from './api';
+import { send } from './relay';
 import { useDialog } from './useDialog';
 
 export type MaintenanceStatus = {
@@ -202,7 +203,7 @@ export function ExecutorUpdate({
                   if (!status.release || busy) return;
                   setBusy(true);
                   try {
-                    await command('/api/maintenance/install', {
+                    await send('maintenance', 'maintenance', {
                       release_id: status.release.commit_id,
                     });
                     setQueued(true);

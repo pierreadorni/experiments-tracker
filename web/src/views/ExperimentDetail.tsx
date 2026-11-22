@@ -9,7 +9,7 @@ import { Protocol } from '../Protocol';
 import { Report } from '../Report';
 import { ResearchProgress } from '../ResearchProgress';
 import { Select } from '../Select';
-import { command } from '../api';
+import { experimentKey, send } from '../relay';
 import { downloadEvidenceBundle } from '../evidence';
 import { date, experimentTitle, pretty, researchRequestQuestion, terminal } from '../format';
 import { holdExplanation, holdGuidance, holdTitle } from '../holds';
@@ -116,7 +116,7 @@ export function ExperimentDetail(
               }
               onClick={() =>
                 void act(async () => {
-                  await command(`/api/experiments/${exp.id}/actions`, {
+                  await send('action', experimentKey(exp.id), {
                     action: 'summarize_title',
                   });
                 })
@@ -284,17 +284,17 @@ export function ExperimentDetail(
         error={error}
         onIntegrate={(reason) =>
           act(async () => {
-            await command(`/api/experiments/${exp.id}/integrate`, reason ? { reason } : {});
+            await send('integrate', experimentKey(exp.id), reason ? { reason } : {});
           })
         }
         onRevert={() =>
           act(async () => {
-            await command(`/api/experiments/${exp.id}/integrations/revert`, {});
+            await send('revert_integration', experimentKey(exp.id), {});
           })
         }
         onApprove={(approval) =>
           act(async () => {
-            await command(`/api/experiments/${exp.id}/integrations/approve`, {
+            await send('approve_integration', experimentKey(exp.id), {
               action: 'approve',
               ...approval,
             });
@@ -302,7 +302,7 @@ export function ExperimentDetail(
         }
         onDontMerge={(value) =>
           act(async () => {
-            await command(`/api/experiments/${exp.id}/dont-merge`, { value });
+            await send('dont_merge', experimentKey(exp.id), { value });
           })
         }
       />
@@ -404,7 +404,7 @@ export function ExperimentDetail(
                           disabled={busy || !stageExecutionAvailable}
                           onClick={() =>
                             void act(async () => {
-                              await command(`/api/experiments/${exp.id}/actions`, {
+                              await send('action', experimentKey(exp.id), {
                                 action: exp.pause_agent ? 'resume_agent' : 'pause_agent',
                               });
                             })
@@ -417,7 +417,7 @@ export function ExperimentDetail(
                           disabled={busy || !stageExecutionAvailable}
                           onClick={() =>
                             void act(async () => {
-                              await command(`/api/experiments/${exp.id}/actions`, {
+                              await send('action', experimentKey(exp.id), {
                                 action: exp.pause_compute
                                   ? 'resume_new_compute'
                                   : 'pause_new_compute',
@@ -474,7 +474,7 @@ export function ExperimentDetail(
                   <a
                     className="artifact-row"
                     key={a.id}
-                    href={`/api/artifacts/${a.id}`}
+                    href={`/api/blobs/${a.id}`}
                     target="_blank"
                     rel="noreferrer"
                   >
@@ -490,7 +490,7 @@ export function ExperimentDetail(
                     </div>
                     <span className="file-size">{(a.size / 1024).toFixed(1)} KiB</span>
                     <span className="muted small">
-                      {status?.mode === 'gateway'
+                      {status?.host === 'gateway'
                         ? a.remote_published
                           ? 'Published'
                           : 'Upload pending'
@@ -540,7 +540,7 @@ export function ExperimentDetail(
                       )}
                       <a
                         className="text-button"
-                        href={`/api/artifacts/${report.id}`}
+                        href={`/api/blobs/${report.id}`}
                         target="_blank"
                         rel="noreferrer"
                       >
@@ -582,7 +582,7 @@ export function ExperimentDetail(
                   onSubmit={(e) => {
                     e.preventDefault();
                     void act(async () => {
-                      await command(`/api/experiments/${exp.id}/notes`, { text: note });
+                      await send('note', experimentKey(exp.id), { text: note });
                       setNote('');
                     });
                   }}
@@ -643,7 +643,7 @@ export function ExperimentDetail(
                   onSubmit={(e) => {
                     e.preventDefault();
                     void act(async () => {
-                      await command(`/api/experiments/${exp.id}/answers`, {
+                      await send('answer', experimentKey(exp.id), {
                         pending_request_id: exp.pending_request!.id,
                         answer,
                       });
@@ -667,7 +667,7 @@ export function ExperimentDetail(
                           disabled={busy}
                           onClick={() =>
                             void act(async () => {
-                              await command(`/api/experiments/${exp.id}/answers`, {
+                              await send('answer', experimentKey(exp.id), {
                                 pending_request_id: exp.pending_request!.id,
                                 answer: decision,
                               });

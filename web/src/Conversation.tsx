@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ArrowUp, LoaderCircle, MessageSquare, X } from 'lucide-react';
-import { api, command } from './api';
+import { api } from './api';
+import { experimentKey, onRejection, send as sendCommand } from './relay';
 import type { Discussion, Experiment, Status } from './types';
 import { Select } from './Select';
 import { useDialog } from './useDialog';
@@ -85,30 +86,24 @@ export function Conversation({
       setPending(null);
       return;
     }
-    let active = true;
-    void api<{ state: string; error?: string }>(`/api/commands/${pending.id}`)
-      .then((receipt) => {
-        if (active && receipt.state === 'rejected') {
-          setError(receipt.error || 'Message could not be applied.');
-          setDraft(pending.text);
-          setPending(null);
-        }
-      })
-      .catch(() => {});
-    return () => {
-      active = false;
-    };
-  }, [pending, exp.conversation, exp.pending_commands]);
+    return onRejection((receipt) => {
+      if (receipt.request_id !== pending.id) return;
+      setError(receipt.error || 'Message could not be applied.');
+      setDraft(pending.text);
+      setPending(null);
+    });
+  }, [pending, exp.conversation]);
   const send = async () => {
     if (!draft.trim() || busy) return;
     setBusy(true);
     setError(null);
     const text = draft;
     try {
-      const result = await command<{ request_id: string; state: string }>(
-        `/api/experiments/${exp.id}/conversation`,
-        { text, model, reasoning_effort: effort },
-      );
+      const result = await sendCommand('discuss', experimentKey(exp.id), {
+        text,
+        model,
+        reasoning_effort: effort,
+      });
       setPending({ id: result.request_id, text, created_at: Date.now() / 1000 });
       setDraft('');
       nearBottom.current = true;
@@ -256,7 +251,7 @@ export function Conversation({
                             a && (
                               <a
                                 key={id}
-                                href={`/api/artifacts/${id}`}
+                                href={`/api/blobs/${id}`}
                                 target="_blank"
                                 rel="noreferrer"
                               >

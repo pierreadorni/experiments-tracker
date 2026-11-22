@@ -124,7 +124,7 @@ export function Protocol({ exp }: { exp: Experiment }) {
             {exp.artifacts
               .filter((a) => /^report-v[0-9]+\.json$/.test(a.name))
               .map((a) => (
-                <a key={a.id} href={`/api/artifacts/${a.id}`} target="_blank" rel="noreferrer">
+                <a key={a.id} href={`/api/blobs/${a.id}`} target="_blank" rel="noreferrer">
                   {a.name}
                 </a>
               ))}

@@ -26,19 +26,20 @@ let approvalResponse;
 page.on('request', (request) => {
   if (
     request.method() === 'POST' &&
-    request.url().endsWith(`/api/experiments/${experimentId}/answers`)
+    request.url().endsWith('/api/commands') &&
+    request.postDataJSON().kind === 'answer'
   )
     approvalRequest = request.postDataJSON();
 });
 try {
   const detailResponse = await page.request.get(
-    new URL(`/api/experiments/${experimentId}`, target).href,
+    new URL(`/api/projections/experiment:${experimentId}`, target).href,
     {
       headers: { Authorization: `Bearer ${token}` },
     },
   );
   assert.equal(detailResponse.status(), 200);
-  const detail = await detailResponse.json();
+  const detail = (await detailResponse.json()).document;
   assert.equal(detail.contract.execution_contract, 4);
   assert.equal(JSON.stringify(detail).includes('PRIVATE CHECKPOINT'), false);
   assert.equal(JSON.stringify(detail).includes('never show this content'), false);
@@ -100,8 +101,7 @@ try {
 
   const responseWait = page.waitForResponse(
     (response) =>
-      response.url().endsWith(`/api/experiments/${experimentId}/answers`) &&
-      response.request().method() === 'POST',
+      response.url().endsWith('/api/commands') && response.request().method() === 'POST',
   );
   await page.getByRole('button', { name: 'Accept', exact: true }).click();
   const response = await responseWait;
@@ -115,20 +115,23 @@ try {
 
 // The same request identity/body must replay the saved receipt instead of deciding again.
 assert.ok(approvalRequest, 'approval POST was not observed');
-assert.equal(approvalRequest.answer, 'accept');
+assert.equal(approvalRequest.payload.answer, 'accept');
 assert.ok(approvalResponse, 'approval receipt was not observed');
-const replay = await fetch(new URL(`/api/experiments/${experimentId}/answers`, target), {
+const replay = await fetch(new URL('/api/commands', target), {
   method: 'POST',
   headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
   body: JSON.stringify(approvalRequest),
 });
 assert.equal(replay.status, 200);
-assert.deepEqual(await replay.json(), approvalResponse);
-const after = await fetch(new URL(`/api/experiments/${experimentId}`, target), {
+const replayed = await replay.json();
+assert.equal(replayed.state, 'applied');
+assert.equal(replayed.request_id, approvalResponse.request_id);
+assert.deepEqual(replayed.result, approvalResponse.result);
+const after = await fetch(new URL(`/api/projections/experiment:${experimentId}`, target), {
   headers: { Authorization: `Bearer ${token}` },
 });
 assert.equal(after.status, 200);
-const final = await after.json();
+const final = (await after.json()).document;
 assert.equal(final.pending_request.answer, 'accept');
 assert.equal(JSON.stringify(final).includes('PRIVATE CHECKPOINT'), false);
 assert.equal(errors.length, 0, errors.join('\n'));

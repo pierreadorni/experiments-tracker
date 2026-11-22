@@ -175,6 +175,10 @@ def create_app(config, *, components=None, config_path=None, current_release=Non
         )
         return {"schema_version": 1, "authenticated": True}
 
+    @app.get("/api/session", dependencies=[Depends(authorize)])
+    async def session():
+        return {"schema_version": 1, "authenticated": True, "host": "local"}
+
     @app.delete("/api/session", dependencies=[Depends(authorize)])
     async def logout(response: Response):
         response.delete_cookie("et_session")
@@ -503,6 +507,11 @@ def create_app(config, *, components=None, config_path=None, current_release=Non
         )
         return command_receipt(str(body.request_id), body.kind, body.target, outcome, received)
 
+    @app.get("/api/commands", dependencies=[Depends(authorize)])
+    async def pending_commands(state: str = Query(pattern="^pending$")):
+        # Local commands settle before POST returns, so nothing waits for an executor here.
+        return {"schema_version": 1, "commands": []}
+
     @app.get("/api/commands/{request_id}", dependencies=[Depends(authorize)])
     async def receipt(request_id: UUID):
         row = store().one(
@@ -547,6 +556,7 @@ def create_app(config, *, components=None, config_path=None, current_release=Non
         return {"schema_version": 1, **result}
 
     @app.get("/api/artifacts/{artifact_id}", dependencies=[Depends(authorize)])
+    @app.get("/api/blobs/{artifact_id}", dependencies=[Depends(authorize)])
     async def artifact(artifact_id: UUID):
         row = store().one("SELECT * FROM artifacts WHERE id=? AND local_valid=1", (str(artifact_id),))
         if not row:

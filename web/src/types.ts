@@ -289,6 +289,7 @@ export type Status = {
   models_observed_at?: number | null;
   job_observations?: Record<string, { job_id: string | null; observed_at: number | null }>;
   mode: 'demo' | 'live' | 'gateway';
+  host?: 'local' | 'gateway';
   executor_id: string;
   last_tick: number | null;
   agent_ready: boolean;

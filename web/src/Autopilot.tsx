@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Download, Pause, Play, Square, FileText, ChevronDown } from 'lucide-react';
-import { api, command } from './api';
+import { api } from './api';
+import { projectKey, send as sendCommand, usePendingCommands } from './relay';
 import type { Status } from './types';
 
 type Policy = {
@@ -82,7 +83,6 @@ type View = {
   }[];
   messages?: { seq: number; kind: string; document: string }[];
   responses?: { id: string; cursor: number; result: string; created_at: number }[];
-  pending_commands?: { request_id: string; state: string; error: string | null; payload: string }[];
   stage_holds?: { experiment_id: string; stage_id: string; reason: string; detail: string }[];
   backlog?: {
     id: string;
@@ -208,14 +208,14 @@ export function Autopilot({
       setReserveDraft(null);
   }, [policy, reserveDraft]);
   const capable = !!status?.autopilot?.available && view?.available !== false;
-  const pending =
-    view?.pending_commands?.filter((c) => c.state === 'pending' || c.state === 'received') || [];
+  const target = projectKey('autopilot', projectId);
+  const pending = usePendingCommands().filter((c) => c.target === target);
   const attention = (view?.notices || []).filter((n) => !n.resolved_at);
   const send = async (kind: string, fields: Record<string, unknown> = {}) => {
     setBusy(true);
     setError(null);
     try {
-      const result = await command<{ state: string }>(path + '/commands', {
+      const result = await sendCommand('autopilot', target, {
         kind,
         expected_revision: run?.revision || 0,
         ...fields,
@@ -289,14 +289,6 @@ export function Autopilot({
           Saved project state below has not changed yet.
         </p>
       )}
-      {view?.pending_commands
-        ?.filter((c) => c.state === 'rejected')
-        .slice(0, 1)
-        .map((c) => (
-          <p key={c.request_id} role="alert" className="notice warning">
-            Command refused: {c.error}
-          </p>
-        ))}
       {view?.observed_at && (
         <p className="muted small">
           Last observed {date(view.observed_at)}

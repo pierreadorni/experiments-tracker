@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { api, command } from './api';
+import { api } from './api';
+import { projectKey, send as sendCommand } from './relay';
 import { Select } from './Select';
 import { ResearchMemory, type SavedIdea } from './ResearchMemory';
 import type { Experiment } from './types';
@@ -129,7 +130,7 @@ export function ProjectKnowledge({
     setBusy(true);
     setError(null);
     try {
-      await command(path, {
+      await sendCommand('knowledge', projectKey('knowledge', projectId), {
         kind,
         ...(model ? { model } : {}),
         ...(effort ? { reasoning_effort: effort } : {}),
@@ -208,7 +209,7 @@ export function ProjectKnowledge({
       return (
         <figure key={index} className="memory-figure">
           <img
-            src={`/api/artifacts/${encodeURIComponent(block.artifact_id)}`}
+            src={`/api/blobs/${encodeURIComponent(block.artifact_id)}`}
             alt={block.alt}
             loading="lazy"
           />
