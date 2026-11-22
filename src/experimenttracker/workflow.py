@@ -44,10 +44,10 @@ from .models import (
     Implementation,
     ResearchPlan,
 )
-from .progress import DiscussionActivity, describe_item, read_job_progress
+from .progress import DiscussionActivity, describe_item
 from .projects import Projects, ProjectUnavailable
 from .quota import QuotaGate
-from .remote import RemoteSlurmScheduler, TransferPending
+from .remote import RemoteSlurmScheduler
 from .research import readback as research_readback
 from .research.dispatch import PHASE as RESEARCH_PHASE
 from .research.dispatch import ResearchDispatch
@@ -57,8 +57,6 @@ from .resolver import TurnResolver
 from .slurm import ResourceUnavailable
 from .steering import queue_late_reports
 from .store import encode
-from .tfevents import read_previews
-from .tfevents import selection as tensorboard_selection
 from .title import TitleSummary, luna_title_model, title_prompt
 from .watchdog import engine_watchdog
 from .workspaces import Workspaces
@@ -1187,12 +1185,9 @@ class Workflow:
             (f"{job_obligations.NOT_SUBMITTED_PREFIX}%",),
         ):
             eid = job["experiment_id"]
-            observed = None
-            research_job = False
             try:
                 exp = self.store.experiment(eid)
-                research_job = exp["contract"].get("execution_contract") == 4
-                if research_job:
+                if exp["contract"].get("execution_contract") == 4:
                     if exp["deleted_at"] is not None or exp["phase"] in ("complete", "failed", "cancelled"):
                         continue
                     from .research import job_observe
@@ -1241,271 +1236,9 @@ class Workflow:
                 ):
                     await legacy_archive.settle_job(self, exp, job)
                     continue
-                check = self.output_checks.get(job["intent_id"])
-                if check and not check[0].done():
-                    continue
-                scheduler = self.scheduler_for(exp, job)
-                if isinstance(scheduler, RemoteSlurmScheduler):
-                    if not scheduler.due(job, clock.now()):
-                        continue
-                    with self.store.tx() as db:
-                        db.execute(
-                            "UPDATE jobs SET remote_polled_at=? WHERE intent_id=?",
-                            (clock.now(), job["intent_id"]),
-                        )
-                if not job["job_id"]:
-                    # C5 owns every intent without a scheduler identity: adoption,
-                    # quarantine or a proven absence is saved here, at the scheduler
-                    # cadence, before advancement may submit for this experiment. An
-                    # intent whose sbatch is still in flight has an owner that saves
-                    # its own outcome, so this list entry is not observed at all.
-                    if job["intent_id"] in self.submissions_in_flight:
-                        continue
-                    job = await resolver.resolve(self, exp, job)
-                    if not job:
-                        continue
-                observed = check[1] if check else await scheduler.observe(job["job_id"])
-                if self.store.experiment(eid)["phase"] == "cancelled":
-                    continue
-                self.research.service.budget.observe(
-                    job, observed, exp["contract"].get("execution", {}).get("context", "acacia")
-                )
-                if isinstance(scheduler, RemoteSlurmScheduler):
-                    try:
-                        await scheduler.fetch(job, observed)
-                    except TransferPending as exc:
-                        with self.store.tx() as db:
-                            before = job_obligations.locked_job(db, job, "state")
-                            if before is None:
-                                continue
-                            db.execute(
-                                "UPDATE jobs SET scheduler_state=?,exit_code=?,observed_at=? WHERE intent_id=?",
-                                (observed.state, observed.exit_code, clock.now(), job["intent_id"]),
-                            )
-                            job_obligations.sync_backend(db, job["intent_id"], before=before)
-                        self.store.update(
-                            eid,
-                            hold_reason="results_transfer_pending"
-                            if observed.state == "COMPLETED"
-                            else "remote_transfer_pending",
-                            error=str(exc),
-                        )
-                        continue
-                    if exp["hold_reason"] in (
-                        "results_transfer_pending",
-                        "remote_transfer_pending",
-                        "executor_unavailable",
-                    ):
-                        self.store.update(eid, hold_reason=None, error=None)
-                job_root = Path(job["execution_root"]) if job.get("execution_root") else self.root(eid)
-                job_manifest = (
-                    json.loads(job["execution_manifest"])
-                    if job.get("execution_manifest")
-                    else self.store.experiment(eid)["snapshot"]
-                )
-                now = clock.now()
-                previous_progress = json.loads(job["progress"]) if job["progress"] else None
-                progress = await asyncio.to_thread(
-                    read_job_progress,
-                    job_root,
-                    {**job, "started_at": observed.started_at or job["started_at"]},
-                    now=now,
-                )
-                if previous_progress and (
-                    progress is None or progress["reported_at"] <= previous_progress["reported_at"]
-                ):
-                    progress = previous_progress
-                # Observation freshness is saved below, but a heartbeat timestamp
-                # alone is not new scientific progress worth another full view.
-                progress_changed = (
-                    {k: v for k, v in progress.items() if k != "reported_at"} if progress else None
-                ) != (
-                    {k: v for k, v in previous_progress.items() if k != "reported_at"}
-                    if previous_progress
-                    else None
-                )
-                previous_tensorboard = json.loads(job["tensorboard"]) if job.get("tensorboard") else None
-                tensorboard = (
-                    await asyncio.to_thread(read_previews, job_root, job, job_manifest)
-                    if tensorboard_selection(job_manifest, job["stage_id"])
-                    else None
-                )
-                if tensorboard is None:
-                    tensorboard = previous_tensorboard
-                elif previous_tensorboard:
-                    # Keep the last saved preview across transient missing files,
-                    # remote transfer failures and an executor cache restart.
-                    if not tensorboard["image"]:
-                        tensorboard["image"] = previous_tensorboard["image"]
-                    if tensorboard["scalar"] and not tensorboard["scalar"]["points"]:
-                        tensorboard["scalar"] = previous_tensorboard["scalar"]
-                    tensorboard["updated_at"] = max(
-                        tensorboard["updated_at"], previous_tensorboard["updated_at"]
-                    )
-                    if tensorboard["image"]:
-                        tensorboard["image_pending"] = False
-                tensorboard_changed = tensorboard != previous_tensorboard
-                state = "submitted"
-                error = None
-                completed_names = None
-                if observed.state == "COMPLETED" and observed.exit_code is not None:
-                    if observed.exit_code == "0:0":
-                        # Scheduler success is necessary, not sufficient: validate before recording success.
-                        exp = self.store.experiment(eid)
-                        register_outputs = iteration.enabled(exp)
-                        names = await asyncio.to_thread(
-                            artifacts.validate_stage,
-                            job_root,
-                            job["stage_id"],
-                            job_manifest,
-                        )
-                        if register_outputs:
-                            completed_names = names
-                        state = "complete"
-                    else:
-                        state, error = "failed", f"job exit {observed.exit_code}"
-                elif observed.state in TERMINAL_BAD:
-                    state, error = "failed", f"{observed.state}: {observed.exit_code}"
-                changed = (
-                    (job["scheduler_state"], job["exit_code"], job["state"])
-                    != (
-                        observed.state,
-                        observed.exit_code,
-                        state,
-                    )
-                    or any(
-                        job[field] != getattr(observed, field)
-                        for field in ("estimated_start_at", "pending_reason")
-                    )
-                    or any(
-                        getattr(observed, field) is not None and job[field] != getattr(observed, field)
-                        for field in ("started_at", "ended_at")
-                    )
-                )
-                if self.store.experiment(eid)["phase"] == "cancelled":
-                    continue
-                with self.store.tx() as db:
-                    before = job_obligations.locked_job(db, job)
-                    parent = db.execute("SELECT phase FROM experiments WHERE id=?", (eid,)).fetchone()
-                    if before is None or parent is None or parent["phase"] == "cancelled":
-                        continue
-                    registration_started = time.monotonic()
-                    selected = early_repair.selected(self, exp, job)
-                    if completed_names is not None and not selected:
-                        completed_names = None
-                    if completed_names is not None and iteration.enabled(exp):
-                        iteration.complete(self, exp, job, job_manifest, job_root, db)
-                    db.execute(
-                        "UPDATE jobs SET state=?,scheduler_state=?,exit_code=?,observed_at=?,error=?,"
-                        "started_at=COALESCE(?,started_at),ended_at=COALESCE(?,ended_at),estimated_start_at=?,pending_reason=?,progress=?,tensorboard=? WHERE intent_id=?",
-                        (
-                            state,
-                            observed.state,
-                            observed.exit_code,
-                            now,
-                            error,
-                            observed.started_at,
-                            observed.ended_at,
-                            observed.estimated_start_at,
-                            observed.pending_reason,
-                            encode(progress) if progress else None,
-                            encode(tensorboard) if tensorboard else None,
-                            job["intent_id"],
-                        ),
-                    )
-                    job_obligations.sync_backend(db, job["intent_id"], before=before)
-                    db.execute("UPDATE experiments SET observed_at=? WHERE id=?", (now, eid))
-                    if completed_names is not None:
-                        db.execute(
-                            "UPDATE stages SET state='complete',error=NULL,output_manifest=?,updated_at=? "
-                            "WHERE experiment_id=? AND id=?",
-                            (encode(completed_names), now, eid, job["stage_id"]),
-                        )
-                        if iteration.enabled(exp):
-                            iteration.queue_working_report(self, exp, job, db)
-                        self.store.emit(
-                            db,
-                            eid,
-                            "stage_changed",
-                            {
-                                "stage": job["stage_id"],
-                                "state": "complete",
-                                **(
-                                    {
-                                        "bookkeeping_ms": job_manifest.get("bookkeeping_ms"),
-                                        "registration_ms": (time.monotonic() - registration_started) * 1000,
-                                        "source_bytes": job_manifest.get("source_bytes"),
-                                        "provenance_bytes_read": 0,
-                                    }
-                                    if iteration.enabled(exp)
-                                    else {}
-                                ),
-                            },
-                        )
-                    if changed:
-                        self.store.emit(
-                            db, eid, "job_observed", {"job_id": job["job_id"], "state": observed.state}
-                        )
-                    elif progress_changed or tensorboard_changed:
-                        self.store.emit(db, eid, "job_progress", {"job_id": job["job_id"]})
-                self.output_checks.pop(job["intent_id"], None)
-                if observed.state == "ACCOUNTING_PENDING" or (
-                    observed.state == "COMPLETED" and observed.exit_code is None
-                ):
-                    self.store.update(eid, hold_reason="accounting_pending")
-                elif self.store.experiment(eid)["hold_reason"] in (
-                    "accounting_pending",
-                    "executor_unavailable",
-                    "submission_uncertain",
-                ):
-                    self.store.update(eid, hold_reason=None, error=None)
-                if state == "failed" and early_repair.selected(self, self.store.experiment(eid), job):
-                    restarting = self.store.one(
-                        "SELECT 1 FROM steering WHERE experiment_id=? AND mode='restart' AND state IN ('pending','cancelling')",
-                        (eid,),
-                    )
-                    self.store.stage(
-                        eid, job["stage_id"], "cancelled" if restarting else "failed", error=error
-                    )
-                    optional = iteration.enabled(exp) and not next(
-                        s for s in job_manifest["plan"]["stages"] if s["id"] == job["stage_id"]
-                    ).get("requested", True)
-                    if not restarting and not optional:
-                        self.fail(eid, "compute_failed", error)
-            except ValueError as exc:
-                if research_job:
-                    self.store.update(eid, hold_reason="executor_unavailable", error=str(exc))
-                    continue
-                self.output_checks.pop(job["intent_id"], None)
-                selected = early_repair.selected(self, self.store.experiment(eid), job)
-                if selected:
-                    self.store.stage(eid, job["stage_id"], "failed", error=str(exc))
-                try:
-                    with self.store.tx() as db:
-                        before = job_obligations.locked_job(db, job)
-                        if before is None:
-                            continue
-                        db.execute(
-                            "UPDATE jobs SET state='failed',error=? WHERE intent_id=?",
-                            (str(exc), job["intent_id"]),
-                        )
-                        if observed is not None:
-                            db.execute(
-                                "UPDATE jobs SET scheduler_state=?,exit_code=?,observed_at=? WHERE intent_id=?",
-                                (observed.state, observed.exit_code, clock.now(), job["intent_id"]),
-                            )
-                        job_obligations.sync_backend(db, job["intent_id"], before=before)
-                        self.store.emit(db, eid, "output_validation_failed", {"error": str(exc)})
-                except RuntimeError as mapping_error:
-                    self.store.update(eid, hold_reason="executor_unavailable", error=str(mapping_error))
-                    continue
-                optional = iteration.enabled(exp) and not next(
-                    s for s in job_manifest["plan"]["stages"] if s["id"] == job["stage_id"]
-                ).get("requested", True)
-                if not optional and selected:
-                    self.fail(eid, "validation_failed", str(exc))
+                # Live contract 3 observation was retired with its stage engine; any
+                # other saved job is left untouched for operator inspection.
             except Exception as exc:
-                self.output_checks.pop(job["intent_id"], None)
                 self.store.update(eid, hold_reason="executor_unavailable", error=str(exc))
 
     async def commit_branch(self, exp, message):

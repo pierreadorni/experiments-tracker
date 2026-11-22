@@ -1,13 +1,10 @@
 """Synthetic regressions for exact job-observation obligation handoffs."""
 
 import json
-from contextlib import contextmanager
 from uuid import uuid4
 
-import pytest
 from helpers import seed_saved_contract3
 
-from experimenttracker import early_repair
 from experimenttracker.cancellation import process_cancellations
 from experimenttracker.core import job_obligations
 from experimenttracker.models import ActionCommand
@@ -68,71 +65,4 @@ async def test_cancel_adoption_refreshes_snapshot_before_same_cycle_terminal_set
     assert scheduler.observed and scheduler.cancelled == []
     assert not store.rows("SELECT 1 FROM obligations WHERE state='open' AND target=?", (intent_id,))
     assert store.one("SELECT 1 FROM events WHERE kind='cancelled_job_settled'")
-    await workflow.close()
-
-
-@pytest.mark.usefixtures("contract_three_fixture")
-async def test_observer_mapper_value_error_rolls_back_without_scientific_failure(runtime, monkeypatch):
-    store, _, _, workflow = runtime
-    eid, intent_id = seed_job(store)
-    scheduler = Scheduler(Observation("RUNNING"))
-    workflow.scheduler_for = lambda _exp, _job: scheduler
-
-    def conflicting_mapping(*_args, **_kwargs):
-        raise ValueError("synthetic obligation history conflict")
-
-    monkeypatch.setattr(job_obligations, "sync_job", conflicting_mapping)
-    stages_before = store.rows(
-        "SELECT id,state,error,output_manifest FROM stages WHERE experiment_id=? ORDER BY id", (eid,)
-    )
-
-    await workflow.observe_jobs()
-
-    saved = store.one("SELECT state,scheduler_state,error FROM jobs WHERE intent_id=?", (intent_id,))
-    assert saved == {"state": "submitted", "scheduler_state": None, "error": None}
-    assert store.experiment(eid)["phase"] != "failed"
-    assert store.experiment(eid)["hold_reason"] == "executor_unavailable"
-    assert (
-        store.rows(
-            "SELECT id,state,error,output_manifest FROM stages WHERE experiment_id=? ORDER BY id", (eid,)
-        )
-        == stages_before
-    )
-    assert not store.rows(
-        "SELECT 1 FROM events WHERE experiment_id=? AND kind='output_validation_failed'", (eid,)
-    )
-    assert store.one(
-        "SELECT state,owner FROM obligations WHERE target=? ORDER BY id DESC LIMIT 1", (intent_id,)
-    ) == {"state": "open", "owner": "external"}
-    await workflow.close()
-
-
-@pytest.mark.usefixtures("contract_three_fixture")
-async def test_parent_cancellation_is_rechecked_inside_observation_transaction(runtime, monkeypatch):
-    store, _, _, workflow = runtime
-    eid, intent_id = seed_job(store)
-    scheduler = Scheduler(Observation("RUNNING"))
-    workflow.scheduler_for = lambda _exp, _job: scheduler
-    selected_calls = []
-    monkeypatch.setattr(early_repair, "selected", lambda *_args: selected_calls.append(True))
-    transaction, cancellations = store.tx, []
-
-    @contextmanager
-    def cancel_before_observation_write():
-        # The observer's own pre-write check has passed; cancellation lands now.
-        if scheduler.observed and not cancellations:
-            cancellations.append(True)
-            cancel(store, eid)
-        with transaction() as db:
-            yield db
-
-    monkeypatch.setattr(store, "tx", cancel_before_observation_write)
-
-    await workflow.observe_jobs()
-
-    saved = store.one("SELECT state,scheduler_state FROM jobs WHERE intent_id=?", (intent_id,))
-    assert saved == {"state": "submitted", "scheduler_state": None}
-    assert store.experiment(eid)["phase"] == "cancelled"
-    assert not store.rows("SELECT 1 FROM events WHERE experiment_id=? AND kind='job_observed'", (eid,))
-    assert cancellations and not selected_calls
     await workflow.close()

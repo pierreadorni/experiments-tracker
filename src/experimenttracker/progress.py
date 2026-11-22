@@ -1,82 +1,10 @@
 """Bounded numeric job telemetry and sanitized agent activity descriptions."""
 
-import json
-import math
-import os
 import re
-import stat
-from datetime import datetime
 from pathlib import PurePath
 
 PROGRESS_PREFIX = "ET_PROGRESS "
 LOG_TAIL_BYTES = 256 * 1024
-
-
-def read_job_progress(root, job, *, now):
-    """Read numeric telemetry only from this exact intent/job's bounded stdout tail.
-
-    Incomplete, invalid and unrelated lines are ignored. Logs are never published,
-    and telemetry cannot establish scheduler success or evidence readiness.
-    """
-    if not job["job_id"] or not re.fullmatch(r"[0-9]+", job["job_id"]):
-        return None
-    if not re.fullmatch(r"[a-zA-Z0-9-]+", job["intent_id"]):
-        return None
-    path = root / f"et-{job['intent_id']}-{job['job_id']}.out"
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        with os.fdopen(fd, "rb") as log:
-            metadata = os.fstat(log.fileno())
-            if not stat.S_ISREG(metadata.st_mode):
-                return None
-            offset = max(0, metadata.st_size - LOG_TAIL_BYTES)
-            log.seek(offset)
-            lines = log.read(LOG_TAIL_BYTES).split(b"\n")
-    except OSError:
-        return None
-    # The first tail fragment and final unfinished line are not records.
-    lines = lines[1:-1] if offset else lines[:-1]
-    latest = None
-    for line in lines:
-        if not line.startswith(PROGRESS_PREFIX.encode()) or len(line) > 2048:
-            continue
-        try:
-            value = json.loads(line[len(PROGRESS_PREFIX) :])
-            if not isinstance(value, dict) or value.get("stage") != job["stage_id"]:
-                continue
-            numbers = {key: value[key] for key in ("completed", "total", "timestamp")}
-            if isinstance(numbers["timestamp"], str):
-                timestamp = datetime.fromisoformat(numbers["timestamp"])
-                if timestamp.tzinfo is None or timestamp.utcoffset() is None:
-                    continue
-                numbers["timestamp"] = timestamp.timestamp()
-            eta = value.get("eta_seconds")
-            if eta is not None:
-                numbers["eta_seconds"] = eta
-            if any(
-                type(number) not in (int, float) or not math.isfinite(number) or abs(number) > 1e15
-                for number in numbers.values()
-            ):
-                continue
-            if not 0 <= numbers["completed"] <= numbers["total"] or numbers["total"] <= 0:
-                continue
-            if not 0 < numbers["timestamp"] <= now + 60:
-                continue
-            if job.get("started_at") and numbers["timestamp"] < job["started_at"] - 60:
-                continue
-            if eta is not None and not 0 <= eta <= 365 * 24 * 3600:
-                continue
-            sample = {
-                "completed": numbers["completed"],
-                "total": numbers["total"],
-                "reported_at": numbers["timestamp"],
-                "eta_seconds": eta,
-            }
-            if latest is None or sample["reported_at"] >= latest["reported_at"]:
-                latest = sample
-        except (ValueError, KeyError, TypeError, OverflowError, RecursionError):
-            continue
-    return latest
 
 
 def safe_filename(value):
