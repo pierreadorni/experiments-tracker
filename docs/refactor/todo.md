@@ -610,9 +610,17 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
   - [x] Slice 5: C3 MCP stage tools (the legacy listing now serves only `job_status` for discussion turns on saved records) and the repair half of `early_repair`. Selective cancellation, used by C4 `cancel_job`, remains in that module.
   - [x] Slice 6 (done in 6a and 6b; the `audit.py` and `reporting.py` C3 branches are historical readers and stay): `core/advancement_decisions` (experiment lifetime and cancellation obligations written from shared store paths; review carefully), the remaining `iteration.py` helpers and C3-only hold writers.
   - [x] Re-seeded the `contract_three_fixture` tests and deleted the fixture. Deleted `contract_three_engine`.
-- [ ] Follow-ups found during retirement (C4 gaps, not regressions): remote association limits (`AssocGrpSubmitJobsLimit` etc.) map to a wait only on the C3 staging path; automatic titles are generated only for C3 experiments. See the [retirement sequence](notes/t4.8-rollout.md#3-verify-drain-on-the-actual-installation-retire-separately).
+- [x] Follow-ups found during retirement are tracked as T4.9 and T4.10 below; they are C4 gaps, not regressions, and do not block T4.8.
 
 ---
+
+### [ ] T4.9 C4 remote submit-limit wait · S · M
+
+Remote association limits (`AssocGrpSubmitJobsLimit`, `QOSMaxSubmitJobPerUserLimit` and similar) map to `AdmissionPending` in `RemoteSlurmScheduler.preflight`, but C4 `research.job_dispatch.dispatch` surfaces it to the agent as a refusal. Design a saved wait first: preflight runs before any intent is saved, so a wait needs a durable timer or wakeup tied to the request identity, and it must never retry an uncertain submission. Owner decision on the wait shape before implementation.
+
+### [ ] T4.10 Automatic titles on C4 · S · M
+
+`advance_title`, `dispatch_title` and `title_applicable` run only for C3 (`iteration.runnable`), and `_pending_admitted` admits no `title`/`summarize_title` phase on C4. C4 sessions are untitled until the first summary. Decide whether C4 spends a quota-gated small-model turn or derives the title from the first summary, then wire admission, obligations and tests. Owner decision on cost and trigger before implementation.
 
 ## Phase 5 — Simplification
 
