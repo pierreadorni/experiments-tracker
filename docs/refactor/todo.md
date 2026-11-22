@@ -619,7 +619,9 @@ Plan, owner decisions and design: [notes/t6-agent-backends.md](notes/t6-agent-ba
 Starts after the T4.8 engine deletion; T6.0 blocks T6.5 onward. No live use without
 owner authorization (T6.9).
 
-### [ ] T6.0 Owner decisions: API-billed Claude credential, spend limits, per-project data opt-in, AGENTS.md rule amendment · owner · note
+### [~] T6.0 Owner decisions · owner · note
+- [x] 2026-11-22: API billing allowed for all backends when explicitly configured under a spend budget (AGENTS.md amended). Claude uses an Anthropic API key, with an initial $100 monthly budget.
+- [ ] Per-project data opt-in for sending work to Anthropic; default model and effort; daily and per-turn caps, set from T6.1's measured costs.
 ### [ ] T6.1 Capability probe: scripted fixtures plus one owner-authorized, budget-capped live probe recording transcripts for completed, interrupted and killed turns, structured output, MCP stdio and the Bash sandbox on the executor host · S · note
 ### [ ] T6.2 `AgentBackend` protocol and neutral `agent_errors.py`; `CodexAgent` and `DemoAgent` conform; no behaviour change · F+R · M
 ### [ ] T6.3 Backend binding: optional `ClaudeConfig`, project default, `contract.agent` saved at create (absent means Codex), refuse resume on a different backend, neutral MCP server spec · F+R · M

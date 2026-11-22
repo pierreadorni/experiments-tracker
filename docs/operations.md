@@ -12,7 +12,7 @@ uv run --locked experimenttracker --config .local/live.yaml inspect EXPERIMENT_U
 
 `doctor` and saved-state inspection do not dispatch work. Start the owner with `serve`; stop with Ctrl+C or SIGTERM. Shutdown persists workflow state, takes an online backup and stops owned agent children. Slurm jobs survive. Restarting the same configuration adopts saved identities. Do not use broad process kills or cancel scheduler jobs as routine restart cleanup.
 
-The UI's agent pause stops new inference; compute pause stops new submissions. Existing jobs continue. Fresh explicit included-usage permission and five-hour/week quota windows gate agent dispatch; stale, unknown or denied windows hold work. Defaults reserve 25%/10%, with 30%/15% recovery thresholds. Compute observation and publication can continue while inference is held. No automatic API billing, purchased credits or credential extraction.
+The UI's agent pause stops new inference; compute pause stops new submissions. Existing jobs continue. Fresh explicit included-usage permission and five-hour/week quota windows gate agent dispatch; stale, unknown or denied windows hold work. Defaults reserve 25%/10%, with 30%/15% recovery thresholds. Compute observation and publication can continue while inference is held. API-billed backends run only when explicitly configured, under the owner's spend budget; never as an automatic fallback, and never with extracted credentials.
 
 ## Uncertain dispatch
 

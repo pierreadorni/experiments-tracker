@@ -1,7 +1,8 @@
 # T6: selectable agent backends (Codex and Claude Agent SDK)
 
 Status: plan, 2026-11-22. Nothing here is implemented, and none of it authorizes
-live use. Section 1 lists owner decisions that must be made before T6.5.
+live use. Section 1 lists the owner decisions; decision 1 is made, and decisions
+2 and 3 must be made before T6.5.
 
 ## Goal
 
@@ -29,19 +30,18 @@ Autopilot's session options: whichever lands second rebases.
 
 ## 1. Owner decisions (block T6.5)
 
-1. **Authentication and billing.** AGENTS.md currently says *managed ChatGPT
-   authentication only: no API-billed fallback*. Anthropic's Agent SDK
+1. **Authentication and billing. Decided 2026-11-22.** The owner waived the
+   "managed ChatGPT only" rule for all backends; AGENTS.md now allows explicitly
+   configured API billing under an owner spend budget. Anthropic's Agent SDK
    documentation says third-party products may not offer claude.ai login or
-   subscription rate limits unless Anthropic has approved it; the supported route
-   is an Anthropic API key (or Amazon Bedrock / Google Vertex / Microsoft Foundry
-   credentials). A Claude backend is therefore **API-billed**. The owner must:
-   - amend the AGENTS.md rule so that it becomes "Codex: managed ChatGPT only.
-     Claude: an explicitly configured API credential, with an owner spend
-     budget", or decline T6;
-   - choose the credential provider (Anthropic API, Bedrock, Vertex);
-   - set the spend limits (per turn, per day and per month, in USD).
+   subscription rate limits without Anthropic's approval. The Claude backend
+   therefore uses an **Anthropic API key**, kept in a protected credential file.
+   The owner has **$100 of monthly API credits**, so the initial monthly budget
+   is $100. The daily and per-turn caps are set in T6.1 from measured turn costs.
    Claude is never an automatic fallback for Codex quota exhaustion. Selection is
-   explicit per project or role.
+   explicit per project or role. The Codex guard in `CodexAgent.start` that
+   refuses non-ChatGPT accounts stays: Codex API-key mode is out of scope unless
+   a later card adds it under the same spend ledger.
 2. **Data handling.** Prompts, checkpoints and repository content would go to a
    second provider. The owner confirms which projects may use it (per-project
    opt-in).

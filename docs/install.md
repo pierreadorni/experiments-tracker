@@ -56,7 +56,7 @@ make setup
 
 `tools/codex/package-lock.json` pins Codex **0.160.1**. Use this project-local executable rather than replacing another project's global runtime. If login is needed, have the owner complete supported `codex login` (or `login --device-auth` where enabled). Reuse the existing supported managed login; do not read/copy authentication files or put tokens in chat. See [official authentication guidance](https://learn.chatgpt.com/docs/auth).
 
-The adapter checks an exact version. Review generated protocol schemas and run the tests before changing versions; see [official App Server documentation](https://learn.chatgpt.com/docs/app-server). Do not configure API keys or a paid fallback. Account/model availability must be established on this installation.
+The adapter checks an exact version. Review generated protocol schemas and run the tests before changing versions; see [official App Server documentation](https://learn.chatgpt.com/docs/app-server). API keys are allowed only when explicitly configured for a backend with a spend budget, never as an automatic paid fallback. Account/model availability must be established on this installation.
 
 ## 5. Generate and adapt live configuration
 
