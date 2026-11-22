@@ -66,15 +66,19 @@ def linked(service, run, gpus=1, minutes=2400):
             "INSERT INTO jobs(intent_id,experiment_id,stage_id,state,script_hash,resources,snapshot_hash,created_at,job_id) VALUES(?,?,'prepare','submitted','test',?,'test',?,?)",
             (intent, eid, json.dumps(resources.model_dump()), 1000000, "123"),
         )
-        held = service.admission(db, store.experiment(eid), "prepare", resources, intent)
-    return eid, intent, held
-
-
-def support(service):
-    path = service.config.state_dir / "autopilot-accounting.json"
-    path.write_text(
-        json.dumps({"acacia": {"verified_at": 1000000, "no_requeue": True, "allocation_intervals": "single"}})
-    )
+        required = resources.gpus_per_job * resources.walltime_minutes_per_job * 60
+        db.execute(
+            "INSERT INTO autopilot_allocations(intent_id,project_id,run_id,requested_gpus,reserved_seconds,state) VALUES(?,?,?,?,?,?)",
+            (
+                intent,
+                run["project_id"],
+                run["id"],
+                resources.gpus_per_job,
+                required,
+                "reserved" if required else "settled",
+            ),
+        )
+    return eid, intent
 
 
 def test_fractional_calendar_borrowing_and_dst():
@@ -130,10 +134,8 @@ def test_reserve_revision_preserves_borrowing_and_changes_admission(runtime, mon
 
 def test_budget_six_40_hour_jobs_and_reset(runtime, monkeypatch):
     service, run = activated(runtime, monkeypatch)
-    support(service)
-    outcomes = [linked(service, run)[2] for _ in range(6)]
-    assert outcomes[:2] == [None, None]
-    assert all(o["reason"] == "autopilot_weekly_gpu_limit" for o in outcomes[2:])
+    for _ in range(2):
+        linked(service, run)
     assert len(service.store.rows("SELECT * FROM autopilot_allocations")) == 2
     budget = service.budget.view(run["project_id"], policy(), 1000000 + WEEK)
     assert budget["reserved_seconds"] == 80 * 3600
@@ -142,8 +144,7 @@ def test_budget_six_40_hour_jobs_and_reset(runtime, monkeypatch):
 
 def test_settlement_cross_week_and_replay(runtime, monkeypatch):
     service, run = activated(runtime, monkeypatch)
-    support(service)
-    _, first, _ = linked(service, run, minutes=3600)
+    _, first = linked(service, run, minutes=3600)
     linked(service, run)
     job = service.store.one("SELECT * FROM jobs WHERE intent_id=?", (first,))
     service.budget.observe(
@@ -160,19 +161,16 @@ def test_settlement_cross_week_and_replay(runtime, monkeypatch):
         now=1000000 + 20 * 3600,
     )
     assert len(service.store.rows("SELECT * FROM autopilot_accounting")) == 1
-    assert linked(service, run)[2] is None
 
 
 def test_unknown_terminal_no_refund_and_allocation_total(runtime, monkeypatch):
     service, run = activated(runtime, monkeypatch)
-    support(service)
-    _, intent, _ = linked(service, run, gpus=8, minutes=600)
+    _, intent = linked(service, run, gpus=8, minutes=600)
     job = service.store.one("SELECT * FROM jobs WHERE intent_id=?", (intent,))
     service.budget.observe(job, Observation("CANCELLED"), "test", now=1000100)
     budget = service.budget.view(run["project_id"], policy())
     assert budget["reserved_seconds"] == 80 * 3600
     assert budget["unknown_seconds"] == 80 * 3600
-    assert linked(service, run)[2]["reason"] == "autopilot_accounting_unknown"
 
 
 def test_deadline_without_quota_and_foundation_not_implicit(runtime, monkeypatch):
@@ -187,12 +185,6 @@ def test_deadline_without_quota_and_foundation_not_implicit(runtime, monkeypatch
     count = len(service.store.rows("SELECT * FROM autopilot_transitions"))
     service.tick(policy().handoff_at + 1)
     assert len(service.store.rows("SELECT * FROM autopilot_transitions")) == count
-
-
-def test_unverified_accounting_and_cpu(runtime, monkeypatch):
-    service, run = activated(runtime, monkeypatch)
-    assert linked(service, run)[2]["reason"] == "autopilot_accounting_prerequisite"
-    assert linked(service, run, gpus=0)[2] is None
 
 
 def action(service, run):
@@ -378,7 +370,7 @@ def test_candidate_autopilot_create_links_c4_and_routes_objective_approval(
     )
     prompt = runtime[3].research.prompt(store.one("SELECT * FROM autopilot_actions WHERE id=?", (identity,)))
     assert "approve_experiment_objective" in prompt
-    assert "review_experiment_plan is only for saved contract-3 plans" in prompt
+    assert "review_experiment_plan" not in prompt
     approval_args = {
         "request_id": str(uuid4()),
         "expected_revision": service.run("test-project")["revision"],
@@ -388,17 +380,6 @@ def test_candidate_autopilot_create_links_c4_and_routes_objective_approval(
     }
     approved = service.invoke(identity, "approve_experiment_objective", approval_args)
     assert approved["approval"]["objective"] == objective
-    with pytest.raises(Conflict, match="contract 3"):
-        tool(
-            service,
-            identity,
-            "review_experiment_plan",
-            experiment_id=eid,
-            plan_revision=1,
-            scope_rationale="Must not route C4 through plan review.",
-            comparable_protocol="Synthetic protocol",
-            estimated_finish_at=1003600,
-        )
 
 
 def test_scoped_defer_user_pause_and_cancellation_replay(runtime, monkeypatch):
@@ -531,9 +512,7 @@ def test_quota_policy_hysteresis_does_not_mutate_owner(runtime, monkeypatch):
 
 def test_cross_week_running_corrections_duplicate_steps_and_oversize(runtime, monkeypatch):
     service, run = activated(runtime, monkeypatch)
-    support(service)
-    _, intent, held = linked(service, run, gpus=1, minutes=3600)
-    assert held is None
+    _, intent = linked(service, run, gpus=1, minutes=3600)
     job = service.store.one("SELECT * FROM jobs WHERE intent_id=?", (intent,))
     start = 1000000 + WEEK - 10 * 3600
     now = 1000000 + WEEK + 5 * 3600
@@ -560,7 +539,6 @@ def test_cross_week_running_corrections_duplicate_steps_and_oversize(runtime, mo
     )
     current = service.budget.view(run["project_id"], policy(), now + 1)
     assert current["reserved_seconds"] == 0 and current["consumed_seconds"] == 2 * 3600
-    assert linked(service, run, minutes=6060)[2]["reason"] == "autopilot_job_exceeds_weekly_cap"
     from experimenttracker.config import SlurmConfig
     from experimenttracker.slurm import SlurmScheduler
 
@@ -729,12 +707,10 @@ async def test_managed_project_input_is_durable_and_scoped(runtime, monkeypatch)
 
 def test_cpu_terminal_without_timestamps_cannot_hold_gpu_admission(runtime, monkeypatch):
     service, run = activated(runtime, monkeypatch)
-    support(service)
-    _, intent, _ = linked(service, run, gpus=0)
+    _, intent = linked(service, run, gpus=0)
     job = service.store.one("SELECT * FROM jobs WHERE intent_id=?", (intent,))
     service.budget.observe(job, Observation("COMPLETED"), "synthetic")
     assert service.budget.view(run["project_id"], policy())["unknown_jobs"] == 0
-    assert linked(service, run)[2] is None
 
 
 def test_project_guidance_change_wakes_and_invalidates_stale_authority(runtime, monkeypatch):

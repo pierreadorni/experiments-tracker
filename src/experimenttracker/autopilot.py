@@ -7,7 +7,6 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from . import clock
 from .autopilot_budget import WEEK, Budget
 from .autopilot_models import AutopilotCommand, AutopilotPolicy
-from .core import review_obligations
 from .store import Conflict, encode
 
 PHASES = ("foundation", "main_argument", "ablations", "writing")
@@ -546,72 +545,6 @@ class Autopilot:
         if active >= self.policy(run).max_open_experiments:
             raise Conflict("Autopilot open-experiment limit reached")
 
-    def hold(self, db, exp, stage, reason, detail):
-        old = self.store.one(
-            "SELECT reason,detail FROM autopilot_stage_holds WHERE experiment_id=? AND stage_id=? AND attempt=?",
-            (exp["id"], stage, exp["evidence_revision"]),
-        )
-        wire = encode(detail)
-        if old and old["reason"] == reason and old["detail"] == wire:
-            return
-        db.execute(
-            "INSERT INTO autopilot_stage_holds VALUES(?,?,?,?,?,?) ON CONFLICT(experiment_id,stage_id,attempt) DO UPDATE SET reason=excluded.reason,detail=excluded.detail,updated_at=excluded.updated_at",
-            (exp["id"], stage, exp["evidence_revision"], reason, wire, clock.now()),
-        )
-        db.execute("UPDATE experiments SET hold_reason=? WHERE id=?", (reason, exp["id"]))
-        self.store.emit(db, exp["id"], "autopilot_stage_held", {"stage": stage, "reason": reason, **detail})
-
-    def admission(self, db, exp, stage, resources, intent_id=None, now=None):
-        member = self.member(exp["id"])
-        if not member:
-            return None
-        run = self.run(run_id=member["run_id"])
-        policy = self.policy(run)
-        reason = self.authority(exp["id"], stage=stage, now=now)
-        required = resources.gpus_per_job * resources.walltime_minutes_per_job * 60
-        budget = self.budget.view(member["project_id"], policy, now)
-        detail = {"required_seconds": required, **budget}
-        if not reason and resources.gpus_per_job:
-            context = exp["contract"].get("execution", {}).get("context", "acacia")
-            # Explicit operational prerequisite: no assumptions about live cluster semantics.
-            support = self.config.state_dir / "autopilot-accounting.json" if self.config else None
-            try:
-                supported = json.loads(support.read_text())[context] if support else {}
-            except (OSError, KeyError, ValueError):
-                supported = {}
-            if (
-                not supported.get("verified_at")
-                or supported.get("no_requeue") is not True
-                or supported.get("allocation_intervals") != "single"
-            ):
-                reason = "autopilot_accounting_prerequisite"
-            elif budget["anomalies"] or budget["unknown_jobs"]:
-                reason = "autopilot_accounting_unknown"
-            elif required > budget["cap_seconds"]:
-                reason = "autopilot_job_exceeds_weekly_cap"
-            elif required > budget["available_seconds"]:
-                reason = "autopilot_weekly_gpu_limit"
-        if reason:
-            self.hold(db, exp, stage, reason, detail)
-            return {"state": "held", "reason": reason, **detail}
-        if intent_id:
-            db.execute(
-                "INSERT INTO autopilot_allocations(intent_id,project_id,run_id,requested_gpus,reserved_seconds,state) VALUES(?,?,?,?,?,?)",
-                (
-                    intent_id,
-                    member["project_id"],
-                    member["run_id"],
-                    resources.gpus_per_job,
-                    required,
-                    "settled" if not required else "reserved",
-                ),
-            )
-            db.execute(
-                "DELETE FROM autopilot_stage_holds WHERE experiment_id=? AND stage_id=? AND attempt=?",
-                (exp["id"], stage, exp["evidence_revision"]),
-            )
-        return None
-
     def document(self, run_id, name, version=None):
         row = self.store.one(
             "SELECT * FROM autopilot_documents WHERE run_id=? AND name=? "
@@ -892,73 +825,14 @@ class Autopilot:
                     {**approval, "author": author, "action_id": action_id},
                 )
                 result = {"approval": approval}
-            elif name == "review_experiment_plan":
-                eid = str(args.experiment_id)
-                member = self.member(eid)
-                if not member or member["run_id"] != run["id"] or self.authority(eid, "plan"):
-                    raise Conflict("plan is outside active project authority")
-                if args.estimated_finish_at > policy.handoff_at or args.estimated_finish_at <= now:
-                    raise Conflict("plan cannot plausibly finish before handoff")
-                exp = self.store.experiment(eid)
-                if exp["contract"].get("execution_contract") != 3:
-                    raise Conflict("Autopilot requires execution contract 3")
-                review = exp["plan_review"] or {}
-                if review.get("schema_version") != 3:
-                    raise Conflict("Autopilot requires plan schema 3")
-                result = self.store.command(
-                    request_id,
-                    "plan_review",
-                    {"decision": "approve", "plan_revision": args.plan_revision},
-                    eid=eid,
-                    origin=author,
-                    _db=db,
-                )
-                review = self.store.experiment(eid)["plan_review"]
-                review["approved_by"] = {
-                    "kind": "autopilot",
-                    "run_id": run["id"],
-                    "policy_revision": run["policy_revision"],
-                    "action_id": action_id,
-                    "scope_rationale": args.scope_rationale,
-                    "comparable_protocol": args.comparable_protocol,
-                }
-                before_review = review_obligations.saved_review(db, eid)
-                db.execute("UPDATE experiments SET plan_review=? WHERE id=?", (encode(review), eid))
-                review_obligations.sync_review(db, eid, before=before_review)
-                self.store.emit(db, eid, "autopilot_plan_approved", review["approved_by"])
             elif name == "control_experiment":
                 eid = str(args.experiment_id)
-                if args.stage_ids:
-                    member = self.member(eid)
-                    if (
-                        not member
-                        or member["run_id"] != run["id"]
-                        or args.operation not in ("defer", "resume")
-                    ):
-                        raise Conflict("stage controls only support scoped defer/resume")
-                    known = {
-                        s["id"]
-                        for s in self.store.rows("SELECT id FROM stages WHERE experiment_id=?", (eid,))
-                    }
-                    if not set(args.stage_ids) <= known:
-                        raise Conflict("unknown stage identity")
-                    held = set(json.loads(member["deferred_stages"]))
-                    held = (
-                        held | set(args.stage_ids)
-                        if args.operation == "defer"
-                        else held - set(args.stage_ids)
-                    )
-                    db.execute(
-                        "UPDATE autopilot_members SET deferred_stages=?,defer_reason=? WHERE experiment_id=?",
-                        (encode(sorted(held)), args.reason, eid),
-                    )
-                else:
-                    self.control(db, run, eid, args.operation, args.reason, request_id, author)
-                    # A tool's own exact control is accepted, while externally changed authority stays stale.
-                    db.execute(
-                        "UPDATE autopilot_actions SET control_revision=(SELECT control_revision FROM autopilot_runs WHERE id=?) WHERE id=?",
-                        (run["id"], action_id),
-                    )
+                self.control(db, run, eid, args.operation, args.reason, request_id, author)
+                # A tool's own exact control is accepted, while externally changed authority stays stale.
+                db.execute(
+                    "UPDATE autopilot_actions SET control_revision=(SELECT control_revision FROM autopilot_runs WHERE id=?) WHERE id=?",
+                    (run["id"], action_id),
+                )
             elif name == "update_backlog":
                 item = args.item
                 old = self.store.one(
@@ -1111,7 +985,6 @@ class Autopilot:
             if name in (
                 "record_decision",
                 "create_experiment",
-                "review_experiment_plan",
                 "control_experiment",
                 "prepare_handoff",
             ):
@@ -1177,33 +1050,6 @@ class Autopilot:
                 if run["next_review_at"] and now >= run["next_review_at"]:
                     self.wake(db, run["id"], f"review:{run['next_review_at']}", "scheduled_review")
                     db.execute("UPDATE autopilot_runs SET next_review_at=NULL WHERE id=?", (run["id"],))
-                for member in self.store.rows(
-                    "SELECT m.experiment_id,e.revision,e.phase,e.plan_review,e.partial_results FROM autopilot_members m JOIN experiments e ON e.id=m.experiment_id WHERE m.run_id=?",
-                    (run["id"],),
-                ):
-                    review = json.loads(member["plan_review"]) if member["plan_review"] else {}
-                    if (
-                        review.get("state") == "awaiting_review"
-                        or member["phase"] in ("complete", "failed")
-                        or member["partial_results"]
-                    ):
-                        # Source revision changes include observation events: use actual content identity.
-                        identity = encode(
-                            {"phase": member["phase"], "review": review, "results": member["partial_results"]}
-                        )
-                        from hashlib import sha256
-
-                        self.wake(
-                            db,
-                            run["id"],
-                            "result:" + member["experiment_id"] + ":" + sha256(identity.encode()).hexdigest(),
-                            "experiment_change",
-                            {
-                                "experiment_id": member["experiment_id"],
-                                "phase": member["phase"],
-                                "review": review.get("state"),
-                            },
-                        )
                 if schedule["handoff_due"] and run["handoff"] is None:
                     docs = self.store.rows(
                         "SELECT name,MAX(version) AS version FROM autopilot_documents WHERE run_id=? GROUP BY name",

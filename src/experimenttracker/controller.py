@@ -424,16 +424,6 @@ class Controller:
             require_live_research(exp, action)
             request = JobStatus.model_validate(args)
             return job_status(wf, exp, request)
-        if (
-            name not in ("job_status", "check_manifest", "check_agent_stage")
-            and action.get("autopilot_control_revision") is not None
-        ):
-            if action["autopilot_control_revision"] != wf.research.service.control_revision(
-                eid
-            ) or wf.research.service.authority(
-                eid, "interpret" if action["phase"] == "interpret" else action["phase"]
-            ):
-                raise ValueError("current project authority/hold rejects stale child turn effects")
         if name == "save_checkpoint":
             require_research_write(wf, exp, action)
             request = SaveCheckpoint.model_validate(args)
