@@ -154,8 +154,6 @@ const actionSchema = z
       'pause_new_compute',
       'resume_new_compute',
       'summarize_title',
-      'retry_agent',
-      'repair_implementation',
       'cancel',
     ]),
   })
@@ -167,18 +165,6 @@ const answerSchema = z
     answer: z.string().min(1).max(4000),
   })
   .strict();
-const planReviewSchema = z
-  .object({
-    ...base,
-    decision: z.enum(['approve', 'revise', 'cancel']),
-    feedback: z.string().max(4000).optional(),
-    plan_revision: z.number().int().min(1).safe(),
-  })
-  .strict()
-  .refine((value) => value.decision !== 'revise' || Boolean(value.feedback?.trim()), {
-    message: 'Revision feedback is required',
-    path: ['feedback'],
-  });
 const steeringSchema = z
   .object({
     ...base,
@@ -226,7 +212,6 @@ const experimentCommandRoutes: Record<
   { kind: string; schema: z.ZodType<Record<string, unknown>> }
 > = {
   notes: { kind: 'note', schema: noteSchema },
-  'plan-review': { kind: 'plan_review', schema: planReviewSchema },
   steering: { kind: 'steer', schema: steeringSchema },
   conversation: { kind: 'discuss', schema: discussSchema },
   actions: { kind: 'action', schema: actionSchema },
@@ -852,9 +837,7 @@ async function enqueue(env: Env, kind: string, payload: Record<string, unknown>,
     if (
       archiveActive &&
       ((kind === 'action' && payload.action !== 'cancel' && !researchAction) ||
-        (['answer', 'plan_review', 'steer'].includes(kind) &&
-          !durableAnswer &&
-          !(research && kind === 'steer')))
+        (['answer', 'steer'].includes(kind) && !durableAnswer && !(research && kind === 'steer')))
     )
       throw new HttpError(
         409,
@@ -864,50 +847,15 @@ async function enqueue(env: Env, kind: string, payload: Record<string, unknown>,
       );
     if (
       !stageExecutionAvailable &&
-      ((kind === 'action' &&
-        ['retry_agent', 'repair_implementation', 'summarize_title'].includes(
-          String(payload.action),
-        )) ||
-        (kind === 'steer' && !research) ||
-        (kind === 'plan_review' && ['approve', 'revise'].includes(String(payload.decision))))
+      ((kind === 'action' && payload.action === 'summarize_title') ||
+        (kind === 'steer' && !research))
     )
       throw new HttpError(409, 'Legacy execution is archived; this mutation is unavailable');
-    if (
-      kind === 'action' &&
-      payload.action === 'retry_agent' &&
-      ![
-        'agent_session_unavailable',
-        'agent_stage_blocked',
-        'agent_stage_failed',
-        'implementation_blocked',
-      ].includes(exp.hold_reason) &&
-      (exp.phase !== 'failed' ||
-        exp.recipe_id !== 'agent_experiment_v1' ||
-        !(
-          (exp.snapshot &&
-            ['compute_failed', 'validation_failed', 'agent_recovery_exhausted'].includes(
-              exp.hold_reason,
-            )) ||
-          [
-            'agent_recovery_exhausted',
-            'agent_correction_stalled',
-            'agent_budget_exhausted',
-          ].includes(exp.hold_reason)
-        ))
-    )
-      throw new HttpError(
-        409,
-        'Agent retry requires a held session or confirmed failed agent/compute work',
-      );
     if (kind === 'action' && payload.action === 'cancel') {
       if (!(await executorSupports(env, 'experiment_cancellation')))
         throw new HttpError(409, 'Install the executor update to enable cancellation');
       if (exp.phase === 'complete')
         throw new HttpError(409, 'A completed experiment cannot be cancelled');
-    }
-    if (kind === 'action' && payload.action === 'repair_implementation') {
-      if (!(await executorSupports(env, 'implementation_repair')))
-        throw new HttpError(409, 'Install the executor update to enable implementation repair');
     }
     if (['integrate', 'revert_integration', 'dont_merge', 'approve_integration'].includes(kind)) {
       if (archivedContractThree)
@@ -927,12 +875,6 @@ async function enqueue(env: Env, kind: string, payload: Record<string, unknown>,
       );
     if (kind === 'discuss' && exp.phase !== 'complete')
       throw new HttpError(409, 'Discussion is available when the experiment is complete');
-    if (
-      kind === 'plan_review' &&
-      (exp.plan_review?.state !== 'awaiting_review' ||
-        exp.plan_review?.revision !== payload.plan_revision)
-    )
-      throw new HttpError(409, 'Plan review has changed or is no longer awaiting a decision');
     if (research && kind === 'steer') {
       if (payload.mode === 'restart')
         throw new HttpError(409, 'Restart steering is not supported for research sessions');

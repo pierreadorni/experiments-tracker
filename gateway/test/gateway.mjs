@@ -406,7 +406,6 @@ test('contract-four hosted owner controls queue pauses and bounded next-turn ste
   assert.equal((await send('steering', { text: 'Use the held-out split' })).status, 202);
   assert.equal((await send('steering', { text: 'Do not reset', mode: 'restart' })).status, 409);
   assert.equal((await send('steering', { text: 'é'.repeat(501) })).status, 409);
-  assert.equal((await send('actions', { action: 'repair_implementation' })).status, 409);
   assert.equal(
     (
       await req('/api/executor/ack', {
@@ -458,106 +457,6 @@ test('durable command refusals survive redelivery without poisoning the queue', 
     (await req('/api/experiments', { method: 'POST', body: JSON.stringify(payload) })).status,
     409,
   );
-});
-test('plan review rejects stale versions and steering is a durable active command', async () => {
-  const { result } = await create();
-  const eid = result.experiment_id;
-  const db = await mf.getD1Database('DB');
-  const exp = await (await req(`/api/experiments/${eid}`)).json();
-  exp.revision = 1;
-  exp.phase = 'preparing';
-  exp.plan_review = {
-    state: 'awaiting_review',
-    revision: 3,
-    summary: 'Compare two scales',
-    protocol: 'Fixed split',
-    stages: [],
-  };
-  await db
-    .prepare('UPDATE projections SET revision=?,payload=? WHERE id=?')
-    .bind(exp.revision, JSON.stringify(exp), eid)
-    .run();
-  const endpoint = `/api/experiments/${eid}/plan-review`;
-  const approval = {
-    schema_version: 1,
-    request_id: randomUUID(),
-    decision: 'revise',
-    feedback: 'Include native scale',
-    plan_revision: 3,
-  };
-  const post = (url, value) => req(url, { method: 'POST', body: JSON.stringify(value) });
-  assert.equal((await post(endpoint, { ...approval, plan_revision: 2 })).status, 409);
-  assert.equal((await post(endpoint, { ...approval, feedback: '' })).status, 422);
-  assert.equal((await post(endpoint, approval)).status, 202);
-  const again = await post(endpoint, approval);
-  assert.equal(again.status, 202);
-  assert.equal((await again.json()).experiment_id, eid);
-  exp.plan_review.state = 'reviewed';
-  await db
-    .prepare('UPDATE projections SET payload=? WHERE id=?')
-    .bind(JSON.stringify(exp), eid)
-    .run();
-  assert.equal((await post(endpoint, approval)).status, 202);
-  assert.equal((await post(endpoint, { ...approval, request_id: randomUUID() })).status, 409);
-  const steer = { schema_version: 1, request_id: randomUUID(), text: 'x'.repeat(50000) };
-  assert.equal((await post(`/api/experiments/${eid}/steering`, steer)).status, 202);
-  assert.equal(
-    (
-      await post(`/api/experiments/${eid}/steering`, {
-        ...steer,
-        request_id: randomUUID(),
-        text: 'x'.repeat(50001),
-      })
-    ).status,
-    422,
-  );
-  const restart = {
-    schema_version: 1,
-    request_id: randomUUID(),
-    text: 'Use native scale instead',
-    mode: 'restart',
-  };
-  assert.equal((await post(`/api/experiments/${eid}/steering`, restart)).status, 202);
-  assert.equal(
-    (await post(`/api/experiments/${eid}/steering`, { ...restart, mode: 'invalid' })).status,
-    422,
-  );
-  const commands = (await (await req('/api/executor/commands', { token: executor })).json())
-    .commands;
-  assert.deepEqual(commands.find((c) => c.request_id === approval.request_id).payload, approval);
-  assert.equal(commands.find((c) => c.request_id === approval.request_id).kind, 'plan_review');
-  assert.equal(commands.find((c) => c.request_id === steer.request_id).kind, 'steer');
-  assert.equal(commands.find((c) => c.request_id === steer.request_id).payload.text, steer.text);
-  assert.equal(commands.find((c) => c.request_id === steer.request_id).payload.mode, 'later');
-  assert.deepEqual(commands.find((c) => c.request_id === restart.request_id).payload, restart);
-  exp.phase = 'complete';
-  await db
-    .prepare('UPDATE projections SET payload=? WHERE id=?')
-    .bind(JSON.stringify(exp), eid)
-    .run();
-  assert.equal(
-    (await post(`/api/experiments/${eid}/steering`, { ...steer, request_id: randomUUID() })).status,
-    409,
-  );
-  exp.phase = 'failed';
-  await db
-    .prepare('UPDATE projections SET payload=? WHERE id=?')
-    .bind(JSON.stringify(exp), eid)
-    .run();
-  assert.equal(
-    (await post(`/api/experiments/${eid}/steering`, { ...steer, request_id: randomUUID() })).status,
-    409,
-  );
-  assert.equal(
-    (await post(`/api/experiments/${eid}/steering`, { ...restart, request_id: randomUUID() }))
-      .status,
-    202,
-  );
-  const title = { schema_version: 1, request_id: randomUUID(), action: 'summarize_title' };
-  for (let i = 0; i < 2; i++)
-    assert.equal((await post(`/api/experiments/${eid}/actions`, title)).status, 202);
-  const queued = (await (await req('/api/executor/commands', { token: executor })).json()).commands;
-  assert.equal(queued.filter((c) => c.request_id === title.request_id).length, 1);
 });
 test('quota reserve commands survive offline delivery and have global receipts', async () => {
   const payload = {
@@ -1858,56 +1757,7 @@ test('new and existing project requests survive offline delivery and immutable s
   );
 });
 
-test('manual agent retry is durable, deduplicated and restricted to failed compute', async () => {
-  const { result } = await create({
-    recipe_id: 'agent_experiment_v1',
-    brief: 'Measure a new method',
-  });
-  const eid = result.experiment_id;
-  const endpoint = `/api/experiments/${eid}/actions`;
-  const retry = { schema_version: 1, request_id: randomUUID(), action: 'retry_agent' };
-  const post = (payload) => req(endpoint, { method: 'POST', body: JSON.stringify(payload) });
-  assert.equal((await post(retry)).status, 409);
-  const exp = await (await req(`/api/experiments/${eid}`)).json();
-  Object.assign(exp, { phase: 'failed', hold_reason: 'compute_failed', snapshot: { plan: {} } });
-  const db = await mf.getD1Database('DB');
-  await db
-    .prepare('UPDATE projections SET payload=? WHERE id=?')
-    .bind(JSON.stringify(exp), eid)
-    .run();
-  assert.equal((await post(retry)).status, 202);
-  assert.equal((await post(retry)).status, 202);
-  exp.phase = 'preparing';
-  await db
-    .prepare('UPDATE projections SET payload=? WHERE id=?')
-    .bind(JSON.stringify(exp), eid)
-    .run();
-  assert.equal((await post(retry)).status, 202);
-  assert.equal((await post({ ...retry, request_id: randomUUID() })).status, 409);
-  for (const [phase, hold_reason] of [
-    ['interpreting', 'agent_session_unavailable'],
-    ['training', 'agent_stage_blocked'],
-    ['failed', 'agent_stage_failed'],
-    ['preparing', 'implementation_blocked'],
-    ['failed', 'agent_recovery_exhausted'],
-  ]) {
-    Object.assign(exp, { phase, hold_reason });
-    await db
-      .prepare('UPDATE projections SET payload=? WHERE id=?')
-      .bind(JSON.stringify(exp), eid)
-      .run();
-    assert.equal((await post({ ...retry, request_id: randomUUID() })).status, 202);
-  }
-  const commands = (await (await req('/api/executor/commands', { token: executor })).json())
-    .commands;
-  assert.equal(commands.filter((c) => c.request_id === retry.request_id).length, 1);
-  assert.equal(
-    commands.find((c) => c.request_id === retry.request_id).payload.action,
-    'retry_agent',
-  );
-});
-
-test('frozen terminal records reject execution mutations but keep plan-review cancel', async () => {
+test('frozen terminal records reject execution mutations', async () => {
   const { result } = await create({ brief: 'Historical frozen record' });
   const eid = result.experiment_id;
   const db = await mf.getD1Database('DB');
@@ -1924,14 +1774,8 @@ test('frozen terminal records reject execution mutations but keep plan-review ca
     .run();
 
   for (const [path, payload] of [
-    [`/api/experiments/${eid}/actions`, { action: 'retry_agent' }],
     [`/api/experiments/${eid}/actions`, { action: 'summarize_title' }],
     [`/api/experiments/${eid}/steering`, { text: 'continue', mode: 'later' }],
-    [`/api/experiments/${eid}/plan-review`, { decision: 'approve', plan_revision: 1 }],
-    [
-      `/api/experiments/${eid}/plan-review`,
-      { decision: 'revise', plan_revision: 1, feedback: 'change' },
-    ],
   ])
     assert.equal(
       (
@@ -1949,23 +1793,6 @@ test('frozen terminal records reject execution mutations but keep plan-review ca
       .bind(eid)
       .first('n'),
     0,
-  );
-  const cancel = await req(`/api/experiments/${eid}/plan-review`, {
-    method: 'POST',
-    body: JSON.stringify({
-      schema_version: 1,
-      request_id: randomUUID(),
-      decision: 'cancel',
-      plan_revision: 1,
-    }),
-  });
-  assert.equal(cancel.status, 202);
-  assert.equal(
-    await db
-      .prepare("SELECT kind FROM commands WHERE experiment_id=? AND kind!='create'")
-      .bind(eid)
-      .first('kind'),
-    'plan_review',
   );
 });
 
@@ -1992,7 +1819,6 @@ test('active archived commands stay cancel-only', async () => {
   for (const [path, payload] of [
     [`/api/experiments/${eid}/actions`, { action: 'pause_agent' }],
     [`/api/experiments/${eid}/actions`, { action: 'pause_new_compute' }],
-    [`/api/experiments/${eid}/plan-review`, { decision: 'cancel', plan_revision: 1 }],
     [`/api/experiments/${eid}/answers`, { pending_request_id: 'pending', answer: 'decline' }],
   ])
     assert.equal(
@@ -2152,32 +1978,6 @@ test('frozen completed replies require an exact saved discussion action', async 
       binding === 'valid' ? 1 : 0,
     );
   }
-});
-
-test('implementation repair requires executor capability', async () => {
-  const { result } = await create({ recipe_id: 'agent_experiment_v1', brief: 'Repair graph' });
-  const endpoint = `/api/experiments/${result.experiment_id}/actions`;
-  const db = await mf.getD1Database('DB');
-  const before = await db
-    .prepare('SELECT payload,received_at FROM executor_status WHERE id=?')
-    .bind('acacia')
-    .first();
-  const request = { schema_version: 1, request_id: randomUUID(), action: 'repair_implementation' };
-  const post = () => req(endpoint, { method: 'POST', body: JSON.stringify(request) });
-  await db.prepare('DELETE FROM executor_status WHERE id=?').bind('acacia').run();
-  assert.equal((await post()).status, 409);
-  await db
-    .prepare('INSERT INTO executor_status(id,payload,received_at) VALUES(?,?,?)')
-    .bind('acacia', JSON.stringify({ implementation_repair: true }), Date.now() / 1000)
-    .run();
-  assert.equal((await post()).status, 202);
-  assert.equal((await post()).status, 202);
-  await db.prepare('DELETE FROM executor_status WHERE id=?').bind('acacia').run();
-  if (before)
-    await db
-      .prepare('INSERT INTO executor_status(id,payload,received_at) VALUES(?,?,?)')
-      .bind('acacia', before.payload, before.received_at)
-      .run();
 });
 
 test('branch integration commands require the executor capability and stay bounded', async () => {
