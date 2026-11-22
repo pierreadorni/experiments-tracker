@@ -10,7 +10,6 @@ import asyncio
 import contextlib
 import inspect
 import json
-from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -108,46 +107,6 @@ def test_finished_task_settles_from_its_source_row(runtime, state, retained):
     # Ownership survives the ended task without a live slot, with the exact saved turn.
     kept = wf.agent_pool.lookup("agent_actions", action_id)
     assert (kept.slot, kept.thread_id, kept.turn_id) == (None, "saved-thread", "saved-turn")
-
-
-@pytest.mark.usefixtures("contract_three_fixture")
-async def test_monitor_and_conversation_admissions_claim_then_release_unsent_turns(runtime, monkeypatch):
-    store, _, agent, wf = runtime
-    monitored, discussed = create(store), create(store)
-    wf.agent_ready = True
-    wf.gate.update(await agent.quota())
-    store.update(monitored, phase="training")
-    store.update(discussed, phase="complete")
-    wake_id = str(uuid4())
-    with store.tx() as db:
-        db.execute(
-            "INSERT INTO agent_wakeups(id,experiment_id,reason,due_at,state,created_at) "
-            "VALUES(?,?,?,0,'pending',0)",
-            (wake_id, monitored, json.dumps({"reason": "synthetic telemetry gap"})),
-        )
-    wf.controller.server = object()
-    monkeypatch.setattr(wf.controller, "diagnostic_jobs", lambda _: [{"intent_id": "synthetic-job"}])
-    monkeypatch.setattr(wf, "dispatch", AsyncMock())
-    monkeypatch.setattr(wf.conversation, "prompt", lambda exp, message: "Discuss\nPAYLOAD:\n{}")
-    monkeypatch.setattr(wf.conversation, "dispatch", AsyncMock())
-    try:
-        await role_step(wf.controller)
-        watched = store.one("SELECT * FROM agent_actions WHERE experiment_id=?", (monitored,))
-        claimed(wf, "agent_actions", watched["id"], "monitor", experiment_owner(monitored))
-        await wf.agent_task
-        # No turn was sent: the pending source row releases the claim.
-        await until_released(wf, "agent_actions", watched["id"])
-        wf.agent_task = wf.active_action = None
-        store.command(uuid4(), "discuss", {"text": "Explain the result"}, eid=discussed)
-        await role_step(wf.conversation)
-        spoken = store.one(
-            "SELECT * FROM agent_actions WHERE experiment_id=? AND phase LIKE 'discuss:%'", (discussed,)
-        )
-        claimed(wf, "agent_actions", spoken["id"], "conversation", experiment_owner(discussed))
-        await wf.agent_task
-        await until_released(wf, "agent_actions", spoken["id"])
-    finally:
-        wf.controller.server = None
 
 
 async def test_research_admission_claims_the_project_run_and_retains_received(runtime, monkeypatch):

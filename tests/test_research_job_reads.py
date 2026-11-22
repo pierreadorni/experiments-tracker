@@ -196,7 +196,6 @@ async def test_repeating_a_job_read_is_the_same_read_without_side_effects(runtim
     async def forbidden(*_args, **_kwargs):
         raise AssertionError("a job read must never dispatch or ask the scheduler")
 
-    monkeypatch.setattr(workflow, "dispatch", forbidden)
     monkeypatch.setattr(scheduler, "submit", forbidden)
     before = store.rows("SELECT * FROM events ORDER BY seq")
     first = await workflow.controller.call(eid, "job_logs", payload)

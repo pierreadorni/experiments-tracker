@@ -69,48 +69,6 @@ def agent_job(wf, exp, phase):
     )
 
 
-def agent_prompt(wf, exp, phase):
-    job = agent_job(wf, exp, phase)
-    manifest = json.loads(job["execution_manifest"])
-    spec = next(s for s in manifest["plan"]["stages"] if s["id"] == job["stage_id"])
-    payload = {
-        "phase": phase,
-        "brief": exp["brief"],
-        "stage": spec,
-        "protocol": manifest["plan"]["protocol"],
-        "attempt_directory": job["execution_root"],
-        "source_directory": str(Path(job["execution_root"]) / "snapshot"),
-        "inputs": manifest["inputs"],
-        "python": manifest["python_executable"],
-        "workspace": str(wf.working_directory(exp)),
-        "project_context": wf.project_context(exp),
-        "project_instructions": wf.projects.instructions(
-            exp["contract"].get("project", {}).get("id", "test-project")
-        ),
-    }
-    conventions = wf.worktree_conventions(exp)
-    return (
-        "Execute this small agent stage with shell/tool calls in the local attempt_directory. "
-        "Diagnose failures and correct/retest within this same turn; do not turn a failed small check into a Slurm job. "
-        "Use the declared source copies as starting context; write any corrected scripts, diagnostics and declared outputs "
-        "inside attempt_directory, preserving snapshot and inputs.json. You may also fix declared source/config files "
-        "in workspace and the authorized project_context.checkout, preserving unrelated edits. Copy changed candidate sources "
-        "into this attempt's scratch area and test them there. Dependent Slurm attempts copy the corrected declared sources "
-        "at dispatch; already dispatched source copies stay unchanged. Do not modify producer inputs, shared environments "
-        "or other experiments. Dependencies are direct paths in inputs, never files assumed under your output root. "
-        "Keep work bounded to the approved instruction: no long training, background processes, scheduler submission, "
-        "API billing or credentials. Local GPU access requires existing runtime/host authorization; a plan grants none. "
-        "Return outcome='blocked' with a concrete reason and needed action in summary if required inputs or resources "
-        "are unavailable; return outcome='failed' if the work cannot be completed for another reason. "
-        "Return outcome='completed' only after successful work and all declared outputs exist. "
-        "For evaluation, result_file follows the supplied "
-        "ExperimentResult schema and exact protocol. Use check_agent_stage to check outputs and fix errors before finishing."
-        + (f" {conventions}" if conventions else "")
-        + "\nPAYLOAD:\n"
-        + encode({**payload, "result_schema": ExperimentResult.model_json_schema()})
-    )
-
-
 def check_stage(root, stage, manifest):
     spec = next(s for s in manifest["plan"]["stages"] if s["id"] == stage)
     for name in spec["outputs"]:

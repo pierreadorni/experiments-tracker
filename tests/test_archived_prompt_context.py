@@ -1,4 +1,3 @@
-import pytest
 from legacy_fixture import load_legacy_completed
 
 
@@ -21,8 +20,6 @@ def test_archived_execution_context_is_readable_and_prompts_are_inert(runtime):
         table: store.one(f"SELECT count(*) AS n FROM {table}")["n"]
         for table in ("experiments", "stages", "jobs", "agent_actions", "events", "outbox")
     }
-    with pytest.raises(ValueError, match="archived legacy execution prompts are read-only"):
-        workflow._prompt(exp, "interpret")
     after = {table: store.one(f"SELECT count(*) AS n FROM {table}")["n"] for table in before}
     assert after == before
     assert agent.calls == 0

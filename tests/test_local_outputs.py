@@ -168,33 +168,3 @@ async def test_archived_saved_job_settles_without_reading_checkpoint_bytes(
     assert agent.calls == 0
     assert len(store.rows("SELECT * FROM jobs WHERE experiment_id=?", (eid,))) == 1
     outstanding.cancel()
-
-
-async def test_archived_legacy_output_reconciliation_refuses_without_state_change(failed_directory_run):
-    store, agent, workflow, eid, _ = failed_directory_run
-    store.archive_legacy_experiments()
-
-    async def forbidden(*args, **kwargs):
-        pytest.fail("archived recovery must not query the scheduler")
-
-    workflow.scheduler.reconcile = forbidden
-    workflow.scheduler.observe = forbidden
-    before = (
-        store.experiment(eid),
-        store.rows("SELECT * FROM jobs WHERE experiment_id=?", (eid,)),
-        store.rows("SELECT * FROM stages WHERE experiment_id=?", (eid,)),
-        store.rows("SELECT * FROM artifacts WHERE experiment_id=?", (eid,)),
-        store.rows("SELECT kind,payload FROM events WHERE experiment_id=? ORDER BY seq", (eid,)),
-    )
-    with pytest.raises(ValueError, match="archived legacy"):
-        await workflow.reconcile_outputs(eid)
-    after = (
-        store.experiment(eid),
-        store.rows("SELECT * FROM jobs WHERE experiment_id=?", (eid,)),
-        store.rows("SELECT * FROM stages WHERE experiment_id=?", (eid,)),
-        store.rows("SELECT * FROM artifacts WHERE experiment_id=?", (eid,)),
-        store.rows("SELECT kind,payload FROM events WHERE experiment_id=? ORDER BY seq", (eid,)),
-    )
-    assert after == before
-    assert agent.calls == 0
-    await workflow.close()

@@ -101,14 +101,6 @@ def test_project_prompt_and_public_catalog(config, runtime, tmp_path):
     eid = saved_c3(store, project_id="anyup-rs")
     current = store.experiment(eid)
     assert current["contract"]["execution_contract"] == 3
-    prompt = workflow.prompt(current, "prepare")
-    payload = json.loads(prompt.split("\nPAYLOAD:\n", 1)[1])
-    assert payload["project_context"]["checkout"] == str(checkout)
-    assert payload["project_context"]["access"] == "read-write"
-    assert (
-        payload["project_instructions"] == "Choose any capable available GPU before waiting for a busy A6000."
-    )
-    assert "Implement the actual research brief without a model-family whitelist" in prompt
     assert next(p for p in workflow.status(None)["projects"] if p["id"] == "anyup-rs")["folder"] == str(
         checkout
     )

@@ -7,15 +7,13 @@ claim managed inference, real Slurm scientific success or physical-phone access.
 import asyncio
 import json
 import threading
-from types import SimpleNamespace
 from uuid import uuid4
 
 import httpx
 import pytest
-from helpers import IterationAgent, role_step, seed_saved_contract3
+from helpers import IterationAgent, seed_saved_contract3
 
 from experimenttracker.api import create_app
-from experimenttracker.codex_client import NeedsAttention
 from experimenttracker.store import Store
 
 
@@ -143,102 +141,6 @@ async def test_slow_project_catalog_does_not_block_health_or_owner_loop(runtime,
                 release.set()
             response = await task
             assert response.status_code == 200 and response.json()["projects"]
-
-
-@pytest.mark.parametrize("lost_response", [False, True])
-@pytest.mark.parametrize("terminal", [False, True])
-@pytest.mark.usefixtures("contract_three_fixture")
-async def test_saved_monitor_turn_is_adopted_after_restart_without_duplicate_dispatch(
-    runtime, lost_response, terminal
-):
-    store, scheduler, agent, wf = runtime
-    eid = create(store)
-    action_id, wake_id = str(uuid4()), str(uuid4())
-    result = {"summary": "Saved monitor check", "next_check_seconds": 900}
-    with store.tx() as db:
-        db.execute(
-            "INSERT INTO agent_actions(id,experiment_id,phase,evidence_revision,state,thread_id,turn_id,input,attempts,created_at,updated_at) VALUES(?,?,'monitor',1,'running','saved-thread','saved-monitor','prompt',1,0,0)",
-            (action_id, eid),
-        )
-        db.execute(
-            "INSERT INTO agent_wakeups(id,experiment_id,reason,due_at,state,action_id,created_at) VALUES(?,?,'{}',0,'queued',?,0)",
-            (wake_id, eid, action_id),
-        )
-    reads = []
-    if terminal:
-        store.update(eid, phase="complete")
-
-    async def read_turn(thread, turn):
-        reads.append((thread, turn))
-        if lost_response:
-            raise NeedsAttention("saved turn outcome unavailable")
-        return result
-
-    agent.read_turn = read_turn
-    wf.agent_ready = True
-    wf.controller.server = object()
-    try:
-        await role_step(wf.controller)
-        action = store.one("SELECT * FROM agent_actions WHERE id=?", (action_id,))
-        assert reads == [("saved-thread", "saved-monitor")]
-        assert action["state"] == ("uncertain" if lost_response else "completed")
-        assert action["attempts"] == 1 and action["turn_id"] == "saved-monitor"
-        if lost_response:
-            agent.read_turn = lambda *_: asyncio.sleep(0, result=result)
-            await wf.reconcile_action(action_id)
-        await role_step(wf.controller)
-        assert store.one("SELECT state FROM agent_wakeups WHERE id=?", (wake_id,))["state"] == "complete"
-        assert len(store.rows("SELECT * FROM agent_actions WHERE experiment_id=?", (eid,))) == 1
-        assert scheduler.submissions == 0 and agent.calls == 0
-    finally:
-        wf.controller.server = None
-        await wf.close()
-
-
-@pytest.mark.usefixtures("contract_three_fixture")
-async def test_monitor_action_obligation_tracks_creation_and_pending_supersession(runtime, monkeypatch):
-    store, _, _, wf = runtime
-    eid = create(store)
-    store.update(eid, phase="training")
-    wake_id = str(uuid4())
-    with store.tx() as db:
-        db.execute(
-            "INSERT INTO agent_wakeups(id,experiment_id,reason,due_at,state,created_at) "
-            "VALUES(?,?,?,0,'pending',0)",
-            (wake_id, eid, json.dumps({"reason": "synthetic telemetry gap"})),
-        )
-    wf.controller.server = object()
-    wf.agent_ready = True
-    monkeypatch.setattr(wf.controller, "diagnostic_jobs", lambda _: [{"intent_id": "synthetic-job"}])
-    monkeypatch.setattr(wf.gate, "decide", lambda: SimpleNamespace(admitted=True))
-
-    async def no_dispatch(_action, _slot):
-        return None
-
-    monkeypatch.setattr(wf, "dispatch", no_dispatch)
-    try:
-        await role_step(wf.controller)
-        action = store.one("SELECT * FROM agent_actions WHERE experiment_id=?", (eid,))
-        assert action["phase"] == "monitor" and action["state"] == "pending"
-        obligation_id = f"agent-action:{action['id']}:0"
-        assert store.one("SELECT state FROM obligations WHERE id=?", (obligation_id,))["state"] == "open"
-        assert store.one("SELECT kind FROM events WHERE kind='agent_wakeup_queued'")
-        if wf.agent_task:
-            await wf.agent_task
-        wf.agent_task = wf.active_action = None
-        with store.tx() as db:
-            db.execute("UPDATE experiments SET phase='complete' WHERE id=?", (eid,))
-        await role_step(wf.controller)
-        assert (
-            store.one("SELECT state FROM agent_actions WHERE id=?", (action["id"],))["state"] == "superseded"
-        )
-        assert store.one("SELECT state FROM obligations WHERE id=?", (obligation_id,))["state"] == "abandoned"
-        assert store.one(
-            "SELECT 1 FROM events WHERE kind='agent_action_changed' AND json_extract(payload,'$.action_id')=?",
-            (action["id"],),
-        )
-    finally:
-        wf.controller.server = None
 
 
 @pytest.mark.usefixtures("contract_three_fixture")

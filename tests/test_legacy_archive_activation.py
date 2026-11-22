@@ -226,8 +226,6 @@ async def test_saved_archived_turn_settles_identity_and_raw_result_without_advan
     monkeypatch.setattr(agent, "begin", refused)
     monkeypatch.setattr(agent, "finish", refused)
     workflow.agent_ready = True
-    action = store.one("SELECT * FROM agent_actions WHERE id=?", (action_id,))
-    assert await workflow.dispatch(action, workflow.agent_pool.primary) is None
     assert calls == [] and dispatched == [] and scheduler.submissions == 0
     # The saved identity stays exactly as returned and is never finished by dispatch.
     assert saved_action() == {

@@ -10,7 +10,6 @@ integration and completed-work discussions are deliberately not gated.
 """
 
 import json
-from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -89,58 +88,6 @@ async def test_planning_steering_and_restart_leave_a_saved_contract_four_unchang
         {"request_id": "restart-guidance", "state": "pending", "applied_at": None},
     ]
     assert len(store.rows("SELECT id FROM experiments")) == 2
-
-
-async def test_automatic_repair_leaves_a_saved_contract_four_unchanged(runtime, widened_archive):
-    store, _, _, wf = runtime
-    wf.config.mode = "live"
-    eid = saved(
-        store,
-        contract=4,
-        phase="failed",
-        hold_reason="compute_failed",
-        snapshot={"plan": {"schema_version": 3, "protocol": "Saved", "stages": []}},
-    )
-    add_job(store, eid, "failed-intent")
-    early = saved(store, contract=4, phase="preparing", hold_reason="compute_failed")
-    contract = {**store.experiment(early)["contract"], "early_repair": {"state": "preparing"}}
-    with store.tx() as db:
-        db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(contract), early))
-    before = store.experiment(eid)
-
-    await wf.repair_failed_experiments()
-    wf.fail(eid, "compute_failed", "Synthetic compute failure")
-    wf.fail(early, "compute_failed", "Synthetic compute failure")
-
-    after = store.experiment(eid)
-    assert (after["phase"], after["hold_reason"]) == (before["phase"], before["hold_reason"])
-    assert after["contract"] == before["contract"]
-    assert store.experiment(early)["phase"] == "failed"
-
-
-async def test_controller_monitor_never_queues_a_saved_contract_four(runtime, widened_archive, monkeypatch):
-    store, _, _, wf = runtime
-    eid = saved(store, contract=4)
-    add_job(store, eid, "running-intent", state="submitted", scheduler_state="RUNNING")
-    with store.tx() as db:
-        db.execute(
-            "INSERT INTO agent_wakeups(id,experiment_id,reason,due_at,state,created_at) "
-            "VALUES(?,?,?,0,'pending',0)",
-            ("saved-wakeup", eid, json.dumps({"reason": "Saved backend check"})),
-        )
-    monkeypatch.setattr(wf.controller, "diagnostic_jobs", lambda _: [{"intent_id": "synthetic"}])
-    monkeypatch.setattr(wf.gate, "decide", lambda: SimpleNamespace(admitted=True))
-    wf.agent_ready = True
-    wf.controller.server = object()
-    try:
-        await wf.controller.advance()
-    finally:
-        wf.controller.server = None
-
-    assert store.rows("SELECT id,state FROM agent_wakeups WHERE experiment_id=?", (eid,)) == [
-        {"id": "saved-wakeup", "state": "pending"}
-    ]
-    assert not store.rows("SELECT * FROM agent_actions WHERE experiment_id=?", (eid,))
 
 
 async def test_stage_tools_refuse_a_saved_contract_four_session(runtime, widened_archive):

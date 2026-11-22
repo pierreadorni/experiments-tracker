@@ -215,7 +215,6 @@ async def test_frozen_contract_three_keeps_stage_writers_inert(runtime, monkeypa
     assert iteration.enabled(before)
     assert not iteration.runnable(before)
     await workflow.step_control_advance()
-    await workflow.dispatch(action, workflow.agent_pool.primary)
 
     assert store.experiment(eid) == before
     assert store.rows("SELECT * FROM stages WHERE experiment_id=?", (eid,)) == stages

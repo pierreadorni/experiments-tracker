@@ -163,7 +163,7 @@ async def demo(config, brief, max_seconds):
         lock.close()
 
 
-async def reconcile(config, action_id, jobs, outputs=None, agent_output=None, turn_id=None):
+async def reconcile(config, action_id, jobs, turn_id=None):
     lock, store, workflow = runtime(config)
     try:
         if action_id:
@@ -172,11 +172,6 @@ async def reconcile(config, action_id, jobs, outputs=None, agent_output=None, tu
         if jobs:
             await workflow.observe_jobs()
             print(json.dumps(store.rows("SELECT * FROM jobs ORDER BY created_at"), indent=2))
-        if outputs:
-            print(json.dumps(await workflow.reconcile_outputs(str(outputs)), indent=2))
-        if agent_output:
-            await workflow.agent.start()
-            print(json.dumps(await workflow.reconcile_agent_output(str(agent_output)), indent=2))
     finally:
         await workflow.close()
         store.close()
@@ -233,8 +228,6 @@ def main():
     choices = recover.add_mutually_exclusive_group(required=True)
     choices.add_argument("--action-id", type=UUID)
     choices.add_argument("--jobs", action="store_true")
-    choices.add_argument("--outputs", type=UUID, metavar="EXPERIMENT_UUID")
-    choices.add_argument("--agent-output", type=UUID, metavar="EXPERIMENT_UUID")
     recover.add_argument(
         "--turn-id", help="recover a lost response using an exact completed turn with matching input"
     )
@@ -324,9 +317,7 @@ def main():
         app = create_app(config, config_path=args.config.resolve(), current_release=args.release)
         asyncio.run(serve_http(config, app, args.max_seconds))
     elif args.command == "reconcile":
-        asyncio.run(
-            reconcile(config, args.action_id, args.jobs, args.outputs, args.agent_output, args.turn_id)
-        )
+        asyncio.run(reconcile(config, args.action_id, args.jobs, args.turn_id))
     elif args.command == "inspect":
         reader = Store.read_only(config.state_dir / "workflow.sqlite")
         try:
