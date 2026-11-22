@@ -44,6 +44,7 @@ def test_replay_keeps_the_episode(runtime):
     assert store.rows("SELECT id FROM obligations WHERE id LIKE 'review:%'") == [{"id": opened["id"]}]
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 def test_owner_approval_satisfies_the_generation(runtime):
     store = runtime[0]
     eid = create(store)
@@ -53,6 +54,7 @@ def test_owner_approval_satisfies_the_generation(runtime):
     assert not episode(store, eid, index=1)
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 def test_revision_request_abandons_and_the_next_revision_opens(runtime):
     store = runtime[0]
     eid = create(store)
@@ -97,6 +99,7 @@ def test_cancellation_abandons_the_saved_review(runtime):
     assert episode(store, eid)["state"] == "abandoned"
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 def test_stale_revision_approval_is_still_refused(runtime):
     store = runtime[0]
     eid = create(store)
@@ -106,6 +109,7 @@ def test_stale_revision_approval_is_still_refused(runtime):
     assert episode(store, eid, revision=2)["state"] == "open"
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 def test_live_generation_conflicting_with_terminal_history_is_diagnosed(runtime):
     store = runtime[0]
     eid = create(store)
@@ -137,6 +141,7 @@ def test_review_obligation_and_event_roll_back_together(runtime, monkeypatch):
     assert store.one("SELECT COUNT(*) n FROM outbox")["n"] == outbox
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 def test_autopilot_approval_satisfies_the_generation(runtime, monkeypatch):
     from test_iteration_autopilot import action, activated, tool
 

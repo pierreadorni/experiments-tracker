@@ -27,6 +27,7 @@ def raising(exc):
 
 
 @pytest.mark.parametrize("error", [KeyError("saved snapshot identity"), ValueError("broken invariant")])
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_unexpected_error_holds_the_experiment_and_skips_its_next_tick(runtime, monkeypatch, error):
     store, _, _, workflow = runtime
     eid = submit(store)
@@ -59,6 +60,7 @@ async def test_unexpected_error_holds_the_experiment_and_skips_its_next_tick(run
     await workflow.close()
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_oserror_notifies_once_per_distinct_error_text(runtime, monkeypatch):
     store, _, _, workflow = runtime
     eid = submit(store)
@@ -82,6 +84,7 @@ async def test_oserror_notifies_once_per_distinct_error_text(runtime, monkeypatc
     await workflow.close()
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_successful_advance_clears_backoff(runtime, monkeypatch):
     store, _, _, workflow = runtime
     eid = submit(store)
@@ -107,6 +110,7 @@ async def test_successful_advance_clears_backoff(runtime, monkeypatch):
     await workflow.close()
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_backoff_is_per_experiment_and_does_not_block_other_work(runtime, monkeypatch):
     store, _, _, workflow = runtime
     broken, healthy = submit(store), submit(store)
@@ -137,6 +141,7 @@ def test_backoff_caps_at_thirty_minutes(runtime, monkeypatch):
     assert workflow.error_backoff[eid] == (7, 2800.0)
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_experiment_failure_still_fails_the_experiment(runtime, monkeypatch):
     store, _, _, workflow = runtime
     eid = submit(store)
@@ -156,6 +161,7 @@ async def test_experiment_failure_still_fails_the_experiment(runtime, monkeypatc
     await workflow.close()
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_project_unavailable_keeps_its_own_hold(runtime, monkeypatch):
     store, _, _, workflow = runtime
     eid = submit(store)

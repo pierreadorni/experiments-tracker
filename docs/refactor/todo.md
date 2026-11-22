@@ -598,7 +598,8 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 - [x] Align the executor, Worker and browser on the archive decision advertised by the executor. Keep exact replay and bound discussion replies, and preserve historical views.
 - [x] Run the archive candidate against saved C3 startup, reads and settlement, with the C4 synthetic flow still active.
 - [x] Resolve the 25 scenario failures in the archive-on probe. Shared turn, scheduler, quota and mixed-role recovery use C4. The blocked-stage continuation and progress/monitor fixtures explicitly enable the C3 engine.
-- [ ] Run the full suite with the archive boundary switched in an isolated checkout. Classify any remaining stage-specific tests before switching the default archive boundary.
+- [x] Run the full suite with the archive boundary switched in an isolated checkout, and switch the default. `2f982df` archives C3 by default. Each remaining C3-dependent test opts in explicitly: `contract_three_engine` (stage behaviour, deleted with the engine: 77 tests and 3 whole files) or `contract_three_fixture` (shared behaviour seeded on C3, which must move to C4 before deletion: 102 tests).
+- [ ] Installation order: the deployed Worker predates `2b02b4d`. Publish the current Worker before installing an executor at or after `2f982df`, then refresh drain evidence (owner-authorized).
 - [ ] Refresh drain evidence at activation. Then archive C3 and remove the old engine in reviewed slices. See the [retirement sequence](notes/t4.8-rollout.md#3-verify-drain-on-the-actual-installation-retire-separately).
 
 ---
@@ -636,6 +637,7 @@ owner authorization (T6.9).
 
 ## Log
 
+- **T4.8 archive default:** `2f982df` sets `SUPPORTED_EXECUTION_CONTRACTS = (4,)`. With the archive on, the first probe in a disposable worktree found 221 failures, 7 errors and three files over the 5-minute per-file limit. None was a C4 defect: every failure expected C3 to run or expected the pre-archive message. The 179 failing tests and the 3 files now opt into the engine with `contract_three_engine` or `contract_three_fixture`, and four parametrized C3 refusals also accept the archive message. Ruff passed, and 1,481 Python tests passed in per-file parallel shards. Source +1/−1; tests +208/−11. The earlier unsharded run hung past 30 minutes; the scenario fixture moved to the root `conftest.py`.
 - **T4.8 recovery scenarios:** migrates shared recovery to C4, and isolates three C3-specific stage and monitor cases. C4 now reads back saved turns after restart and wakes on resolver-proven submission absence. Ruff and the normal full suite (1,481 Python tests in isolated shards) passed. The archive-on scenario, historical compatibility and C4 synthetic group passed all 88 tests. Source +21/−7 and tests/docs +458/−494 across the three migration cards.
 - **T4.8 archive startup:** the sweep reads the same supported-contract set as dispatch. With C3 archived in a disposable checkout, all 49 focused startup, historical-read, settlement and C4 demo tests passed. The earlier broader probe found 25 scenario failures in addition to four archive assertions corrected by this card. The final isolated suite passed 1,481 Python tests. Source +4/−4 and tests/docs +32/−12.
 - **T4.8 archive controls:** the executor publishes the archive decision, the Worker preserves exact replay and bound discussion answers, and the browser gates stage controls without hiding evidence. Source +49/−22 and tests/docs +101/−2. Isolated Node 24 `make check` passed 1,482 Python, 42 web, and 52 gateway tests.

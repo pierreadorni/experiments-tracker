@@ -29,6 +29,7 @@ def legacy(store, contract="missing", phase="training", deleted=False):
     return eid
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 def test_archive_sweeps_only_unfinished_non_current_contracts(runtime):
     store, *_ = runtime
     old = [legacy(store, contract) for contract in ("missing", 1, 2)]

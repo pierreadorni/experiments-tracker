@@ -34,6 +34,7 @@ def source_repo(config, store, tmp_path):
     return source
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_auto_worktree_implementation_during_training(runtime, tmp_path):
     store, scheduler, _, old = runtime
     source = source_repo(old.config, store, tmp_path)

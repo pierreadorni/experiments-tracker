@@ -98,6 +98,7 @@ def test_deleted_run_disappears_from_api_and_inbox(config, runtime):
         assert client.get(f"/api/experiments/{eid}", headers=headers).status_code == 410
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_selected_model_and_effort_survive_restart_and_both_turns(runtime):
     store, scheduler, _, old = runtime
     agent = IterationAgent()
@@ -132,6 +133,7 @@ async def test_selected_model_and_effort_survive_restart_and_both_turns(runtime)
     await workflow.close()
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_unavailable_model_stops_before_thread_or_job_dispatch(runtime):
     store, scheduler, agent, workflow = runtime
     eid = create(store, recipe_id="agent_experiment_v1", model="unadvertised", reasoning_effort="medium")
@@ -239,6 +241,7 @@ async def test_scheduler_queue_running_and_exact_accounting_timestamps(config, m
     assert scheduler_time("Unknown") is None
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_deleted_reference_remains_usable_for_existing_child(runtime):
     store, scheduler, _, old = runtime
     agent = IterationAgent()

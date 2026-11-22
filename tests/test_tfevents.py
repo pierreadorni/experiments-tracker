@@ -210,6 +210,7 @@ def test_event_directory_is_confined(directory):
         TensorBoardDisplay(log_dir=directory, scalar_tag="loss")
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_preview_is_persisted_with_projection_and_survives_restart(runtime, monkeypatch):
     store, scheduler, _, workflow = runtime
     eid = tensorboard_experiment(store, workflow)

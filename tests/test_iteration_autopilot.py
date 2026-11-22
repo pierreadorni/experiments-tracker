@@ -529,6 +529,7 @@ def test_quota_policy_hysteresis_does_not_mutate_owner(runtime, monkeypatch):
     assert gate.config.five_hour_min_remaining == 25
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_common_gate_one_240_hour_experiment_no_inference_on_reset(runtime, monkeypatch):
     monkeypatch.setattr(creation_policy, "MODE", "legacy")
     import sys
@@ -796,6 +797,7 @@ async def test_gateway_autopilot_lost_ack_and_durable_refusal(runtime, config, t
     await client.close()
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_delegated_child_runs_contract_three_with_attributed_approval(runtime, monkeypatch):
     monkeypatch.setattr(creation_policy, "MODE", "legacy")
     from unittest.mock import AsyncMock

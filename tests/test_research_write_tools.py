@@ -153,7 +153,7 @@ async def test_research_writes_refuse_during_maintenance(runtime, name, payload)
         ("plan", "running", False, 4, "active research turn"),
         ("research", "pending", False, 4, "active owned session"),
         ("research", "running", True, 4, "live research experiment"),
-        ("research", "running", False, 3, "execution contract 4"),
+        ("research", "running", False, 3, "execution contract 4|legacy execution is archived"),
     ],
 )
 async def test_save_checkpoint_keeps_the_common_live_v4_gate(

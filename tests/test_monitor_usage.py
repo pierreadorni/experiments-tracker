@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import pytest
 from helpers import role_step
 from test_controller import create
 
@@ -98,6 +99,7 @@ async def test_healthy_and_uninstrumented_jobs_make_zero_monitor_calls(runtime):
         await wf.close()
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_old_wakeup_backlog_coalesces_without_discarding_queued_turn(runtime):
     store, _, _, wf = runtime
     eid = create(store)
@@ -161,6 +163,7 @@ async def test_recent_stdout_prevents_false_stall(runtime):
     await wf.close()
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_sustained_stall_dispatches_one_small_diagnostic(runtime):
     store, _, _, wf = runtime
     eid = create(store)
@@ -186,6 +189,7 @@ async def test_sustained_stall_dispatches_one_small_diagnostic(runtime):
         await wf.close()
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_monitor_uses_small_fresh_thread_and_preserves_research_session(runtime):
     store, _, agent, wf = runtime
     eid = create(store)

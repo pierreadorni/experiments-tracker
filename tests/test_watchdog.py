@@ -213,6 +213,7 @@ def test_a_deleted_experiment_is_not_reported(store, clock):
 
 
 @pytest.mark.parametrize("state", ["pending", "dispatching", "running"])
+@pytest.mark.usefixtures("contract_three_fixture")
 def test_a_live_agent_turn_keeps_the_experiment_going(store, clock, state):
     eid = create(store)
     action(store, eid, state=state)
@@ -266,6 +267,7 @@ def test_an_owner_question_needs_the_existing_notice(store, clock):
     assert [row["kind"] for row in notices(store, answered)] == ["required_decision"]
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 def test_a_backend_family_needs_a_handler_return_after_the_grace(store, clock):
     eid = create(store)
     action_id = action(store, eid, state="pending")
@@ -320,6 +322,7 @@ def test_each_new_notice_logs_one_warning(store, clock, caplog):
     assert len(warnings) == 1 and "missing_dependency: advancement:" in warnings[0].getMessage()
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_tick_reports_a_stuck_experiment_and_records_its_service(runtime, clock):
     store, _, _, workflow = runtime
     eid = create(store)

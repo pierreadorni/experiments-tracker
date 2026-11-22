@@ -62,6 +62,7 @@ def obligation_rows(store, action_id):
     return [row for row in rows if row["id"].rsplit(":", 1)[0] == f"agent-action:{action_id}"]
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 def test_pending_admission_metadata_replay_preserves_episode_and_timestamps(runtime, monkeypatch):
     store = runtime[0]
     eid, action_id = seed_action(store)
@@ -131,6 +132,7 @@ def test_transition_records_dispatch_attempt_then_running_turn(runtime):
     ]
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 def test_workflow_action_state_closes_obligation_with_existing_event(runtime):
     store, _, _, workflow = runtime[:4]
     eid, action_id = seed_action(store)
@@ -184,6 +186,7 @@ def test_running_without_both_exact_turn_ids_waits_for_reconciliation(runtime):
         ("running", "thread", "turn", "agent_turn", "agent", "turn:turn"),
     ],
 )
+@pytest.mark.usefixtures("contract_three_fixture")
 def test_state_selects_responsibility_kind_and_exact_wait(
     runtime, state, thread_id, turn_id, kind, owner, wait
 ):
@@ -201,6 +204,7 @@ def test_state_selects_responsibility_kind_and_exact_wait(
 @pytest.mark.parametrize(
     "state,terminal", [("completed", "satisfied"), ("failed", "abandoned"), ("cancelled", "abandoned")]
 )
+@pytest.mark.usefixtures("contract_three_fixture")
 def test_terminal_action_closes_only_existing_history(runtime, state, terminal):
     store = runtime[0]
     _, action_id = seed_action(store, state=state)
@@ -216,6 +220,7 @@ def test_terminal_action_closes_only_existing_history(runtime, state, terminal):
     assert len(obligation_rows(store, action_id)) == 1
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 def test_terminal_history_requires_proven_transition_for_active_source(runtime):
     store = runtime[0]
     _, action_id = seed_action(store)
@@ -238,6 +243,7 @@ def test_terminal_history_requires_proven_transition_for_active_source(runtime):
     assert len(obligation_rows(store, action_id)) == 1
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 def test_terminal_history_advances_only_with_same_transaction_source_transition(runtime):
     store = runtime[0]
     _, action_id = seed_action(store)
@@ -249,6 +255,7 @@ def test_terminal_history_advances_only_with_same_transaction_source_transition(
 
 
 @pytest.mark.parametrize("owner,kind", [("backend", "job"), ("agent", "reconcile")])
+@pytest.mark.usefixtures("contract_three_fixture")
 def test_unrelated_saved_ledger_responsibility_is_diagnostic_without_effects(runtime, owner, kind):
     store = runtime[0]
     eid, action_id = seed_action(store)
@@ -290,6 +297,7 @@ def test_pending_admission_respects_archive_and_terminal_experiment(
     assert len(obligation_rows(store, action_id)) == int(expected)
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 def test_pending_skipped_admission_abandons_existing_open_episode(runtime):
     store = runtime[0]
     eid, action_id = seed_action(store)
@@ -312,6 +320,7 @@ def test_legacy_exact_running_and_uncertain_actions_remain_trackable(runtime):
     assert (uncertain["owner"], uncertain["wait"]) == ("backend", f"reconcile:{uncertain_id}")
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 def test_scope_phase_and_evidence_identity_conflicts_roll_back(runtime):
     store = runtime[0]
     eid, action_id = seed_action(store)

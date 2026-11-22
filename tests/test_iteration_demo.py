@@ -9,6 +9,8 @@ import json
 from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
 
+import pytest
+
 from experimenttracker import artifacts, cli, creation_policy
 from experimenttracker.codex_client import DEMO_AGENT_SOURCE
 from experimenttracker.store import Store
@@ -33,6 +35,7 @@ def read_store(config):
     return Store.read_only(config.state_dir / "workflow.sqlite")
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 def test_demo_runs_the_current_contract_end_to_end(monkeypatch, config):
     monkeypatch.setattr(creation_policy, "MODE", "legacy")
     forbid_scientific_traversal(monkeypatch)
@@ -112,6 +115,7 @@ def test_demo_refuses_a_live_configuration(monkeypatch, config):
     assert not (config.state_dir / "workflow.sqlite").exists()
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 def test_demo_asks_before_running_an_unsupported_brief(monkeypatch, config):
     monkeypatch.setattr(creation_policy, "MODE", "legacy")
     forbid_scientific_traversal(monkeypatch)

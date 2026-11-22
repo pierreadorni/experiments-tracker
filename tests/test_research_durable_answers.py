@@ -79,6 +79,7 @@ async def test_startup_preserves_saved_contract_four_questions(runtime, monkeypa
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_startup_still_expires_old_rpcs_and_contract_three_requests(runtime, monkeypatch):
     store, _, _, workflow = runtime
     answered = question(store)

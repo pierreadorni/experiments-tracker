@@ -19,6 +19,8 @@ from experimenttracker.models import Implementation
 from experimenttracker.slurm import Observation, ResourceUnavailable
 from experimenttracker.workflow import Workflow
 
+pytestmark = pytest.mark.usefixtures("contract_three_engine")
+
 
 async def failed(runtime):
     store, scheduler, agent, wf, eid = await prepared(runtime, True)

@@ -63,6 +63,7 @@ def add_steering(store, eid, identity, mode):
         )
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_step_control_advance_selects_only_a_saved_contract_three(
     runtime, widened_archive, monkeypatch
 ):

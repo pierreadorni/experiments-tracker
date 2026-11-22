@@ -41,6 +41,7 @@ async def make_title_action(store, workflow, monkeypatch, eid):
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_workflow_action_creation_opens_admission_obligation(runtime, monkeypatch):
     store, _, _, workflow = runtime
     eid = seed_saved_contract3(store, "A new brief")
@@ -63,6 +64,7 @@ async def test_workflow_action_creation_opens_admission_obligation(runtime, monk
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_title_dispatch_records_handoffs_terminal_result_and_replay(runtime, monkeypatch):
     store, _, agent, workflow = runtime
     eid = seed_saved_contract3(store, "A concise research title")
@@ -109,6 +111,7 @@ async def test_title_dispatch_records_handoffs_terminal_result_and_replay(runtim
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_completion_after_await_cannot_settle_replaced_saved_turn(runtime, monkeypatch):
     store, _, agent, workflow = runtime
     eid = seed_saved_contract3(store, "Reject stale turn completion")
@@ -153,6 +156,7 @@ async def test_completion_after_await_cannot_settle_replaced_saved_turn(runtime,
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_exact_completed_callback_replay_keeps_event_and_obligation(runtime, monkeypatch):
     store, _, _, workflow = runtime
     eid = seed_saved_contract3(store, "Replay exact completed turn")
@@ -188,6 +192,7 @@ async def test_exact_completed_callback_replay_keeps_event_and_obligation(runtim
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_action_source_event_and_obligation_rollback_together(runtime, monkeypatch):
     store, _, _, workflow = runtime
     eid = seed_saved_contract3(store, "Rollback a saved action")

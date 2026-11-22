@@ -211,7 +211,7 @@ async def test_repeating_a_job_read_is_the_same_read_without_side_effects(runtim
     [
         ("plan", False, 4, "active research turn"),
         ("research", True, 4, "live research experiment"),
-        ("research", False, 3, "execution contract 4"),
+        ("research", False, 3, "execution contract 4|legacy execution is archived"),
     ],
 )
 async def test_job_logs_requires_the_exact_live_v4_research_turn(

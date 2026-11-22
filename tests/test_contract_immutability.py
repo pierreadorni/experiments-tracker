@@ -9,6 +9,7 @@ compares the whole contract with the one it started from.
 import json
 from uuid import uuid4
 
+import pytest
 from helpers import seed_saved_contract3
 
 MANIFEST = {
@@ -50,6 +51,7 @@ def rewrite(store, eid, before, changed):
     assert {key: value for key, value in after.items() if key not in changed} == before
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 def test_every_store_contract_rewrite_preserves_the_execution_contract(runtime):
     store = runtime[0]
 

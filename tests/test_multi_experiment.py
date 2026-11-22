@@ -24,6 +24,7 @@ def create(store, **extra):
 
 
 @pytest.mark.parametrize("limit,submitted", [(1, 1), (2, 2), (None, 3)])
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_job_limit_across_experiments_and_restart(runtime, tmp_path, limit, submitted):
     store, scheduler, _, old = runtime
     old.config.slurm.max_concurrent_jobs = limit
@@ -84,6 +85,7 @@ async def test_job_limit_across_experiments_and_restart(runtime, tmp_path, limit
     await resumed.close()
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_readonly_planning_during_training_and_project_write_hold(runtime):
     store, scheduler, _, old = runtime
 
@@ -149,6 +151,7 @@ async def test_readonly_planning_during_training_and_project_write_hold(runtime)
     await workflow.close()
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_model_turns_serialized_and_uncertainty_blocks_new_dispatch(runtime):
     store, scheduler, _, old = runtime
     agent = IterationAgent()
@@ -191,6 +194,7 @@ async def test_model_turns_serialized_and_uncertainty_blocks_new_dispatch(runtim
     await workflow.close()
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_paused_oldest_experiment_does_not_block_another(runtime):
     store, scheduler, _, old = runtime
     agent = IterationAgent()

@@ -201,6 +201,7 @@ async def planned(scenario, brief):
     return eid
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_observation_of_an_in_flight_submission_decides_nothing(scenario):
     store, backend = scenario.store, scenario.slurm_backend
     eid = await planned(scenario, "Synthetic in-flight submission.")
@@ -291,6 +292,7 @@ async def test_a_row_decided_during_the_scheduler_read_writes_no_hold(runtime, w
     assert store.experiment(eid)["hold_reason"] is None
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_a_lost_response_after_the_gated_submission_adopts_the_identity_once(scenario):
     store, backend = scenario.store, scenario.slurm_backend
     eid = await planned(scenario, "Synthetic lost response after an in-flight submission.")
@@ -330,6 +332,7 @@ async def test_a_lost_response_after_the_gated_submission_adopts_the_identity_on
     assert store.experiment(eid)["hold_reason"] is None
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_absence_after_the_accounting_lag_still_records_one_receipt(scenario):
     store, backend = scenario.store, scenario.slurm_backend
     eid = await planned(scenario, "Synthetic absence after the accounting lag.")

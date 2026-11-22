@@ -58,6 +58,7 @@ def dependency_project(workflow, store, tmp_path, environment=None):
     return source
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_dependency_branch_uses_one_shared_environment(runtime, tmp_path, monkeypatch, uv):
     store, scheduler, _, old = runtime
     dependency_project(old, store, tmp_path)
@@ -83,6 +84,7 @@ async def test_dependency_branch_uses_one_shared_environment(runtime, tmp_path, 
         await workflow.close()
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_fixed_interpreter_replaces_the_shared_cache(runtime, tmp_path, monkeypatch, uv):
     store, scheduler, _, old = runtime
     dependency_project(old, store, tmp_path, environment=EnvironmentConfig(python=Path(sys.executable)))

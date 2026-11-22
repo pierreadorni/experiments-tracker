@@ -17,6 +17,7 @@ from experimenttracker.slurm import SubmissionUncertain
 from experimenttracker.workflow import Workflow
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_metrics_survive_plot_failure_repair_restart_and_direct_bindings(runtime, monkeypatch):
     store, scheduler, agent, wf, eid = await prepared(runtime, True)
 
@@ -188,6 +189,7 @@ def test_source_capture_is_bounded_declared_and_preserves_packages(tmp_path, mon
     assert (two / "snapshot/pkg/__init__.py").read_text() == "VALUE=43"
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_lost_submission_response_reconciles_exact_attempt_without_retry(runtime):
     store, scheduler, _, wf, eid = await prepared(runtime)
     submit = scheduler.submit
@@ -219,6 +221,7 @@ async def test_lost_submission_response_reconciles_exact_attempt_without_retry(r
     await wf.close()
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_remote_attempt_does_not_seal_or_sync_project_and_delivery_retries_only(
     runtime, tmp_path, monkeypatch
 ):
@@ -287,6 +290,7 @@ def test_bounded_results_reject_bad_counts_missing_metrics_and_nonfinite(tmp_pat
         iteration.check_stage(tmp_path, "evaluate", {"plan": PLAN})
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_missing_original_output_is_actionable_without_new_compute(runtime):
     store, scheduler, _, wf, eid = await prepared(runtime, True)
     await until(wf, store, eid, lambda e: e["phase"] == "failed")
@@ -308,6 +312,7 @@ async def test_missing_original_output_is_actionable_without_new_compute(runtime
     await wf.close()
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_failed_shared_editors_repair_in_isolated_candidates_without_ownership_deadlock(runtime):
     store, scheduler, agent, wf, first = await prepared(runtime, True)
     await until(wf, store, first, lambda e: e["phase"] == "failed")
@@ -328,6 +333,7 @@ async def test_failed_shared_editors_repair_in_isolated_candidates_without_owner
     await wf.close()
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_final_report_render_correction_never_queues_compute_repair(runtime, monkeypatch):
     store, scheduler, agent, wf, eid = await prepared(runtime)
     original = reporting.build_report

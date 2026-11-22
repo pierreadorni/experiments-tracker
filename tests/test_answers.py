@@ -17,6 +17,7 @@ def test_multiple_questions_require_complete_explicit_answers():
             request_answer(pending, invalid)
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 def test_invalid_approval_is_rejected_before_command_commit(runtime):
     store, _, _, _ = runtime
     eid = seed_saved_contract3(store, "Compare fixed synthetic models.")

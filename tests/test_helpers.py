@@ -9,6 +9,7 @@ from helpers import PLAN, prepared, wait_for_experiment, wait_until
 
 
 @pytest.mark.parametrize("mode", ["legacy", "candidate"])
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_prepared_seeds_historical_contract3_under_each_create_policy(runtime, monkeypatch, mode):
     from experimenttracker import creation_policy
 

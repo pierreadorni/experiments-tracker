@@ -163,7 +163,7 @@ async def test_restart_keeps_the_question_and_the_existing_answer_settles_it(run
         ("research", "pending", False, 4, "active owned session"),
         ("research", "dispatching", False, 4, "not running"),
         ("research", "running", True, 4, "live research experiment"),
-        ("research", "running", False, 3, "execution contract 4"),
+        ("research", "running", False, 3, "execution contract 4|legacy execution is archived"),
     ],
 )
 async def test_ask_owner_keeps_the_common_live_v4_and_running_action_gate(

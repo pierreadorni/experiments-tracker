@@ -119,6 +119,7 @@ async def settle(wf, tasks):
     await wf.tick(force_observe=True)
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_two_connections_overlap_an_experiment_and_a_project_decision(runtime, monkeypatch):
     service, run = activated(runtime, monkeypatch)
     wf = await pooled(runtime)
@@ -153,6 +154,7 @@ async def test_two_connections_overlap_an_experiment_and_a_project_decision(runt
     await wf.close()
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_two_connections_overlap_an_experiment_and_an_owner_project_turn(runtime):
     wf = await pooled(runtime)
     store, eid = wf.store, create(wf.store)
@@ -182,6 +184,7 @@ async def test_two_connections_overlap_an_experiment_and_an_owner_project_turn(r
     await wf.close()
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_one_configured_turn_serves_the_higher_priority_role_first(runtime, monkeypatch):
     service, run = activated(runtime, monkeypatch)
     wf = await pooled(runtime, sessions=1)
@@ -214,6 +217,7 @@ async def test_one_configured_turn_serves_the_higher_priority_role_first(runtime
     await wf.close()
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_unknown_saved_turns_count_once_and_readback_needs_no_capacity(runtime):
     store, scheduler, _, old = runtime
     old.config.codex.max_sessions = 2
@@ -310,6 +314,7 @@ def offer(wf, row, started, *, role="stage", connections=None):
     )
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_saved_turns_beyond_a_shrunken_pool_admit_nothing_and_keep_readback(runtime):
     store, scheduler, _, old = runtime
     old.config.codex.max_sessions = 2

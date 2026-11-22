@@ -16,6 +16,7 @@ def create(store):
     return seed_saved_contract3(store, "Test an entirely new method and show its frontier.")
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 def test_compact_reference_retains_protocol_and_full_pointers(runtime):
     store, _, _, workflow = runtime
     parent_id = create(store)
@@ -91,6 +92,7 @@ def test_compact_reference_retains_protocol_and_full_pointers(runtime):
         workflow.prompt(store.experiment(child_id), "prepare")
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_first_implementation_starts_fresh_after_planning(runtime):
     store, scheduler, _, old = runtime
 

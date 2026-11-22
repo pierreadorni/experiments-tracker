@@ -150,6 +150,7 @@ async def test_slow_project_catalog_does_not_block_health_or_owner_loop(runtime,
 
 @pytest.mark.parametrize("lost_response", [False, True])
 @pytest.mark.parametrize("terminal", [False, True])
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_saved_monitor_turn_is_adopted_after_restart_without_duplicate_dispatch(
     runtime, lost_response, terminal
 ):
@@ -197,6 +198,7 @@ async def test_saved_monitor_turn_is_adopted_after_restart_without_duplicate_dis
         await wf.close()
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_monitor_action_obligation_tracks_creation_and_pending_supersession(runtime, monkeypatch):
     store, _, _, wf = runtime
     eid = create(store)
@@ -242,6 +244,7 @@ async def test_monitor_action_obligation_tracks_creation_and_pending_supersessio
         wf.controller.server = None
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_manual_planning_retry_has_same_revision_and_duplicate_receipt(runtime):
     store, scheduler, _, wf = runtime
     eid = create(store)
@@ -263,6 +266,7 @@ async def test_manual_planning_retry_has_same_revision_and_duplicate_receipt(run
 
 
 @pytest.mark.parametrize("uncertain", [False, True])
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_explicit_retry_grants_one_turn_at_owner_budget_with_idempotent_receipt(runtime, uncertain):
     store, scheduler, _, old = runtime
     old.config.codex.max_agent_turns = 1
@@ -331,6 +335,7 @@ async def test_explicit_retry_grants_one_turn_at_owner_budget_with_idempotent_re
     await wf.close()
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_known_quota_interruption_resumes_automatically_after_owner_restart(runtime):
     store, scheduler, _, old = runtime
     agent = PermissionAgent()
@@ -399,6 +404,7 @@ async def test_known_quota_interruption_resumes_automatically_after_owner_restar
     await wf.close()
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_manifest_tool_wakeups_and_tracked_submission_are_idempotent(runtime):
     store, scheduler, _, old = runtime
     agent = PermissionAgent()
@@ -476,6 +482,7 @@ async def test_agent_progress_extends_inactivity_window_without_unbounded_event_
     assert await task == {} and agent.server.events.qsize() == 0
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_configured_sessions_let_another_plan_progress_while_one_turn_waits(runtime):
     store, scheduler, _, old = runtime
     old.config.codex.max_sessions = 2

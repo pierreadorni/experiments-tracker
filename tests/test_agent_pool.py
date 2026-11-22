@@ -110,6 +110,7 @@ def test_finished_task_settles_from_its_source_row(runtime, state, retained):
     assert (kept.slot, kept.thread_id, kept.turn_id) == (None, "saved-thread", "saved-turn")
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_stage_admission_claims_the_slot_before_dispatch(runtime):
     store, scheduler, _, old = runtime
     agent = GatedIterationAgent("prepare")
@@ -134,6 +135,7 @@ async def test_stage_admission_claims_the_slot_before_dispatch(runtime):
     await wf.close()
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_title_admissions_claim_plan_and_summary_turns(runtime):
     store, scheduler, _, old = runtime
     agent = GatedIterationAgent("title")
@@ -172,6 +174,7 @@ async def test_title_admissions_claim_plan_and_summary_turns(runtime):
     await wf.close()
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_monitor_and_conversation_admissions_claim_then_release_unsent_turns(runtime, monkeypatch):
     store, _, agent, wf = runtime
     monitored, discussed = create(store), create(store)

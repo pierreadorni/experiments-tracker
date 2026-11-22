@@ -84,6 +84,7 @@ def project_pending(service, action_id):
     return json.loads(row["pending_request"])
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_each_slot_receives_only_its_own_turn_s_callbacks(runtime):
     wf = await pooled(runtime)
     store, first, second = wf.store, wf.agent_pool.slots[0], wf.agent_pool.slots[1]
@@ -194,6 +195,7 @@ async def test_unmatched_old_and_supervisor_requests_fail_closed(runtime, monkey
     await wf.close()
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_answer_after_a_restart_expires_instead_of_replaying(runtime):
     wf = await pooled(runtime)
     slot, store = wf.agent_pool.slots[1], wf.store

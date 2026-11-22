@@ -89,6 +89,7 @@ async def saved_plan_failure(runtime):
     return store, scheduler, agent, workflow, eid, action
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_revalidate_exact_plan_is_idempotent_and_survives_restart(runtime):
     store, scheduler, agent, workflow, eid, action = await saved_plan_failure(runtime)
     calls = agent.calls
@@ -109,6 +110,7 @@ async def test_revalidate_exact_plan_is_idempotent_and_survives_restart(runtime)
 
 
 @pytest.mark.parametrize("block", ["uncertain", "mismatch", "nonterminal", "steering"])
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_output_recovery_refuses_unestablished_outcomes(runtime, block, monkeypatch):
     store, scheduler, agent, workflow, eid, action = await saved_plan_failure(runtime)
     calls = agent.calls
@@ -136,6 +138,7 @@ async def test_output_recovery_refuses_unestablished_outcomes(runtime, block, mo
     await workflow.close()
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_archived_agent_output_reconciliation_refuses_adoption(runtime):
     store, _, agent, workflow, eid, action = await saved_plan_failure(runtime)
     contract = store.experiment(eid)["contract"]

@@ -444,6 +444,7 @@ async def test_reserve_command_has_no_experiment_identity(config, runtime, tmp_p
         await client.close()
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_gateway_integrate_replays_the_saved_branch_once(config, runtime, tmp_path):
     store, _, _, _ = runtime
     token = tmp_path / "integration-token"
@@ -491,6 +492,7 @@ async def test_gateway_integrate_replays_the_saved_branch_once(config, runtime, 
     }
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_gateway_revert_without_an_applied_merge_stays_rejected(config, runtime, tmp_path):
     store, _, _, _ = runtime
     token = tmp_path / "revert-token"
@@ -533,6 +535,7 @@ async def test_gateway_revert_without_an_applied_merge_stays_rejected(config, ru
     assert not store.rows("SELECT * FROM obligations WHERE kind='integration'")
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_gateway_approval_moves_only_the_exact_awaiting_candidate(config, runtime, tmp_path):
     store, _, _, _ = runtime
     token = tmp_path / "approval-token"

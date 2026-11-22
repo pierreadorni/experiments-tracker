@@ -193,6 +193,7 @@ class BrokenSourceAgent(IterationAgent):
         return turn
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_invalid_prepared_source_fails_bounded_repair_before_compute(runtime):
     store, scheduler, _, old = runtime
     agent = BrokenSourceAgent()

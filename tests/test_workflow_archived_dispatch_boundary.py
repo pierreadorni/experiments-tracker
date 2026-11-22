@@ -9,6 +9,7 @@ from helpers import prepared, wait_for_experiment
 from experimenttracker.store import encode
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_scriptless_current_stage_runs_saved_recipe_with_exact_job_identity(runtime):
     store, scheduler, _, workflow, eid = await prepared(runtime)
     exp = await wait_for_experiment(workflow, store, eid, lambda e: bool(e["snapshot"]))
@@ -27,6 +28,7 @@ async def test_scriptless_current_stage_runs_saved_recipe_with_exact_job_identit
     await workflow.close()
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_frozen_contract_never_reaches_scheduler_dispatch(runtime):
     store, scheduler, _, workflow, eid = await prepared(runtime)
     exp = await wait_for_experiment(workflow, store, eid, lambda e: bool(e["snapshot"]))

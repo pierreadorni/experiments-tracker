@@ -19,6 +19,8 @@ from experimenttracker.models import Implementation, ResearchPlan
 from experimenttracker.store import Conflict
 from experimenttracker.workflow import Workflow
 
+pytestmark = pytest.mark.usefixtures("contract_three_engine")
+
 CHECK = {
     "id": "model_check",
     "title": "Check synthetic model before training",

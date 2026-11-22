@@ -31,6 +31,7 @@ def test_title_output_is_bounded_and_prompt_includes_brief():
     assert "avoid adding claims about results" in prompt
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_saved_luna_turn_is_reconciled_after_plan_approval(runtime):
     store, scheduler, _, old = runtime
 
@@ -82,6 +83,7 @@ async def test_saved_luna_turn_is_reconciled_after_plan_approval(runtime):
     await restored.close()
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_current3_manual_summary_updates_failed_run_without_restarting_it(runtime):
     store, scheduler, _, old = runtime
 

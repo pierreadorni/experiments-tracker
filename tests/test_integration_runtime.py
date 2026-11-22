@@ -79,6 +79,7 @@ async def queued_branch(runtime, tmp_path, monkeypatch, *, edit="value = 2\n", c
     return source, store, workflow, eid, request_id
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_a_completed_merge_commits_checks_and_settles_the_saved_branch(runtime, tmp_path, monkeypatch):
     marker = tmp_path / "check-cwd.txt"
     source, store, workflow, eid, request_id = await queued_branch(
@@ -107,6 +108,7 @@ async def test_a_completed_merge_commits_checks_and_settles_the_saved_branch(run
     assert not (source / ".worktrees" / "_integration").exists()
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_a_merge_waits_for_terminal_completion(runtime, tmp_path, monkeypatch):
     source, store, workflow, eid, request_id = await queued_branch(
         runtime, tmp_path, monkeypatch, complete=False
@@ -143,6 +145,7 @@ async def test_a_merge_waits_for_terminal_completion(runtime, tmp_path, monkeypa
         ),
     ],
 )
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_in_flight_work_defers_the_commit_until_the_branch_is_idle(
     runtime, tmp_path, monkeypatch, insert, settle
 ):
@@ -164,6 +167,7 @@ async def test_in_flight_work_defers_the_commit_until_the_branch_is_idle(
     assert (source / "shared.py").read_text() == "value = 2\n"
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_a_failed_project_check_never_merges(runtime, tmp_path, monkeypatch):
     source, store, workflow, eid, request_id = await queued_branch(
         runtime, tmp_path, monkeypatch, check_command=[sys.executable, "-c", "raise SystemExit(3)"]
@@ -193,6 +197,7 @@ def test_project_check_is_argv_only_and_time_bounded(tmp_path):
         integration_runtime.project_check(tmp_path, ["definitely-not-a-command"], 30)
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_a_dont_merge_flag_blocks_even_a_ready_request(runtime, tmp_path, monkeypatch):
     source, store, workflow, eid, request_id = await queued_branch(runtime, tmp_path, monkeypatch)
     with store.tx() as db:
@@ -214,6 +219,7 @@ async def test_a_dont_merge_flag_blocks_even_a_ready_request(runtime, tmp_path, 
 
 
 @pytest.mark.parametrize("drift", ["branch", "worktree", "project", "descendant", "deleted", "empty"])
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_an_ineligible_request_is_saved_for_manual_inspection_without_git_work(
     runtime, tmp_path, monkeypatch, drift
 ):
@@ -258,6 +264,7 @@ async def test_an_ineligible_request_is_saved_for_manual_inspection_without_git_
     assert not (source / ".worktrees" / "_integration").exists()
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_required_approval_waits_without_a_saved_owner_receipt(runtime, tmp_path, monkeypatch):
     source, store, workflow, eid, request_id = await queued_branch(
         runtime, tmp_path, monkeypatch, require_approval=True
@@ -272,6 +279,7 @@ async def test_required_approval_waits_without_a_saved_owner_receipt(runtime, tm
     assert commit_of(source, "main") == base_before
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_a_ready_candidate_waits_while_the_experiment_is_busy_again(runtime, tmp_path, monkeypatch):
     source, store, workflow, eid, request_id = await queued_branch(
         runtime, tmp_path, monkeypatch, require_approval=True
@@ -301,6 +309,7 @@ async def test_a_ready_candidate_waits_while_the_experiment_is_busy_again(runtim
 
 
 @pytest.mark.parametrize("change", ["head", "dont_merge"])
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_a_scope_change_during_the_check_is_not_fast_forwarded(runtime, tmp_path, monkeypatch, change):
     source, store, workflow, eid, request_id = await queued_branch(
         runtime, tmp_path, monkeypatch, check_command=[sys.executable, "-c", "pass"]
@@ -330,6 +339,7 @@ async def test_a_scope_change_during_the_check_is_not_fast_forwarded(runtime, tm
     assert (source / "shared.py").read_text() == "value = 1\n"
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_an_uncertain_apply_is_not_replayed_and_never_settles_the_row(runtime, tmp_path, monkeypatch):
     source, store, workflow, eid, request_id = await queued_branch(runtime, tmp_path, monkeypatch)
     calls = []
@@ -357,6 +367,7 @@ async def test_an_uncertain_apply_is_not_replayed_and_never_settles_the_row(runt
     assert len(calls) == 1
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_reverting_a_settled_merge_restores_the_branch_row(runtime, tmp_path, monkeypatch):
     source, store, workflow, eid, request_id = await queued_branch(runtime, tmp_path, monkeypatch)
     assert integration_runtime.run(workflow.workspaces)[0]["outcome"] == "applied"
@@ -379,6 +390,7 @@ async def test_reverting_a_settled_merge_restores_the_branch_row(runtime, tmp_pa
     assert saved(store, again)["stage"] == "queued"
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_one_driver_per_repository_drains_the_queue_in_order(runtime, tmp_path, monkeypatch):
     store, _, _, workflow = runtime
     source = git_project(workflow, store, tmp_path)

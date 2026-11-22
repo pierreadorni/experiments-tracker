@@ -28,6 +28,7 @@ def failed_action(store, eid, *, phase="prepare", error="known failure"):
     return store.one("SELECT * FROM agent_actions WHERE id=?", (identity,))
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 def test_continuation_obligation_event_and_replay_are_atomic(runtime, monkeypatch):
     store = runtime[0]
     eid = seed_experiment(store, "Synthetic continuation transaction")
@@ -63,6 +64,7 @@ def test_continuation_obligation_event_and_replay_are_atomic(runtime, monkeypatc
     assert len(obligations(store, child["id"])) == 1
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 def test_session_retry_and_title_summary_write_admission_obligations_atomically(runtime, monkeypatch):
     store = runtime[0]
     eid = seed_experiment(store, "Synthetic session retry")

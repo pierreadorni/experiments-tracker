@@ -32,6 +32,7 @@ def identities(jobs, refs):
     )
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_initial_mixed_agent_plan_fits_a_saved_three_job_budget(runtime):
     _, _, _, old = runtime
     old.config.slurm.max_jobs_per_experiment = 3
@@ -55,6 +56,7 @@ async def test_initial_mixed_agent_plan_fits_a_saved_three_job_budget(runtime):
 
 
 @pytest.mark.parametrize("cap", [4, 3])
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_resource_repair_counts_only_the_one_new_slurm_job(runtime, cap):
     store, scheduler, agent, wf, eid = await resource_hold(runtime)
     jobs = saved_jobs(store, eid)

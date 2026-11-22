@@ -164,6 +164,7 @@ def test_a_timer_needs_its_saved_due_time_and_one_interval_of_slack(store):
     assert cause(inspect(store, 100.0), obligation_id) == "source_not_live"
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 def test_backend_families_need_service_evidence_or_restart_grace(store):
     eid = create(store)
     action_id = save_action(store, eid, state="pending")

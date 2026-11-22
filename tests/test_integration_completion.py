@@ -74,6 +74,7 @@ async def completed(runtime, agent, tmp_path=None):
     return workflow, store, eid, source
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_completed_named_branch_queues_the_explicit_opt_in_once(runtime, tmp_path):
     workflow, store, eid, source = await completed(
         runtime,
@@ -117,6 +118,7 @@ async def test_completed_named_branch_queues_the_explicit_opt_in_once(runtime, t
         await workflow.close()
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_default_false_completion_queues_nothing(runtime, tmp_path):
     workflow, store, eid, _ = await completed(runtime, OptInAgent({}), tmp_path)
     try:
@@ -127,6 +129,7 @@ async def test_default_false_completion_queues_nothing(runtime, tmp_path):
         await workflow.close()
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_dont_merge_flag_blocks_the_completion_request(runtime, tmp_path):
     store, scheduler, _, old = runtime
     git_project(old, store, tmp_path)
@@ -142,6 +145,7 @@ async def test_dont_merge_flag_blocks_the_completion_request(runtime, tmp_path):
         await workflow.close()
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_an_owner_request_is_not_duplicated_at_completion(runtime, tmp_path):
     store, scheduler, _, old = runtime
     git_project(old, store, tmp_path)
@@ -160,6 +164,7 @@ async def test_an_owner_request_is_not_duplicated_at_completion(runtime, tmp_pat
         await workflow.close()
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_the_named_branch_interpretation_prompt_explains_the_opt_in(runtime, tmp_path):
     workflow, store, eid, _ = await completed(runtime, OptInAgent({}), tmp_path)
     try:
@@ -172,6 +177,7 @@ async def test_the_named_branch_interpretation_prompt_explains_the_opt_in(runtim
         await workflow.close()
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_shared_checkout_completion_queues_nothing_and_offers_no_opt_in(runtime):
     workflow, store, eid, _ = await completed(
         runtime, OptInAgent({"integrate": True, "integrate_reason": "Keep the synthetic improvement."})

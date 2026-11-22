@@ -154,6 +154,7 @@ def blocked_experiment(runtime):
     return store, eid, identity
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 def test_answer_command_on_blocked_resume_satisfies_the_request(blocked_experiment):
     store, eid, identity = blocked_experiment
     store.update(eid, pending_request=request(expired=True))
@@ -165,6 +166,7 @@ def test_answer_command_on_blocked_resume_satisfies_the_request(blocked_experime
     )
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 def test_steering_a_blocked_resume_abandons_the_unanswered_request(blocked_experiment):
     store, eid, _ = blocked_experiment
     store.update(eid, pending_request=request(expired=True))

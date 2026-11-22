@@ -147,6 +147,7 @@ def test_iso_timestamps_are_normalized_and_subject_to_same_bounds(log_job):
         assert read_job_progress(root, job, now=now) is None
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_progress_publication_restart_replay_and_readiness(runtime, monkeypatch):
     store, scheduler, agent, workflow = runtime
     eid = progress_experiment(store, workflow)
@@ -218,6 +219,7 @@ async def test_progress_publication_restart_replay_and_readiness(runtime, monkey
         reopened.close()
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_progress_and_outbox_roll_back_together(runtime, monkeypatch):
     store, scheduler, _, workflow = runtime
     eid = progress_experiment(store, workflow)

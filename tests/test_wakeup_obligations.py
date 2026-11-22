@@ -59,6 +59,7 @@ def test_replacing_pending_request_abandons_its_timer(runtime):
     assert timer(store, second["id"])["state"] == "open"
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_queueing_the_saved_action_satisfies_its_timer_in_that_transaction(runtime, monkeypatch):
     store, _, _, wf = runtime
     eid = create(store)
@@ -106,6 +107,7 @@ async def test_queueing_the_saved_action_satisfies_its_timer_in_that_transaction
         await wf.close()
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_failed_monitor_action_abandons_its_timer(runtime):
     store, _, _, wf = runtime
     eid = create(store)

@@ -89,6 +89,7 @@ COMPACT_JOB_KEYS = (
 )
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_job_status_can_select_a_compact_owned_job(runtime):
     store, _, _, workflow, eid = await failed_training(runtime)
     job = store.one("SELECT * FROM jobs WHERE experiment_id=?", (eid,))
@@ -123,6 +124,7 @@ async def test_job_status_can_select_a_compact_owned_job(runtime):
 
 
 @pytest.mark.parametrize("uncertain", [False, True])
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_session_retry_preserves_action_and_does_not_block_other_experiments(runtime, uncertain):
     from experimenttracker.codex_client import SessionUnavailable
     from experimenttracker.store import Conflict
@@ -207,6 +209,7 @@ async def test_session_retry_preserves_action_and_does_not_block_other_experimen
     await workflow.close()
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_repaired_readiness_does_not_wait_for_retired_artifact_uploads(runtime):
     store, scheduler, agent, workflow, eid = await failed_training(runtime)
     original_root = workflow.projects.base_root(eid)

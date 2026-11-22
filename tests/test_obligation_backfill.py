@@ -193,6 +193,7 @@ def test_terminal_sources_and_archived_legacy_get_no_history(runtime):
     assert store.rows("SELECT * FROM obligations WHERE id LIKE ?", (f"advancement:{legacy}:%",)) == []
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 def test_conflicting_terminal_history_is_counted_logged_and_left_as_saved(runtime, caplog):
     store = runtime[0]
     eid = create(store)
@@ -216,6 +217,7 @@ def test_conflicting_terminal_history_is_counted_logged_and_left_as_saved(runtim
     assert any("agent_action" in message and conflicted in message for message in messages)
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 def test_fixed_size_batches_cover_every_candidate(runtime):
     store = runtime[0]
     for index in range(3):
@@ -227,6 +229,7 @@ def test_fixed_size_batches_cover_every_candidate(runtime):
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_workflow_start_backfills_before_its_services(runtime, monkeypatch):
     store, _, _, workflow = runtime
     legacy = legacy_experiment(store)

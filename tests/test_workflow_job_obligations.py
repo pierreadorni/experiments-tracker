@@ -27,6 +27,7 @@ def submission_event(store, eid, kind, intent_id):
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_intent_is_committed_before_scheduler_submit_and_exact_id_handoff_replays(runtime):
     store, scheduler, _, workflow, eid = await prepared(runtime)
     accepted_id = "scheduler-accepted-42"
@@ -80,6 +81,7 @@ async def test_intent_is_committed_before_scheduler_submit_and_exact_id_handoff_
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_uncertain_scheduler_response_keeps_the_saved_backend_intent(runtime):
     store, _, _, workflow, eid = await prepared(runtime)
     calls = []
@@ -115,6 +117,7 @@ async def test_uncertain_scheduler_response_keeps_the_saved_backend_intent(runti
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_missing_id_reconcile_hands_off_only_after_saved_id(runtime):
     store, scheduler, _, workflow, eid = await prepared(runtime)
     calls = []
@@ -163,6 +166,7 @@ async def test_missing_id_reconcile_hands_off_only_after_saved_id(runtime):
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_intent_hook_failure_rolls_back_before_any_scheduler_call(runtime, monkeypatch):
     store, scheduler, _, workflow, eid = await prepared(runtime)
     calls = []
@@ -197,6 +201,7 @@ async def test_intent_hook_failure_rolls_back_before_any_scheduler_call(runtime,
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_missing_id_mapper_conflict_rolls_back_without_scientific_failure(runtime, monkeypatch):
     store, _, _, workflow, eid = await prepared(runtime)
 
@@ -244,6 +249,7 @@ async def test_missing_id_mapper_conflict_rolls_back_without_scientific_failure(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_submit_acceptance_does_not_overwrite_newer_saved_job_state(runtime):
     store, _, _, workflow, eid = await prepared(runtime)
     accepted_id = "scheduler-accepted-after-cancel"

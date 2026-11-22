@@ -198,6 +198,7 @@ class GPUAgent(IterationAgent):
         return turn
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_gpu_plan_persists_before_dispatch_and_restart_never_resubmits(runtime):
     store, _, _, old = runtime
     config = old.config.model_copy(update={"mode": "live"})
@@ -236,6 +237,7 @@ async def test_gpu_plan_persists_before_dispatch_and_restart_never_resubmits(run
     await workflow.close()
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_unavailable_preflight_creates_no_submission_intent_and_no_duplicate_notices(runtime):
     store, _, _, old = runtime
     config = old.config.model_copy(update={"mode": "live"})

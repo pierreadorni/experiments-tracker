@@ -254,6 +254,7 @@ async def test_explicit_shared_workspace_is_not_marked_for_a_branch(runtime, tmp
     assert workflow.workspaces.branch(eid) is None
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_named_branch_experiment_runs_from_its_own_worktree(runtime, tmp_path, monkeypatch):
     class WorktreeAgent(IterationAgent):
         async def begin(self, thread_id, prompt, schema, *, workspace=None, project_workspace=None, **kwargs):
@@ -300,6 +301,7 @@ async def test_named_branch_experiment_runs_from_its_own_worktree(runtime, tmp_p
         await workflow.close()
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_accepted_implementation_commit_records_head_and_reports_skipped(
     runtime, tmp_path, monkeypatch
 ):
@@ -485,6 +487,7 @@ def test_attempt_project_sources_must_match_the_job_commit_blobs(tmp_path):
         iteration.committed_project_sources(None, commit, sources, {})
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_agent_and_scheduler_jobs_record_the_exact_committed_sources(runtime, tmp_path, monkeypatch):
     from test_iteration_agent_stages import MixedAgent
 

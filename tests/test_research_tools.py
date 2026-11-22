@@ -121,7 +121,7 @@ def test_cluster_capabilities_bound_long_cached_fields(runtime):
         ("plan", "running", False, 4, "active research turn"),
         ("research", "pending", False, 4, "active owned session"),
         ("research", "running", True, 4, "live research experiment"),
-        ("research", "running", False, 3, "execution contract 4"),
+        ("research", "running", False, 3, "execution contract 4|legacy execution is archived"),
     ],
 )
 async def test_cluster_info_refuses_anything_but_the_live_research_action(

@@ -266,6 +266,7 @@ def test_sbatch_resource_match_and_no_extra_gpu_allocation(tmp_path):
         sbatch_directives(source, resources)
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_remote_roundtrip_seals_checkpoints_without_downloading_bytes(runtime, tmp_path, monkeypatch):
     wf, exp, _ = prepared(runtime, tmp_path)
     assert exp["contract"]["execution_contract"] == 3
@@ -412,6 +413,7 @@ async def test_c4_remote_result_transfer_replays_and_recovers_interrupted_downlo
     )
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_lost_submission_reconciles_exactly_once_across_restart(runtime, tmp_path, monkeypatch):
     wf, exp, _ = prepared(runtime, tmp_path)
     assert exp["contract"]["execution_contract"] == 3
@@ -428,6 +430,7 @@ async def test_lost_submission_reconciles_exactly_once_across_restart(runtime, t
     assert len(machines.jobs) == 1
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_completed_job_waits_for_transfer_and_polling_is_persisted(runtime, tmp_path, monkeypatch):
     wf, exp, _ = prepared(runtime, tmp_path)
     assert exp["contract"]["execution_contract"] == 3
@@ -489,6 +492,7 @@ async def test_remote_manifest_identity_guard_refuses_tampered_attempt_manifest(
     assert not list(remote_run.glob("remote-receipt-*"))  # noqa: ASYNC240
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_agent_transfer_tool_is_durable_and_scoped(runtime, tmp_path):
     wf, exp, _ = prepared(runtime, tmp_path)
     assert exp["contract"]["execution_contract"] == 3
@@ -514,6 +518,7 @@ async def test_agent_transfer_tool_is_durable_and_scoped(runtime, tmp_path):
         await wf.controller.call(exp["id"], "set_project_execution", args)
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_remote_reads_are_batched_and_transport_failures_keep_observations_stale(
     runtime, tmp_path, monkeypatch
 ):
@@ -545,6 +550,7 @@ async def test_remote_reads_are_batched_and_transport_failures_keep_observations
     assert len(machines.jobs) == 1
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_remote_successful_checkpoint_reuse_stays_remote(runtime, tmp_path, monkeypatch):
     wf, exp, _ = prepared(runtime, tmp_path)
     assert exp["contract"]["execution_contract"] == 3
@@ -604,6 +610,7 @@ def test_browser_creation_preserves_the_selected_execution_snapshot(runtime, mon
     assert store.command(identity, "create", payload) == result
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_remote_association_limit_waits_without_replanning_or_fast_retry(
     runtime, tmp_path, monkeypatch
 ):
@@ -628,6 +635,7 @@ async def test_remote_association_limit_waits_without_replanning_or_fast_retry(
     assert not wf.store.rows("SELECT * FROM agent_actions")
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_tensorboard_events_return_without_custom_download_template(runtime, tmp_path, monkeypatch):
     from tensorboard.compat.proto.event_pb2 import Event
     from tensorboard.summary.writer.event_file_writer import EventFileWriter

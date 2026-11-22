@@ -151,6 +151,7 @@ async def failed_evaluate(runtime):
     await workflow.close()
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_recovery_adopts_failed_attempt_outputs_once(failed_evaluate, monkeypatch):
     case = failed_evaluate
     store, workflow, eid, job = case.store, case.workflow, case.eid, case.job
@@ -239,6 +240,7 @@ async def test_recovery_adopts_failed_attempt_outputs_once(failed_evaluate, monk
         ("symlink", "regular file inside the registered root"),
     ],
 )
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_recovery_refuses_unconfirmed_or_invalid_saved_attempt(
     failed_evaluate, monkeypatch, failure, reason
 ):
@@ -269,6 +271,7 @@ async def test_recovery_refuses_unconfirmed_or_invalid_saved_attempt(
     assert case.scheduler.submissions == 2
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_recovery_rolls_back_attempt_adoption_on_transaction_failure(failed_evaluate, monkeypatch):
     case = failed_evaluate
     store, workflow, eid, job = case.store, case.workflow, case.eid, case.job
@@ -316,6 +319,7 @@ async def test_recovery_rolls_back_attempt_adoption_on_transaction_failure(faile
     assert not store.rows("PRAGMA foreign_key_check")
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_restarted_observation_adopts_saved_terminal_attempt_once(runtime):
     store, scheduler, agent, workflow, eid = await prepared(runtime)
 

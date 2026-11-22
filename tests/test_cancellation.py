@@ -26,6 +26,7 @@ def cancel(store, eid, request_id=None):
     return store.command(payload["request_id"], "action", payload, eid=eid)
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_cancel_supersedes_pending_action_obligation_atomically_and_replays(runtime, monkeypatch):
     store, _, _, wf = runtime
     eid = create(store)
@@ -78,6 +79,7 @@ async def test_cancel_supersedes_pending_action_obligation_atomically_and_replay
 @pytest.mark.parametrize(
     "phase", ["preparing", "training", "evaluating", "validating", "interpreting", "publishing", "failed"]
 )
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_cancel_any_phase_retires_only_its_queue_and_survives_restart(runtime, phase, monkeypatch):
     from experimenttracker import creation_policy
 

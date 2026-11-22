@@ -21,6 +21,7 @@ async def wait_for(workflow, store, eid, predicate):
     await wait_for_experiment(workflow, store, eid, predicate)
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_plan_is_reviewed_before_source_is_written(runtime):
     store, scheduler, _, old = runtime
     workflow = Workflow(old.config, store, scheduler, IterationAgent())
@@ -51,6 +52,7 @@ async def test_plan_is_reviewed_before_source_is_written(runtime):
     await workflow.close()
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_long_steering_survives_planning_revision(runtime):
     store, scheduler, _, old = runtime
     workflow = Workflow(old.config, store, scheduler, IterationAgent())
@@ -99,6 +101,7 @@ class WaitingScheduler:
         return "12345"
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_restart_cancels_only_saved_job_and_creates_one_replacement(runtime, monkeypatch):
     # This case covers C3-to-C3 replacement; cutover has separate C3-to-C4 cases.
     monkeypatch.setattr(creation_policy, "MODE", "legacy")
@@ -135,6 +138,7 @@ async def test_restart_cancels_only_saved_job_and_creates_one_replacement(runtim
     await workflow.close()
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_implementation_drift_requires_a_second_approval(runtime):
     store, scheduler, _, old = runtime
 
@@ -166,6 +170,7 @@ async def test_implementation_drift_requires_a_second_approval(runtime):
     await workflow.close()
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_failed_run_restart_reconciles_a_job_that_was_last_seen_running(runtime, monkeypatch):
     monkeypatch.setattr(creation_policy, "MODE", "legacy")
     store, _, _, old = runtime
@@ -209,6 +214,7 @@ async def test_failed_run_restart_reconciles_a_job_that_was_last_seen_running(ru
     await workflow.close()
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_message_arriving_during_interpretation_is_queued_for_discussion(runtime):
     store, scheduler, _, old = runtime
     steering_id = str(uuid4())
@@ -250,6 +256,7 @@ def test_subscription_reserve_survives_workflow_restart(runtime):
     assert old.config.quota.five_hour_min_remaining == 25
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_planning_clarification_waits_for_durable_answer(runtime):
     store, scheduler, _, old = runtime
 
@@ -336,6 +343,7 @@ def pending_question(store, eid, *, expired=True):
 
 @pytest.mark.parametrize("state", ["pending", "dispatching", "running", "uncertain"])
 @pytest.mark.parametrize("kind", ["steer", "answer"])
+@pytest.mark.usefixtures("contract_three_engine")
 def test_feedback_never_resubmits_an_unsettled_turn(blocked_store, state, kind):
     store, eid, identity = blocked_store
     pending_question(store, eid)
@@ -357,6 +365,7 @@ def test_feedback_never_resubmits_an_unsettled_turn(blocked_store, state, kind):
 
 
 @pytest.mark.parametrize("implementation", [True, False])
+@pytest.mark.usefixtures("contract_three_engine")
 def test_feedback_can_queue_behind_an_unrelated_pending_action(blocked_store, implementation):
     store, eid, identity = blocked_store
     other = str(uuid4())
@@ -377,6 +386,7 @@ def test_feedback_can_queue_behind_an_unrelated_pending_action(blocked_store, im
 
 
 @pytest.mark.parametrize("kind", ["steer", "answer"])
+@pytest.mark.usefixtures("contract_three_engine")
 def test_feedback_and_resume_roll_back_together(blocked_store, monkeypatch, kind):
     store, eid, _ = blocked_store
     if kind == "answer":
@@ -404,6 +414,7 @@ def test_feedback_and_resume_roll_back_together(blocked_store, monkeypatch, kind
     assert {table: store.rows(f"SELECT * FROM {table} ORDER BY rowid") for table in tables} == before
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 def test_autopilot_steering_resumes_blocked_work_in_its_transaction(blocked_store, runtime, monkeypatch):
     from test_iteration_autopilot import activated
 
@@ -429,6 +440,7 @@ def test_autopilot_steering_resumes_blocked_work_in_its_transaction(blocked_stor
     assert store.one("SELECT state FROM steering WHERE experiment_id=?", (eid,))["state"] == "applied"
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 def test_blocked_answer_uses_the_existing_command_transaction(blocked_store):
     store, eid, identity = blocked_store
     pending_question(store, eid)
@@ -472,6 +484,7 @@ def test_answers_keep_identity_permission_and_live_rpc_checks(blocked_store, inv
 
 
 @pytest.mark.parametrize("state", ["pending", "cancelling"])
+@pytest.mark.usefixtures("contract_three_engine")
 def test_manual_retry_never_consumes_restart_steering(blocked_store, state):
     store, eid, _ = blocked_store
     request = str(uuid4())
@@ -486,6 +499,7 @@ def test_manual_retry_never_consumes_restart_steering(blocked_store, state):
 
 
 @pytest.mark.parametrize("session", [False, True])
+@pytest.mark.usefixtures("contract_three_engine")
 def test_manual_retry_consumes_later_feedback_for_other_known_failures(blocked_store, session):
     store, eid, identity = blocked_store
     # Guidance was accepted before the terminal failure, as on an older owner.
@@ -512,6 +526,7 @@ def test_manual_retry_consumes_later_feedback_for_other_known_failures(blocked_s
     assert store.one("SELECT state FROM steering WHERE request_id=?", (steering,))["state"] == "applied"
 
 
+@pytest.mark.usefixtures("contract_three_engine")
 def test_restart_admission_preserves_legacy_but_refuses_incompatible_candidate(runtime, monkeypatch):
     store, _, _, _ = runtime
     eid = seed_saved_contract3(store)
@@ -536,6 +551,7 @@ def test_restart_admission_preserves_legacy_but_refuses_incompatible_candidate(r
     ("workspace_mode", "reference"),
     [("shared", False), ("auto", True)],
 )
+@pytest.mark.usefixtures("contract_three_engine")
 def test_candidate_restart_refuses_shared_or_reference_replacement(
     runtime, config, tmp_path, monkeypatch, workspace_mode, reference
 ):
@@ -566,6 +582,7 @@ def test_candidate_restart_refuses_shared_or_reference_replacement(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_delayed_restart_does_not_cancel_when_replacement_became_incompatible(runtime, monkeypatch):
     store, scheduler, _, workflow = runtime
     eid = seed_saved_contract3(store)
@@ -599,6 +616,7 @@ async def test_delayed_restart_does_not_cancel_when_replacement_became_incompati
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("contract_three_engine")
 async def test_candidate_restart_creates_eligible_contract_four_replacement(
     runtime, config, tmp_path, monkeypatch
 ):

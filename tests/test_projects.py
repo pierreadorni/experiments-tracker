@@ -85,6 +85,7 @@ def test_cross_project_references_and_missing_checkouts_are_atomic(config, runti
     assert before == {table: len(store.rows(f"SELECT * FROM {table}")) for table in before}
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 def test_project_prompt_and_public_catalog(config, runtime, tmp_path):
     store, _, _, workflow = runtime
     checkout = register(config, store, tmp_path)
@@ -267,6 +268,7 @@ def test_project_creation_never_overwrites_or_retries_an_uncertain_folder(config
     assert workflow.projects.receipt(denied["request_id"])["state"] == "rejected"
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_agent_edits_selected_folder_and_freezes_project_run_evidence(config, runtime, tmp_path):
     from helpers import IterationAgent, approve_plan, until
 
@@ -380,6 +382,7 @@ async def test_agent_edits_selected_folder_and_freezes_project_run_evidence(conf
         await workflow.close()
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_changed_project_folder_holds_without_turn_or_job(runtime, tmp_path):
     store, scheduler, agent, workflow = runtime
     folder = tmp_path / "held-project"

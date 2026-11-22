@@ -4,6 +4,7 @@ import json
 from contextlib import contextmanager
 from uuid import uuid4
 
+import pytest
 from helpers import seed_saved_contract3
 
 from experimenttracker import early_repair
@@ -70,6 +71,7 @@ async def test_cancel_adoption_refreshes_snapshot_before_same_cycle_terminal_set
     await workflow.close()
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_observer_mapper_value_error_rolls_back_without_scientific_failure(runtime, monkeypatch):
     store, _, _, workflow = runtime
     eid, intent_id = seed_job(store)
@@ -105,6 +107,7 @@ async def test_observer_mapper_value_error_rolls_back_without_scientific_failure
     await workflow.close()
 
 
+@pytest.mark.usefixtures("contract_three_fixture")
 async def test_parent_cancellation_is_rechecked_inside_observation_transaction(runtime, monkeypatch):
     store, _, _, workflow = runtime
     eid, intent_id = seed_job(store)

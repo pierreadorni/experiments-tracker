@@ -4,7 +4,7 @@ from . import clock
 from .core import job_obligations
 
 # Execution contracts this engine still runs; every other saved value is archived.
-SUPPORTED_EXECUTION_CONTRACTS = (3, 4)
+SUPPORTED_EXECUTION_CONTRACTS = (4,)
 # These formats retain every evidence revision, including after execution is frozen.
 ALL_REVISIONS_EVIDENCE_CONTRACTS = (3, 4)
 
