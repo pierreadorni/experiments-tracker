@@ -614,9 +614,11 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 
 ---
 
-### [ ] T4.9 C4 remote submit-limit wait · S · M
+### [x] T4.9 C4 remote submit-limit wait · S · M
 
 Remote association limits (`AssocGrpSubmitJobsLimit`, `QOSMaxSubmitJobPerUserLimit` and similar) map to `AdmissionPending` in `RemoteSlurmScheduler.preflight`, but C4 `research.job_dispatch.dispatch` surfaces it to the agent as a refusal. Design a saved wait first: preflight runs before any intent is saved, so a wait needs a durable timer or wakeup tied to the request identity, and it must never retry an uncertain submission. Owner decision on the wait shape before implementation.
+
+Done: the owner chose agent retry after a timer. A full submit limit (local or remote preflight) now returns a `Conflict` that says nothing was sent and tells the agent to end its turn with `next` `timer:<seconds>` and call `submit_job` again with a new `request_id`. The remote intent is already saved as a proven pre-send failure, so a new request identity is required; a local refusal precedes any intent. Uncertain sends are unchanged and never retried.
 
 ### [x] T4.10 Automatic titles on C4 · S · M
 

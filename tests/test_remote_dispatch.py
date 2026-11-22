@@ -16,7 +16,7 @@ from experimenttracker import remote, resolver
 from experimenttracker.research import job_observe, remote_dispatch
 from experimenttracker.research.job_dispatch import record_pre_send_failure, record_submission
 from experimenttracker.research.job_intent import save
-from experimenttracker.slurm import SubmissionUncertain
+from experimenttracker.slurm import ResourceUnavailable, SubmissionUncertain
 from experimenttracker.store import Conflict
 
 
@@ -144,6 +144,27 @@ def test_proven_pre_send_failure_is_durable_and_not_replayed(monkeypatch, failur
         with pytest.raises(Conflict, match="not permission to send or replay"):
             await remote_dispatch.dispatch(workflow, "experiment", {}, request_for(intent))
         assert intent not in workflow.submissions_in_flight
+
+    asyncio.run(run())
+    assert events.count("send") == 0
+
+
+def test_a_full_submit_limit_is_a_retry_later_refusal_and_never_sends(monkeypatch):
+    async def send():
+        return "unexpected"
+
+    workflow, intent, events, job = harness(monkeypatch, send=send)
+
+    async def full(_job, _receipt):
+        events.append("preflight")
+        raise ResourceUnavailable("sbatch: error: QOSMaxSubmitJobPerUserLimit")
+
+    workflow.scheduler.preflight_research_job = full
+
+    async def run():
+        with pytest.raises(Conflict, match="submit-job limit is full.*new request_id"):
+            await remote_dispatch.dispatch(workflow, "experiment", {}, request_for(intent))
+        assert job["state"] == "failed" and job["error"].startswith("not_submitted:")
 
     asyncio.run(run())
     assert events.count("send") == 0

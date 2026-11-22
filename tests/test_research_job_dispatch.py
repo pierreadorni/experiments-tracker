@@ -85,3 +85,25 @@ async def test_pause_during_preflight_refuses_persistence_and_submission(runtime
     assert not store.rows("SELECT * FROM jobs")
     assert scheduler.submissions == 0
     assert not workflow.submissions_in_flight
+
+
+async def test_a_full_submit_limit_tells_the_agent_to_retry_later_without_saving_or_sending(
+    runtime, tmp_path, monkeypatch
+):
+    from experimenttracker.slurm import ResourceUnavailable
+
+    store, _, _, workflow = runtime
+    _, eid, action, request = setup_request(workflow, tmp_path)
+    accept(store, eid, request)
+    scheduler = FakeScheduler(workflow, False)
+
+    async def full(*args):
+        raise ResourceUnavailable("sbatch: error: AssocGrpSubmitJobsLimit")
+
+    scheduler.preflight = full
+    monkeypatch.setattr(workflow, "scheduler_for", lambda *_: scheduler)
+    with pytest.raises(Conflict, match="submit-job limit is full.*timer:.*new request_id"):
+        await dispatch(workflow, eid, action, request)
+    assert not store.rows("SELECT * FROM jobs")
+    assert scheduler.submissions == 0
+    assert not workflow.submissions_in_flight

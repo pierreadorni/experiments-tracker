@@ -6,7 +6,7 @@ import json
 
 from .. import artifacts
 from ..core import action_obligations, job_obligations
-from ..slurm import SubmissionUncertain
+from ..slurm import ResourceUnavailable, SubmissionUncertain, submit_limit_guidance, submit_limit_hit
 from ..store import Conflict
 from .admission import SubmitJobRequest, preflight
 from .job_intent import save
@@ -86,7 +86,12 @@ async def dispatch(workflow, eid, action, request):
         source = await asyncio.to_thread(prepare, workflow, eid, action, request)
         preflight(workflow, eid, action, request)
         scheduler = workflow.scheduler_for(store.experiment(eid))
-        await scheduler.preflight(intent, source.script, source.root, request.resources)
+        try:
+            await scheduler.preflight(intent, source.script, source.root, request.resources)
+        except ResourceUnavailable as exc:
+            if submit_limit_hit(exc):
+                raise Conflict(submit_limit_guidance(exc)) from exc
+            raise
         script = artifacts.allowed_path(source.script, source.root)
         if hashlib.sha256(script.read_bytes()).hexdigest() != source.prepared.script_hash:
             raise Conflict("prepared research script changed during preflight")

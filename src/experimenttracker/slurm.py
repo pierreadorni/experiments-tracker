@@ -20,6 +20,29 @@ class ResourceUnavailable(RuntimeError):
     """Read-only scheduler validation failed; no submission was attempted."""
 
 
+SUBMIT_LIMIT_MARKERS = (
+    "AssocGrpSubmitJobsLimit",
+    "QOSMaxSubmitJobPerUserLimit",
+    "QOSGrpSubmitJobsLimit",
+    "AssocMaxSubmitJobLimit",
+    "QOSMaxSubmitJobPerAccountLimit",
+)
+
+
+def submit_limit_hit(detail):
+    """Whether a scheduler refusal says the account's submit-count limit is full."""
+    return any(marker in str(detail) for marker in SUBMIT_LIMIT_MARKERS)
+
+
+def submit_limit_guidance(detail):
+    """The agent-facing refusal for a full submit limit: nothing was sent, retry later."""
+    return (
+        "The cluster's submit-job limit is full, so nothing was submitted: "
+        f"{str(detail).strip()[:300]} Wait by ending your turn with next timer:<seconds> "
+        "(for example timer:600), then call submit_job again with a new request_id."
+    )
+
+
 @dataclass
 class Observation:
     state: str

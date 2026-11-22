@@ -1,6 +1,6 @@
 """Fresh-intent orchestration for the saved Jean Zay research route."""
 
-from ..slurm import SubmissionUncertain
+from ..slurm import SubmissionUncertain, submit_limit_guidance, submit_limit_hit
 from ..store import Conflict
 from .admission import SubmitJobRequest
 from .job_dispatch import record_pre_send_failure, record_submission
@@ -37,6 +37,8 @@ async def dispatch(workflow, experiment_id, action, request):
         except Exception as exc:
             # Staging and the explicit read-only preflight precede the send boundary.
             record_pre_send_failure(store, experiment_id, job, exc)
+            if submit_limit_hit(exc):
+                raise Conflict(submit_limit_guidance(exc)) from exc
             raise
         try:
             # Once the send operation starts, every exception is uncertain: transport

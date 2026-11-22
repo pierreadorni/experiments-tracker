@@ -15,7 +15,7 @@ from uuid import UUID, uuid4
 from . import artifacts, clock
 from .core import obligation_sources, transfer_obligations
 from .execution_settings import ExecutionSettings
-from .slurm import ResourceUnavailable, SlurmScheduler, command
+from .slurm import ResourceUnavailable, SlurmScheduler, command, submit_limit_hit
 from .store import encode
 
 
@@ -580,16 +580,7 @@ class RemoteSlurmScheduler(SlurmScheduler):
             await super().preflight(intent_id, remote_root / script.name, remote_root, resources)
         except ResourceUnavailable as exc:
             detail = str(exc)
-            if any(
-                marker in detail
-                for marker in (
-                    "AssocGrpSubmitJobsLimit",
-                    "QOSMaxSubmitJobPerUserLimit",
-                    "QOSGrpSubmitJobsLimit",
-                    "AssocMaxSubmitJobLimit",
-                    "QOSMaxSubmitJobPerAccountLimit",
-                )
-            ):
+            if submit_limit_hit(detail):
                 raise AdmissionPending(detail) from exc
             if "ssh failed (255)" in detail or "timed out" in detail:
                 raise TransferPending(detail) from exc
