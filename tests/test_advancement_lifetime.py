@@ -2,13 +2,12 @@
 
 from uuid import uuid4
 
-import pytest
-from helpers import seed_saved_contract3
+from helpers import open_saved_lifetime, seed_saved_contract3
 from legacy_fixture import load_legacy_completed
 
 from experimenttracker import clock, creation_policy
 from experimenttracker.cancellation import process_cancellations
-from experimenttracker.core import advancement_decisions, obligations
+from experimenttracker.core import advancement_decisions
 from experimenttracker.models import ActionCommand
 
 
@@ -21,7 +20,7 @@ def create(store, brief="Synthetic advancement lifetime"):
 def saved_experiment(store, brief="Synthetic advancement lifetime"):
     eid = seed_saved_contract3(store, brief)
     with store.tx() as db:
-        advancement_decisions.open_lifetime(db, eid)
+        open_saved_lifetime(db, eid)
     return eid
 
 
@@ -41,29 +40,11 @@ def cancel(store, eid):
     return store.command(payload["request_id"], "action", payload, eid=eid)
 
 
-def test_creation_opens_exactly_one_lifetime_episode_atomically(runtime, monkeypatch):
+def test_creation_opens_no_advancement_lifetime(runtime, monkeypatch):
     store = runtime[0]
     monkeypatch.setattr(creation_policy, "MODE", "legacy")
-
-    def fail_open(*args, **kwargs):
-        raise RuntimeError("synthetic obligation failure")
-
-    with monkeypatch.context() as patcher:
-        patcher.setattr(obligations, "open", fail_open)
-        with pytest.raises(RuntimeError, match="synthetic obligation failure"):
-            create(store)
-    assert store.rows("SELECT * FROM experiments") == []
-    assert store.rows("SELECT * FROM commands") == []
-
     eid = create(store)
-    saved = episodes(store, eid)
-    assert [
-        (row["id"], row["experiment_id"], row["project_id"], row["kind"], row["target"], row["owner"])
-        for row in saved
-    ] == [(f"advancement:{eid}:0", eid, "test-project", "reconcile", eid, "backend")]
-    assert [(row["wait"], row["state"], row["detail"]) for row in saved] == [("none", "open", None)]
-    create(store)
-    assert len(episodes(store, eid)) == 1
+    assert episodes(store, eid) == []
 
 
 def test_command_replay_and_phase_handoffs_keep_the_episode_age(runtime, monkeypatch):
@@ -111,9 +92,6 @@ async def test_cancellation_completion_satisfies_its_responsibility(runtime):
 
 def test_archived_legacy_experiments_get_no_advancement(runtime):
     store, _, _, wf = runtime
-    eid = load_legacy_completed(store, wf)
+    load_legacy_completed(store, wf)
     store.archive_legacy_experiments()
-    with store.tx() as db:
-        assert advancement_decisions.read(db, eid) is None
-        assert advancement_decisions.open_lifetime(db, eid) is None
     assert store.rows("SELECT * FROM obligations WHERE id LIKE 'advancement:%'") == []

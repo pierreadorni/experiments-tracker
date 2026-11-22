@@ -353,3 +353,23 @@ async def prepared(runtime, fail_plot=False):
     eid = seed_saved_contract3(store)
     await approve_plan(wf, store, eid)
     return store, scheduler, agent, wf, eid
+
+
+def open_saved_lifetime(db, eid):
+    """Save the advancement lifetime obligation a historical C3 creation opened."""
+    from experimenttracker.core import obligation_sources
+
+    contract = json.loads(db.execute("SELECT contract FROM experiments WHERE id=?", (eid,)).fetchone()[0])
+    return obligation_sources.open_episode(
+        db,
+        "advancement",
+        eid,
+        source_transition=False,
+        experiment_id=eid,
+        project_id=(contract.get("project") or {}).get("id"),
+        kind="reconcile",
+        target=eid,
+        owner="backend",
+        wait="none",
+        detail=None,
+    )

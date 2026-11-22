@@ -4,13 +4,12 @@ import time
 from uuid import uuid4
 
 import pytest
-from helpers import seed_saved_contract3, seed_saved_contract4
+from helpers import open_saved_lifetime, seed_saved_contract3, seed_saved_contract4
 from test_research_create import create as create_research
 from test_research_create import git_project
 
 from experimenttracker.core import (
     action_obligations,
-    advancement_decisions,
     job_obligations,
     liveness,
     transfer_obligations,
@@ -53,7 +52,7 @@ def create(store, hold_reason="agent_stage_blocked", phase="preparing", contract
         return eid
     eid = seed_saved_contract3(store, "Synthetic watchdog test")
     with store.tx() as db:
-        advancement_decisions.open_lifetime(db, eid)
+        open_saved_lifetime(db, eid)
     store.update(eid, phase=phase, hold_reason=hold_reason)
     return eid
 
@@ -291,15 +290,6 @@ def test_a_restarted_process_gets_one_interval_of_grace(store, clock):
     clock.advance(31)
     assert watch(store, clock, started_at=restarted) == 1
     assert notices(store, eid)[0]["text"].startswith("unserviced: job:")
-
-
-def test_a_contract3_experiment_without_its_lifetime_is_reported(store, clock):
-    eid = create(store)
-    with store.tx() as db:
-        db.execute("DELETE FROM obligations WHERE id=?", (f"advancement:{eid}:0",))
-    clock.advance(31)
-    assert watch(store, clock) == 1
-    assert notices(store, eid)[0]["text"].startswith("missing_lifetime: ")
 
 
 def test_the_watchdog_only_notifies_and_never_dispatches(store, clock):

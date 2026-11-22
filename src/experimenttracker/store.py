@@ -1320,7 +1320,6 @@ class Store:
                     "INSERT INTO experiments(id,brief,recipe_id,contract,created_at,updated_at,reference_experiment_id) VALUES(?,?,?,?,?,?,?)",
                     (eid, payload["brief"], payload["recipe_id"], encode(contract), now, now, reference_id),
                 )
-                advancement_decisions.open_lifetime(db, eid)
                 if project.checkout and project.writable:
                     folder = project.checkout.resolve(strict=True)
                     info = folder.stat()

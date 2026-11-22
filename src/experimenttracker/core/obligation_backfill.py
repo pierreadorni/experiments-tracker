@@ -80,20 +80,13 @@ def _sync_review(db, experiment_id):
     return review_obligations.sync_review(db, experiment_id, before=None)
 
 
-def _open_advancement(db, experiment_id):
-    if obligation_sources.latest_episode(db, advancement_decisions.SOURCE_TYPE, experiment_id) is not None:
-        return None
-    return advancement_decisions.open_lifetime(db, experiment_id)
-
-
 def _open_cancellation(db, experiment_id, unconfirmed):
     if obligation_sources.latest_episode(db, advancement_decisions.CANCELLATION, experiment_id) is not None:
         return None
     return advancement_decisions.open_cancellation(db, experiment_id, unconfirmed=bool(unconfirmed))
 
 
-# Pre-selection only: the mapper reads the saved row again and decides. Frozen
-# legacy has no advancement lifetime, so only contract-3 experiments are asked.
+# Pre-selection only: the mapper reads the saved row again and decides.
 _GROUPS = (
     (
         "agent_action",
@@ -137,14 +130,6 @@ _GROUPS = (
         "SELECT rowid AS cursor,id FROM agent_wakeups WHERE rowid>? AND state='pending'",
         ("id",),
         wakeup_obligations.sync_wakeup,
-    ),
-    (
-        "advancement",
-        "SELECT rowid AS cursor,id FROM experiments WHERE rowid>? AND deleted_at IS NULL "
-        f"AND phase NOT IN {_EXPERIMENT_TERMINAL} "
-        "AND json_extract(contract,'$.execution_contract') IS 3",
-        ("id",),
-        _open_advancement,
     ),
     (
         "cancellation",

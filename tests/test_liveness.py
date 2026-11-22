@@ -7,16 +7,14 @@ with raw SQL to reproduce a defect as the watchdog sees it.
 from uuid import uuid4
 
 import pytest
-from helpers import seed_saved_contract3, seed_saved_contract4
+from helpers import open_saved_lifetime, seed_saved_contract3, seed_saved_contract4
 from test_advancement_lifetime import cancel
 
 from experimenttracker import clock
 from experimenttracker.core import (
     action_obligations,
-    advancement_decisions,
     job_obligations,
     liveness,
-    obligation_backfill,
     transfer_obligations,
     wakeup_obligations,
 )
@@ -34,7 +32,7 @@ def create(store, brief="Synthetic liveness"):
     with store.tx() as db:
         now = clock.now()
         db.execute("UPDATE experiments SET created_at=?,updated_at=? WHERE id=?", (now, now, eid))
-        advancement_decisions.open_lifetime(db, eid)
+        open_saved_lifetime(db, eid)
     return eid
 
 
@@ -201,19 +199,6 @@ def test_an_owner_hold_alone_keeps_advancement_live(store):
     obligation_id = f"advancement:{eid}:0"
     assert cause(inspect(store, 100.0), obligation_id) == "missing_dependency"
     assert cause(inspect(store, 100.0, owner_holds=("needs_attention",)), obligation_id) is None
-
-
-def test_a_contract3_experiment_without_its_lifetime_is_a_defect_until_backfilled(store):
-    eid = create(store)
-    run(store, "DELETE FROM obligations WHERE id=?", (f"advancement:{eid}:0",))
-
-    report = inspect(store, 100.0)
-    assert [verdict for verdict in report.defects if verdict.experiment_id == eid] == [
-        liveness.LivenessVerdict(eid, None, "advancement", "missing_lifetime")
-    ]
-
-    obligation_backfill.backfill(store)
-    assert [verdict for verdict in inspect(store, 100.0).defects if verdict.experiment_id == eid] == []
 
 
 def test_cancellation_work_is_inspected_on_a_terminal_experiment(store):

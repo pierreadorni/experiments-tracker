@@ -152,7 +152,6 @@ def test_backfill_opens_the_episode_each_hook_saved_for_live_sources(runtime):
         "review": {"synced": 1, "conflicts": 0},
         "report_version": {"synced": 1, "conflicts": 0},
         "wakeup": {"synced": 1, "conflicts": 0},
-        "advancement": {"synced": 0, "conflicts": 0},
         "cancellation": {"synced": 1, "conflicts": 0},
     }
 

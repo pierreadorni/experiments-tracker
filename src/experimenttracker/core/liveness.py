@@ -9,7 +9,7 @@ saved experiment revision, because its dependency is the experiment's own progre
 
 Causes are short and machine-readable: ``source_missing``, ``source_not_live``,
 ``identity_mismatch``, ``notice_missing``, ``overdue``, ``unserviced``,
-``missing_dependency``, ``missing_lifetime`` and ``unsupported_responsibility``. Nothing here writes, notifies,
+``missing_dependency`` and ``unsupported_responsibility``. Nothing here writes, notifies,
 logs, repairs or dispatches; the caller owns the transaction.
 """
 
@@ -33,13 +33,6 @@ _SOURCE_TYPES = frozenset(
 _RESPONSIBILITIES = frozenset(
     {("agent", "agent_turn"), ("owner", "owner_answer"), ("owner", "owner_approval"), ("external", "job")}
     | {("backend", kind) for kind in ("agent_turn", "job", "transfer", "timer", "publication", "reconcile")}
-)
-_MISSING_LIFETIMES = (
-    "SELECT e.id FROM experiments e WHERE e.deleted_at IS NULL "
-    "AND e.phase NOT IN ('complete','failed','cancelled') "
-    "AND json_extract(e.contract,'$.execution_contract') IS 3 "
-    "AND NOT EXISTS (SELECT 1 FROM obligations o WHERE o.experiment_id=e.id AND o.state='open' "
-    "AND substr(o.id,1,12)='advancement:') ORDER BY e.id"
 )
 
 
@@ -91,7 +84,6 @@ def inspect(db, now, *, interval, service, owner_holds=()):
     rows = obligations.open_for(db)
     watched = _Watch(db, rows, now, interval, service, owner_holds)
     verdicts = [LivenessVerdict(r["experiment_id"], r["id"], _family(r), watched.cause(r)) for r in rows]
-    verdicts.extend(_missing_lifetimes(db))
     verdicts.extend(_orphaned_research(db, now, interval, owner_holds))
     return LivenessReport(tuple(verdicts))
 
@@ -221,14 +213,6 @@ def _notices(db, rows):
         f"({','.join('?' * len(owed))}) AND kind IN ({','.join('?' * len(_NOTICE_KINDS))})"
     )
     return {(row["experiment_id"], row["kind"]) for row in db.execute(sql, (*sorted(owed), *_NOTICE_KINDS))}
-
-
-def _missing_lifetimes(db):
-    """Non-terminal contract-3 experiments whose advancement episode is not open."""
-    return [
-        LivenessVerdict(row["id"], None, "advancement", "missing_lifetime")
-        for row in db.execute(_MISSING_LIFETIMES)
-    ]
 
 
 def _orphaned_research(db, now, interval, owner_holds):
