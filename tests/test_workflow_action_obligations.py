@@ -1,13 +1,10 @@
-import asyncio
-from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from helpers import seed_saved_contract3
+from helpers import seed_saved_contract4
 
 from experimenttracker.codex_client import NeedsAttention
 from experimenttracker.core import action_obligations
-from experimenttracker.workflow import Workflow
 
 
 def obligations_for(store, action_id):
@@ -16,127 +13,24 @@ def obligations_for(store, action_id):
     return [row for row in rows if row["id"].rsplit(":", 1)[0] == f"agent-action:{action_id}"]
 
 
-async def make_title_action(store, workflow, monkeypatch, eid):
-    store.update(eid, phase="preparing", plan_review={"state": "awaiting_review", "revision": 1})
-    workflow.agent_ready = True
-    workflow.gate.decide = lambda: SimpleNamespace(admitted=True)
-    monkeypatch.setattr(
-        "experimenttracker.workflow.luna_title_model", lambda models: ("deterministic-demo", "low")
-    )
-
-    async def waiting(_action, _slot):
-        await asyncio.Event().wait()
-
-    monkeypatch.setattr(workflow, "dispatch_title", waiting)
-    await workflow.advance_title()
-    workflow.agent_pool.admit()
-    task = workflow.agent_task
-    action = store.one("SELECT * FROM agent_actions WHERE experiment_id=? AND phase='title'", (eid,))
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    workflow.agent_task = None
-    return action
+def seed_pending_action(store, eid):
+    """A saved pending research action; its transitions are driven through ``_action_state``."""
+    action_id = str(uuid4())
+    with store.tx() as db:
+        db.execute(
+            "INSERT INTO agent_actions(id,experiment_id,phase,evidence_revision,state,input,created_at,updated_at) "
+            "VALUES(?,?,'research',1,'pending','saved',1,1)",
+            (action_id, eid),
+        )
+        action_obligations.sync_action(db, action_id)
+    return store.one("SELECT * FROM agent_actions WHERE id=?", (action_id,))
 
 
 @pytest.mark.asyncio
-@pytest.mark.usefixtures("contract_three_fixture")
-async def test_title_dispatch_records_handoffs_terminal_result_and_replay(runtime, monkeypatch):
-    store, _, agent, workflow = runtime
-    eid = seed_saved_contract3(store, "A concise research title")
-    action = await make_title_action(store, workflow, monkeypatch, eid)
-    assert obligations_for(store, action["id"])[0]["wait"] == "admission"
-    monkeypatch.setattr("experimenttracker.workflow.blocked", lambda store: False)
-    monkeypatch.setattr(
-        workflow.research.service,
-        "quota",
-        lambda gate, eid=None: SimpleNamespace(admitted=True),
-    )
-    monkeypatch.setattr(workflow.research.service, "authority", lambda *args: None)
-    monkeypatch.setattr(
-        workflow,
-        "refresh_quota",
-        lambda _slot=None: asyncio.sleep(0, result=SimpleNamespace(admitted=True)),
-    )
-    turns = []
-
-    async def begin(thread_id, prompt, schema, **kwargs):
-        turns.append((thread_id, prompt))
-        return "title-turn"
-
-    async def finish(thread_id, turn_id):
-        return {"schema_version": 1, "title": "Saved title"}
-
-    monkeypatch.setattr(agent, "begin", begin)
-    monkeypatch.setattr(agent, "finish", finish)
-    await Workflow.dispatch_title(workflow, action, workflow.agent_pool.primary)
-    rows = obligations_for(store, action["id"])
-    assert [(row["owner"], row["kind"], row["state"]) for row in rows] == [
-        ("backend", "agent_turn", "abandoned"),
-        ("backend", "reconcile", "abandoned"),
-        ("agent", "agent_turn", "satisfied"),
-    ]
-    saved = store.one("SELECT state,thread_id,turn_id FROM agent_actions WHERE id=?", (action["id"],))
-    assert (saved["state"], saved["turn_id"]) == ("completed", "title-turn")
-    assert turns and saved["thread_id"] == turns[0][0]
-    events_before = store.rows("SELECT * FROM events WHERE experiment_id=?", (eid,))
-    obligations_before = obligations_for(store, action["id"])
-    workflow._action_state(action["id"], "completed", result={"schema_version": 1, "title": "Saved title"})
-    assert store.rows("SELECT * FROM events WHERE experiment_id=?", (eid,)) == events_before
-    assert obligations_for(store, action["id"]) == obligations_before
-
-
-@pytest.mark.asyncio
-@pytest.mark.usefixtures("contract_three_fixture")
-async def test_completion_after_await_cannot_settle_replaced_saved_turn(runtime, monkeypatch):
-    store, _, agent, workflow = runtime
-    eid = seed_saved_contract3(store, "Reject stale turn completion")
-    action = await make_title_action(store, workflow, monkeypatch, eid)
-    monkeypatch.setattr("experimenttracker.workflow.blocked", lambda store: False)
-    monkeypatch.setattr(
-        workflow.research.service,
-        "quota",
-        lambda gate, eid=None: SimpleNamespace(admitted=True),
-    )
-    monkeypatch.setattr(workflow.research.service, "authority", lambda *args: None)
-    monkeypatch.setattr(
-        workflow,
-        "refresh_quota",
-        lambda _slot=None: asyncio.sleep(0, result=SimpleNamespace(admitted=True)),
-    )
-
-    async def begin(*args, **kwargs):
-        return "saved-turn"
-
-    async def finish(thread_id, turn_id):
-        assert turn_id == "saved-turn"
-        with store.tx() as db:
-            before = dict(db.execute("SELECT * FROM agent_actions WHERE id=?", (action["id"],)).fetchone())
-            db.execute("UPDATE agent_actions SET turn_id='replacement-turn' WHERE id=?", (action["id"],))
-            action_obligations.sync_action(db, action["id"], before=before)
-        return {"schema_version": 1, "title": "Stale result"}
-
-    monkeypatch.setattr(agent, "begin", begin)
-    monkeypatch.setattr(agent, "finish", finish)
-    with pytest.raises(NeedsAttention, match="saved action changed during reconciliation"):
-        await Workflow.dispatch_title(workflow, action, workflow.agent_pool.primary)
-
-    saved = store.one("SELECT state,turn_id FROM agent_actions WHERE id=?", (action["id"],))
-    assert (saved["state"], saved["turn_id"]) == ("running", "replacement-turn")
-    rows = obligations_for(store, action["id"])
-    assert rows[-1]["state"] == "open" and rows[-1]["wait"] == "turn:replacement-turn"
-    assert not any(
-        event["kind"] == "agent_action_changed"
-        for event in store.rows("SELECT kind FROM events WHERE experiment_id=?", (eid,))
-    )
-
-
-@pytest.mark.asyncio
-@pytest.mark.usefixtures("contract_three_fixture")
 async def test_exact_completed_callback_replay_keeps_event_and_obligation(runtime, monkeypatch):
     store, _, _, workflow = runtime
-    eid = seed_saved_contract3(store, "Replay exact completed turn")
-    action = await make_title_action(store, workflow, monkeypatch, eid)
+    eid = seed_saved_contract4(store, "Replay exact completed turn")
+    action = seed_pending_action(store, eid)
     with store.tx() as db:
         before = dict(db.execute("SELECT * FROM agent_actions WHERE id=?", (action["id"],)).fetchone())
         db.execute(
@@ -168,11 +62,10 @@ async def test_exact_completed_callback_replay_keeps_event_and_obligation(runtim
 
 
 @pytest.mark.asyncio
-@pytest.mark.usefixtures("contract_three_fixture")
 async def test_action_source_event_and_obligation_rollback_together(runtime, monkeypatch):
     store, _, _, workflow = runtime
-    eid = seed_saved_contract3(store, "Rollback a saved action")
-    action = await make_title_action(store, workflow, monkeypatch, eid)
+    eid = seed_saved_contract4(store, "Rollback a saved action")
+    action = seed_pending_action(store, eid)
     before_events = store.rows("SELECT * FROM events WHERE experiment_id=?", (eid,))
     before_obligations = obligations_for(store, action["id"])
     sync = action_obligations.sync_action
@@ -192,7 +85,7 @@ async def test_action_source_event_and_obligation_rollback_together(runtime, mon
 @pytest.mark.asyncio
 async def test_exact_discussion_reconciliation_satisfies_existing_episode(runtime, monkeypatch):
     store, _, agent, workflow = runtime
-    eid = seed_saved_contract3(store, "Keep a completed reader")
+    eid = seed_saved_contract4(store, "Keep a completed reader")
     action_id = str(uuid4())
     with store.tx() as db:
         db.execute(

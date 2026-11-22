@@ -85,7 +85,6 @@ def test_cross_project_references_and_missing_checkouts_are_atomic(config, runti
     assert before == {table: len(store.rows(f"SELECT * FROM {table}")) for table in before}
 
 
-@pytest.mark.usefixtures("contract_three_fixture")
 def test_project_prompt_and_public_catalog(config, runtime, tmp_path):
     store, _, _, workflow = runtime
     checkout = register(config, store, tmp_path)

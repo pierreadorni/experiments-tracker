@@ -3,13 +3,13 @@
 from uuid import uuid4
 
 import pytest
-from helpers import seed_saved_contract3
+from helpers import seed_saved_contract4
 
 from experimenttracker.core import action_obligations
 
 
 def seed_experiment(store, brief):
-    return seed_saved_contract3(store, brief)
+    return seed_saved_contract4(store, brief)
 
 
 def obligations(store, action_id):
@@ -17,7 +17,7 @@ def obligations(store, action_id):
     return store.rows("SELECT * FROM obligations WHERE substr(id,1,?)=? ORDER BY id", (len(prefix), prefix))
 
 
-def failed_action(store, eid, *, phase="prepare", error="known failure"):
+def failed_action(store, eid, *, phase="research", error="known failure"):
     identity = str(uuid4())
     with store.tx() as db:
         db.execute(
@@ -28,7 +28,6 @@ def failed_action(store, eid, *, phase="prepare", error="known failure"):
     return store.one("SELECT * FROM agent_actions WHERE id=?", (identity,))
 
 
-@pytest.mark.usefixtures("contract_three_fixture")
 def test_continuation_obligation_event_and_replay_are_atomic(runtime, monkeypatch):
     store = runtime[0]
     eid = seed_experiment(store, "Synthetic continuation transaction")

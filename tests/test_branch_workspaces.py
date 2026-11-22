@@ -6,7 +6,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from helpers import PLAN, prepare_branch, seed_saved_contract3
+from helpers import PLAN, prepare_branch, seed_saved_contract3, seed_saved_contract4
 from test_projects import register
 
 from experimenttracker import clock
@@ -27,8 +27,8 @@ def git_project(workflow, store, tmp_path):
     return source
 
 
-def create(store, **extra):
-    """Seed a saved historical C3 row for stage-engine workspace regression tests."""
+def create(store, *, contract=3, **extra):
+    """Seed a saved row (historical C3 by default, or ``contract=4``) with its branch workspace."""
     project_id = extra.get("project_id", "anyup-rs")
     project = store.projects.get(project_id)
     branch_workspace = bool(
@@ -37,7 +37,8 @@ def create(store, **extra):
         and extra.get("workspace_mode", "auto") != "shared"
         and branch_eligible(project.checkout)
     )
-    return seed_saved_contract3(
+    seed = seed_saved_contract4 if contract == 4 else seed_saved_contract3
+    return seed(
         store,
         "Test an entirely new method and show its frontier.",
         project_id=project_id,

@@ -7,7 +7,7 @@ with raw SQL to reproduce a defect as the watchdog sees it.
 from uuid import uuid4
 
 import pytest
-from helpers import seed_saved_contract3
+from helpers import seed_saved_contract3, seed_saved_contract4
 from test_advancement_lifetime import cancel
 
 from experimenttracker import clock
@@ -38,13 +38,13 @@ def create(store, brief="Synthetic liveness"):
     return eid
 
 
-def save_action(store, eid, *, state="pending", thread_id=None, turn_id=None):
+def save_action(store, eid, *, state="pending", thread_id=None, turn_id=None, phase="prepare"):
     action_id = str(uuid4())
     with store.tx() as db:
         db.execute(
             "INSERT INTO agent_actions(id,experiment_id,phase,evidence_revision,state,thread_id,turn_id,"
-            "input,created_at,updated_at) VALUES(?,?,'prepare',1,?,?,?,'synthetic',1,1)",
-            (action_id, eid, state, thread_id, turn_id),
+            "input,created_at,updated_at) VALUES(?,?,?,1,?,?,?,'synthetic',1,1)",
+            (action_id, eid, phase, state, thread_id, turn_id),
         )
         action_obligations.sync_action(db, action_id)
     return action_id
@@ -164,10 +164,9 @@ def test_a_timer_needs_its_saved_due_time_and_one_interval_of_slack(store):
     assert cause(inspect(store, 100.0), obligation_id) == "source_not_live"
 
 
-@pytest.mark.usefixtures("contract_three_fixture")
 def test_backend_families_need_service_evidence_or_restart_grace(store):
-    eid = create(store)
-    action_id = save_action(store, eid, state="pending")
+    eid = seed_saved_contract4(store, "Synthetic liveness")
+    action_id = save_action(store, eid, state="pending", phase="research")
     obligation_id = f"agent-action:{action_id}:0"
     assert cause(inspect(store, 100.0), obligation_id) is None
     assert cause(inspect(store, 160.0, started_at=100.0), obligation_id) is None

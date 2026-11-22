@@ -15,12 +15,6 @@ def contract_three_engine(monkeypatch):
 
 
 @pytest.fixture
-def contract_three_fixture(monkeypatch):
-    """Run shared behaviour on a seeded contract 3 record; migrate to contract 4 before deletion."""
-    monkeypatch.setattr(legacy_archive, "SUPPORTED_EXECUTION_CONTRACTS", (3, 4))
-
-
-@pytest.fixture
 def config(tmp_path):
     token = tmp_path / "token"
     token.write_text("t" * 40)

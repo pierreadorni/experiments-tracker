@@ -3,7 +3,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from helpers import seed_saved_contract3
+from helpers import seed_saved_contract4
 from test_integration_commands import awaiting, saved, seed_branch
 
 from experimenttracker import creation_policy
@@ -264,8 +264,8 @@ async def test_expired_command_refusal_is_durable_before_lost_ack(config, runtim
     credential = tmp_path / "token"
     credential.write_text("e" * 40)
     config.gateway = GatewayConfig(url="https://gateway.example", credential_file=credential)
-    eid = seed_saved_contract3(store, "Compare the fixed models.")
-    assert store.experiment(eid)["contract"]["execution_contract"] == 3
+    eid = seed_saved_contract4(store, "Compare the fixed models.")
+    assert store.experiment(eid)["contract"]["execution_contract"] == 4
     request_id = str(uuid4())
     queued = {
         "request_id": request_id,
@@ -444,13 +444,12 @@ async def test_reserve_command_has_no_experiment_identity(config, runtime, tmp_p
         await client.close()
 
 
-@pytest.mark.usefixtures("contract_three_fixture")
 async def test_gateway_integrate_replays_the_saved_branch_once(config, runtime, tmp_path):
     store, _, _, _ = runtime
     token = tmp_path / "integration-token"
     token.write_text("e" * 40)
     config.gateway = GatewayConfig(url="https://gateway.example", credential_file=token)
-    eid = seed_saved_contract3(store, "Integrate the saved branch.")
+    eid = seed_saved_contract4(store, "Integrate the saved branch.")
     repo = tmp_path / "repo"
     seed_branch(store, eid, repo)
     request_id = str(uuid4())
@@ -492,13 +491,12 @@ async def test_gateway_integrate_replays_the_saved_branch_once(config, runtime, 
     }
 
 
-@pytest.mark.usefixtures("contract_three_fixture")
 async def test_gateway_revert_without_an_applied_merge_stays_rejected(config, runtime, tmp_path):
     store, _, _, _ = runtime
     token = tmp_path / "revert-token"
     token.write_text("e" * 40)
     config.gateway = GatewayConfig(url="https://gateway.example", credential_file=token)
-    eid = seed_saved_contract3(store, "Revert only an applied merge.")
+    eid = seed_saved_contract4(store, "Revert only an applied merge.")
     seed_branch(store, eid, tmp_path / "repo")
     request_id = str(uuid4())
     queued = {
@@ -535,13 +533,12 @@ async def test_gateway_revert_without_an_applied_merge_stays_rejected(config, ru
     assert not store.rows("SELECT * FROM obligations WHERE kind='integration'")
 
 
-@pytest.mark.usefixtures("contract_three_fixture")
 async def test_gateway_approval_moves_only_the_exact_awaiting_candidate(config, runtime, tmp_path):
     store, _, _, _ = runtime
     token = tmp_path / "approval-token"
     token.write_text("e" * 40)
     config.gateway = GatewayConfig(url="https://gateway.example", credential_file=token)
-    eid = seed_saved_contract3(store, "Approve the prepared candidate.")
+    eid = seed_saved_contract4(store, "Approve the prepared candidate.")
     repo = tmp_path / "repo"
     seed_branch(store, eid, repo)
     request_id, candidate = awaiting(store, eid, repo)
@@ -588,8 +585,8 @@ def publication_client(config, store, tmp_path, handler):
 
 
 def publication_experiment(store):
-    eid = seed_saved_contract3(store, "Compare the fixed synthetic models.")
-    assert store.experiment(eid)["contract"]["execution_contract"] == 3
+    eid = seed_saved_contract4(store, "Compare the fixed synthetic models.")
+    assert store.experiment(eid)["contract"]["execution_contract"] == 4
     with store.tx() as db:
         store.emit(db, eid, "experiment_created")
     return eid
@@ -754,7 +751,7 @@ async def test_artifacts_wait_for_registration_and_failed_upload_cannot_starve_s
 
     store, _, _, workflow = runtime
     eid = publication_experiment(store)
-    if execution_contract != 3:
+    if execution_contract != 4:
         from experimenttracker.store import encode
 
         contract = {**store.experiment(eid)["contract"], "execution_contract": execution_contract}

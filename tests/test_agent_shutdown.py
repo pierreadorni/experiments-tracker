@@ -9,8 +9,7 @@ import asyncio
 import json
 from uuid import uuid4
 
-import pytest
-from helpers import seed_saved_contract3
+from helpers import seed_saved_contract4
 
 from experimenttracker.agent_pool import experiment_owner, project_owner
 from experimenttracker.codex_client import DemoAgent, NeedsAttention
@@ -46,7 +45,7 @@ class ReadbackAgent(LaneAgent):
 
 
 def create(store):
-    return seed_saved_contract3(store, "Exercise synthetic agent ownership.")
+    return seed_saved_contract4(store, "Exercise synthetic agent ownership.")
 
 
 def insert_action(store, eid, state, *, phase="prepare", thread=None, turn=None):
@@ -189,7 +188,6 @@ async def test_shutdown_stops_admissions_before_roles_and_closes_each_transport_
     assert store.one("SELECT state FROM agent_actions WHERE id=?", (live["id"],))["state"] == "running"
 
 
-@pytest.mark.usefixtures("contract_three_fixture")
 async def test_restart_and_session_shrink_keep_logical_ownership_without_duplicating_a_turn(runtime):
     store, scheduler, _, old = runtime
     accepted = insert_action(
@@ -235,7 +233,6 @@ async def test_restart_and_session_shrink_keep_logical_ownership_without_duplica
     await resumed.close()
 
 
-@pytest.mark.usefixtures("contract_three_fixture")
 async def test_title_readback_settles_the_reservation_retained_outside_its_task(runtime):
     store, scheduler, _, old = runtime
     wf = Workflow(old.config, store, scheduler, LaneAgent())

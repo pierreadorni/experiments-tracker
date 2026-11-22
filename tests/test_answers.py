@@ -1,7 +1,7 @@
 from uuid import uuid4
 
 import pytest
-from helpers import seed_saved_contract3
+from helpers import seed_saved_contract4
 
 from experimenttracker.models import request_answer
 from experimenttracker.store import Conflict
@@ -17,11 +17,10 @@ def test_multiple_questions_require_complete_explicit_answers():
             request_answer(pending, invalid)
 
 
-@pytest.mark.usefixtures("contract_three_fixture")
 def test_invalid_approval_is_rejected_before_command_commit(runtime):
     store, _, _, _ = runtime
-    eid = seed_saved_contract3(store, "Compare fixed synthetic models.")
-    assert store.experiment(eid)["contract"]["execution_contract"] == 3
+    eid = seed_saved_contract4(store, "Compare fixed synthetic models.")
+    assert store.experiment(eid)["contract"]["execution_contract"] == 4
     pending = {"id": "pending", "method": "item/fileChange/requestApproval", "params": {}, "expired": False}
     store.update(eid, pending_request=pending)
     request_id = uuid4()

@@ -4,7 +4,7 @@ import time
 from uuid import uuid4
 
 import pytest
-from helpers import seed_saved_contract3
+from helpers import seed_saved_contract3, seed_saved_contract4
 from test_research_create import create as create_research
 from test_research_create import git_project
 
@@ -46,7 +46,11 @@ def store(tmp_path):
     store.close()
 
 
-def create(store, hold_reason="agent_stage_blocked", phase="preparing"):
+def create(store, hold_reason="agent_stage_blocked", phase="preparing", contract=3):
+    if contract == 4:
+        eid = seed_saved_contract4(store, "Synthetic watchdog test")
+        store.update(eid, phase=phase, hold_reason=hold_reason)
+        return eid
     eid = seed_saved_contract3(store, "Synthetic watchdog test")
     with store.tx() as db:
         advancement_decisions.open_lifetime(db, eid)
@@ -64,13 +68,13 @@ def watch(store, clock, minutes=30, *, started_at=None, serviced=None):
     return engine_watchdog(store, clock.now, minutes, evidence)
 
 
-def action(store, eid, *, state="running", thread_id="thread-1", turn_id="turn-1"):
+def action(store, eid, *, state="running", thread_id="thread-1", turn_id="turn-1", phase="prepare"):
     action_id = str(uuid4())
     with store.tx() as db:
         db.execute(
             "INSERT INTO agent_actions(id,experiment_id,phase,evidence_revision,state,thread_id,turn_id,"
-            "input,created_at,updated_at) VALUES(?,?,'prepare',1,?,?,?,'synthetic',0,0)",
-            (action_id, eid, state, thread_id, turn_id),
+            "input,created_at,updated_at) VALUES(?,?,?,1,?,?,?,'synthetic',0,0)",
+            (action_id, eid, phase, state, thread_id, turn_id),
         )
         action_obligations.sync_action(db, action_id)
     return action_id
@@ -213,10 +217,9 @@ def test_a_deleted_experiment_is_not_reported(store, clock):
 
 
 @pytest.mark.parametrize("state", ["pending", "dispatching", "running"])
-@pytest.mark.usefixtures("contract_three_fixture")
 def test_a_live_agent_turn_keeps_the_experiment_going(store, clock, state):
-    eid = create(store)
-    action(store, eid, state=state)
+    eid = create(store, contract=4)
+    action(store, eid, state=state, phase="research")
     clock.advance(120)
     assert watch(store, clock) == 0
 
@@ -267,10 +270,9 @@ def test_an_owner_question_needs_the_existing_notice(store, clock):
     assert [row["kind"] for row in notices(store, answered)] == ["required_decision"]
 
 
-@pytest.mark.usefixtures("contract_three_fixture")
 def test_a_backend_family_needs_a_handler_return_after_the_grace(store, clock):
-    eid = create(store)
-    action_id = action(store, eid, state="pending")
+    eid = create(store, contract=4)
+    action_id = action(store, eid, state="pending", phase="research")
     started = clock.now
     clock.advance(29)
     assert watch(store, clock, started_at=started) == 0
@@ -322,10 +324,9 @@ def test_each_new_notice_logs_one_warning(store, clock, caplog):
     assert len(warnings) == 1 and "missing_dependency: advancement:" in warnings[0].getMessage()
 
 
-@pytest.mark.usefixtures("contract_three_fixture")
 async def test_tick_reports_a_stuck_experiment_and_records_its_service(runtime, clock):
     store, _, _, workflow = runtime
-    eid = create(store)
+    eid = create(store, contract=4)
     clock.advance(31)
     await workflow.tick()
     assert [row["kind"] for row in notices(store, eid)] == ["engine_stuck"]

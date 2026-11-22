@@ -12,7 +12,7 @@ import json
 from uuid import uuid4
 
 import pytest
-from helpers import seed_saved_contract3
+from helpers import seed_saved_contract4
 from test_iteration_autopilot import activated
 from test_knowledge import completed
 
@@ -65,7 +65,7 @@ class GatedAgent(DemoAgent):
 
 
 def create(store):
-    return seed_saved_contract3(store, "Share synthetic configured turns.")
+    return seed_saved_contract4(store, "Share synthetic configured turns.")
 
 
 def insert_action(store, eid, state, *, phase="title", thread=None, turn=None, created_at=0):
@@ -119,7 +119,6 @@ async def settle(wf, tasks):
     await wf.tick(force_observe=True)
 
 
-@pytest.mark.usefixtures("contract_three_fixture")
 async def test_unknown_saved_turns_count_once_and_readback_needs_no_capacity(runtime):
     store, scheduler, _, old = runtime
     old.config.codex.max_sessions = 2
@@ -216,7 +215,6 @@ def offer(wf, row, started, *, role="stage", connections=None):
     )
 
 
-@pytest.mark.usefixtures("contract_three_fixture")
 async def test_saved_turns_beyond_a_shrunken_pool_admit_nothing_and_keep_readback(runtime):
     store, scheduler, _, old = runtime
     old.config.codex.max_sessions = 2

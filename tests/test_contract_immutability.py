@@ -8,8 +8,7 @@ compares the whole contract with the one it started from.
 
 from uuid import uuid4
 
-import pytest
-from helpers import save_snapshot, seed_saved_contract3
+from helpers import save_snapshot, seed_saved_contract4
 
 MANIFEST = {
     "snapshot_hash": "synthetic-contract-immutability",
@@ -19,7 +18,7 @@ MANIFEST = {
 
 
 def create(store):
-    return seed_saved_contract3(store, "Synthetic contract immutability")
+    return seed_saved_contract4(store, "Synthetic contract immutability")
 
 
 def action(store, eid, phase, **extra):
@@ -46,11 +45,10 @@ def job(store, eid, stage, state):
 def rewrite(store, eid, before, changed):
     """Assert the store kept the whole saved contract apart from ``changed``."""
     after = store.experiment(eid)["contract"]
-    assert after["execution_contract"] == before["execution_contract"] == 3
+    assert after["execution_contract"] == before["execution_contract"] == 4
     assert {key: value for key, value in after.items() if key not in changed} == before
 
 
-@pytest.mark.usefixtures("contract_three_fixture")
 def test_every_store_contract_rewrite_preserves_the_execution_contract(runtime):
     store = runtime[0]
 

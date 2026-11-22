@@ -79,7 +79,6 @@ async def test_startup_preserves_saved_contract_four_questions(runtime, monkeypa
 
 
 @pytest.mark.asyncio
-@pytest.mark.usefixtures("contract_three_fixture")
 async def test_startup_still_expires_old_rpcs_and_contract_three_requests(runtime, monkeypatch):
     store, _, _, workflow = runtime
     answered = question(store)
@@ -101,10 +100,9 @@ async def test_startup_still_expires_old_rpcs_and_contract_three_requests(runtim
 
     await workflow.start()
 
-    for eid in (answered, legacy):
-        saved = saved_pending(store, eid)
-        assert saved["expired"] is True
-        assert store.experiment(eid)["hold_reason"] == "expired_agent_request"
+    for eid, hold in ((answered, "expired_agent_request"), (legacy, "legacy_contract_archived")):
+        assert saved_pending(store, eid)["expired"] is True
+        assert store.experiment(eid)["hold_reason"] == hold
 
 
 @pytest.mark.asyncio

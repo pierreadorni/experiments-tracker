@@ -10,12 +10,11 @@ import logging
 from uuid import uuid4
 
 import pytest
-from helpers import seed_saved_contract3
+from helpers import seed_saved_contract4
 from test_legacy_archive_activation import legacy_experiment
 
 from experimenttracker.core import (
     action_obligations,
-    advancement_decisions,
     job_obligations,
     obligation_backfill,
     transfer_obligations,
@@ -37,10 +36,7 @@ IDENTITY = (
 
 
 def create(store, brief="Synthetic obligation backfill"):
-    eid = seed_saved_contract3(store, brief)
-    with store.tx() as db:
-        advancement_decisions.open_lifetime(db, eid)
-    return eid
+    return seed_saved_contract4(store, brief)
 
 
 def insert_raw_action(store, eid, *, phase, state="pending"):
@@ -55,7 +51,7 @@ def insert_raw_action(store, eid, *, phase, state="pending"):
     return action_id
 
 
-def insert_action(store, eid, *, phase="prepare", state="pending"):
+def insert_action(store, eid, *, phase="research", state="pending"):
     """Save an action row and replay its writer's hook in that transaction."""
     action_id = insert_raw_action(store, eid, phase=phase, state=state)
     with store.tx() as db:
@@ -66,6 +62,10 @@ def insert_action(store, eid, *, phase="prepare", state="pending"):
 def insert_job(store, eid, *, state="submitting", job_id=None):
     intent_id = str(uuid4())
     with store.tx() as db:
+        db.execute(
+            "INSERT OR IGNORE INTO stages(experiment_id,id,updated_at,ordinal) VALUES(?,'prepare',0,0)",
+            (eid,),
+        )
         db.execute(
             "INSERT INTO jobs(intent_id,experiment_id,stage_id,attempt,state,job_id,script_hash,resources,"
             "snapshot_hash,created_at) VALUES(?,?,'prepare',1,?,?,'synthetic','{}','control',1)",
@@ -133,11 +133,8 @@ def test_backfill_opens_the_episode_each_hook_saved_for_live_sources(runtime):
     store = runtime[0]
     eid, cancelled = seed_live(store)
     hooked = saved(store)
-    # A terminal source keeps no history: the abandoned lifetime of the cancelled
-    # experiment is a hook outcome, not a backfill candidate.
-    wanted = [row for row in hooked if row["id"] != f"advancement:{cancelled}:0"]
+    wanted = hooked
     assert {row["id"] for row in wanted} >= {
-        f"advancement:{eid}:0",
         f"request:{eid}:request-1:0",
         f"review:{eid}:1:0",
         f"report-version:{eid}:1:0",
@@ -155,7 +152,7 @@ def test_backfill_opens_the_episode_each_hook_saved_for_live_sources(runtime):
         "review": {"synced": 1, "conflicts": 0},
         "report_version": {"synced": 1, "conflicts": 0},
         "wakeup": {"synced": 1, "conflicts": 0},
-        "advancement": {"synced": 1, "conflicts": 0},
+        "advancement": {"synced": 0, "conflicts": 0},
         "cancellation": {"synced": 1, "conflicts": 0},
     }
 
@@ -193,20 +190,19 @@ def test_terminal_sources_and_archived_legacy_get_no_history(runtime):
     assert store.rows("SELECT * FROM obligations WHERE id LIKE ?", (f"advancement:{legacy}:%",)) == []
 
 
-@pytest.mark.usefixtures("contract_three_fixture")
 def test_conflicting_terminal_history_is_counted_logged_and_left_as_saved(runtime, caplog):
     store = runtime[0]
     eid = create(store)
-    conflicted = insert_raw_action(store, eid, phase="prepare")
+    conflicted = insert_raw_action(store, eid, phase="research")
     conflict_id = f"agent-action:{conflicted}:0"
     project_id = store.experiment(eid)["contract"]["project"]["id"]
     with store.tx() as db:
         db.execute(
             "INSERT INTO obligations(id,experiment_id,project_id,kind,target,owner,wait,state,detail,"
             "created_at,updated_at,due_at) VALUES(?,?,?,'agent_turn',?,'backend','admission','satisfied',?,1,1,NULL)",
-            (conflict_id, eid, project_id, conflicted, "phase=prepare;evidence_revision=1"),
+            (conflict_id, eid, project_id, conflicted, "phase=research;evidence_revision=1"),
         )
-    healthy = insert_raw_action(store, eid, phase="interpret")
+    healthy = insert_raw_action(store, eid, phase="discuss:1")
 
     with caplog.at_level(logging.WARNING, logger="experimenttracker.core.obligation_backfill"):
         counts = obligation_backfill.backfill(store)
@@ -217,11 +213,10 @@ def test_conflicting_terminal_history_is_counted_logged_and_left_as_saved(runtim
     assert any("agent_action" in message and conflicted in message for message in messages)
 
 
-@pytest.mark.usefixtures("contract_three_fixture")
 def test_fixed_size_batches_cover_every_candidate(runtime):
     store = runtime[0]
     for index in range(3):
-        insert_action(store, create(store, f"Synthetic batch {index}"), phase=f"phase-{index}")
+        insert_action(store, create(store, f"Synthetic batch {index}"), phase="research")
     forget(store)
     counts = obligation_backfill.backfill(store, batch_size=1)
     assert counts["agent_action"] == {"synced": 3, "conflicts": 0}
@@ -229,11 +224,10 @@ def test_fixed_size_batches_cover_every_candidate(runtime):
 
 
 @pytest.mark.asyncio
-@pytest.mark.usefixtures("contract_three_fixture")
 async def test_workflow_start_backfills_before_its_services(runtime, monkeypatch):
     store, _, _, workflow = runtime
     legacy = legacy_experiment(store)
-    action_id = insert_raw_action(store, create(store), phase="prepare")
+    action_id = insert_raw_action(store, create(store), phase="research")
     order = []
     real = obligation_backfill.backfill
 

@@ -284,9 +284,11 @@ def seed_saved_contract3(
     return _seed_saved_experiment(store, brief, 3, project_id, branch_workspace, workspace_mode)
 
 
-def seed_saved_contract4(store, brief, *, branch_workspace=False):
+def seed_saved_contract4(
+    store, brief, *, project_id="test-project", branch_workspace=False, workspace_mode="auto"
+):
     """Seed a C4 row for unit tests that exercise saved state, not workspace creation."""
-    return _seed_saved_experiment(store, brief, 4, "test-project", branch_workspace)
+    return _seed_saved_experiment(store, brief, 4, project_id, branch_workspace, workspace_mode)
 
 
 def _seed_saved_experiment(
@@ -310,7 +312,7 @@ def _seed_saved_experiment(
         "project": {
             "id": project.id,
             "name": project.name,
-            **({"writable": True} if execution_contract == 3 and branch_workspace else {}),
+            **({"writable": True} if branch_workspace else {}),
         },
         **({"branch_workspace": True} if branch_workspace else {}),
     }
@@ -319,7 +321,7 @@ def _seed_saved_experiment(
             "INSERT INTO experiments(id,brief,recipe_id,contract,created_at,updated_at) VALUES(?,?,?,?,0,0)",
             (eid, brief, "agent_experiment_v1", encode(contract)),
         )
-        if execution_contract == 3 and project.writable and project.checkout is not None:
+        if project.writable and project.checkout is not None:
             folder = project.checkout.resolve(strict=True)
             info = folder.stat()
             db.execute(

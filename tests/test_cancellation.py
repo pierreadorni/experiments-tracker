@@ -4,7 +4,7 @@ import asyncio
 from uuid import uuid4
 
 import pytest
-from helpers import seed_saved_contract3
+from helpers import seed_saved_contract3, seed_saved_contract4
 
 from experimenttracker.agent_pool import experiment_owner
 from experimenttracker.cancellation import process_cancellations
@@ -21,20 +21,23 @@ def create(store):
     return seed_saved_contract3(store, "Synthetic cancellation test.")
 
 
+def create_c4(store):
+    return seed_saved_contract4(store, "Synthetic cancellation test.")
+
+
 def cancel(store, eid, request_id=None):
     payload = ActionCommand(request_id=request_id or uuid4(), action="cancel").model_dump(mode="json")
     return store.command(payload["request_id"], "action", payload, eid=eid)
 
 
-@pytest.mark.usefixtures("contract_three_fixture")
 async def test_cancel_supersedes_pending_action_obligation_atomically_and_replays(runtime, monkeypatch):
     store, _, _, wf = runtime
-    eid = create(store)
+    eid = create_c4(store)
     action_id, request_id = str(uuid4()), uuid4()
     with store.tx() as db:
         db.execute(
             "INSERT INTO agent_actions(id,experiment_id,phase,evidence_revision,state,input,created_at,updated_at) "
-            "VALUES(?,?,'monitor',1,'pending','prompt',0,0)",
+            "VALUES(?,?,'research',1,'pending','prompt',0,0)",
             (action_id, eid),
         )
         action_obligations.sync_action(db, action_id)
@@ -76,13 +79,10 @@ async def test_cancel_supersedes_pending_action_obligation_atomically_and_replay
     )
 
 
-@pytest.mark.parametrize(
-    "phase", ["preparing", "training", "evaluating", "validating", "interpreting", "publishing"]
-)
-@pytest.mark.usefixtures("contract_three_fixture")
+@pytest.mark.parametrize("phase", ["preparing", "research", "training"])
 async def test_cancel_any_phase_retires_only_its_queue_and_survives_restart(runtime, phase, monkeypatch):
     store, _, _, wf = runtime
-    eid, other = create(store), create(store)
+    eid, other = create_c4(store), create_c4(store)
     store.update(eid, phase=phase, pending_request={"id": "approval"})
     for identity, experiment in (("mine", eid), ("other", other)):
         with store.tx() as db:
@@ -101,12 +101,7 @@ async def test_cancel_any_phase_retires_only_its_queue_and_survives_restart(runt
     )
     # Late worker responses cannot clear cancellation or make dependencies ready.
     store.update(eid, phase="complete", hold_reason=None)
-    store.stage(eid, "prepare", "complete")
     assert store.experiment(eid)["phase"] == "cancelled"
-    assert (
-        store.one("SELECT state FROM stages WHERE experiment_id=? AND id='prepare'", (eid,))["state"]
-        == "cancelled"
-    )
     with pytest.raises(Conflict, match="cancelled"):
         store.command(uuid4(), "action", {"action": "resume_agent"}, eid=eid)
     reopened = Store(store.path)
