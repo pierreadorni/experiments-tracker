@@ -165,11 +165,13 @@ def _pending_admitted(contract, phase):
     """Whether one saved pending action may keep its backend admission obligation.
 
     Contract 3 queues stage actions. Contract 4 has one research turn plus the
-    shared discussion and integration actions, so a saved contract-3 stage action
+    small title turn and the shared discussion and integration actions, so a saved contract-3 stage action
     on contract 4 is not admitted. Unsupported contracts keep only discussions.
     """
     if contract.get("execution_contract") == 4:
-        return phase == _RESEARCH_PHASE or phase.startswith((_DISCUSSION_PREFIX, _INTEGRATION_PREFIX))
+        return phase in (_RESEARCH_PHASE, "summarize_title") or phase.startswith(
+            (_DISCUSSION_PREFIX, _INTEGRATION_PREFIX)
+        )
     if supported_contract(contract):
         return True
     return phase.startswith(_DISCUSSION_PREFIX)

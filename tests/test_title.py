@@ -21,3 +21,74 @@ def test_title_output_is_bounded_and_prompt_includes_brief():
     prompt = title_prompt("Frozen DINOv3 at scale 1", "anyup-rs", "Segmentation baseline")
     assert "Frozen DINOv3 at scale 1" in prompt
     assert "avoid adding claims about results" in prompt
+
+
+async def test_an_untitled_contract_four_experiment_gets_one_small_title_turn(
+    runtime, config, tmp_path, monkeypatch
+):
+    import asyncio
+    from types import SimpleNamespace
+
+    from test_research_create import create, git_project
+
+    store, _, agent, workflow = runtime
+    git_project(config, store, tmp_path, research_loop=True)
+    _, _, receipt = create(store)
+    eid = receipt["experiment_id"]
+    assert store.rows("SELECT * FROM agent_actions WHERE experiment_id=?", (eid,)) == []
+
+    monkeypatch.setattr(
+        agent,
+        "models",
+        [{"id": "gpt-6-luna", "name": "GPT-6 Luna", "reasoning_efforts": ["low"]}],
+    )
+    calls = []
+
+    async def begin(thread_id, prompt, schema, **kwargs):
+        calls.append(prompt)
+        return "title-turn"
+
+    async def finish(thread_id, turn_id):
+        return {"schema_version": 1, "title": "Project method study"}
+
+    monkeypatch.setattr(agent, "begin", begin)
+    monkeypatch.setattr(agent, "finish", finish)
+    monkeypatch.setattr("experimenttracker.workflow.blocked", lambda store: False)
+    monkeypatch.setattr(
+        workflow.research.service, "quota", lambda gate, eid=None: SimpleNamespace(admitted=True)
+    )
+    monkeypatch.setattr(workflow.research.service, "authority", lambda *args: None)
+    monkeypatch.setattr(
+        workflow,
+        "refresh_quota",
+        lambda _slot=None: asyncio.sleep(0, result=SimpleNamespace(admitted=True)),
+    )
+    workflow.agent_ready = True
+    workflow.gate.decide = lambda: SimpleNamespace(admitted=True)
+
+    await workflow.advance_title()
+    queued = store.rows(
+        "SELECT * FROM agent_actions WHERE experiment_id=? AND phase='summarize_title'", (eid,)
+    )
+    assert [row["state"] for row in queued] == ["pending"]
+    assert store.rows("SELECT * FROM obligations WHERE target=?", (queued[0]["id"],))
+    workflow.agent_pool.admit()
+    assert workflow.agent_task is not None
+    await workflow.agent_task
+    workflow.agent_task = None
+    await workflow.advance_title()
+
+    assert len(calls) == 1 and "Measure a project-specific method." in calls[0]
+    saved = store.one("SELECT state FROM agent_actions WHERE id=?", (queued[0]["id"],))
+    assert saved["state"] == "completed"
+    assert store.experiment(eid)["title"] == "Project method study"
+
+
+async def test_no_title_turn_is_queued_without_a_small_model(runtime, config, tmp_path):
+    from test_research_create import create, git_project
+
+    store, _, _, workflow = runtime
+    git_project(config, store, tmp_path, research_loop=True)
+    _, _, receipt = create(store)
+    await workflow.advance_title()
+    assert store.rows("SELECT * FROM agent_actions WHERE experiment_id=?", (receipt["experiment_id"],)) == []

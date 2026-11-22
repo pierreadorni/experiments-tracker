@@ -904,11 +904,12 @@ class Workflow:
         choice = luna_title_model(getattr(self.agent, "models", []))
         if not choice:
             return
+        self.queue_title_turns(choice)
         for action in self.store.rows(
             "SELECT * FROM agent_actions WHERE phase='summarize_title' AND state='pending' ORDER BY created_at"
         ):
             exp = self.store.experiment(action["experiment_id"])
-            if not iteration.runnable(exp):
+            if not self.title_runnable(exp):
                 continue
             if not self.title_applicable(exp, action, dispatch=True) or exp["pause_agent"]:
                 continue
@@ -987,11 +988,42 @@ class Workflow:
             )
             return
 
+    def queue_title_turns(self, choice):
+        """Save one pending small-model title turn per untitled live contract 4 experiment.
+
+        A title is requested once: a failed or superseded turn is never re-queued
+        automatically; the owner can ask again with `summarize_title`.
+        """
+        for row in self.store.rows(
+            "SELECT id FROM experiments e WHERE deleted_at IS NULL AND (title IS NULL OR title='') "
+            "AND phase NOT IN ('complete','failed','cancelled') "
+            "AND json_extract(contract,'$.execution_contract') IS 4 "
+            "AND NOT EXISTS (SELECT 1 FROM agent_actions a WHERE a.experiment_id=e.id "
+            "AND a.phase IN ('title','summarize_title')) ORDER BY created_at"
+        ):
+            exp = self.store.experiment(row["id"])
+            prompt = title_prompt(exp["brief"], exp["contract"].get("project", {}).get("name", "Project"), "")
+            action_id = str(uuid4())
+            with self.store.tx() as db:
+                db.execute(
+                    "INSERT INTO agent_actions(id,experiment_id,phase,evidence_revision,state,input,created_at,updated_at) "
+                    "VALUES(?,?,'summarize_title',1,'pending',?,?,?)",
+                    (action_id, exp["id"], encode({"prompt": prompt}), clock.now(), clock.now()),
+                )
+                action_obligations.sync_action(db, action_id)
+                self.store.emit(
+                    db, exp["id"], "agent_action_queued", {"phase": "summarize_title", "action_id": action_id}
+                )
+
+    @staticmethod
+    def title_runnable(exp):
+        return exp["contract"].get("execution_contract") == 4 and not legacy_archive.execution_frozen(exp)
+
     @staticmethod
     def title_applicable(exp, action, *, dispatch=False):
-        # The separate title turn summarises a contract-3 plan review; contract 4 takes
-        # its title from the first summary instead.
-        if exp["deleted_at"] or not iteration.runnable(exp):
+        # Contract 4 queues one small-model title turn at creation; the frozen contract-3
+        # plan-review title turn is archived.
+        if exp["deleted_at"] or not Workflow.title_runnable(exp):
             return False
         if action["phase"] == "summarize_title":
             return True
@@ -1010,7 +1042,7 @@ class Workflow:
         expected = action
         try:
             exp = self.store.experiment(eid)
-            if not iteration.runnable(exp):
+            if not self.title_runnable(exp):
                 return
             await self.refresh_quota(slot)
             if blocked(self.store):

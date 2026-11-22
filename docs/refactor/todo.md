@@ -618,9 +618,11 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 
 Remote association limits (`AssocGrpSubmitJobsLimit`, `QOSMaxSubmitJobPerUserLimit` and similar) map to `AdmissionPending` in `RemoteSlurmScheduler.preflight`, but C4 `research.job_dispatch.dispatch` surfaces it to the agent as a refusal. Design a saved wait first: preflight runs before any intent is saved, so a wait needs a durable timer or wakeup tied to the request identity, and it must never retry an uncertain submission. Owner decision on the wait shape before implementation.
 
-### [ ] T4.10 Automatic titles on C4 · S · M
+### [x] T4.10 Automatic titles on C4 · S · M
 
 `advance_title`, `dispatch_title` and `title_applicable` run only for C3 (`iteration.runnable`), and `_pending_admitted` admits no `title`/`summarize_title` phase on C4. C4 sessions are untitled until the first summary. Decide whether C4 spends a quota-gated small-model turn or derives the title from the first summary, then wire admission, obligations and tests. Owner decision on cost and trigger before implementation.
+
+Done: `advance_title` queues one small-model `summarize_title` turn per untitled live C4 experiment as soon as a Luna model is advertised; nothing is queued without one, a failed turn is not re-queued, and the pool's per-experiment owner serialization keeps it from overlapping the research turn. C4 admits the `summarize_title` phase. Owner decision: Luna turn, usage not a factor.
 
 ## Phase 5 — Simplification
 
