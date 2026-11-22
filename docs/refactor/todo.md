@@ -591,6 +591,7 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 ### [x] T4.7 Live pilot — owner-authorized, small brief, measure turns, tokens and interventions · owner + S
 - The isolated, owner-authorized live pilot completed one CPU/no-GPU Slurm job, registered its results, published a ready report, and reached `complete`. It required a metadata-only normalization of a copy of the original metric file; it was not a zero-intervention run. See the [acceptance summary](notes/t4.7-pilot.md). This does not authorize a rollout or contract-3 retirement.
 ### [ ] T4.8 Make contract 4 the default; archive contract 3 after it drains; delete the old engine · S · L
+- Continue from the [retirement handoff](notes/t4.8-retirement-handoff.md): current state, remaining work in order, and the method and pitfalls.
 - [x] Switch creation only. `ae5a899` selects C4 for new experiments and the CLI demo. The owner-authorized update and deployment are recorded in the private installation receipt. Late unbound hosted creates are refused, while already-applied requests retain their exact receipts.
 - [x] Add [read-only drain inventory](notes/t4.8-drain-evidence.md#run-the-offline-inventory) for saved SQLite and optional D1 backups.
 - [x] Run the owner-authorized production drain check and review the registered hosted queues. The window and per-ID evidence are recorded privately.
