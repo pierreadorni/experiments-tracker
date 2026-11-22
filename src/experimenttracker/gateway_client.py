@@ -4,6 +4,7 @@ import inspect
 import json
 import logging
 from pathlib import Path
+from urllib.parse import quote
 from uuid import UUID
 
 import httpx
@@ -28,11 +29,31 @@ from .models import (
     SteerCommand,
 )
 from .projects import Projects
+from .publish.projections import (
+    TOMBSTONE_DIGEST,
+    Projections,
+    envelope,
+    experiment_key,
+    scrub_local,
+    wire,
+    wire_digest,
+)
 from .store import Conflict, encode, public_projection
 
 log = logging.getLogger(__name__)
 
 _ALL_REVISIONS_CONTRACT_SQL = ",".join(str(version) for version in ALL_REVISIONS_EVIDENCE_CONTRACTS)
+
+
+RELAY_BATCH = 20  # documents per tick, so a backfill cannot starve the old publication
+RELAY_BLOB_MAX = 10 * 1024 * 1024
+RELAY_AGGREGATE_SECONDS = 30  # status carries clocks, so an unchanged view still changes
+RELAY_RETRY_SECONDS = 30
+RELAY_UNSUPPORTED_SECONDS = 300
+
+
+class RelayUnsupported(Exception):
+    """The gateway has no relay routes yet; this is not an error."""
 
 
 class GatewayClient:
@@ -62,6 +83,12 @@ class GatewayClient:
         self.last_autopilot_publish = 0
         self.operation_errors = {}
         self.artifact_retry_at = {}
+        # Relay publication keeps no SQLite state: the Worker's revisions manifest is the
+        # ledger, and these are only throttles and a cache of blobs already accepted.
+        self.relay_retry_at = 0
+        self.relay_key_retry_at = {}
+        self.relay_aggregates_at = 0
+        self.relay_blobs = set()
 
     async def request(self, method, path, **kwargs):
         response = await self.client.request(method, path, **kwargs)
@@ -328,6 +355,144 @@ class GatewayClient:
                 self.artifact_retry_at[row["id"]] = clock.now() + 30
                 self.operation_errors["artifact:" + row["id"]] = self.error_text(exc)
                 log.warning("gateway artifact %s retained for retry: %s", row["id"], self.error_text(exc))
+
+    async def relay_request(self, method, path, **kwargs):
+        headers = {"x-executor-id": self.config.executor_id, **kwargs.pop("headers", {})}
+        response = await self.client.request(method, path, headers=headers, **kwargs)
+        if response.status_code == 404:
+            raise RelayUnsupported(path)
+        response.raise_for_status()
+        result = response.json()
+        if result.get("schema_version") != 1:
+            raise ValueError("unsupported gateway response schema")
+        return result
+
+    async def publish_relay(self):
+        """Publish relay projections beside the old path, diffed against the Worker's manifest."""
+        if clock.now() < self.relay_retry_at:
+            return
+        try:
+            await self.relay_cycle()
+        except RelayUnsupported:
+            self.relay_retry_at = clock.now() + RELAY_UNSUPPORTED_SECONDS
+            for name in [n for n in self.operation_errors if n.startswith("relay:")]:
+                del self.operation_errors[name]
+
+    async def relay_cycle(self):
+        manifest = (await self.relay_request("GET", "/api/executor/relay/revisions")).get("revisions")
+        if not isinstance(manifest, dict):
+            raise ValueError("invalid relay revisions manifest")
+        now = clock.now()
+        live = self.store.rows(
+            "SELECT id,revision FROM experiments WHERE deleted_at IS NULL ORDER BY created_at"
+        )
+        keys = []
+        projections = Projections(self.store)
+        if now - self.relay_aggregates_at >= RELAY_AGGREGATE_SECONDS:
+            try:
+                status = await self.relay_status()
+                projections = Projections(self.store, status=status, catalog=status.get("projects", []))
+                keys += ["status", "projects", "inbox"]
+                self.relay_aggregates_at = now
+                self.operation_errors.pop("relay:status-provider", None)
+            except Exception as exc:
+                self.operation_errors["relay:status-provider"] = self.error_text(exc)
+        keys += [
+            experiment_key(r["id"])
+            for r in live
+            if experiment_key(r["id"]) not in manifest or manifest[experiment_key(r["id"])][0] < r["revision"]
+        ]
+        present = {experiment_key(r["id"]) for r in live}
+        keys += [
+            k
+            for k, (_, digest) in manifest.items()
+            if k.startswith("experiment:") and k not in present and digest != TOMBSTONE_DIGEST
+        ]
+        for key in keys[:RELAY_BATCH]:
+            if self.relay_key_retry_at.get(key, 0) > now:
+                continue
+            try:
+                await self.relay_put(key, projections, manifest.get(key))
+                self.relay_key_retry_at.pop(key, None)
+                self.operation_errors.pop("relay:" + key, None)
+            except RelayUnsupported:
+                raise
+            except Exception as exc:
+                # A stale 409 or a lost response is retried later from the manifest, not in a tight loop.
+                self.relay_key_retry_at[key] = now + RELAY_RETRY_SECONDS
+                self.operation_errors["relay:" + key] = self.error_text(exc)
+                log.warning("gateway relay %s retained for retry: %s", key, self.error_text(exc))
+
+    async def relay_status(self):
+        status = self.status_provider() if self.status_provider else {"projects": []}
+        if inspect.isawaitable(status):
+            status = await status
+        return {
+            **status,
+            "schema_version": 1,
+            "executor_id": self.config.executor_id,
+            "publication": {"failed_operations": sorted(self.operation_errors)},
+        }
+
+    def relay_roots(self):
+        config = self.config
+        roots = [config.state_dir, config.job_output_root, config.backup_dir, config.web_dir]
+        roots += [config.projects_root, config.api_token_file]
+        return [*roots, *(p.checkout for p in config.projects if p.checkout)]
+
+    async def relay_put(self, key, projections, prior):
+        if key.startswith("experiment:") and not projections.store.one(
+            "SELECT 1 FROM experiments WHERE id=? AND deleted_at IS NULL", (key.partition(":")[2],)
+        ):
+            body = {"schema_version": 1, "key": key, "revision": (prior or [0])[0] + 1}
+        else:
+            built = projections.build(key, last_acked=(prior or [0])[0])
+            if not built:
+                return
+            roots = [r for r in self.relay_roots() if r]
+            # Only the status block can carry free-text paths from the host.
+            built["document"] = scrub_local(built["document"], roots, paths=key == "status")
+            if (
+                key in ("status", "projects", "inbox")
+                and prior
+                and prior[1] == wire_digest(built["document"])
+            ):
+                return
+            if key.startswith("experiment:"):
+                await self.relay_upload_blobs(key, built["document"])
+            body = envelope(built)
+        await self.relay_request(
+            "PUT",
+            "/api/executor/relay/projections/" + quote(key, safe=":"),
+            content=wire(body).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+
+    async def relay_upload_blobs(self, key, document):
+        # Blobs are accepted before the document revision that references them.
+        for artifact in document.get("artifacts", []):
+            if (artifact["id"], artifact["sha256"]) in self.relay_blobs:
+                continue
+            row = self.store.one("SELECT * FROM artifacts WHERE id=? AND local_valid=1", (artifact["id"],))
+            if not row or row["size"] > RELAY_BLOB_MAX:
+                continue
+            root = self.projects.base_root(row["experiment_id"])
+            content = await asyncio.to_thread(self.artifact_bytes, row, root)
+            response = await self.relay_request(
+                "PUT",
+                "/api/executor/relay/blobs/" + quote(row["id"], safe=":"),
+                content=content,
+                headers={
+                    "Content-Type": row["media_type"],
+                    "x-sha256": row["sha256"],
+                    "x-size": str(row["size"]),
+                    "x-owner-key": key,
+                    "x-name": quote(row["name"]),
+                },
+            )
+            if response.get("sha256") != row["sha256"] or response.get("size") != row["size"]:
+                raise ValueError("relay blob verification response mismatch")
+            self.relay_blobs.add((row["id"], row["sha256"]))
 
     @staticmethod
     def artifact_bytes(row, root):
@@ -698,6 +863,7 @@ class GatewayClient:
         async def publication():
             await self.isolated("projections", self.publish_outbox)
             await self.isolated("artifacts", self.upload_artifacts)
+            await self.isolated("relay", self.publish_relay)
 
         # Command polling, heartbeat and publication can wait on independent RPCs.
         # SQLite writes still run transactionally under the one executor owner.

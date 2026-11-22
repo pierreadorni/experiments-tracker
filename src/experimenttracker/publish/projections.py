@@ -8,6 +8,9 @@ no executor-local paths.
 
 import hashlib
 import json
+import math
+import re
+from decimal import Decimal
 from uuid import UUID
 
 from .. import clock
@@ -28,6 +31,76 @@ def scrub(value):
 
 def digest(document):
     return hashlib.sha256(json.dumps(document, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+_INDEX = re.compile(r"(0|[1-9][0-9]{0,9})\Z")
+_ABSOLUTE = re.compile(r"(?<![\w:/.@+-])/(?:[\w.@+-]+/)+[\w.@+-]*")
+TOMBSTONE_DIGEST = hashlib.sha256(b"\x00tombstone").hexdigest()
+
+
+def _number(x):
+    if isinstance(x, int):
+        return str(x)
+    if not math.isfinite(x):
+        raise ValueError("a published document cannot hold a non-finite number")
+    if x == 0:
+        return "0"
+    # JavaScript's Number::toString from Python's shortest repr digits.
+    t = Decimal(repr(abs(x))).as_tuple()
+    n = len(t.digits) + t.exponent
+    digits = "".join(map(str, t.digits)).rstrip("0")
+    k = len(digits)
+    if k <= n <= 21:
+        text = digits + "0" * (n - k)
+    elif 0 < n <= 21:
+        text = digits[:n] + "." + digits[n:]
+    elif -6 < n <= 0:
+        text = "0." + "0" * -n + digits
+    else:
+        text = digits[0] + ("." + digits[1:] if k > 1 else "") + f"e{'+' if n > 0 else '-'}{abs(n - 1)}"
+    return ("-" if x < 0 else "") + text
+
+
+def wire(value):
+    """Deterministic JSON that ``JSON.stringify(JSON.parse(wire))`` reproduces byte for byte.
+
+    The Worker digests the parsed document, so key order must already be the order
+    JavaScript uses: array-index keys ascending, then the others (here sorted).
+    """
+    if value is None or isinstance(value, bool):
+        return json.dumps(value)
+    if isinstance(value, (int, float)):
+        return _number(value)
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, (list, tuple)):
+        return "[" + ",".join(wire(v) for v in value) + "]"
+    if isinstance(value, dict):
+        keys = sorted(
+            value,
+            key=lambda k: (not _INDEX.match(k) or int(k) >= 2**32 - 1, int(k) if _INDEX.match(k) else 0, k),
+        )
+        return "{" + ",".join(f"{json.dumps(k, ensure_ascii=False)}:{wire(value[k])}" for k in keys) + "}"
+    raise TypeError(f"cannot publish {type(value).__name__}")
+
+
+def wire_digest(document):
+    """The digest the Worker stores: sha256 of ``JSON.stringify(document)``."""
+    return hashlib.sha256(wire(document).encode()).hexdigest()
+
+
+def scrub_local(value, roots=(), *, paths=False):
+    """Replace executor-local roots, and with ``paths`` any absolute path, in every string."""
+    roots = sorted({r for r in map(str, roots) if len(r) > 1}, key=len, reverse=True)
+    if isinstance(value, dict):
+        return {k: scrub_local(v, roots, paths=paths) for k, v in value.items()}
+    if isinstance(value, list):
+        return [scrub_local(v, roots, paths=paths) for v in value]
+    if isinstance(value, str):
+        for root in roots:
+            value = value.replace(root, "<local>")
+        return _ABSOLUTE.sub("<local>", value) if paths else value
+    return value
 
 
 def aggregate_revision(last_acked=0):

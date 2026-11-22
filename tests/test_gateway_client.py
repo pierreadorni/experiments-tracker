@@ -715,6 +715,8 @@ async def test_failed_bridge_operations_do_not_block_other_experiments_or_heartb
     messages, heartbeats = [], []
 
     async def handler(request):
+        if "/relay/" in request.url.path:
+            return httpx.Response(404)
         if request.url.path.endswith("/project-commands"):
             raise httpx.ReadTimeout("project polling failed")
         if request.url.path.endswith(
