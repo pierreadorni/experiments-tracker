@@ -629,10 +629,12 @@ Done: `advance_title` queues one small-model `summarize_title` turn per untitled
 ## Phase 5 — Simplification
 
 ### [ ] T5.1 Autopilot as a policy layer on contract 4 (C8) · S · L
-- Design and subcards T5.1a–g: [notes/t5.1-autopilot-c4-design.md](notes/t5.1-autopilot-c4-design.md). T5.1b onward wait for the owner decisions listed there.
+- Design and subcards T5.1a–g: [notes/t5.1-autopilot-c4-design.md](notes/t5.1-autopilot-c4-design.md). Owner approved the defaults 2026-11-22; T5.1b onward follows T5.2a–d.
 - [x] T5.1a: deleted the C3 Autopilot admission/hold, plan review, stage controls, C3 tick wakes and the always-NULL child-turn authority check (source −176, tests −24). Kept stage-hold projections and the `deferred_stages` authority read for saved members.
 ### [ ] T5.2 Gateway as a thin relay (C9) · S · L
-- Design and subcards T5.2a–i: [notes/t5.2-gateway-relay-design.md](notes/t5.2-gateway-relay-design.md). Implementation waits for the owner decisions listed there.
+- Design and subcards T5.2a–i: [notes/t5.2-gateway-relay-design.md](notes/t5.2-gateway-relay-design.md). Owner approved the defaults 2026-11-22.
+- [x] T5.2a: Worker relay routes and append-only migration `0010` (four `relay_*` tables); old routes unchanged, unknown receipt ids fall through to the old route until T5.2i.
+- [x] T5.2b: Python projection builder (experiment, projects, status, inbox), notification text ported with a shared TS/Python golden file, local `GET /api/projections`. Project folders are no longer in documents; T5.2e must handle the local folder display.
 ### [ ] T5.3 Rewrite AGENTS.md and docs (C13) · F+R · M
 ### [x] T5.4 Split `web/src/main.tsx` by view; remove tracked design mocks · F · M
 - `main.tsx` is a 12-line bootstrap; state and routing live in `App.tsx`, views in `web/src/views/`. Mocks deleted (−4,861 lines). The `ViewProps` typing adds about 515 lines of overhead over the moved code; moving view state into hooks is a possible follow-up, not part of this card.
