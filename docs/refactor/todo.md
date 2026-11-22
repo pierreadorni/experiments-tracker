@@ -629,9 +629,13 @@ Done: `advance_title` queues one small-model `summarize_title` turn per untitled
 ## Phase 5 — Simplification
 
 ### [ ] T5.1 Autopilot as a policy layer on contract 4 (C8) · S · L
+- Design and subcards T5.1a–g: [notes/t5.1-autopilot-c4-design.md](notes/t5.1-autopilot-c4-design.md). T5.1b onward wait for the owner decisions listed there.
 ### [ ] T5.2 Gateway as a thin relay (C9) · S · L
+- Design and subcards T5.2a–i: [notes/t5.2-gateway-relay-design.md](notes/t5.2-gateway-relay-design.md). Implementation waits for the owner decisions listed there.
 ### [ ] T5.3 Rewrite AGENTS.md and docs (C13) · F+R · M
-### [ ] T5.4 Split `web/src/main.tsx` by view; remove tracked design mocks · F · M
+### [x] T5.4 Split `web/src/main.tsx` by view; remove tracked design mocks · F · M
+- `main.tsx` is a 12-line bootstrap; state and routing live in `App.tsx`, views in `web/src/views/`. Mocks deleted (−4,861 lines). The `ViewProps` typing adds about 515 lines of overhead over the moved code; moving view state into hooks is a possible follow-up, not part of this card.
+- Found: `web/scripts/smoke.mjs` still drives the contract-3 plan-approval flow and fails on main at the same step; `research-owner-smoke.mjs` is the working C4 browser check. Retire or rewrite `smoke.mjs` under T5.3.
 ### [ ] T5.5 Reassess the self-update subsystem once restarts are routine · S · note
 
 ---
