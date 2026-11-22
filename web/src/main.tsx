@@ -91,6 +91,23 @@ function age(seconds: number | null) {
       ? `${Math.floor(n / 60)}m ago`
       : `${Math.floor(n / 3600)}h ago`;
 }
+const lastProjectKey = 'experiment-tracker:last-project';
+function readLastProject(): string {
+  try {
+    return localStorage.getItem(lastProjectKey) || '';
+  } catch {
+    // Browser storage can be unavailable; the app then falls back to the project list.
+    return '';
+  }
+}
+function rememberProject(id: string) {
+  try {
+    localStorage.setItem(lastProjectKey, id);
+  } catch {
+    // Keep the in-memory choice when browser storage is unavailable.
+  }
+}
+
 function Badge({ exp }: { exp: Experiment }) {
   return (
     <span
@@ -122,7 +139,8 @@ function App() {
   const [token, setToken] = useState('');
   const [allExperiments, setExperiments] = useState<Experiment[]>([]);
   const [projectId, setProjectId] = useState(
-    () => new URLSearchParams(location.search).get('project') || 'test-project',
+    () =>
+      new URLSearchParams(location.search).get('project') || readLastProject() || 'test-project',
   );
   const experiments = useMemo(
     () => allExperiments.filter((e) => (e.project_id || 'test-project') === projectId),
@@ -334,6 +352,16 @@ function App() {
     setTab(target.phase === 'complete' ? 'Report' : 'Progress');
     notificationLink.current = null;
   }, [allExperiments, auth, projectId]);
+  useEffect(() => {
+    if (!status) return;
+    const knownProjects = status.projects || [{ id: 'test-project', name: 'Test project' }];
+    if (knownProjects.some((p) => p.id === projectId)) return;
+    // The remembered or URL project no longer exists (for example a deleted test-project).
+    setProjectId(knownProjects[0]?.id || '');
+  }, [status, projectId]);
+  useEffect(() => {
+    if (projectId && status) rememberProject(projectId);
+  }, [projectId, status]);
   useEffect(() => {
     if (!deleting) return;
     if (!allExperiments.some((e) => e.id === deleting.eid)) {
