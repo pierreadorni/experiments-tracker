@@ -35,7 +35,6 @@ from .core import (
     liveness,
     obligation_backfill,
     request_obligations,
-    review_obligations,
 )
 from .engine.integration_resolver import IntegrationResolver
 from .knowledge import ProjectSupervisor
@@ -56,7 +55,7 @@ from .research.session import first_turn, follow_up_turn
 from .research.settlement import complete as settle_research_turn
 from .resolver import TurnResolver
 from .slurm import ResourceUnavailable
-from .steering import process_restarts, queue_late_reports
+from .steering import queue_late_reports
 from .store import encode
 from .tfevents import read_previews
 from .tfevents import selection as tensorboard_selection
@@ -727,8 +726,6 @@ class Workflow:
 
     async def step_control_advance(self):
         """Steer, restart, repair and publish reports; contract 3 stages no longer advance."""
-        self.apply_planning_steering()
-        await process_restarts(self)
         await self.advance_reports()
 
     async def step_watchdog(self, now):
@@ -1176,55 +1173,6 @@ class Workflow:
             return
         self.store.update(eid, phase="failed", hold_reason=reason, error=error)
         self.store.notify(eid, "recovery_exhausted", f"Experiment stopped: {error}")
-
-    def apply_planning_steering(self):
-        """Fold saved guidance into a fresh preparation revision before any job is dispatched."""
-        pending = self.store.rows(
-            "SELECT request_id,experiment_id,text FROM steering WHERE state='pending' ORDER BY created_at"
-        )
-        for item in pending:
-            eid = item["experiment_id"]
-            exp = self.store.experiment(eid)
-            # Plan-revision feedback is part of the contract-3 planning stage; contract 4
-            # steering becomes an owner message in its next turn instead.
-            if not iteration.runnable(exp):
-                continue
-            review = exp["plan_review"]
-            if (
-                exp["recipe_id"] != "agent_experiment_v1"
-                or exp["snapshot"]
-                or not review
-                or review["state"] not in ("awaiting_review", "approved", "drafting")
-                or self.store.one("SELECT 1 FROM jobs WHERE experiment_id=?", (eid,))
-                or self.store.one(
-                    "SELECT 1 FROM agent_actions WHERE experiment_id=? AND phase='prepare'",
-                    (eid,),
-                )
-            ):
-                continue
-            with self.store.tx() as db:
-                current = db.execute("SELECT plan_review FROM experiments WHERE id=?", (eid,)).fetchone()
-                review = json.loads(current["plan_review"])
-                before_review = dict(review)
-                if review["state"] != "drafting":
-                    review["revision"] += 1
-                    review["state"] = "drafting"
-                previous = review.get("feedback", "")
-                review["feedback"] = (previous + "\n" + item["text"]).strip()
-                db.execute(
-                    "UPDATE experiments SET plan_review=?,pause_compute=0,hold_reason=NULL WHERE id=?",
-                    (encode(review), eid),
-                )
-                review_obligations.sync_review(db, eid, before=before_review)
-                db.execute(
-                    "UPDATE stages SET state='pending',updated_at=? WHERE experiment_id=? AND id='plan'",
-                    (clock.now(), eid),
-                )
-                db.execute(
-                    "UPDATE steering SET state='applied',applied_at=? WHERE request_id=?",
-                    (clock.now(), item["request_id"]),
-                )
-                self.store.emit(db, eid, "steering_applied", {"request_id": item["request_id"]})
 
     async def observe_jobs(self):
         for job in self.store.rows(

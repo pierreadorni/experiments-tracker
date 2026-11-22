@@ -546,80 +546,6 @@ class Store:
             )
             return saved
 
-    def _consume_steering(self, db, eid, *, request_id=None):
-        """Attach saved later guidance to an admitted recovery, in its transaction."""
-        rows = db.execute(
-            "SELECT request_id,text FROM steering WHERE experiment_id=? AND state='pending' "
-            "AND (mode='later' OR request_id=?) ORDER BY created_at,rowid",
-            (eid, request_id),
-        ).fetchall()
-        if not rows:
-            return None
-        db.executemany(
-            "UPDATE steering SET state='applied',applied_at=? WHERE request_id=?",
-            [(clock.now(), row["request_id"]) for row in rows],
-        )
-        self.emit(db, eid, "steering_applied", {"request_ids": [row["request_id"] for row in rows]})
-        return "\n\n".join(row["text"] for row in rows)
-
-    def _resume_blocked(self, db, exp, request_id, feedback, *, resolve_request=False):
-        """Continue only a settled blocked phase; retain the original turn and attempt."""
-        eid = exp["id"]
-        if (
-            exp["phase"] in ("complete", "cancelled")
-            or (exp["pending_request"] and not resolve_request)
-            or db.execute(
-                "SELECT 1 FROM agent_actions WHERE experiment_id=? "
-                "AND state IN ('dispatching','running','uncertain')",
-                (eid,),
-            ).fetchone()
-            or db.execute(
-                "SELECT 1 FROM steering WHERE experiment_id=? AND mode='restart' "
-                "AND state IN ('pending','cancelling')",
-                (eid,),
-            ).fetchone()
-        ):
-            raise Conflict("resolve pending or uncertain work before resuming the blocked phase")
-        implementation = exp["hold_reason"] == "implementation_blocked"
-        saved = db.execute(
-            "SELECT a.* FROM agent_actions a JOIN stages s ON s.experiment_id=a.experiment_id "
-            "AND s.id=CASE WHEN a.phase='prepare' THEN 'prepare' ELSE substr(a.phase,7) END "
-            "WHERE a.experiment_id=? "
-            "AND (a.state='failed' OR (a.state='completed' "
-            "AND json_extract(COALESCE(a.result,'{}'),'$.outcome') IN ('blocked','failed'))) "
-            "AND NOT EXISTS (SELECT 1 FROM agent_actions child WHERE child.previous_action_id=a.id) AND "
-            + (
-                "a.phase='prepare' "
-                if implementation
-                else "a.phase LIKE 'agent:%' AND a.evidence_revision=? AND s.state IN ('pending','failed') "
-            )
-            + "ORDER BY a.rowid DESC LIMIT 1",
-            (eid,) if implementation else (eid, exp["evidence_revision"]),
-        ).fetchone()
-        if (
-            not saved
-            or saved["state"] not in ("completed", "failed")
-            or (saved["state"] == "failed" and saved["attempts"] and not saved["turn_id"])
-        ):
-            raise Conflict("resumption requires a known settled blocked action")
-        action = self.continue_action(dict(saved), request_id=request_id, feedback=feedback, _db=db)
-        db.execute(
-            "UPDATE experiments SET phase=?,hold_reason=NULL,error=NULL,pending_request=NULL WHERE id=?",
-            ("preparing" if implementation else "training", eid),
-        )
-        if exp["pending_request"]:
-            request_obligations.sync_request(db, eid, before=exp["pending_request"])
-        db.execute(
-            "UPDATE stages SET state=?,error=NULL,updated_at=? WHERE experiment_id=? AND id=?",
-            (
-                "pending" if implementation else "running",
-                clock.now(),
-                eid,
-                "prepare" if implementation else saved["phase"].removeprefix("agent:"),
-            ),
-        )
-        return action
-
     @contextlib.contextmanager
     def tx(self):
         with self.lock:
@@ -1110,42 +1036,6 @@ class Store:
         if not branch_workspace:
             raise Conflict("the research loop needs the project's main Git checkout and base branch")
 
-    def restart_replacement_payload(self, exp, item):
-        """Rebuild the exact create request that restart steering will submit."""
-        correction = "\n\nResearcher correction for this run: " + item["text"]
-        brief = (
-            item["text"][:4000]
-            if len(correction) >= 4000
-            else exp["brief"][: 4000 - len(correction)] + correction
-        )
-        agent = exp["contract"].get("agent", {})
-        return {
-            "schema_version": 1,
-            "request_id": str(uuid5(NAMESPACE_URL, f"experiment-restart:{item['request_id']}")),
-            "brief": brief,
-            "recipe_id": exp["recipe_id"],
-            "workspace_mode": exp["contract"].get("workspace_mode", "auto"),
-            **({"execution": exp["contract"]["execution"]} if exp["contract"].get("execution") else {}),
-            "project_id": exp["contract"].get("project", {}).get("id", "test-project"),
-            **({"model": agent["model"]} if agent.get("model") else {}),
-            **({"reasoning_effort": agent["reasoning_effort"]} if agent.get("reasoning_effort") else {}),
-            **(
-                {"reference_experiment_id": exp["reference_experiment_id"]}
-                if exp["reference_experiment_id"]
-                else {}
-            ),
-        }
-
-    def require_restart_replacement(self, exp, item):
-        """Validate the selected replacement before any original job can be cancelled."""
-        payload = self.restart_replacement_payload(exp, item)
-        project = self.projects.get(payload["project_id"])
-        if (
-            creation_policy.select_contract(requested=None, opted_in=bool(project and project.research_loop))
-            == 4
-        ):
-            self.require_research_workspace(payload, branch_workspace=self.branch_workspace_for(payload))
-
     def _integration_branch(self, exp):
         """Return this experiment's exact saved named branch, or refuse.
 
@@ -1570,196 +1460,9 @@ class Store:
                 elif kind == "action":
                     action = payload["action"]
                     if action in ("retry_agent", "repair_implementation"):
-                        guidance = self._consume_steering(db, eid)
-                        feedback = "\n\n".join(filter(None, (exp["error"], guidance))) or None
+                        raise Conflict("stage retry and repair were retired with contract 3")
                     if action == "cancel":
                         self.cancel_experiment(db, eid, now)
-                    elif action == "repair_implementation":
-                        if (
-                            exp["hold_reason"] not in ("agent_stage_blocked", "agent_stage_failed")
-                            or exp["contract"].get("execution_contract") != 3
-                            or not exp["snapshot"]
-                            or exp["pending_request"]
-                            or db.execute(
-                                "SELECT 1 FROM agent_actions WHERE experiment_id=? AND state IN ('pending','dispatching','running','uncertain')",
-                                (eid,),
-                            ).fetchone()
-                            or db.execute(
-                                "SELECT 1 FROM steering WHERE experiment_id=? AND state IN ('pending','cancelling')",
-                                (eid,),
-                            ).fetchone()
-                        ):
-                            raise Conflict(
-                                "implementation repair requires a settled agent stage and no pending work"
-                            )
-                        saved = db.execute(
-                            "SELECT * FROM agent_actions WHERE experiment_id=? AND phase LIKE 'agent:%' ORDER BY rowid DESC LIMIT 1",
-                            (eid,),
-                        ).fetchone()
-                        if (
-                            not saved
-                            or saved["state"] != "completed"
-                            or json.loads(saved["result"] or "{}").get("outcome") not in ("blocked", "failed")
-                        ):
-                            raise Conflict(
-                                "implementation repair requires a known failed or blocked agent outcome"
-                            )
-                        job = db.execute(
-                            "SELECT * FROM jobs WHERE experiment_id=? AND stage_id=? AND attempt=? AND state='agent' ORDER BY rowid DESC LIMIT 1",
-                            (eid, saved["phase"].removeprefix("agent:"), saved["evidence_revision"]),
-                        ).fetchone()
-                        if not job:
-                            raise Conflict("the saved agent producer is unavailable for repair")
-                        db.execute(
-                            "UPDATE jobs SET state='failed',error=?,ended_at=? WHERE intent_id=?",
-                            (feedback, now, job["intent_id"]),
-                        )
-                        contract = exp["contract"]
-                        contract["manual_repair_requests"] = contract.get("manual_repair_requests", 0) + 1
-                        db.execute(
-                            "UPDATE experiments SET contract=?,phase='preparing',hold_reason='automatic_repair_pending',error=? WHERE id=?",
-                            (encode(contract), feedback, eid),
-                        )
-                    elif action == "retry_agent" and exp["hold_reason"] in (
-                        "implementation_blocked",
-                        "agent_stage_blocked",
-                        "agent_stage_failed",
-                    ):
-                        self._resume_blocked(db, exp, request_id, feedback)
-                    elif action == "retry_agent":
-                        session_failure = db.execute(
-                            "SELECT * FROM agent_actions WHERE experiment_id=? AND state='failed' "
-                            "AND turn_id IS NULL AND error LIKE 'session resume rejected:%' "
-                            "AND phase IN ('plan','prepare','interpret') ORDER BY updated_at DESC LIMIT 1",
-                            (eid,),
-                        ).fetchone()
-                        if exp["hold_reason"] == "agent_session_unavailable" and session_failure:
-                            if exp["phase"] in ("complete", "failed", "cancelled") or exp["pending_request"]:
-                                raise Conflict(
-                                    "session retry requires an active experiment without pending input"
-                                )
-                            if (
-                                db.execute(
-                                    "SELECT 1 FROM agent_actions WHERE experiment_id=? "
-                                    "AND state IN ('dispatching','running','uncertain')",
-                                    (eid,),
-                                ).fetchone()
-                                or db.execute(
-                                    "SELECT 1 FROM steering WHERE experiment_id=? AND state IN ('pending','cancelling')",
-                                    (eid,),
-                                ).fetchone()
-                            ):
-                                raise Conflict(
-                                    "resolve pending or uncertain work before retrying the session"
-                                )
-                            before = dict(session_failure)
-                            db.execute(
-                                "UPDATE agent_actions SET state='pending',error=?,updated_at=? WHERE id=?",
-                                (guidance, now, session_failure["id"]),
-                            )
-                            action_obligations.sync_action(db, session_failure["id"], before=before)
-                            db.execute(
-                                "UPDATE experiments SET hold_reason=NULL,error=NULL WHERE id=?", (eid,)
-                            )
-                        elif (
-                            exp["phase"] == "failed"
-                            and exp["recipe_id"] == "agent_experiment_v1"
-                            and exp["hold_reason"]
-                            in (
-                                "agent_recovery_exhausted",
-                                "agent_correction_stalled",
-                                "agent_budget_exhausted",
-                            )
-                        ):
-                            failed = db.execute(
-                                "SELECT * FROM agent_actions WHERE experiment_id=? AND (phase IN ('plan','prepare','interpret') OR phase LIKE 'agent:%') ORDER BY rowid DESC LIMIT 1",
-                                (eid,),
-                            ).fetchone()
-                            if (
-                                not failed
-                                or failed["state"] != "failed"
-                                or exp["pending_request"]
-                                or db.execute(
-                                    "SELECT 1 FROM agent_actions WHERE experiment_id=? AND state IN ('dispatching','running','uncertain')",
-                                    (eid,),
-                                ).fetchone()
-                                or db.execute(
-                                    "SELECT 1 FROM steering WHERE experiment_id=? AND state IN ('pending','cancelling')",
-                                    (eid,),
-                                ).fetchone()
-                                or not (
-                                    (not failed["attempts"] and not failed["turn_id"])
-                                    or (
-                                        failed["turn_id"]
-                                        and str(failed["error"]).startswith(
-                                            (
-                                                "turn interrupted:",
-                                                "turn failed:",
-                                                "turn timeout; interrupted",
-                                                "agent output validation:",
-                                            )
-                                        )
-                                    )
-                                )
-                            ):
-                                raise Conflict(
-                                    "retry requires a known terminal agent outcome without unresolved work"
-                                )
-                            self.continue_action(
-                                dict(failed),
-                                request_id=request_id,
-                                feedback="\n\n".join(filter(None, (failed["error"], guidance))) or None,
-                                _db=db,
-                            )
-                            if exp["hold_reason"] == "agent_budget_exhausted":
-                                contract = exp["contract"]
-                                contract["manual_agent_turn_requests"] = (
-                                    contract.get("manual_agent_turn_requests", 0) + 1
-                                )
-                                db.execute(
-                                    "UPDATE experiments SET contract=? WHERE id=?", (encode(contract), eid)
-                                )
-                            db.execute(
-                                "UPDATE experiments SET phase=?,hold_reason='agent_continuation',error=NULL WHERE id=?",
-                                (
-                                    "training"
-                                    if failed["phase"].startswith("agent:")
-                                    else "interpreting"
-                                    if failed["phase"] == "interpret"
-                                    else "preparing",
-                                    eid,
-                                ),
-                            )
-                            db.execute(
-                                "UPDATE stages SET state='pending',error=NULL,updated_at=? WHERE experiment_id=? AND id=?",
-                                (now, eid, failed["phase"].removeprefix("agent:")),
-                            )
-                        else:
-                            if (
-                                exp["phase"] != "failed"
-                                or exp["recipe_id"] != "agent_experiment_v1"
-                                or not exp["snapshot"]
-                                or exp["hold_reason"] not in ("compute_failed", "validation_failed")
-                            ):
-                                raise Conflict("agent retry requires failed agent or compute work")
-                            if (
-                                exp["pending_request"]
-                                or db.execute(
-                                    "SELECT 1 FROM agent_actions WHERE experiment_id=? AND state IN ('dispatching','running','uncertain')",
-                                    (eid,),
-                                ).fetchone()
-                                or db.execute(
-                                    "SELECT 1 FROM steering WHERE experiment_id=? AND state IN ('pending','cancelling')",
-                                    (eid,),
-                                ).fetchone()
-                            ):
-                                raise Conflict("resolve pending or uncertain work before requesting repair")
-                            contract = exp["contract"]
-                            contract["manual_repair_requests"] = contract.get("manual_repair_requests", 0) + 1
-                            db.execute(
-                                "UPDATE experiments SET contract=?,phase='preparing',hold_reason='automatic_repair_pending',error=? WHERE id=?",
-                                (encode(contract), feedback, eid),
-                            )
                     elif action == "summarize_title":
                         if db.execute(
                             "SELECT 1 FROM agent_actions WHERE experiment_id=? AND phase IN ('title','summarize_title') "
@@ -1790,15 +1493,10 @@ class Store:
                         )
                 elif kind == "answer":
                     pending = exp["pending_request"]
-                    resumes_stage = exp["contract"].get("execution_contract") == 3 and exp["hold_reason"] in (
-                        "implementation_blocked",
-                        "agent_stage_blocked",
-                        "agent_stage_failed",
-                    )
                     if (
                         not pending
                         or pending["id"] != payload["pending_request_id"]
-                        or (pending.get("expired") and not resumes_stage)
+                        or pending.get("expired")
                     ):
                         raise Conflict("stale or mismatched pending request")
                     try:
@@ -1811,123 +1509,35 @@ class Store:
                         and (origin not in ("local", "gateway") or pending.get("answer"))
                     ):
                         raise Conflict("only the owner can decide a research approval once")
-                    if resumes_stage:
-                        # A settled turn has no live RPC to answer, even if its request survived restart.
-                        # Resuming clears the request, so record the answer that fulfills it.
-                        pending["answer"] = payload["answer"]
-                        db.execute(
-                            "INSERT INTO steering(request_id,experiment_id,text,created_at,mode) VALUES(?,?,?,?,'later')",
-                            (request_id, eid, payload["answer"], now),
-                        )
-                        guidance = self._consume_steering(db, eid)
-                        resumed = self._resume_blocked(
-                            db,
-                            exp,
-                            request_id,
-                            guidance,
-                            resolve_request=True,
-                        )
-                        self.emit(
-                            db,
-                            eid,
-                            "steering_resumed_blocked_work",
-                            {
-                                "request_id": request_id,
-                                "action_id": resumed["id"],
-                                "source": "answer",
-                            },
-                        )
-                    else:
-                        before = dict(pending)
-                        pending["answer"] = payload["answer"]
-                        db.execute(
-                            "UPDATE experiments SET pending_request=? WHERE id=?", (encode(pending), eid)
-                        )
-                        request_obligations.sync_request(db, eid, before=before)
-                        if exp["contract"].get("execution_contract") == 4 and pending.get("rpc_id") is None:
-                            # A saved contract 4 answer is that experiment's first event
-                            # wake: record it in the answer's own transaction so a restart
-                            # keeps the window next to the answer it debounces.
-                            from .research import wakeups
+                    before = dict(pending)
+                    pending["answer"] = payload["answer"]
+                    db.execute("UPDATE experiments SET pending_request=? WHERE id=?", (encode(pending), eid))
+                    request_obligations.sync_request(db, eid, before=before)
+                    if exp["contract"].get("execution_contract") == 4 and pending.get("rpc_id") is None:
+                        # A saved contract 4 answer is that experiment's first event
+                        # wake: record it in the answer's own transaction so a restart
+                        # keeps the window next to the answer it debounces.
+                        from .research import wakeups
 
-                            wakeups.record(
-                                self, eid, wakeups.OWNER_REQUEST_ANSWERED, pending["id"], db=db, now=now
-                            )
+                        wakeups.record(
+                            self, eid, wakeups.OWNER_REQUEST_ANSWERED, pending["id"], db=db, now=now
+                        )
                 elif kind == "plan_review":
-                    review = exp["plan_review"]
-                    if not review or review.get("state") != "awaiting_review":
-                        raise Conflict("the plan is not awaiting review")
-                    if payload["plan_revision"] != review["revision"]:
-                        raise Conflict("plan revision is stale")
-                    if db.execute(
-                        "SELECT 1 FROM jobs WHERE experiment_id=? AND attempt=?",
-                        (eid, exp["evidence_revision"]),
-                    ).fetchone():
-                        raise Conflict("a submitted experiment plan cannot be changed by plan review")
-                    before_review = dict(review)
-                    decision = payload["decision"]
-                    if decision == "approve":
-                        if review.get("questions"):
-                            raise Conflict("answer the planning questions before approval")
-                        review["state"] = "approved"
-                    elif decision == "revise":
-                        feedback = (payload.get("feedback") or "").strip()
-                        if not feedback:
-                            raise Conflict("revision feedback is required")
-                        review.update(
-                            state="drafting", scope="plan", revision=review["revision"] + 1, feedback=feedback
-                        )
-                        review.pop("preparation_revision", None)
-                        db.execute(
-                            "UPDATE stages SET state='pending',updated_at=? WHERE experiment_id=? AND id IN ('plan','prepare')",
-                            (now, eid),
-                        )
-                    elif decision == "cancel":
-                        self.cancel_experiment(db, eid, now)
-                        review["state"] = "cancelled"
-                    else:
-                        raise Conflict("unknown plan decision")
-                    db.execute(
-                        "UPDATE experiments SET plan_review=?,hold_reason=? WHERE id=?",
-                        (
-                            encode(review),
-                            "plan_review"
-                            if decision == "approve"
-                            else "cancellation_pending"
-                            if decision == "cancel"
-                            else None,
-                            eid,
-                        ),
-                    )
-                    review_obligations.sync_review(db, eid, before=before_review)
+                    raise Conflict("plan review was retired with contract 3")
                 elif kind == "steer":
                     text = payload["text"].strip()
                     if not text:
                         raise Conflict("steering text is required")
                     mode = payload.get("mode", "later")
+                    if mode == "restart":
+                        raise Conflict("restart steering was retired with contract 3")
+                    if mode != "later":
+                        raise Conflict("unknown steering mode")
                     contract4 = exp["contract"].get("execution_contract") == 4
-                    if contract4 and mode == "restart":
-                        raise Conflict("restart steering is not supported for contract 4 research sessions")
                     if contract4 and len(text.encode()) > 1000:
                         raise Conflict("research steering must be at most 1000 UTF-8 bytes")
-                    blocked_work = not contract4 and exp["hold_reason"] in (
-                        "implementation_blocked",
-                        "agent_stage_blocked",
-                        "agent_stage_failed",
-                    )
-                    if exp["phase"] in ("complete", "failed", "cancelled") and not (
-                        exp["phase"] == "failed" and (mode == "restart" or blocked_work)
-                    ):
-                        raise Conflict("steering requires an active experiment or a restart of a failed run")
-                    if db.execute(
-                        "SELECT 1 FROM steering WHERE experiment_id=? AND mode='restart' AND state IN ('pending','cancelling')",
-                        (eid,),
-                    ).fetchone():
-                        raise Conflict("a restart is already pending for this experiment")
-                    if mode not in ("later", "restart"):
-                        raise Conflict("unknown steering mode")
-                    if mode == "restart":
-                        self.require_restart_replacement(exp, {"request_id": request_id, "text": text})
+                    if exp["phase"] in ("complete", "failed", "cancelled"):
+                        raise Conflict("steering requires an active experiment")
                     if (
                         db.execute(
                             "SELECT COUNT(*) FROM steering WHERE experiment_id=? AND state='pending'",
@@ -1940,30 +1550,6 @@ class Store:
                         "INSERT INTO steering(request_id,experiment_id,text,created_at,mode) VALUES(?,?,?,?,?)",
                         (request_id, eid, text, now, mode),
                     )
-                    if blocked_work:
-                        guidance = self._consume_steering(db, eid, request_id=request_id)
-                        resumed = self._resume_blocked(
-                            db,
-                            exp,
-                            request_id,
-                            guidance,
-                            resolve_request=True,
-                        )
-                        self.emit(
-                            db,
-                            eid,
-                            "steering_resumed_blocked_work",
-                            {
-                                "request_id": request_id,
-                                "action_id": resumed["id"],
-                                "source": "steer",
-                            },
-                        )
-                    elif mode == "restart":
-                        db.execute(
-                            "UPDATE experiments SET pause_compute=1,hold_reason='steering_restart' WHERE id=?",
-                            (eid,),
-                        )
                 elif kind == "integrate":
                     if exp["contract"].get("dont_merge"):
                         raise Conflict("this experiment is marked Don't merge")

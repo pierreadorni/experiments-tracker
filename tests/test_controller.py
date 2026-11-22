@@ -10,7 +10,6 @@ import threading
 from uuid import uuid4
 
 import httpx
-import pytest
 from helpers import IterationAgent, seed_saved_contract3
 
 from experimenttracker.api import create_app
@@ -141,27 +140,6 @@ async def test_slow_project_catalog_does_not_block_health_or_owner_loop(runtime,
                 release.set()
             response = await task
             assert response.status_code == 200 and response.json()["projects"]
-
-
-@pytest.mark.usefixtures("contract_three_fixture")
-async def test_manual_planning_retry_has_same_revision_and_duplicate_receipt(runtime):
-    store, scheduler, _, wf = runtime
-    eid = create(store)
-    identity = str(uuid4())
-    with store.tx() as db:
-        db.execute(
-            "INSERT INTO agent_actions(id,experiment_id,phase,evidence_revision,state,thread_id,turn_id,input,error,attempts,created_at,updated_at) VALUES(?,?,'plan',1,'failed','saved-thread','saved-turn','prompt','agent output validation: invalid plan',1,0,0)",
-            (identity, eid),
-        )
-    wf.fail(eid, "agent_correction_stalled", "invalid plan")
-    request = uuid4()
-    first = store.command(request, "action", {"action": "retry_agent"}, eid=eid)
-    assert store.command(request, "action", {"action": "retry_agent"}, eid=eid) == first
-    actions = store.rows("SELECT * FROM agent_actions WHERE experiment_id=? ORDER BY rowid", (eid,))
-    assert len(actions) == 2 and actions[0]["turn_id"] == "saved-turn"
-    assert actions[1]["previous_action_id"] == identity and actions[1]["evidence_revision"] == 1
-    assert scheduler.submissions == 0
-    await wf.close()
 
 
 async def test_agent_progress_extends_inactivity_window_without_unbounded_event_storage(tmp_path):

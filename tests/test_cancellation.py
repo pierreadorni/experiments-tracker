@@ -77,14 +77,10 @@ async def test_cancel_supersedes_pending_action_obligation_atomically_and_replay
 
 
 @pytest.mark.parametrize(
-    "phase", ["preparing", "training", "evaluating", "validating", "interpreting", "publishing", "failed"]
+    "phase", ["preparing", "training", "evaluating", "validating", "interpreting", "publishing"]
 )
 @pytest.mark.usefixtures("contract_three_fixture")
 async def test_cancel_any_phase_retires_only_its_queue_and_survives_restart(runtime, phase, monkeypatch):
-    from experimenttracker import creation_policy
-
-    if phase == "failed":
-        monkeypatch.setattr(creation_policy, "MODE", "legacy")
     store, _, _, wf = runtime
     eid, other = create(store), create(store)
     store.update(eid, phase=phase, pending_request={"id": "approval"})
@@ -94,9 +90,7 @@ async def test_cancel_any_phase_retires_only_its_queue_and_survives_restart(runt
                 "INSERT INTO execution_transfers VALUES(?,?, 'up','{}','pending',NULL,0)",
                 (identity, experiment),
             )
-    store.command(
-        uuid4(), "steer", {"text": "Do later", "mode": "restart" if phase == "failed" else "later"}, eid=eid
-    )
+    store.command(uuid4(), "steer", {"text": "Do later", "mode": "later"}, eid=eid)
     request = uuid4()
     assert cancel(store, eid, request) == cancel(store, eid, request)
     assert store.experiment(eid)["pending_request"] is None

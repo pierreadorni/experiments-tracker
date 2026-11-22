@@ -64,40 +64,6 @@ def test_continuation_obligation_event_and_replay_are_atomic(runtime, monkeypatc
     assert len(obligations(store, child["id"])) == 1
 
 
-@pytest.mark.usefixtures("contract_three_fixture")
-def test_session_retry_and_title_summary_write_admission_obligations_atomically(runtime, monkeypatch):
-    store = runtime[0]
-    eid = seed_experiment(store, "Synthetic session retry")
-    failure = failed_action(store, eid, phase="plan", error="session resume rejected: expired")
-    store.update(eid, phase="interpreting", hold_reason="agent_session_unavailable")
-    events_before = store.rows("SELECT * FROM events WHERE experiment_id=?", (eid,))
-    request = uuid4()
-    sync = action_obligations.sync_action
-
-    def fail(*args, **kwargs):
-        raise RuntimeError("injected obligation failure")
-
-    monkeypatch.setattr(action_obligations, "sync_action", fail)
-    with pytest.raises(RuntimeError, match="injected obligation failure"):
-        store.command(request, "action", {"action": "retry_agent"}, eid=eid)
-    monkeypatch.setattr(action_obligations, "sync_action", sync)
-    assert store.one("SELECT state FROM agent_actions WHERE id=?", (failure["id"],))["state"] == "failed"
-    assert store.rows("SELECT * FROM events WHERE experiment_id=?", (eid,)) == events_before
-    assert not store.one("SELECT 1 FROM commands WHERE request_id=?", (str(request),))
-
-    store.command(request, "action", {"action": "retry_agent"}, eid=eid)
-    resumed = store.one("SELECT * FROM agent_actions WHERE id=?", (failure["id"],))
-    assert resumed["state"] == "pending"
-    assert obligations(store, failure["id"])[0]["wait"] == "admission"
-
-    title_eid = seed_experiment(store, "Synthetic title summary")
-    title_request = uuid4()
-    store.command(title_request, "action", {"action": "summarize_title"}, eid=title_eid)
-    title_action = store.one("SELECT * FROM agent_actions WHERE id=?", (str(title_request),))
-    assert title_action["state"] == "pending"
-    assert obligations(store, title_action["id"])[0]["wait"] == "admission"
-
-
 def test_discussion_correction_rolls_back_then_admits_one_continuation(runtime, monkeypatch):
     from legacy_fixture import load_legacy_completed
 

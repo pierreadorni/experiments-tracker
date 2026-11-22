@@ -6,7 +6,6 @@ so this test drives each contract rewrite in ``store.py`` from a saved state and
 compares the whole contract with the one it started from.
 """
 
-import json
 from uuid import uuid4
 
 import pytest
@@ -59,29 +58,3 @@ def test_every_store_contract_rewrite_preserves_the_execution_contract(runtime):
     before = store.experiment(resolved)["contract"]
     save_snapshot(store, resolved, MANIFEST)  # store.py:885
     rewrite(store, resolved, before, {"parameters", "synthetic_demo", "plan"})
-
-    repaired = create(store)
-    save_snapshot(store, repaired, MANIFEST)
-    store.update(repaired, phase="training", hold_reason="agent_stage_blocked")
-    action(store, repaired, "agent:train", state="completed", result=json.dumps({"outcome": "blocked"}))
-    job(store, repaired, "train", "agent")
-    before = store.experiment(repaired)["contract"]
-    store.command(uuid4(), "action", {"action": "repair_implementation"}, eid=repaired)  # store.py:1272
-    assert store.experiment(repaired)["contract"]["manual_repair_requests"] == 1
-    rewrite(store, repaired, before, {"manual_repair_requests"})
-
-    budgeted = create(store)
-    store.update(budgeted, phase="failed", hold_reason="agent_budget_exhausted")
-    action(store, budgeted, "plan")
-    before = store.experiment(budgeted)["contract"]
-    store.command(uuid4(), "action", {"action": "retry_agent"}, eid=budgeted)  # store.py:1372
-    assert store.experiment(budgeted)["contract"]["manual_agent_turn_requests"] == 1
-    rewrite(store, budgeted, before, {"manual_agent_turn_requests"})
-
-    failed = create(store)
-    save_snapshot(store, failed, MANIFEST)
-    store.update(failed, phase="failed", hold_reason="compute_failed")
-    before = store.experiment(failed)["contract"]
-    store.command(uuid4(), "action", {"action": "retry_agent"}, eid=failed)  # store.py:1412
-    assert store.experiment(failed)["contract"]["manual_repair_requests"] == 1
-    rewrite(store, failed, before, {"manual_repair_requests"})

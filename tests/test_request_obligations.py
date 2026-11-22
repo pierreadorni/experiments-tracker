@@ -152,24 +152,3 @@ def blocked_experiment(runtime):
         )
     store.update(eid, phase="preparing", hold_reason="implementation_blocked", error="Missing input")
     return store, eid, identity
-
-
-@pytest.mark.usefixtures("contract_three_fixture")
-def test_answer_command_on_blocked_resume_satisfies_the_request(blocked_experiment):
-    store, eid, identity = blocked_experiment
-    store.update(eid, pending_request=request(expired=True))
-    store.command(uuid4(), "answer", {"pending_request_id": "question", "answer": "dataset A"}, eid=eid)
-    assert store.experiment(eid)["pending_request"] is None
-    assert episode(store, eid)["state"] == "satisfied"
-    assert store.one("SELECT state FROM agent_actions WHERE previous_action_id=?", (identity,))["state"] == (
-        "pending"
-    )
-
-
-@pytest.mark.usefixtures("contract_three_fixture")
-def test_steering_a_blocked_resume_abandons_the_unanswered_request(blocked_experiment):
-    store, eid, _ = blocked_experiment
-    store.update(eid, pending_request=request(expired=True))
-    store.command(uuid4(), "steer", {"text": "Use dataset A", "mode": "later"}, eid=eid)
-    assert store.experiment(eid)["pending_request"] is None
-    assert episode(store, eid)["state"] == "abandoned"
