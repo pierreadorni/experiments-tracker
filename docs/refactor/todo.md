@@ -630,6 +630,7 @@ Done: `advance_title` queues one small-model `summarize_title` turn per untitled
 
 ### [ ] T5.1 Autopilot as a policy layer on contract 4 (C8) · S · L
 - Design and subcards T5.1a–g: [notes/t5.1-autopilot-c4-design.md](notes/t5.1-autopilot-c4-design.md). T5.1b onward wait for the owner decisions listed there.
+- [x] T5.1a: deleted the C3 Autopilot admission/hold, plan review, stage controls, C3 tick wakes and the always-NULL child-turn authority check (source −176, tests −24). Kept stage-hold projections and the `deferred_stages` authority read for saved members.
 ### [ ] T5.2 Gateway as a thin relay (C9) · S · L
 - Design and subcards T5.2a–i: [notes/t5.2-gateway-relay-design.md](notes/t5.2-gateway-relay-design.md). Implementation waits for the owner decisions listed there.
 ### [ ] T5.3 Rewrite AGENTS.md and docs (C13) · F+R · M
