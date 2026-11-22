@@ -19,8 +19,6 @@ def test_register_result_schema_is_advertised_from_the_actual_model():
     assert schema["additionalProperties"] is False
     assert schema["required"] == ["request_id", "intent_id", "path"]
     assert set(schema["properties"]) == {"request_id", "intent_id", "path"}
-    legacy = {item["name"]: item for item in controller.served_tools()}
-    assert legacy["register_result"]["inputSchema"]["required"] == ["stage_id"]
 
 
 async def test_register_result_runs_off_loop_and_replays_stable_receipt(runtime, tmp_path, monkeypatch):

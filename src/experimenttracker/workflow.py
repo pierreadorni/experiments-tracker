@@ -4,7 +4,6 @@ import hashlib
 import json
 import logging
 import os
-import shutil
 import sys
 import time
 from functools import partial
@@ -1145,13 +1144,6 @@ class Workflow:
         exp = self.store.experiment(eid)
         if exp["phase"] == "cancelled":
             return
-        if (
-            iteration.enabled(exp)
-            and early_repair.preparing(exp)
-            and reason in ("compute_failed", "validation_failed")
-        ):
-            self.store.update(eid, phase="preparing", hold_reason="automatic_repair", error=error)
-            return
         if reason in ("agent_correction_stalled", "agent_recovery_exhausted", "agent_budget_exhausted"):
             action = self.store.one(
                 "SELECT phase FROM agent_actions WHERE experiment_id=? ORDER BY rowid DESC LIMIT 1", (eid,)
@@ -1246,26 +1238,6 @@ class Workflow:
         if not self.workspaces.branch(exp["id"]):
             return None
         return await asyncio.to_thread(self.workspaces.commit_branch, exp["id"], message)
-
-    def register_analysis_file(self, exp, name):
-        import re
-
-        if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,149}", name):
-            raise ValueError("analysis files require safe flat filenames")
-        root = self.root(exp["id"])
-        source = artifacts.allowed_path(root / "analysis" / name, root / "analysis")
-        target = root / ("analysis-" + name)
-        if target.exists():
-            if artifacts.sha256(target) != artifacts.sha256(source):
-                raise ValueError("published analysis files cannot change; choose a new filename")
-        else:
-            shutil.copyfile(source, target)
-            target.chmod(0o444)
-        artifacts.register(self.store, exp["id"], "interpret", root, ["analysis-" + name])
-        return self.store.one(
-            "SELECT id,name,sha256,size FROM artifacts WHERE experiment_id=? AND name=? AND evidence_revision=?",
-            (exp["id"], "analysis-" + name, exp["evidence_revision"]),
-        )
 
     def prepared_python(self, exp, plan, runtime=None):
         if self.is_remote(exp):

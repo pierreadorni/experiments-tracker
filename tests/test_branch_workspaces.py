@@ -9,7 +9,7 @@ import pytest
 from helpers import PLAN, prepare_branch, seed_saved_contract3
 from test_projects import register
 
-from experimenttracker import clock, early_repair
+from experimenttracker import clock
 from experimenttracker.engine import gitworkspace
 from experimenttracker.engine.gitworkspace import branch_eligible
 from experimenttracker.models import Implementation
@@ -181,36 +181,6 @@ async def test_busy_project_does_not_hold_a_new_named_branch(runtime, tmp_path, 
     assert store.experiment(second)["hold_reason"] is None
     other = workflow.workspaces.branch(second)
     assert (other["worktree"], other["branch"]) != (row["worktree"], row["branch"])
-
-
-async def test_repair_keeps_project_edits_in_the_branch_worktree(runtime, tmp_path, monkeypatch):
-    store, _, _, workflow = runtime
-    _, row = await branch_experiment(runtime, tmp_path, monkeypatch)
-    eid, worktree = row["experiment_id"], Path(row["worktree"])
-    work = workflow.working_directory(store.experiment(eid))
-    work.mkdir(parents=True)
-    (work / "recipe.py").write_text("print('synthetic')\n")
-    plan = {"files": ["recipe.py"], "project_files": ["shared.py"], "stages": []}
-    store.update(
-        eid,
-        snapshot={"snapshot_hash": "synthetic", "plan": plan},
-        phase="training",
-        hold_reason="compute_failed",
-        error="synthetic failure",
-    )
-    store.db.execute(
-        "INSERT INTO jobs(intent_id,experiment_id,stage_id,state,script_hash,resources,snapshot_hash,created_at) "
-        "VALUES(?,?,'prepare','failed','hash','{}','snapshot',?)",
-        (str(uuid4()), eid, clock.now()),
-    )
-
-    await early_repair.queue(workflow, store.experiment(eid))
-    exp = store.experiment(eid)
-    assert exp["contract"]["early_repair"]["state"] == "preparing"
-    assert exp["contract"]["working_directory"] != str(worktree)
-    # No candidate project copy: this repair edits files in the branch it commits.
-    assert "repair_project" not in exp["contract"]
-    assert workflow.project_context(exp)["checkout"] == str(worktree)
 
 
 async def test_non_git_project_keeps_the_shared_checkout(runtime, tmp_path):

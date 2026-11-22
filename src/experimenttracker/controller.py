@@ -10,12 +10,12 @@ from uuid import UUID
 
 from pydantic import Field
 
-from . import artifacts, clock, early_repair, iteration, reporting
+from . import artifacts, clock, iteration, reporting
 from .agent_pool import experiment_owner
 from .config import StrictModel
 from .core import wakeup_obligations
 from .legacy_archive import execution_frozen
-from .models import Analysis, Implementation, ReportDocument, ResearchPlan
+from .models import Analysis, Implementation, ResearchPlan
 from .research.admission import SubmitJobRequest
 from .research.cancel_tool import CancelJob, cancel_job
 from .research.checkpoints import SaveCheckpoint, save_checkpoint
@@ -70,49 +70,7 @@ def tool_from_model(name, description, model):
 # Tools that read or write the contract-3 stage graph, its manifests or its execution
 # settings. Contract 4 replaces them with research-loop tools, so a saved contract 4
 # turn cannot dispatch stage work; shared reads and owner actions are not listed.
-STAGE_TOOLS = frozenset(
-    (
-        "check_agent_stage",
-        "check_manifest",
-        "register_analysis_file",
-        "register_result",
-        "set_project_execution",
-        "submit_stage",
-    )
-)
-
 TOOLS = [
-    tool(
-        "cancel_job",
-        "During selective repair, cancel only this experiment's exact tracked Slurm intent. Saves a durable decision; terminal success is adopted, and uncertain outcomes need exact accounting.",
-        {
-            "intent_id": {"type": "string"},
-            "request_id": {"type": "string"},
-            "reason": {"type": "string", "maxLength": 2000},
-        },
-        ["intent_id", "request_id", "reason"],
-    ),
-    tool(
-        "check_agent_stage",
-        "Check this active agent stage's declared outputs without completing it; fix errors in this turn.",
-        {},
-        [],
-    ),
-    tool(
-        "update_report",
-        "Publish a new working report version from available metrics/figures without waiting for all tasks.",
-        {"request_id": {"type": "string"}, "document": {"type": "object"}},
-        ["request_id", "document"],
-    ),
-    tool(
-        "check_manifest",
-        "Check a plan, implementation or analysis now; returns concrete validation errors without dispatch or mutation.",
-        {
-            "kind": {"type": "string", "enum": ["plan", "prepare", "interpret"]},
-            "manifest": {"type": "object"},
-        },
-        ["kind", "manifest"],
-    ),
     tool(
         "job_status",
         "Read this experiment's saved jobs. Use summary_only for a compact list; select intent_ids to inspect bounded exact logs and details.",
@@ -121,45 +79,6 @@ TOOLS = [
             "summary_only": {"type": "boolean"},
         },
         [],
-    ),
-    tool(
-        "schedule_wakeup",
-        "Save a future backend compute check; healthy jobs need no inference. Repeating a request_id adopts the same wakeup; a new request replaces pending checks.",
-        {
-            "request_id": {"type": "string"},
-            "delay_seconds": {"type": "integer", "minimum": 60, "maximum": 86400},
-            "reason": {"type": "string", "maxLength": 1000},
-        },
-        ["request_id", "delay_seconds", "reason"],
-    ),
-    tool(
-        "submit_stage",
-        "Submit a prepared ready stage through the executor. Exact saved outcomes are adopted, never resubmitted. Requires approved objectives, compute admission and validated dependencies.",
-        {"stage_id": {"type": "string"}, "request_id": {"type": "string"}},
-        ["stage_id", "request_id"],
-    ),
-    tool(
-        "register_result",
-        "Validate and register an exact successfully completed stage's evidence without launching work.",
-        {"stage_id": {"type": "string"}},
-        ["stage_id"],
-    ),
-    tool(
-        "register_analysis_file",
-        "Register a new analysis figure/data file and return its evidence ID. Raw measurements remain unchanged; use a new filename for revisions.",
-        {"filename": {"type": "string"}},
-        ["filename"],
-    ),
-    tool(
-        "set_project_execution",
-        "Save this project's rsync up/down commands and remote folder. Also configures this experiment before its first submission. No transfer or job is launched. Templates: {local_project}, {remote_project}, {local_run}, {remote_run}, {host}; no shell evaluation.",
-        {
-            "request_id": {"type": "string"},
-            "remote_project": {"type": "string"},
-            "rsync_up": {"type": "string"},
-            "rsync_down": {"type": "string"},
-        },
-        ["request_id", "remote_project", "rsync_up", "rsync_down"],
     ),
 ]
 
@@ -458,8 +377,6 @@ class Controller:
             and action["phase"] == "research"
             and name == "register_result"
         )
-        if name in STAGE_TOOLS and not iteration.enabled(exp) and not research_result:
-            raise ValueError("stage-engine tools require execution contract 3")
         if (exp.get("contract") or {}).get("execution_contract") == 4 and name not in RESEARCH_TOOL_NAMES:
             raise ValueError("contract 4 turns permit only the listed research tools")
         if name == "submit_job":
@@ -543,98 +460,14 @@ class Controller:
             # The copy and hash are bounded filesystem work; keep the controller
             # loop free while the handler repeats its own saved-turn gates.
             return await asyncio.to_thread(register_figure, wf, exp, action, request)
-        if action["phase"].startswith("agent:"):
-            if name == "check_agent_stage":
-                job = iteration.agent_job(wf, exp, action["phase"])
-                iteration.check_stage(
-                    Path(job["execution_root"]), job["stage_id"], json.loads(job["execution_manifest"])
-                )
-                return {"valid": True}
-            if name not in ("job_status",):
-                raise ValueError(
-                    "agent stages permit output checks and status reads; finish the current task before dispatching other work"
-                )
-        if action["phase"] == "monitor" and name not in ("job_status", "schedule_wakeup"):
-            raise ValueError("monitoring only permits status reads and future backend checks")
-        if name == "cancel_job":
-            if action["phase"] != "prepare":
-                raise ValueError("cancellation requires the active repair preparation turn")
-            return await early_repair.cancel(wf, exp, args["intent_id"], args["request_id"], args["reason"])
-        if name == "set_project_execution":
-            if action["phase"] != "prepare":
-                raise ValueError("execution settings can only be changed during implementation")
-            if not wf.is_remote(exp):
-                raise ValueError(
-                    "this experiment uses acacia; select Jean Zay in Project settings for a new experiment"
-                )
-            from .execution_settings import ExecutionSettings
-
-            project_id = exp["contract"]["project"]["id"]
-            current = wf.projects.settings(project_id)
-            execution = ExecutionSettings.model_validate(
-                {
-                    **exp["contract"]["execution"],
-                    **{key: args[key] for key in ("remote_project", "rsync_up", "rsync_down")},
-                }
-            ).model_dump()
-            receipt = wf.projects.enqueue_settings(
-                project_id,
-                {
-                    "request_id": str(UUID(args["request_id"])),
-                    "instructions": current["instructions"],
-                    "execution": execution,
-                },
-                origin="agent",
-            )
-            wf.projects.settings_tick()
-            receipt = wf.projects.settings_receipt(receipt["request_id"])
-            if receipt["state"] == "applied" and not wf.store.one(
-                "SELECT 1 FROM jobs WHERE experiment_id=?", (eid,)
-            ):
-                contract = {**exp["contract"], "execution": execution}
-                if contract != exp["contract"]:
-                    with wf.store.tx() as db:
-                        db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(contract), eid))
-                        wf.store.emit(db, eid, "execution_configured", {"execution": execution})
-            return receipt
-        if name == "update_report":
-            if not exp["snapshot"]:
-                raise ValueError("working reports require an iteration-first saved implementation")
-            document = ReportDocument.model_validate(args["document"])
-            records = wf.store.rows("SELECT * FROM artifacts WHERE experiment_id=?", (eid,))
-            reporting.validate_document(reporting.Evidence(exp, wf.root(eid), records), document)
-            version = wf.store.working_report(
-                eid, document.model_dump(mode="json"), str(UUID(args["request_id"]))
-            )
-            return {"report_version": version, "state": "queued"}
-        if name == "check_manifest":
-            return await self.check(exp, args["kind"], args["manifest"])
         if name == "job_status":
+            # Discussion turns on saved legacy records keep a read-only status view.
             requested = args.get("intent_ids")
             if requested is not None:
                 if not isinstance(requested, list) or len(requested) > 32:
                     raise ValueError("select at most 32 job intents")
                 requested = {str(UUID(value)) for value in requested}
-            if action["phase"] == "monitor":
-                payload = json.loads(action["input"].split("\nPAYLOAD:\n", 1)[1])
-                permitted = {job["intent_id"] for job in payload["jobs"]}
-                requested = permitted if requested is None else requested & permitted
             return self.status(eid, intent_ids=requested, summary_only=args.get("summary_only", False))
-        if name == "schedule_wakeup":
-            return self.schedule(eid, args["request_id"], args["delay_seconds"], args["reason"], action["id"])
-        if name == "register_result":
-            job = wf.store.one(
-                "SELECT j.* FROM jobs j JOIN stage_producers p ON p.intent_id=j.intent_id WHERE p.experiment_id=? AND p.stage_id=?",
-                (eid, args["stage_id"]),
-            )
-            if not job or job["state"] != "complete":
-                raise ValueError("result registration requires a validated terminal successful job")
-            return wf.store.rows(
-                "SELECT id,name,intent_id,context,host,path,kind FROM output_refs WHERE intent_id=?",
-                (job["intent_id"],),
-            )
-        if name == "register_analysis_file":
-            return wf.register_analysis_file(exp, args["filename"])
         raise ValueError("unknown experiment tool")
 
     async def close(self):

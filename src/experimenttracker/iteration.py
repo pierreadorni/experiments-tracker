@@ -62,13 +62,6 @@ def bounded_bytes(path, root, limit=artifacts.MAX_ARTIFACT_BYTES):
     return value
 
 
-def agent_job(wf, exp, phase):
-    return wf.store.one(
-        "SELECT * FROM jobs WHERE experiment_id=? AND stage_id=? AND attempt=?",
-        (exp["id"], phase.removeprefix("agent:"), exp["evidence_revision"]),
-    )
-
-
 def check_stage(root, stage, manifest):
     spec = next(s for s in manifest["plan"]["stages"] if s["id"] == stage)
     for name in spec["outputs"]:

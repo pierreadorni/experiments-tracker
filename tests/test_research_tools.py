@@ -72,8 +72,7 @@ def test_v4_selects_only_research_tools_and_keeps_contract_three_listing(runtime
         "submit_job",
         "update_report",
     }
-    assert "cluster_info" not in {item["name"] for item in controller.served_tools()}
-    assert "submit_stage" in {item["name"] for item in controller.served_tools()}
+    assert {item["name"] for item in controller.served_tools()} == {"job_status"}
 
 
 async def test_cluster_info_returns_bounded_cached_caps_without_live_effects(runtime, monkeypatch):

@@ -1,12 +1,9 @@
-"""Contract 3 selective repair; scheduler boundaries retain exact durable identities."""
+"""Selective cancellation of exact saved job intents, settled at the scheduler boundary."""
 
 import json
-import os
-from pathlib import Path
 from uuid import UUID
 
-from . import artifacts, clock, iteration
-from .core import advancement_decisions, review_obligations
+from . import clock
 from .store import encode
 
 TERMINAL = {
@@ -21,173 +18,6 @@ TERMINAL = {
     "DEADLINE",
     "REVOKED",
 }
-
-
-def preparing(exp):
-    return exp["contract"].get("early_repair", {}).get("state") == "preparing"
-
-
-def selected(wf, exp, job):
-    """A superseded attempt settles accounting but cannot overwrite readiness."""
-    repair = exp["contract"].get("early_repair", {})
-    if job["attempt"] >= exp["evidence_revision"] or repair.get("state") != "applied":
-        return True
-    decision = repair.get("decisions", {}).get(job["stage_id"])
-    return not decision or decision["decision"] == "keep"
-
-
-async def queue(wf, exp):
-    if preparing(exp):
-        wf.store.update(exp["id"], hold_reason="automatic_repair")
-        return
-    if not wf.repair_available(exp) or exp["pending_request"]:
-        return
-    eid = exp["id"]
-    if wf.store.one(
-        "SELECT 1 FROM steering WHERE experiment_id=? AND state IN ('pending','cancelling')", (eid,)
-    ) or wf.store.one(
-        "SELECT 1 FROM agent_actions WHERE experiment_id=? AND state IN ('running','dispatching','uncertain')",
-        (eid,),
-    ):
-        return
-    failed = wf.store.rows("SELECT * FROM jobs WHERE experiment_id=? AND state='failed'", (eid,))
-    if not failed:
-        return
-    # Failures are established by the ordinary exact observer (or saved agent
-    # turn). An uncertain dispatch never creates a failure incident.
-    revision = exp["evidence_revision"] + 1
-    branch = wf.workspaces.branch(eid)
-    root = wf.projects.base_root(eid) / "repair-candidates" / str(revision)
-    work, project = root / "work", root / "project"
-    original_work = wf.working_directory(exp)
-    context = wf.project_context(exp)
-    plan = exp["snapshot"]["plan"]
-    total = 0
-    copies = [(plan["files"], original_work, work)]
-    if not branch:
-        # A named branch worktree is already this experiment's private checkout, so its
-        # repair edits stay in the branch the backend commits. A shared project folder
-        # needs a candidate copy so the original sources are not edited mid-repair.
-        copies.append((plan.get("project_files", []), context["checkout"], project))
-    for names, source, target in copies:
-        target.mkdir(parents=True, exist_ok=True)
-        for name in names:
-            value = iteration.bounded_bytes(
-                Path(source) / name,
-                Path(source),
-                min(iteration.SOURCE_BUDGET - total, artifacts.MAX_ARTIFACT_BYTES),
-            )
-            total += len(value)
-            path = target / name
-            path.parent.mkdir(parents=True, exist_ok=True)
-            if path.exists() and iteration.bounded_bytes(path, target) != value:
-                raise ValueError("uncommitted repair candidate differs from its declared source")
-            if not path.exists():
-                temporary = path.with_name(path.name + ".repair-staging")
-                with temporary.open("wb") as stream:
-                    stream.write(value)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                os.replace(temporary, path)
-    contract = exp["contract"]
-    if contract.get("auto_repair"):
-        contract.setdefault("repair_history", []).append(contract["auto_repair"])
-    contract["auto_repair"] = {
-        "revision": revision,
-        "previous_revision": exp["evidence_revision"],
-        "previous_root": str(wf.root(eid)),
-        "snapshot": exp["snapshot"],
-        "error": exp["error"],
-        "kind": "selective",
-        "reason": exp["hold_reason"],
-    }
-    contract["early_repair"] = {
-        "state": "preparing",
-        "revision": revision,
-        "failed_intents": [j["intent_id"] for j in failed],
-        "error": exp["error"],
-        "original_work": str(original_work),
-    }
-    contract["working_directory"] = str(work)
-    if not branch:
-        contract["repair_project"] = str(project)
-    contract["repair_count"] = contract.get("repair_count", 0) + 1
-    review = exp["plan_review"]
-    if review:
-        review = {
-            **review,
-            "preparation_revision": max(revision, review.get("preparation_revision", review["revision"]) + 1),
-        }
-    with wf.store.tx() as db:
-        before_review = review_obligations.saved_review(db, eid)
-        db.execute(
-            "UPDATE experiments SET contract=?,evidence_revision=?,phase='preparing',hold_reason='automatic_repair',plan_review=? WHERE id=?",
-            (encode(contract), revision, encode(review) if review else None, eid),
-        )
-        advancement_decisions.sync_lifetime(db, eid, exp["phase"], "preparing")
-        review_obligations.sync_review(db, eid, before=before_review)
-        db.execute(
-            "UPDATE stages SET state='pending',attempt=?,updated_at=? WHERE experiment_id=? AND id IN ('prepare','interpret','publish')",
-            (revision, clock.now(), eid),
-        )
-        wf.store.emit(db, eid, "selective_repair_queued", contract["early_repair"])
-
-
-def validate(wf, exp, plan):
-    old = exp["snapshot"]["plan"]
-    decisions = {d.stage_id: d.model_dump() for d in plan.repair_decisions or []}
-    old_stages = {s["id"]: s for s in old["stages"]}
-    new_stages = {s.id: s.model_dump() for s in plan.stages}
-    if len(decisions) != len(plan.repair_decisions or []) or set(decisions) != set(old_stages):
-        raise ValueError(
-            "selective repair requires one keep/retry decision with rationale for every existing stage"
-        )
-    if set(old_stages) - set(new_stages):
-        raise ValueError("selective repair must retain existing stages and requested work")
-    reused = set(plan.reuse_stages or [])
-    for stage, decision in decisions.items():
-        latest = wf.store.one(
-            "SELECT * FROM jobs WHERE experiment_id=? AND stage_id=? ORDER BY attempt DESC LIMIT 1",
-            (exp["id"], stage),
-        )
-        if decision["decision"] == "keep":
-            if new_stages.get(stage) != old_stages[stage]:
-                raise ValueError(f"kept stage specification must remain unchanged: {stage}")
-            if latest and latest["state"] in ("failed", "cancelled"):
-                raise ValueError(f"failed stage requires retry: {stage}")
-            if latest and latest["state"] == "complete" and stage not in reused:
-                raise ValueError(f"kept successful stage requires explicit reuse: {stage}")
-        elif stage in reused:
-            raise ValueError(f"retry cannot also reuse {stage}")
-        elif latest and latest["state"] in ("submitting", "agent"):
-            raise ValueError(f"reconcile exact submission/agent turn before retrying {stage}")
-    if reused - {s for s, d in decisions.items() if d["decision"] == "keep"}:
-        raise ValueError("reuse must select kept successful stages")
-
-
-def apply(wf, exp, plan, manifest):
-    validate(wf, exp, plan)
-    contract = wf.store.experiment(exp["id"])["contract"]
-    decisions = {d.stage_id: d.model_dump() for d in plan.repair_decisions}
-    contract["early_repair"].update(state="applied", decisions=decisions)
-    contract.update(plan=manifest["plan"], parameters=manifest["parameters"])
-    with wf.store.tx() as db:
-        db.execute(
-            "UPDATE experiments SET contract=?,snapshot=?,hold_reason=NULL,error=NULL WHERE id=?",
-            (encode(contract), encode(manifest), exp["id"]),
-        )
-        for ordinal, stage in enumerate(plan.stages, 2):
-            keep = decisions.get(stage.id, {}).get("decision") == "keep"
-            db.execute(
-                "INSERT INTO stages(experiment_id,id,ordinal,attempt,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(experiment_id,id) DO UPDATE SET ordinal=excluded.ordinal",
-                (exp["id"], stage.id, ordinal, exp["evidence_revision"], clock.now()),
-            )
-            if not keep:
-                db.execute(
-                    "UPDATE stages SET state='pending',attempt=?,output_manifest=NULL,error=NULL,updated_at=? WHERE experiment_id=? AND id=?",
-                    (exp["evidence_revision"], clock.now(), exp["id"], stage.id),
-                )
-        wf.store.emit(db, exp["id"], "selective_repair_applied", {"decisions": decisions})
 
 
 def save_cancellation(store, db, eid, intent, request, reason):
@@ -218,17 +48,6 @@ def save_cancellation(store, db, eid, intent, request, reason):
     db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(contract), eid))
     store.emit(db, eid, "selective_cancellation_requested", {"request_id": request, **record})
     return record, True
-
-
-async def cancel(wf, exp, intent, request, reason):
-    if not preparing(exp):
-        raise ValueError("job cancellation requires an active contract 3 repair")
-    with wf.store.tx() as db:
-        saved, created = save_cancellation(wf.store, db, exp["id"], intent, request, reason)
-    if not created:
-        return saved
-    await reconcile_cancellations(wf, exp["id"])
-    return wf.store.experiment(exp["id"])["contract"]["job_cancellations"][str(UUID(request))]
 
 
 async def reconcile_cancellations(wf, eid=None):
