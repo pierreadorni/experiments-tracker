@@ -8,6 +8,7 @@ from uuid import UUID
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import artifacts, clock
@@ -32,7 +33,17 @@ from .models import (
     SteerCommand,
     UpdateProjectSettings,
 )
+from .publish.commands import Services, dispatch
+from .publish.commands import receipt as command_receipt
 from .store import Conflict
+
+
+class CommandRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: UUID
+    kind: str = Field(pattern=r"^[a-z_]{1,40}$")
+    target: str | None = Field(default=None, max_length=200)
+    payload: dict = Field(default_factory=dict)
 
 
 def create_app(config, *, components=None, config_path=None, current_release=None):
@@ -475,6 +486,22 @@ def create_app(config, *, components=None, config_path=None, current_release=Non
                 "SELECT n.id,'' AS experiment_id,r.project_id,n.kind,n.text,n.created_at FROM autopilot_notices n JOIN autopilot_runs r ON r.id=n.run_id WHERE n.resolved_at IS NULL ORDER BY n.created_at DESC LIMIT 100"
             ),
         }
+
+    @app.post("/api/commands", dependencies=[Depends(authorize)])
+    async def post_command(body: CommandRequest):
+        workflow = app.state.workflow
+        services = Services(
+            store(),
+            projects=lambda: workflow.projects,
+            memory=lambda: workflow.supervisor.memory,
+            autopilot=lambda: workflow.research.service,
+            maintenance=lambda: workflow.maintenance,
+        )
+        received = clock.now()
+        outcome = dispatch(
+            services, str(body.request_id), body.kind, body.target, body.payload, origin="local"
+        )
+        return command_receipt(str(body.request_id), body.kind, body.target, outcome, received)
 
     @app.get("/api/commands/{request_id}", dependencies=[Depends(authorize)])
     async def receipt(request_id: UUID):

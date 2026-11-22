@@ -29,6 +29,7 @@ from .models import (
     SteerCommand,
 )
 from .projects import Projects
+from .publish.commands import Services, dispatch
 from .publish.projections import (
     TOMBSTONE_DIGEST,
     Projections,
@@ -377,9 +378,78 @@ class GatewayClient:
         try:
             await self.relay_cycle()
         except RelayUnsupported:
-            self.relay_retry_at = clock.now() + RELAY_UNSUPPORTED_SECONDS
-            for name in [n for n in self.operation_errors if n.startswith("relay:")]:
-                del self.operation_errors[name]
+            self.relay_unsupported()
+
+    def relay_unsupported(self):
+        self.relay_retry_at = clock.now() + RELAY_UNSUPPORTED_SECONDS
+        for name in [n for n in self.operation_errors if n.startswith("relay:")]:
+            del self.operation_errors[name]
+
+    def command_services(self):
+        def autopilot():
+            from .autopilot import Autopilot
+
+            return Autopilot(self.store, self.config)
+
+        return Services(
+            self.store,
+            projects=lambda: self.projects,
+            memory=lambda: Knowledge(self.store),
+            autopilot=autopilot,
+            maintenance=lambda: getattr(self, "maintenance_provider", lambda: None)(),
+        )
+
+    async def relay_commands(self):
+        """Dispatch pending relay commands; each receipt is posted only after its outcome is saved."""
+        if clock.now() < self.relay_retry_at:
+            return
+        try:
+            batch = (await self.relay_request("GET", "/api/executor/relay/commands")).get("commands")
+            if not isinstance(batch, list) or len(batch) > RELAY_BATCH:
+                raise ValueError("invalid relay command batch")
+            services = self.command_services()
+            for command in batch:
+                try:
+                    request_id = str(UUID(command["request_id"]))
+                    outcome = dispatch(
+                        services,
+                        request_id,
+                        command["kind"],
+                        command.get("target"),
+                        command.get("payload"),
+                        origin="gateway",
+                    )
+                except (KeyError, TypeError, ValueError) as exc:
+                    log.warning("relay command ignored, it has no usable identity: %s", exc)
+                    continue
+                if outcome["state"] == "pending":
+                    continue  # redelivered until its saved outcome is terminal
+                try:
+                    await self.relay_request(
+                        "POST",
+                        "/api/executor/relay/receipts",
+                        json={
+                            "schema_version": 1,
+                            "request_id": request_id,
+                            "state": outcome["state"],
+                            "result": outcome.get("result"),
+                            "error": outcome.get("error"),
+                        },
+                    )
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code != 409:
+                        raise
+                    log.warning("relay receipt for %s differs from its terminal receipt", request_id)
+                    continue
+                # The old project pollers must not re-deliver a result the relay already settled.
+                with self.store.tx() as db:
+                    for table in ("project_requests", "project_settings_requests"):
+                        db.execute(
+                            f"UPDATE {table} SET delivered_at=? WHERE request_id=? AND delivered_at IS NULL",
+                            (clock.now(), request_id),
+                        )
+        except RelayUnsupported:
+            self.relay_unsupported()
 
     async def relay_cycle(self):
         manifest = (await self.relay_request("GET", "/api/executor/relay/revisions")).get("revisions")
@@ -885,6 +955,7 @@ class GatewayClient:
             self.isolated("project_memory", self.project_memory),
             self.isolated("project_settings", self.project_settings_commands),
             self.isolated("commands", self.commands),
+            self.isolated("relay_commands", self.relay_commands),
             self.isolated("maintenance", self.maintenance),
             self.isolated("autopilot", self.autopilot),
             self.isolated("heartbeat", self.heartbeat),
