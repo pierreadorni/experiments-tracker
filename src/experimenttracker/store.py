@@ -1202,6 +1202,23 @@ class Store:
                 raise Conflict(
                     "unbound hosted creates are refused at the contract cutover; resubmit explicitly"
                 )
+            if kind == "create" and "autopilot_lead" in payload:
+                # Only the Autopilot service marks its run's one lead, at that run's derived id.
+                from .autopilot_policy import LEAD_ORIGIN, lead_id
+
+                marker = payload["autopilot_lead"]
+                run_id = marker.get("run_id") if isinstance(marker, dict) else None
+                if (
+                    origin != LEAD_ORIGIN
+                    or marker != {"run_id": run_id}
+                    or not isinstance(run_id, str)
+                    or experiment_id != lead_id(run_id)
+                    or not db.execute(
+                        "SELECT 1 FROM autopilot_runs WHERE id=? AND project_id=?",
+                        (run_id, payload.get("project_id") or "test-project"),
+                    ).fetchone()
+                ):
+                    raise Conflict("only the Autopilot service creates a run's lead experiment")
             if db.execute("SELECT 1 FROM autopilot_requests WHERE request_id=?", (request_id,)).fetchone():
                 raise Conflict("request_id was already used for an Autopilot command")
             if (
@@ -1308,6 +1325,8 @@ class Store:
                         "model": payload.get("model"),
                         "reasoning_effort": payload.get("reasoning_effort"),
                     }
+                if payload.get("autopilot_lead"):
+                    contract["autopilot_lead"] = {"run_id": payload["autopilot_lead"]["run_id"]}
                 if reference:
                     contract["reference"] = {
                         "experiment_id": reference_id,

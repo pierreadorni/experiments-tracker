@@ -14,6 +14,7 @@ from test_research_job_dispatch import FakeScheduler
 from test_research_write_tools import document
 
 from experimenttracker.autopilot import Autopilot
+from experimenttracker.autopilot_policy import lead_id
 from experimenttracker.research.demo_fixture import result_bytes
 from experimenttracker.research.dispatch import ResearchDispatch
 from experimenttracker.research.session import follow_up_turn
@@ -107,6 +108,8 @@ async def test_contract4_synthetic_gate_runs_dispatcher_to_done(runtime, config,
     )
     project.command("anyup-rs", {"request_id": str(uuid4()), "kind": "activate", "expected_revision": 1})
     run = project.run("anyup-rs")
+    # Hold the lead: this gate exercises the project-turn approval route until T5.1e.
+    store.update(lead_id(run["id"]), pause_agent=True)
     with store.tx() as db:
         db.execute(
             "INSERT INTO autopilot_members VALUES(?,?,?,'question','exploration','test',0,1,0,NULL,'[]',?)",

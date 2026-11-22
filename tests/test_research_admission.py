@@ -1,6 +1,7 @@
 from uuid import uuid4
 
 import pytest
+from helpers import lead_ready
 from pydantic import ValidationError
 from test_research_approval import request_fixture
 
@@ -41,6 +42,7 @@ def test_autopilot_member_policy_adds_compute_authority(runtime, monkeypatch):
     action = store.one("SELECT * FROM agent_actions WHERE experiment_id=?", (eid,))
     request = payload(approval_id, objective)
     store.command(uuid4(), "answer", {"pending_request_id": approval_id, "answer": "accept"}, eid=eid)
+    lead_ready(store)
     service = workflow.research.service
     now = 1_000_000
     monkeypatch.setattr("experimenttracker.clock.now", lambda: now)

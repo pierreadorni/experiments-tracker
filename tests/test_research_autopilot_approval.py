@@ -2,7 +2,7 @@ import json
 from uuid import uuid4
 
 import pytest
-from helpers import seed_saved_contract4
+from helpers import lead_ready, seed_saved_contract4
 from test_iteration_autopilot import activated
 
 from experimenttracker.autopilot import Autopilot
@@ -88,6 +88,7 @@ def test_autopilot_approval_proof_is_exact_and_separate_from_owner_answer(runtim
     store = runtime[0]
     now = 1_000_000
     monkeypatch.setattr("experimenttracker.clock.now", lambda: now)
+    lead_ready(store)
     service = Autopilot(store, runtime[3].config)
     policy = AutopilotPolicy(
         subject="Synthetic acceptance",

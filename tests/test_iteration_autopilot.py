@@ -2,13 +2,14 @@ import json
 from uuid import uuid4
 
 import pytest
-from helpers import role_step, seed_saved_contract3
+from helpers import lead_ready, role_step, seed_saved_contract3
 
 from experimenttracker import creation_policy
 from experimenttracker.agent_pool import project_owner
-from experimenttracker.autopilot import Autopilot, calendar
+from experimenttracker.autopilot import Autopilot
 from experimenttracker.autopilot_budget import WEEK, window
 from experimenttracker.autopilot_models import AutopilotPolicy
+from experimenttracker.autopilot_policy import calendar, lead_id
 from experimenttracker.config import JobResources, ProjectConfig
 from experimenttracker.slurm import Observation
 from experimenttracker.store import Conflict
@@ -46,6 +47,7 @@ def command(service, kind, **fields):
 def activated(runtime, monkeypatch):
     store, _, _, wf = runtime
     monkeypatch.setattr("experimenttracker.clock.now", lambda: 1000000)
+    lead_ready(store)
     service = Autopilot(store, wf.config)
     command(service, "configure", policy=policy().model_dump())
     command(service, "activate")
@@ -263,8 +265,9 @@ def foundation(service, identity):
 
 
 def test_project_tools_lost_response_scoping_and_stale_documents(runtime, monkeypatch):
-    monkeypatch.setattr(creation_policy, "MODE", "legacy")
     service, run = activated(runtime, monkeypatch)
+    # The lead is created at activation; legacy mode applies to the later member creates.
+    monkeypatch.setattr(creation_policy, "MODE", "legacy")
     identity = action(service, run)
     with pytest.raises(Conflict, match="not ready"):
         tool(
@@ -288,7 +291,8 @@ def test_project_tools_lost_response_scoping_and_stale_documents(runtime, monkey
     }
     first = service.invoke(identity, "create_experiment", arguments)
     assert service.invoke(identity, "create_experiment", arguments) == first
-    assert len(service.store.rows("SELECT * FROM experiments")) == 1
+    # The lead experiment is not a member.
+    assert len(service.store.rows("SELECT * FROM experiments")) == 2
     assert service.store.experiment(first["experiment_id"])["contract"]["execution_contract"] == 3
     assert len(service.store.rows("SELECT * FROM autopilot_members")) == 1
     with pytest.raises(Conflict, match="different payload"):
@@ -344,7 +348,7 @@ def test_candidate_autopilot_create_links_c4_and_routes_objective_approval(
     member = store.one("SELECT * FROM autopilot_members WHERE experiment_id=?", (eid,))
     assert member["run_id"] == run["id"]
     assert member["project_id"] == "test-project"
-    assert [row["id"] for row in store.rows("SELECT id FROM experiments")] == [eid]
+    assert {row["id"] for row in store.rows("SELECT id FROM experiments")} == {eid, lead_id(run["id"])}
 
     research_action = str(uuid4())
     with store.tx() as db:
@@ -383,8 +387,9 @@ def test_candidate_autopilot_create_links_c4_and_routes_objective_approval(
 
 
 def test_scoped_defer_user_pause_and_cancellation_replay(runtime, monkeypatch):
-    monkeypatch.setattr(creation_policy, "MODE", "legacy")
     service, run = activated(runtime, monkeypatch)
+    # The lead is created at activation; legacy mode applies to the later member creates.
+    monkeypatch.setattr(creation_policy, "MODE", "legacy")
     identity = action(service, run)
     foundation(service, identity)
     eid = tool(
@@ -428,8 +433,9 @@ def test_scoped_defer_user_pause_and_cancellation_replay(runtime, monkeypatch):
 
 
 def test_investigation_review_and_cumulative_borrowing(runtime, monkeypatch):
-    monkeypatch.setattr(creation_policy, "MODE", "legacy")
     service, run = activated(runtime, monkeypatch)
+    # The lead is created at activation; legacy mode applies to the later member creates.
+    monkeypatch.setattr(creation_policy, "MODE", "legacy")
     identity = action(service, run)
     foundation(service, identity)
     for _ in range(2):
@@ -742,8 +748,9 @@ def test_project_guidance_change_wakes_and_invalidates_stale_authority(runtime, 
 
 
 def test_request_identity_cannot_cross_project_and_experiment_commands(runtime, monkeypatch):
-    monkeypatch.setattr(creation_policy, "MODE", "legacy")
     service, _ = activated(runtime, monkeypatch)
+    # The lead is created at activation; legacy mode applies to the later member creates.
+    monkeypatch.setattr(creation_policy, "MODE", "legacy")
     request = str(uuid4())
     payload = {
         "request_id": request,

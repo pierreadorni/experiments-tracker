@@ -4,12 +4,12 @@ import json
 import math
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from . import clock
+from . import autopilot_policy, clock
 from .autopilot_budget import WEEK, Budget
 from .autopilot_models import AutopilotCommand, AutopilotPolicy
+from .autopilot_policy import calendar
 from .store import Conflict, encode
 
-PHASES = ("foundation", "main_argument", "ablations", "writing")
 DOCUMENTS = {
     "research_plan",
     "literature",
@@ -107,25 +107,12 @@ def migrate(db):
         db.execute(statement)
 
 
-def calendar(policy, now, borrowed=0):
-    total = policy.handoff_at - policy.start_at
-    boundaries = []
-    percent = 0
-    for i, share in enumerate(policy.phase_percent):
-        percent += share
-        boundaries.append(policy.start_at + total * (percent + (borrowed if i == 1 else 0)) / 100)
-    index = next((i for i, at in enumerate(boundaries) if now < at), 3)
-    return {
-        "phase": PHASES[index],
-        "boundaries": dict(zip(PHASES, boundaries, strict=True)),
-        "week": max(0, (now - policy.start_at) / WEEK),
-        "weeks_remaining": (policy.handoff_at - now) / WEEK,
-        "handoff_due": now >= policy.handoff_at,
-        "starts_in_seconds": max(0, policy.start_at - now),
-    }
-
-
 class Autopilot:
+    # The policy checks live in ``autopilot_policy``; these names keep their callers.
+    authority = autopilot_policy.member_authority
+    quota = autopilot_policy.reserves
+    require_slot = autopilot_policy.require_slot
+
     def __init__(self, store, config=None):
         self.store, self.config = store, config
         self.budget = Budget(store)
@@ -365,6 +352,24 @@ class Autopilot:
                         "UPDATE autopilot_runs SET status='active',control_revision=control_revision+1,next_report_at=? WHERE id=?",
                         (policy.weekly_report_at or policy.start_at + WEEK, run_id),
                     )
+                    # The lead is a contract 4 experiment created in this transaction;
+                    # its id derives from the run, so a replay never creates another.
+                    self.store.command(
+                        autopilot_policy.lead_request_id(run_id),
+                        "create",
+                        {
+                            "brief": autopilot_policy.lead_brief(policy),
+                            "recipe_id": "agent_experiment_v1",
+                            "project_id": project_id,
+                            "execution_contract": 4,
+                            "autopilot_lead": {"run_id": run_id},
+                            "model": policy.model,
+                            "reasoning_effort": policy.reasoning_effort,
+                        },
+                        origin=autopilot_policy.LEAD_ORIGIN,
+                        experiment_id=autopilot_policy.lead_id(run_id),
+                        _db=db,
+                    )
                     self.wake(db, run_id, request_id, "activation")
                 elif body.kind in ("pause", "resume", "stop", "complete"):
                     allowed = {
@@ -447,43 +452,6 @@ class Autopilot:
         member = self.member(eid)
         return self.run(run_id=member["run_id"])["control_revision"] if member else None
 
-    def authority(self, eid, phase="compute", stage=None, now=None):
-        member = self.member(eid)
-        if not member:
-            return None
-        run = self.run(run_id=member["run_id"])
-        policy = self.policy(run)
-        now = clock.now() if now is None else now
-        if (
-            run["project_id"] not in self.store.projects
-            or not self.store.projects[run["project_id"]].public()["available"]
-        ):
-            return "autopilot_project_unavailable"
-        if run["status"] in ("draft", "paused", "stopped", "completed"):
-            return "autopilot_" + run["status"]
-        if member["deferred"] or stage in json.loads(member["deferred_stages"]):
-            return "autopilot_deferred"
-        if now < policy.start_at:
-            return "autopilot_not_started"
-        if now >= policy.handoff_at and phase != "interpret":
-            return "autopilot_handoff"
-        if (
-            calendar(policy, now, run["borrowed_percent"])["phase"] == "writing"
-            and member["purpose"] not in ("correctness", "essential_result", "analysis")
-            and phase != "interpret"
-        ):
-            return "autopilot_writing_scope"
-        return None
-
-    def quota(self, gate, eid=None, run=None):
-        member = self.member(eid) if eid else None
-        if not run and member:
-            run = self.run(run_id=member["run_id"])
-        if not run:
-            return gate.decide()
-        policy = self.policy(run)
-        return gate.decide_policy(run["id"], policy.five_hour_reserve, policy.weekly_reserve)
-
     def control(self, db, run, eid, operation, reason, request_id, author):
         member = self.member(eid)
         if not member or member["run_id"] != run["id"]:
@@ -517,33 +485,6 @@ class Autopilot:
         else:
             raise Conflict("unsupported experiment control")
         db.execute("UPDATE autopilot_runs SET control_revision=control_revision+1 WHERE id=?", (run["id"],))
-
-    def require_slot(self, run):
-        active = 0
-        for row in self.store.rows(
-            "SELECT m.*,e.phase FROM autopilot_members m JOIN experiments e ON e.id=m.experiment_id WHERE m.run_id=?",
-            (run["id"],),
-        ):
-            if row["phase"] in ("complete", "cancelled", "failed"):
-                continue
-            busy = (
-                self.store.one(
-                    "SELECT 1 FROM jobs WHERE experiment_id=? AND state IN ('submitting','submitted','agent')",
-                    (row["experiment_id"],),
-                )
-                or self.store.one(
-                    "SELECT 1 FROM agent_actions WHERE experiment_id=? AND state IN ('dispatching','running','uncertain')",
-                    (row["experiment_id"],),
-                )
-                or self.store.one(
-                    "SELECT 1 FROM execution_transfers WHERE experiment_id=? AND state NOT IN ('complete','cancelled','failed')",
-                    (row["experiment_id"],),
-                )
-            )
-            if not row["deferred"] or busy:
-                active += 1
-        if active >= self.policy(run).max_open_experiments:
-            raise Conflict("Autopilot open-experiment limit reached")
 
     def document(self, run_id, name, version=None):
         row = self.store.one(
@@ -696,8 +637,6 @@ class Autopilot:
             now = clock.now()
             result = {}
             if name == "create_experiment":
-                if now < policy.start_at or now >= policy.handoff_at:
-                    raise Conflict("research dispatch is outside authorized calendar")
                 if run["foundation"] != "ready":
                     raise Conflict("initial literature/protocol/documents are not ready")
                 backlog = self.store.one(
@@ -716,13 +655,9 @@ class Autopilot:
                     or attempts >= item["max_attempts"]
                 ):
                     raise Conflict("investigation reached its saved review point; record a decision first")
-                if args.estimated_finish_at > policy.handoff_at or args.estimated_finish_at <= now:
-                    raise Conflict("new work must plausibly finish before handoff")
-                if calendar(policy, now, run["borrowed_percent"])["phase"] == "writing" and item[
-                    "purpose"
-                ] not in ("correctness", "essential_result", "analysis"):
-                    raise Conflict("writing phase rejects new exploratory directions")
-                self.require_slot(run)
+                autopilot_policy.create_checks(
+                    self, run, policy, now, args.estimated_finish_at, item["purpose"]
+                )
                 eid = str(uuid5(NAMESPACE_URL, "autopilot-experiment:" + request_id))
                 if item["protocol_document"] != "protocol":
                     raise Conflict("investigation must reference the project protocol document")

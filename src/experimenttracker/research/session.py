@@ -18,7 +18,7 @@ notebook text nor a copy of it.
 import json
 from uuid import uuid4
 
-from .. import clock
+from .. import autopilot_policy, clock
 from ..core import action_obligations, job_obligations, request_obligations
 from ..maintenance import blocked
 from . import wakeups
@@ -61,6 +61,7 @@ def _saved_experiment(db, eid):
         or experiment["phase"] in _TERMINAL_PHASES
         or experiment["pause_agent"]
         or contract.get("execution_contract") != 4
+        or autopilot_policy.lead_hold(db, contract)
     ):
         return None
     experiment["contract"] = contract
@@ -125,8 +126,10 @@ def first_turn(store, eid):
             experiment["deleted_at"] is not None
             or experiment["phase"] in _TERMINAL_PHASES
             or contract.get("execution_contract") != 4
+            or autopilot_policy.lead_hold(db, contract)
         ):
             return None
+        experiment["contract"] = contract
         if db.execute(
             "SELECT 1 FROM agent_actions WHERE experiment_id=? AND phase=?", (eid, _RESEARCH_PHASE)
         ).fetchone():
@@ -148,6 +151,14 @@ def _queue(
     """Save one pending research action for this experiment and return it."""
     eid = experiment["id"]
     action_id = str(uuid4())
+    # A lead turn sees its run's bounded status and snapshots the run's control revision.
+    lead = autopilot_policy.lead_run_id(experiment["contract"])
+    control_revision = project_status = None
+    if lead:
+        control_revision = db.execute(
+            "SELECT control_revision FROM autopilot_runs WHERE id=?", (lead,)
+        ).fetchone()["control_revision"]
+        project_status = autopilot_policy.project_status(db, lead)
     prompt = turn_prompt(
         brief=experiment["brief"],
         owner_constraints=owner_constraints,
@@ -156,13 +167,24 @@ def _queue(
         action_id=action_id,
         owner_approval=owner_approval,
         orchestrator_approval=orchestrator_approval,
+        project_status=project_status,
     )
     now = clock.now()
     db.execute(
         "INSERT INTO agent_actions"
-        "(id,experiment_id,phase,evidence_revision,state,thread_id,input,created_at,updated_at) "
-        "VALUES(?,?,?,?,'pending',?,?,?,?)",
-        (action_id, eid, _RESEARCH_PHASE, experiment["evidence_revision"], thread_id, prompt, now, now),
+        "(id,experiment_id,phase,evidence_revision,state,thread_id,input,created_at,updated_at,"
+        "autopilot_control_revision) VALUES(?,?,?,?,'pending',?,?,?,?,?)",
+        (
+            action_id,
+            eid,
+            _RESEARCH_PHASE,
+            experiment["evidence_revision"],
+            thread_id,
+            prompt,
+            now,
+            now,
+            control_revision,
+        ),
     )
     action_obligations.sync_action(db, action_id)
     store.emit(db, eid, "agent_action_queued", {"phase": _RESEARCH_PHASE, "action_id": action_id})

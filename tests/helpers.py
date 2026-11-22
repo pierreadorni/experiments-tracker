@@ -272,6 +272,21 @@ def save_snapshot(store, eid, manifest):
         )
 
 
+def lead_ready(store):
+    """Give the default test project the writable Git checkout an Autopilot lead needs."""
+    from experimenttracker.config import ProjectConfig
+    from experimenttracker.workspaces import initialize_project
+
+    if store.projects["test-project"].checkout is not None:
+        return store.projects["test-project"].checkout
+    folder = store.path.parent / "test-project-checkout"
+    if not folder.exists():
+        folder.mkdir()
+        initialize_project(folder)
+    store.projects["test-project"] = ProjectConfig(id="test-project", name="Test project", checkout=folder)
+    return folder
+
+
 def seed_saved_contract3(
     store,
     brief="Exercise synthetic iteration mechanisms.",

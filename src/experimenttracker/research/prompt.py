@@ -27,6 +27,8 @@ MAX_EVENTS_BYTES = 1600
 MAX_OBLIGATIONS_BYTES = 800
 
 MAX_APPROVAL_CONTEXT_BYTES = 5500
+# An Autopilot lead's project status shares the same turn budget.
+MAX_PROJECT_STATUS_BYTES = 1600
 
 DEFERRED_CHECKPOINT = "[saved notebook text is not copied into a follow-up turn]"
 
@@ -270,6 +272,7 @@ def turn_prompt(
     action_id: str | None = None,
     owner_approval: tuple[str, str, str] | None = None,
     orchestrator_approval: tuple[str, str] | None = None,
+    project_status: str | None = None,
 ) -> str:
     """Build one deterministic, bounded turn prompt from the saved turn inputs.
 
@@ -299,6 +302,12 @@ def turn_prompt(
     # leaves little room for optional narrative. Keep the deferred marker whole.
     if approval:
         budget -= 128
+    status = ""
+    if project_status is not None:
+        header = "\nPROJECT STATUS\n"
+        status_budget = min(budget - 512, MAX_PROJECT_STATUS_BYTES) - len(header.encode()) - 1
+        status = header + _fit(_printable(_text(project_status, "project status")), status_budget) + "\n"
+        budget -= len(status.encode())
     brief_text = _fit(brief, min(budget, MAX_BRIEF_BYTES))
     budget -= len(brief_text.encode())
     constraints_text = _bounded_lines(
@@ -335,7 +344,7 @@ def turn_prompt(
 
     return (
         "RESEARCH TURN\n"
-        f"{marker}{approval}"
+        f"{marker}{approval}{status}"
         f"\nBRIEF\n{brief_text}\n"
         f"\nOWNER CONSTRAINTS\n{constraints_text}\n"
         f"\nLATEST CHECKPOINT\n{checkpoint_text}\n"

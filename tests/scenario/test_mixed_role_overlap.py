@@ -17,6 +17,7 @@ from test_knowledge import completed
 from experimenttracker import clock
 from experimenttracker.agent_pool import experiment_owner, project_owner
 from experimenttracker.autopilot import Autopilot
+from experimenttracker.autopilot_policy import lead_id
 from experimenttracker.workspaces import initialize_project
 
 DECISION = {
@@ -62,7 +63,8 @@ def discuss_turn(payload, workspace):
     return {"schema_version": 1, "reply": "Synthetic discussion reply.", "evidence_ids": []}
 
 
-def create(store, brief="Synthetic mixed-role overlap."):
+def research_project(store):
+    """The test project with a saved Git checkout that contract 4 work and the lead need."""
     project = store.projects["test-project"]
     if project.checkout is None:
         checkout = store.path.parent.parent / "scenario-project"
@@ -77,6 +79,11 @@ def create(store, brief="Synthetic mixed-role overlap."):
                 (project.id, project.name, str(checkout), info.st_dev, info.st_ino, clock.now()),
             )
         store.projects[project.id] = project.model_copy(update={"checkout": checkout, "research_loop": True})
+    return store.projects[project.id]
+
+
+def create(store, brief="Synthetic mixed-role overlap."):
+    project = research_project(store)
     result = store.command(
         uuid4(),
         "create",
@@ -100,10 +107,14 @@ def saved(store, table, **where):
 
 def activated(scenario):
     """Configure and activate the synthetic research run through its own commands."""
+    research_project(scenario.store)
     service = Autopilot(scenario.store, scenario.config)
     command(service, "configure", policy=policy(now=scenario.clock.now()).model_dump())
     command(service, "activate")
-    return service, service.run("test-project")
+    run = service.run("test-project")
+    # Hold the lead: these scenarios exercise the project-turn engine until T5.1e.
+    scenario.store.update(lead_id(run["id"]), pause_agent=True)
+    return service, run
 
 
 def connection_evidence(scenario, wf, source_table, row):
