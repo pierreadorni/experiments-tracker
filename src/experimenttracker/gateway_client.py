@@ -44,6 +44,12 @@ log = logging.getLogger(__name__)
 
 _ALL_REVISIONS_CONTRACT_SQL = ",".join(str(version) for version in ALL_REVISIONS_EVIDENCE_CONTRACTS)
 
+# Which artifact bytes may leave the host; shared by the old upload and relay blobs.
+_ARTIFACT_ELIGIBLE_SQL = (
+    "a.local_valid=1 AND x.deleted_at IS NULL AND x.phase!='cancelled' "
+    "AND (COALESCE(json_extract(x.contract,'$.execution_contract'),0) "
+    f"IN ({_ALL_REVISIONS_CONTRACT_SQL}) OR a.evidence_revision=x.evidence_revision)"
+)
 
 RELAY_BATCH = 20  # documents per tick, so a backfill cannot starve the old publication
 RELAY_BLOB_MAX = 10 * 1024 * 1024
@@ -309,10 +315,7 @@ class GatewayClient:
             "SELECT MAX(e2.revision) FROM events e2 JOIN outbox o2 ON o2.id=e2.id "
             "WHERE e2.experiment_id=x.id AND o2.delivered_at IS NOT NULL) "
             "JOIN outbox o ON o.id=e.id "
-            "WHERE a.local_valid=1 AND a.remote_published=0 "
-            "AND x.deleted_at IS NULL AND x.phase!='cancelled' "
-            "AND (COALESCE(json_extract(x.contract,'$.execution_contract'),0) "
-            f"IN ({_ALL_REVISIONS_CONTRACT_SQL}) OR a.evidence_revision=x.evidence_revision) "
+            f"WHERE {_ARTIFACT_ELIGIBLE_SQL} AND a.remote_published=0 "
             "AND (EXISTS (SELECT 1 FROM artifact_registrations r WHERE r.artifact_id=a.id "
             "AND r.sha256=a.sha256 AND r.size=a.size) "
             "OR EXISTS (SELECT 1 FROM json_each(o.payload,'$.experiment.artifacts') j "
@@ -473,8 +476,18 @@ class GatewayClient:
         for artifact in document.get("artifacts", []):
             if (artifact["id"], artifact["sha256"]) in self.relay_blobs:
                 continue
-            row = self.store.one("SELECT * FROM artifacts WHERE id=? AND local_valid=1", (artifact["id"],))
-            if not row or row["size"] > RELAY_BLOB_MAX:
+            row = self.store.one(
+                "SELECT a.* FROM artifacts a JOIN experiments x ON x.id=a.experiment_id "
+                f"WHERE a.id=? AND {_ARTIFACT_ELIGIBLE_SQL}",
+                (artifact["id"],),
+            )
+            if not row:
+                continue  # withheld like the old upload; the document still lists it
+            if row["size"] > RELAY_BLOB_MAX:
+                # Recorded once, never retried: the Worker would answer 413 every time.
+                self.operation_errors["relay:blob:" + row["id"]] = (
+                    f"artifact exceeds the {RELAY_BLOB_MAX}-byte relay blob limit"
+                )
                 continue
             root = self.projects.base_root(row["experiment_id"])
             content = await asyncio.to_thread(self.artifact_bytes, row, root)

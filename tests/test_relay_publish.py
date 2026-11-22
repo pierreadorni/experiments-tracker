@@ -9,6 +9,7 @@ from test_gateway_client import publication_client, publication_experiment
 
 from experimenttracker import artifacts, clock
 from experimenttracker.publish.projections import TOMBSTONE_DIGEST, wire, wire_digest
+from experimenttracker.store import encode
 
 SAMPLES = [
     {"b": 1.0, "a": [1e-7, 1.5e-5, 0.1, 1e21, 123456789012345680000, -2.5, 0, 2**53], "z": None},
@@ -84,8 +85,6 @@ class Worker:
                 "document": document,
                 "body": body,
             }
-            for blob in document and [a["id"] for a in document.get("artifacts", [])] or []:
-                assert blob in self.blobs, "blob must precede the document that references it"
         if self.lose_key == key and applied:
             self.lose_key = None
             raise httpx.ReadTimeout("response lost after the Worker stored the revision")
@@ -246,3 +245,52 @@ async def test_deleted_experiment_is_tombstoned_once(config, runtime, tmp_path):
     await client.publish_relay()
     assert [c for c in worker.calls[calls:] if c[0] == "PUT"] == []
     await client.close()
+
+
+async def test_blobs_follow_the_old_upload_gating_and_oversize_is_recorded(config, runtime, tmp_path):
+    store, _, _, workflow = runtime
+    eid = publication_experiment(store)
+    contract = {**store.experiment(eid)["contract"], "execution_contract": 2}
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(contract), eid))
+    root = workflow.root(eid)
+    root.mkdir(parents=True)
+    names = ["ok.json", "old.json", "huge.json"]
+    for name in names:
+        (root / name).write_text("{}")
+    artifacts.register(store, eid, "prepare", root, names)
+    ids = {r["name"]: r["id"] for r in store.rows("SELECT id,name FROM artifacts")}
+    with store.tx() as db:
+        # Contracts 3 and 4 keep every revision; contract 2 withholds retired evidence.
+        db.execute("UPDATE artifacts SET evidence_revision=-1 WHERE name='old.json'")
+        db.execute("UPDATE artifacts SET size=? WHERE name='huge.json'", (11 * 1024 * 1024,))
+        store.emit(db, eid, "experiment_updated")
+    cancelled = publication_experiment(store)
+    croot = workflow.root(cancelled)
+    croot.mkdir(parents=True)
+    (croot / "c.json").write_text("{}")
+    artifacts.register(store, cancelled, "prepare", croot, ["c.json"])
+    cancelled_id = store.one("SELECT id FROM artifacts WHERE name='c.json'")["id"]
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET phase='cancelled' WHERE id=?", (cancelled,))
+        store.emit(db, cancelled, "experiment_updated")
+    worker = Worker()
+    client = relay_client(config, store, tmp_path, worker)
+    client.relay_status = lambda: _async({"projects": []})
+    # Old-evidence rows are only withheld when the contract is not an all-revisions one.
+    await client.publish_relay()
+    assert ids["ok.json"] in worker.blobs
+    assert cancelled_id not in worker.blobs and ids["huge.json"] not in worker.blobs
+    assert "relay:blob:" + ids["huge.json"] in client.operation_errors
+    assert f"experiment:{cancelled}" in worker.projections
+    # A document that lists a retired-evidence artifact still gets no blob for it.
+    old = store.one("SELECT * FROM artifacts WHERE name='old.json'")
+    await client.relay_upload_blobs(
+        f"experiment:{eid}", {"artifacts": [{"id": old["id"], "sha256": old["sha256"]}]}
+    )
+    assert old["id"] not in worker.blobs
+    await client.close()
+
+
+async def _async(value):
+    return value
