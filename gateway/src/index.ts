@@ -1,4 +1,5 @@
 import { autopilotRoute } from './autopilot';
+import { relayRoute } from './relay';
 import { z } from 'zod';
 import { maintenanceRoute } from './maintenance';
 import { assets } from './generated-assets';
@@ -1578,6 +1579,8 @@ async function route(request: Request, env: Env): Promise<Response> {
   }
   const machine = p.startsWith('/api/executor/');
   await authorize(request, env, machine);
+  const relay = await relayRoute(request, env, p);
+  if (relay) return relay;
   const autopilot = await autopilotRoute(request, env, p);
   if (autopilot) return autopilot;
   const maintenance = await maintenanceRoute(request, env, p);

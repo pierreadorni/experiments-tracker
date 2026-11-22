@@ -237,3 +237,60 @@ export const autopilotDocuments = sqliteTable('autopilot_documents', {
   version: integer('version').notNull(),
   objectKey: text('object_key').notNull(),
 });
+
+// Relay tables (T5.2a): one document store and one command queue.
+export const relayProjections = sqliteTable('relay_projections', {
+  key: text('key').primaryKey(),
+  executorId: text('executor_id').notNull(),
+  revision: integer('revision').notNull(),
+  payload: text('payload'),
+  digest: text('digest').notNull(),
+  notifyFingerprint: text('notify_fingerprint'),
+  updatedAt: real('updated_at').notNull(),
+});
+export const relayCommands = sqliteTable(
+  'relay_commands',
+  {
+    requestId: text('request_id').primaryKey(),
+    executorId: text('executor_id').notNull(),
+    kind: text('kind').notNull(),
+    target: text('target'),
+    payload: text('payload').notNull(),
+    state: text('state').notNull().default('pending'),
+    result: text('result'),
+    error: text('error'),
+    receivedAt: real('received_at').notNull(),
+    settledAt: real('settled_at'),
+  },
+  (t) => [index('idx_relay_commands_state').on(t.executorId, t.state, t.receivedAt)],
+);
+export const relayFollows = sqliteTable(
+  'relay_follows',
+  {
+    subscriptionId: text('subscription_id')
+      .notNull()
+      .references(() => pushSubscriptions.id, { onDelete: 'cascade' }),
+    key: text('key').notNull(),
+    createdAt: real('created_at').notNull(),
+  },
+  (t) => [uniqueIndex('idx_relay_follows_identity').on(t.subscriptionId, t.key)],
+);
+export const relayPushOutbox = sqliteTable(
+  'relay_push_outbox',
+  {
+    id: text('id').primaryKey(),
+    subscriptionId: text('subscription_id')
+      .notNull()
+      .references(() => pushSubscriptions.id, { onDelete: 'cascade' }),
+    key: text('key').notNull(),
+    revision: integer('revision').notNull(),
+    payload: text('payload').notNull(),
+    state: text('state').notNull().default('pending'),
+    attempts: integer('attempts').notNull().default(0),
+    nextAttemptAt: real('next_attempt_at').notNull(),
+    lease: text('lease'),
+    lastStatus: integer('last_status'),
+    createdAt: real('created_at').notNull(),
+  },
+  (t) => [index('idx_relay_push_outbox_pending').on(t.state, t.nextAttemptAt)],
+);
