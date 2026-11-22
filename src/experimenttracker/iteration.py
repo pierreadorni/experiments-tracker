@@ -5,17 +5,11 @@ sources are copied before dispatch into an attempt-private package tree; agents
 may edit the stable workspace while allocations use their own copies.
 """
 
-import json
-import os
 import stat
 from pathlib import Path
-from uuid import NAMESPACE_URL, uuid5
 
-from . import artifacts, clock, legacy_archive
+from . import artifacts, legacy_archive
 from .models import ExperimentResult
-from .store import encode
-
-SOURCE_BUDGET = 16 * 1024 * 1024
 
 
 def enabled(exp):
@@ -53,15 +47,6 @@ def metadata(root, name):
     }
 
 
-def bounded_bytes(path, root, limit=artifacts.MAX_ARTIFACT_BYTES):
-    path = artifacts.allowed_path(path, root, max_bytes=limit)
-    with path.open("rb") as stream:
-        value = stream.read(limit + 1)
-    if len(value) > limit:
-        raise ValueError("bounded control/source file grew beyond its limit")
-    return value
-
-
 def check_stage(root, stage, manifest):
     spec = next(s for s in manifest["plan"]["stages"] if s["id"] == stage)
     for name in spec["outputs"]:
@@ -81,125 +66,3 @@ def check_stage(root, stage, manifest):
         if spec.get("sample_count") is not None and result.sample_count != spec["sample_count"]:
             raise ValueError("evaluation sample count differs from the requested count")
     return spec["outputs"]
-
-
-def copy_small(source, source_root, destination):
-    data = bounded_bytes(source, source_root)
-    if destination.is_symlink():
-        raise ValueError("publication destination cannot be a symlink")
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.exists():
-        if bounded_bytes(destination, destination.parent) != data:
-            raise ValueError("small published output already exists with different bytes; use a new name")
-        return
-    pending = destination.with_name("." + destination.name + ".pending")
-    if pending.exists():
-        artifacts.allowed_path(pending, destination.parent)
-        pending.unlink()
-    with pending.open("xb") as stream:
-        stream.write(data)
-        stream.flush()
-        os.fsync(stream.fileno())
-    pending.chmod(0o444)
-    pending.replace(destination)
-
-
-def complete(wf, exp, job, manifest, root, db):
-    """Commit output IDs, selected producer, results and readiness with job success."""
-    stage = job["stage_id"]
-    spec = next(s for s in manifest["plan"]["stages"] if s["id"] == stage)
-    remote = manifest.get("execution")
-    if remote:
-        receipt_name = f"remote-receipt-{stage}-{job['intent_id']}.json"
-        receipt = artifacts.read_json(root / receipt_name, root)
-        records = receipt["outputs"] + receipt["local_outputs"]
-        context, host = "jean-zay", remote["layout"]["host"]
-        producer_root = remote["layout"]["remote_run"]
-    else:
-        records = [metadata(root, name) for name in spec["outputs"] + spec.get("local_outputs", [])]
-        context, host, producer_root = "acacia", wf.config.executor_id, str(root)
-    for record in records:
-        identity = str(uuid5(NAMESPACE_URL, job["intent_id"] + ":" + record["name"]))
-        db.execute(
-            "INSERT OR IGNORE INTO output_refs VALUES(?,?,?,?,?,?,?,?,?)",
-            (
-                identity,
-                exp["id"],
-                job["intent_id"],
-                record["name"],
-                context,
-                host,
-                str(Path(producer_root) / record["name"]),
-                record["kind"],
-                clock.now(),
-            ),
-        )
-    db.execute(
-        "INSERT INTO stage_producers VALUES(?,?,?,?) ON CONFLICT(experiment_id,stage_id) DO UPDATE SET intent_id=excluded.intent_id,rationale=excluded.rationale",
-        (exp["id"], stage, job["intent_id"], "successful declared task outputs"),
-    )
-    publication_root = wf.root(exp["id"])
-    for name in spec["outputs"]:
-        copy_small(root / name, root, publication_root / name)
-    artifacts.register(wf.store, exp["id"], stage, publication_root, spec["outputs"], _db=db)
-    if spec.get("result_file"):
-        result = artifacts.read_json(root / spec["result_file"], root)
-        previous = wf.store.experiment(exp["id"]).get("partial_results")
-        partial = json.loads(previous) if previous else {"tasks": {}}
-        partial["tasks"][stage] = {"intent_id": job["intent_id"], "result": result}
-        metric_keys = [
-            (m["name"], m["variant"]) for task in partial["tasks"].values() for m in task["result"]["metrics"]
-        ]
-        if len(metric_keys) != len(set(metric_keys)):
-            raise ValueError(
-                "evaluation metric/variant pairs must be unique across tasks; qualify dataset/split/variant names"
-            )
-        if (
-            sum(len(t["result"]["metrics"]) for t in partial["tasks"].values()) > 10000
-            or len(encode(partial).encode()) > artifacts.MAX_ARTIFACT_BYTES
-        ):
-            raise ValueError(
-                "combined structured results exceed the bounded 10000-metric/10 MiB budget; retain detailed rows as separate small outputs"
-            )
-        db.execute("UPDATE experiments SET partial_results=? WHERE id=?", (encode(partial), exp["id"]))
-
-
-def reuse(wf, exp, plan):
-    if plan.reuse_stages is None or (plan.reuse_stages and not (plan.reuse_rationale or "").strip()):
-        raise ValueError(
-            "repair must explicitly select reuse_stages and explain reuse_rationale; [] requests no reuse"
-        )
-    reused = {}
-    for stage in plan.stages:
-        if stage.id not in plan.reuse_stages:
-            continue
-        producer = wf.store.one(
-            "SELECT * FROM stage_producers WHERE experiment_id=? AND stage_id=?", (exp["id"], stage.id)
-        )
-        if not producer:
-            raise ValueError(f"no successful selected producer for {stage.id}")
-        job = wf.store.one(
-            "SELECT * FROM jobs WHERE intent_id=? AND state='complete'", (producer["intent_id"],)
-        )
-        if not job:
-            raise ValueError("reuse requires an exact known-successful job")
-        refs = wf.store.rows("SELECT * FROM output_refs WHERE intent_id=?", (job["intent_id"],))
-        if {r["name"] for r in refs} != set(stage.outputs + stage.local_outputs):
-            raise ValueError("reused output declarations differ; choose the producer's original declarations")
-        # Paths are used directly. No prior revision, receipt or source traversal.
-        for ref in refs:
-            if ref["context"] == "acacia" and not Path(ref["path"]).exists():
-                raise ValueError(
-                    f"missing output {ref['id']} ({ref['name']}); choose a replacement or rerun only its producer"
-                )
-        for name in stage.outputs:
-            copy_small(
-                Path(job["execution_root"]) / name, Path(job["execution_root"]), wf.root(exp["id"]) / name
-            )
-        reused[stage.id] = {
-            "intent_id": job["intent_id"],
-            "outputs": stage.outputs,
-            "output_ids": [r["id"] for r in refs],
-            "rationale": plan.reuse_rationale,
-        }
-    return reused
