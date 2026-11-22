@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from helpers import IterationAgent, approve_plan, role_step, seed_saved_contract3, wait_until
+from helpers import IterationAgent, role_step, seed_saved_contract3, wait_until
 from test_iteration_autopilot import activated
 
 from experimenttracker.agent_pool import experiment_owner, project_owner
@@ -108,70 +108,6 @@ def test_finished_task_settles_from_its_source_row(runtime, state, retained):
     # Ownership survives the ended task without a live slot, with the exact saved turn.
     kept = wf.agent_pool.lookup("agent_actions", action_id)
     assert (kept.slot, kept.thread_id, kept.turn_id) == (None, "saved-thread", "saved-turn")
-
-
-@pytest.mark.usefixtures("contract_three_fixture")
-async def test_stage_admission_claims_the_slot_before_dispatch(runtime):
-    store, scheduler, _, old = runtime
-    agent = GatedIterationAgent("prepare")
-    wf = Workflow(old.config, store, scheduler, agent)
-    eid = seed_saved_contract3(store, "Exercise synthetic iteration mechanisms.")
-    await approve_plan(wf, store, eid)
-    action = await wait_until(
-        lambda: store.one(
-            "SELECT * FROM agent_actions WHERE experiment_id=? AND phase='prepare' AND state='running'",
-            (eid,),
-        ),
-        ticks=lambda: wf.tick(force_observe=True),
-    )
-    reservation = wf.agent_pool.lookup("agent_actions", action["id"])
-    # The claim precedes the turn: the source row still has no saved identity.
-    assert (reservation.slot, reservation.role, reservation.owner) == (0, "stage", experiment_owner(eid))
-    assert action["turn_id"] and (reservation.thread_id, reservation.turn_id) == (None, None)
-    calls = agent.calls
-    agent.release.set()
-    await until_released(wf, "agent_actions", action["id"])
-    assert agent.calls == calls
-    await wf.close()
-
-
-@pytest.mark.usefixtures("contract_three_fixture")
-async def test_title_admissions_claim_plan_and_summary_turns(runtime):
-    store, scheduler, _, old = runtime
-    agent = GatedIterationAgent("title")
-    wf = Workflow(old.config, store, scheduler, agent)
-    eid = seed_saved_contract3(store, "Exercise synthetic iteration mechanisms.")
-
-    def running(action_id=None):
-        if action_id:
-            found = saved(store, "agent_actions", action_id)
-        else:
-            found = store.one(
-                "SELECT * FROM agent_actions WHERE experiment_id=? AND phase='title' AND state='running'",
-                (eid,),
-            )
-        return found if found and found["state"] == "running" else None
-
-    title = await wait_until(lambda: running(), ticks=lambda: wf.tick(force_observe=True))
-    reservation = wf.agent_pool.lookup("agent_actions", title["id"])
-    assert (reservation.slot, reservation.role, reservation.owner) == (0, "title", experiment_owner(eid))
-    calls = agent.calls
-    agent.release.set()
-    await until_released(wf, "agent_actions", title["id"])
-    assert saved(store, "agent_actions", title["id"])["state"] == "completed"
-    assert agent.calls == calls
-    # The second title site summarizes an already failed run.
-    agent.release = asyncio.Event()
-    failed = create(store)
-    store.update(failed, phase="failed", error="Existing pipeline failure")
-    summary = str(uuid4())
-    store.command(summary, "action", {"action": "summarize_title"}, eid=failed)
-    await wait_until(lambda: running(summary), ticks=lambda: wf.tick(force_observe=True))
-    claimed(wf, "agent_actions", summary, "title", experiment_owner(failed))
-    agent.release.set()
-    await until_released(wf, "agent_actions", summary)
-    assert saved(store, "agent_actions", summary)["state"] == "completed"
-    await wf.close()
 
 
 @pytest.mark.usefixtures("contract_three_fixture")

@@ -155,7 +155,6 @@ async def test_maintenance_observes_but_never_advances_new_work(config, runtime,
         pytest.fail("maintenance dispatched new work")
 
     monkeypatch.setattr(workflow, "observe_jobs", observe)
-    monkeypatch.setattr(workflow, "advance", forbidden)
     monkeypatch.setattr(workflow.conversation, "advance", forbidden)
     monkeypatch.setattr(workflow.supervisor, "advance", forbidden)
     await workflow.tick(force_observe=True)

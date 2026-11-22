@@ -6,7 +6,7 @@ import time
 from uuid import uuid4
 
 import pytest
-from helpers import seed_saved_contract3
+from helpers import save_snapshot, seed_saved_contract3
 from test_generic import PLAN, SOURCE
 
 from experimenttracker import artifacts
@@ -63,7 +63,7 @@ def temporary_run(runtime):
     plan.stages[0].temporary_outputs = ["temporary/features"]
     plan.stages[0].local_outputs = ["checkpoint"]
     manifest = historical_manifest(root, plan)
-    store.resolve_implementation(eid, manifest)
+    save_snapshot(store, eid, manifest)
     (root / "temporary/features").mkdir(parents=True)
     (root / "temporary/features/data.pt").write_bytes(b"regenerable features")
     (root / "checkpoint").write_bytes(b"valuable model")

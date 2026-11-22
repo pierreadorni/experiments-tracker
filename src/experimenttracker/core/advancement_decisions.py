@@ -124,35 +124,6 @@ def read(db, experiment_id):
     return record
 
 
-def set_decision(db, experiment_id, *, phase, evidence_revision, reason, wait):
-    """Save or replay one supported source-less decision on the open lifetime."""
-    obligation_sources.require_transaction(db)
-    exp = _experiment(db, experiment_id)
-    _require_saved(exp)
-    if exp["phase"] in _TERMINAL:
-        raise ValueError("terminal experiments cannot save advancement decisions")
-    if not _contract3(exp):
-        raise ValueError("advancement decisions require execution contract 3")
-    _check_generation(exp, phase, evidence_revision)
-    _validate_pair(reason, wait)
-
-    latest = obligation_sources.latest_episode(db, SOURCE_TYPE, experiment_id)
-    if latest is None:
-        raise ValueError("advancement decisions require an opened lifetime episode")
-    _check_binding(latest, exp)
-    if latest["state"] != "open":
-        raise ValueError("terminal advancement lifetime requires a proven phase transition")
-    record = {
-        "version": _VERSION,
-        "phase": phase,
-        "evidence_revision": evidence_revision,
-        "reason": reason,
-        "wait": wait,
-    }
-    detail = json.dumps(record, sort_keys=True, separators=(",", ":"))
-    return _open(db, SOURCE_TYPE, exp, wait=wait, detail=detail)
-
-
 def _validate_pair(reason, wait):
     if reason is None:
         expected = "none"

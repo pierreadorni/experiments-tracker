@@ -5,9 +5,8 @@ import json
 from uuid import uuid4
 
 import pytest
-from helpers import IterationAgent, seed_saved_contract3, wait_for_experiment, wait_until
+from helpers import IterationAgent, seed_saved_contract3
 from pydantic import ValidationError
-from test_generic import approve_plan
 
 from experimenttracker import slurm
 from experimenttracker.config import JobResources, ResourceLimits, SlurmConfig
@@ -19,7 +18,6 @@ from experimenttracker.slurm import (
     SubmissionUncertain,
     wrapper,
 )
-from experimenttracker.workflow import Workflow
 
 GPU = JobResources(
     partition="longrun",
@@ -196,92 +194,6 @@ class GPUAgent(IterationAgent):
                 ]
         self.results[(thread_id, turn)] = result
         return turn
-
-
-@pytest.mark.usefixtures("contract_three_engine")
-async def test_gpu_plan_persists_before_dispatch_and_restart_never_resubmits(runtime):
-    store, _, _, old = runtime
-    config = old.config.model_copy(update={"mode": "live"})
-    scheduler = RecordedScheduler(config.state_dir / "resource-fixture", store)
-    agent = GPUAgent()
-    workflow = Workflow(config, store, scheduler, agent)
-    eid = seed_saved_contract3(store)
-    assert store.experiment(eid)["contract"]["execution_contract"] == 3
-    await approve_plan(workflow, store, eid)
-    assert store.experiment(eid)["plan_review"]["schema_version"] == 3
-    await wait_until(
-        lambda: bool(scheduler.submissions),
-        ticks=lambda: workflow.tick(force_observe=True),
-        describe=lambda: store.experiment(eid),
-    )
-    assert scheduler.submissions == 1
-    first = store.one("SELECT * FROM jobs WHERE experiment_id=?", (eid,))
-    assert first["stage_id"] == "train"
-    assert first["state"] == "submitting" and first["job_id"] is None
-    assert json.loads(first["resources"]) == GPU.model_dump()
-    await workflow.close()
-    # A changed fallback configuration cannot rewrite the frozen stage request.
-    config = config.model_copy(
-        update={"slurm": SlurmConfig(partition="shortrun", walltime_minutes_per_job=5)}
-    )
-    workflow = Workflow(config, store, scheduler, agent)
-    await wait_for_experiment(workflow, store, eid, lambda e: e["phase"] in ("complete", "failed"))
-    assert store.experiment(eid)["phase"] == "complete", store.experiment(eid)
-    assert scheduler.submissions == 2
-    assert scheduler.preflights == 2
-    adopted = store.one("SELECT * FROM jobs WHERE intent_id=?", (first["intent_id"],))
-    assert adopted["job_id"] == f"demo-{first['intent_id']}"
-    jobs = store.rows("SELECT resources FROM jobs WHERE experiment_id=?", (eid,))
-    assert len(jobs) == 2
-    assert all(json.loads(job["resources"]) == GPU.model_dump() for job in jobs)
-    await workflow.close()
-
-
-@pytest.mark.usefixtures("contract_three_engine")
-async def test_unavailable_preflight_creates_no_submission_intent_and_no_duplicate_notices(runtime):
-    store, _, _, old = runtime
-    config = old.config.model_copy(update={"mode": "live"})
-    scheduler = RecordedScheduler(config.state_dir / "unavailable-fixture", store)
-    attempts = []
-
-    async def unavailable(intent, script, root, resources):
-        attempts.append(resources)
-        raise ResourceUnavailable("requested GPU is drained")
-
-    scheduler.preflight = unavailable
-    agent = GPUAgent()
-    workflow = Workflow(config, store, scheduler, agent)
-    eid = seed_saved_contract3(store)
-    assert store.experiment(eid)["contract"]["execution_contract"] == 3
-    await approve_plan(workflow, store, eid)
-    await wait_for_experiment(workflow, store, eid, lambda e: e["hold_reason"] == "resources_unavailable")
-    for expected in (2, 3, 4):
-        workflow.last_preflight.clear()
-        await wait_until(
-            lambda value=expected: len(attempts) == value,
-            ticks=lambda: workflow.tick(force_observe=True),
-            describe=lambda: store.experiment(eid),
-        )
-    assert not store.rows("SELECT * FROM jobs WHERE experiment_id=?", (eid,))
-    assert not store.rows("SELECT * FROM events WHERE experiment_id=? AND kind='submission_intent'", (eid,))
-    assert scheduler.submissions == 0
-    assert all(resources == GPU for resources in attempts)
-    assert (
-        len(store.rows("SELECT * FROM inbox WHERE experiment_id=? AND text LIKE 'Slurm cannot%'", (eid,)))
-        == 1
-    )
-    exp = store.experiment(eid)
-    assert exp["phase"] == "preparing" and exp["hold_reason"] == "resources_unavailable"
-    assert exp["error"] == "requested GPU is drained"
-    saved_plan = exp["snapshot"]["plan"]
-    assert [stage["id"] for stage in saved_plan["stages"]] == ["train", "evaluate"]
-    assert saved_plan["figures"] == []
-    assert saved_plan["reuse_stages"] == [] and len(saved_plan["repair_decisions"]) == 2
-    repairs = len(
-        store.rows("SELECT * FROM events WHERE experiment_id=? AND kind='automatic_repair_started'", (eid,))
-    )
-    assert (repairs, agent.calls) == (3, 5)
-    await workflow.close()
 
 
 def test_shell_wrapper_derives_threads_from_resources_and_launches_the_declared_script(tmp_path):

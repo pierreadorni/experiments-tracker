@@ -9,17 +9,14 @@ request ID.
 """
 
 import json
-from uuid import uuid4
 
 import pytest
 from helpers import IterationAgent, approve_plan, seed_saved_contract3, until
 from pydantic import ValidationError
 from test_branch_workspaces import git_project
 
-from experimenttracker.engine import integration_queue
 from experimenttracker.models import Analysis
 from experimenttracker.workflow import Workflow
-from experimenttracker.workspaces import git
 
 
 def saved_analysis(**extra):
@@ -72,123 +69,6 @@ async def completed(runtime, agent, tmp_path=None):
     await approve_plan(workflow, store, eid)
     await until(workflow, store, eid, lambda e: e["phase"] == "complete")
     return workflow, store, eid, source
-
-
-@pytest.mark.usefixtures("contract_three_fixture")
-async def test_completed_named_branch_queues_the_explicit_opt_in_once(runtime, tmp_path):
-    workflow, store, eid, source = await completed(
-        runtime,
-        OptInAgent({"integrate": True, "integrate_reason": "Keep the synthetic improvement."}),
-        tmp_path,
-    )
-    try:
-        branch = store.one("SELECT * FROM experiment_branches WHERE experiment_id=?", (eid,))
-        entries = integration_rows(store, eid)
-        assert len(entries) == 1
-        row, detail = entries[0]
-        assert (detail["stage"], detail["request"]["kind"]) == ("queued", "merge")
-        assert detail["request"]["reason"] == "Keep the synthetic improvement."
-        assert detail["request"]["branch"] == branch["branch"]
-        command = integrate_commands(store)[0]
-        assert (command["experiment_id"], command["origin"]) == (eid, "agent")
-        assert json.loads(command["payload"]) == {"reason": "Keep the synthetic improvement."}
-        # The queued request keeps the command's caller identity, and this boundary
-        # adds no second command and moves no Git ref.
-        assert row["id"].startswith("integration:" + command["request_id"] + ":")
-        assert store.experiment(eid)["analysis"]["integrate"] is True
-        assert branch["state"] == "active"
-        assert git(source, "rev-parse", "HEAD").decode().strip() == branch["base_commit"]
-        assert git(source, "status", "--porcelain", "-z") == b""
-
-        # While its request is open, replaying the completion boundary adds nothing.
-        assert store.request_completion_integration(eid) is None
-        assert len(integration_rows(store, eid)) == 1
-        assert len(integrate_commands(store)) == 1
-
-        # Once the request is terminal, the deterministic ID replays its command
-        # instead of queueing the same completed interpretation twice.
-        request_id = row["id"][len("integration:") :].rsplit(":", 1)[0]
-        with store.tx() as db:
-            integration_queue.finish(db, request_id, "abandoned")
-        replay = store.request_completion_integration(eid)
-        assert replay["state"] == "applied"
-        assert [saved["state"] for saved, _ in integration_rows(store, eid)] == ["abandoned"]
-        assert len(integrate_commands(store)) == 1
-    finally:
-        await workflow.close()
-
-
-@pytest.mark.usefixtures("contract_three_fixture")
-async def test_default_false_completion_queues_nothing(runtime, tmp_path):
-    workflow, store, eid, _ = await completed(runtime, OptInAgent({}), tmp_path)
-    try:
-        assert integration_rows(store, eid) == []
-        assert integrate_commands(store) == []
-        assert store.experiment(eid)["analysis"]["integrate"] is False
-    finally:
-        await workflow.close()
-
-
-@pytest.mark.usefixtures("contract_three_fixture")
-async def test_dont_merge_flag_blocks_the_completion_request(runtime, tmp_path):
-    store, scheduler, _, old = runtime
-    git_project(old, store, tmp_path)
-    workflow = Workflow(old.config, store, scheduler, OptInAgent({}))
-    eid = seed_saved_contract3(store, project_id="anyup-rs", branch_workspace=True)
-    store.command(uuid4(), "dont_merge", {"value": True}, eid=eid)
-    try:
-        await approve_plan(workflow, store, eid)
-        await until(workflow, store, eid, lambda e: e["phase"] == "complete")
-        assert integration_rows(store, eid) == []
-        assert integrate_commands(store) == []
-    finally:
-        await workflow.close()
-
-
-@pytest.mark.usefixtures("contract_three_fixture")
-async def test_an_owner_request_is_not_duplicated_at_completion(runtime, tmp_path):
-    store, scheduler, _, old = runtime
-    git_project(old, store, tmp_path)
-    agent = OptInAgent({"integrate": True, "integrate_reason": "Keep the synthetic improvement."})
-    workflow = Workflow(old.config, store, scheduler, agent)
-    eid = seed_saved_contract3(store, project_id="anyup-rs", branch_workspace=True)
-    assert await workflow.prepare_workspace(store.experiment(eid))
-    store.command(uuid4(), "integrate", {"reason": "Owner requested this merge."}, eid=eid)
-    try:
-        await approve_plan(workflow, store, eid)
-        await until(workflow, store, eid, lambda e: e["phase"] == "complete")
-        entries = integration_rows(store, eid)
-        assert [detail["request"].get("reason") for _, detail in entries] == ["Owner requested this merge."]
-        assert [row["origin"] for row in integrate_commands(store)] == ["local"]
-    finally:
-        await workflow.close()
-
-
-@pytest.mark.usefixtures("contract_three_fixture")
-async def test_the_named_branch_interpretation_prompt_explains_the_opt_in(runtime, tmp_path):
-    workflow, store, eid, _ = await completed(runtime, OptInAgent({}), tmp_path)
-    try:
-        prompt = workflow.prompt(store.experiment(eid), "interpret")
-        assert "integrate:true" in prompt
-        assert "only requests integration once this run completes" in prompt
-        assert "Don't merge flag still settle whether it lands" in prompt
-        assert "The default integrate:false requests nothing" in prompt
-    finally:
-        await workflow.close()
-
-
-@pytest.mark.usefixtures("contract_three_fixture")
-async def test_shared_checkout_completion_queues_nothing_and_offers_no_opt_in(runtime):
-    workflow, store, eid, _ = await completed(
-        runtime, OptInAgent({"integrate": True, "integrate_reason": "Keep the synthetic improvement."})
-    )
-    try:
-        assert store.one("SELECT 1 FROM experiment_branches WHERE experiment_id=?", (eid,)) is None
-        assert integration_rows(store, eid) == []
-        assert integrate_commands(store) == []
-        assert "integrate:true" not in workflow.prompt(store.experiment(eid), "interpret")
-    finally:
-        await workflow.close()
 
 
 def test_old_saved_analyses_stay_valid_and_an_opt_in_needs_a_reason():

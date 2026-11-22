@@ -8,12 +8,10 @@ may edit the stable workspace while allocations use their own copies.
 import json
 import os
 import stat
-import time
 from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
 
 from . import artifacts, clock, legacy_archive
-from .core import advancement_decisions
 from .models import ExperimentResult
 from .store import encode
 
@@ -64,227 +62,11 @@ def bounded_bytes(path, root, limit=artifacts.MAX_ARTIFACT_BYTES):
     return value
 
 
-def capture_sources(root, plan, workspace, project):
-    """Copy only explicitly declared small sources, preserving package paths."""
-    snapshot = root / "snapshot"
-    snapshot.mkdir(parents=True, exist_ok=True)
-    files, project_sources, total = {}, {}, 0
-    for name, base, target_name in [
-        *[(name, workspace, name) for name in plan.files],
-        *[(name, project, "project/" + name) for name in plan.project_files],
-    ]:
-        if not base:
-            raise ValueError("declared executable project sources need a project checkout")
-        value = bounded_bytes(
-            Path(base) / name, Path(base), min(SOURCE_BUDGET - total, artifacts.MAX_ARTIFACT_BYTES)
-        )
-        total += len(value)
-        if total > SOURCE_BUDGET:
-            raise ValueError("declared executable sources exceed the 16 MiB submission budget")
-        target = snapshot / target_name
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if target.exists():
-            if bounded_bytes(target, snapshot) != value:
-                raise ValueError("attempt source staging already exists with different bytes")
-        else:
-            target.write_bytes(value)
-            target.chmod(0o444)
-        files[target_name] = artifacts.sha256(target)
-        if target_name.startswith("project/"):
-            project_sources[name] = target_name
-    return files, project_sources, total
-
-
-def input_refs(store, exp, stage):
-    plan = exp["snapshot"]["plan"]
-    spec = next(s for s in plan["stages"] if s["id"] == stage)
-    if spec.get("input_output_ids") is not None:
-        refs = []
-        for identity in spec["input_output_ids"]:
-            ref = store.one(
-                "SELECT r.* FROM output_refs r JOIN jobs j ON j.intent_id=r.intent_id WHERE r.id=? AND j.state='complete'",
-                (str(identity),),
-            )
-            if ref and ref["experiment_id"] not in (exp["id"], exp.get("reference_experiment_id")):
-                ref = None
-            if not ref:
-                raise ValueError(
-                    "selected input must identify this experiment or its selected reference's successful original producer"
-                )
-            refs.append(ref)
-        return refs
-    needs = spec["needs"]
-    refs = []
-    for need in needs:
-        selected = store.one(
-            "SELECT intent_id FROM stage_producers WHERE experiment_id=? AND stage_id=?", (exp["id"], need)
-        )
-        if not selected:
-            raise ValueError(
-                f"missing selected producer for dependency {need}; select completed work or rerun that producer"
-            )
-        rows = store.rows(
-            "SELECT * FROM output_refs WHERE intent_id=? ORDER BY name", (selected["intent_id"],)
-        )
-        refs.extend(rows)
-    if len({r["name"] for r in refs}) != len(refs):
-        raise ValueError("ambiguous logical input names; explicitly name distinct producer outputs")
-    return refs
-
-
-def committed_project_sources(project, commit, project_sources, files):
-    """The copied project sources must be exactly the blobs of the job's commit.
-
-    A repair candidate or a dirty worktree is never allowed to stand in for another
-    tree: the attempt's file SHA and the commit's blob SHA must name the same bytes.
-    """
-    import hashlib
-
-    from .workspaces import WorkspaceUnavailable, git
-
-    if not project:
-        raise WorkspaceUnavailable("declared executable project sources need a project checkout")
-    for name, target_name in project_sources.items():
-        try:
-            blob = git(project, "cat-file", "blob", f"{commit}:{name}")
-        except WorkspaceUnavailable:
-            raise WorkspaceUnavailable(f"the job commit does not contain project source {name}") from None
-        if hashlib.sha256(blob).hexdigest() != files[target_name]:
-            raise WorkspaceUnavailable(f"the copied project source {name} differs from the job commit")
-
-
-def stage_attempt(wf, exp, stage, intent, commit=None):
-    from .models import Implementation
-
-    started = time.monotonic()
-    root = wf.projects.base_root(exp["id"]) / "attempts" / intent
-    if root.is_symlink() or root.parent.is_symlink():
-        raise ValueError("attempt folder must be owned and not a symlink")
-    root.mkdir(parents=True, exist_ok=True)
-    plan = Implementation.model_validate(exp["snapshot"]["plan"])
-    workspace = wf.working_directory(exp)
-    project = wf.project_context(exp)["checkout"]
-    files, project_sources, source_bytes = capture_sources(root, plan, workspace, project)
-    if commit is not None:
-        committed_project_sources(project, commit, project_sources, files)
-    (root / "snapshot/project").mkdir(exist_ok=True)
-    refs = input_refs(wf.store, exp, stage)
-    spec = next(s for s in exp["snapshot"]["plan"]["stages"] if s["id"] == stage)
-    if not wf.is_remote(exp) or spec.get("executor") == "agent":
-        for ref in refs:
-            if ref["context"] != "acacia" or ref["host"] != wf.config.executor_id:
-                raise ValueError("selected input belongs to another host; arrange an explicit transfer")
-            if not Path(ref["path"]).exists():
-                raise ValueError(f"missing output {ref['id']}; replace or rerun only its producer")
-    else:
-        host = exp["contract"]["execution"]["ssh_host"]
-        if any(ref["context"] != "jean-zay" or ref["host"] != host for ref in refs):
-            raise ValueError(
-                "selected input belongs to another host; arrange an explicit transfer or use input_output_ids:[] for an ordering-only gate"
-            )
-    saved_path = root / "snapshot/manifest.json"
-    if saved_path.exists():
-        saved = artifacts.read_json(saved_path, root)
-        if saved["files"] != files or saved["inputs"] != refs or saved["plan"] != exp["snapshot"]["plan"]:
-            raise ValueError(
-                "pre-dispatch attempt identity already has different sources/inputs; use a new request ID"
-            )
-        if saved.get("commit") != commit:
-            from .workspaces import WorkspaceUnavailable
-
-            raise WorkspaceUnavailable("the saved pre-dispatch attempt belongs to a different commit")
-        return root, saved, refs
-    source_context = {}
-    if commit is not None:
-        # The exact branch commit owns every copied project source; never read a
-        # repair candidate or a different checkout as this job's provenance.
-        source_context["git_commit"] = commit
-    elif project:
-        import subprocess
-
-        try:
-            result = subprocess.run(
-                ["git", "-C", str(project), "rev-parse", "--verify", "HEAD"],
-                capture_output=True,
-                text=True,
-                timeout=2,
-                check=True,
-            )
-            source_context["git_commit"] = result.stdout.strip()[:80]
-        except (OSError, subprocess.SubprocessError):
-            source_context["note"] = "optional Git context unavailable"
-    manifest = {
-        **exp["snapshot"],
-        **(({"executor": "agent", "remote_execution": False}) if spec.get("executor") == "agent" else {}),
-        "files": files,
-        "project_sources": project_sources,
-        "reused_stages": {},
-        "inputs": refs,
-        "intent_id": intent,
-        "source_mode": "declared-copies",
-        "source_context": source_context,
-        "source_bytes": source_bytes,
-        "provenance_bytes_read": 0,
-        "bookkeeping_ms": (time.monotonic() - started) * 1000,
-    }
-    if commit is not None:
-        manifest["commit"] = commit
-    # No Git traversal or dependency/environment freeze. This identity protects
-    # the small command payload, not scientific bytes or later checkout equality.
-    import hashlib
-
-    manifest.pop("snapshot_hash", None)
-    manifest["snapshot_hash"] = hashlib.sha256(encode(manifest).encode()).hexdigest()
-    (root / "snapshot/manifest.json").write_text(encode(manifest))
-    (root / "inputs.json").write_text(encode(refs))
-    return root, manifest, refs
-
-
 def agent_job(wf, exp, phase):
     return wf.store.one(
         "SELECT * FROM jobs WHERE experiment_id=? AND stage_id=? AND attempt=?",
         (exp["id"], phase.removeprefix("agent:"), exp["evidence_revision"]),
     )
-
-
-def queue_agent(wf, exp, stage, commit=None, intent=None):
-    """Record the local attempt and input bindings before any managed turn."""
-    from uuid import uuid4
-
-    existing = agent_job(wf, exp, "agent:" + stage)
-    if existing:
-        return existing
-    intent = intent or str(uuid4())
-    root, manifest, refs = stage_attempt(wf, exp, stage, intent, commit=commit)
-    if commit is not None:
-        # Pin exactly this job's commit under the intent saved immediately below.
-        wf.workspaces.pin_job_commit(exp["id"], intent, commit)
-    with wf.store.tx() as db:
-        db.execute(
-            "INSERT INTO jobs(intent_id,experiment_id,stage_id,attempt,state,script_hash,resources,snapshot_hash,created_at,execution_root,execution_manifest) VALUES(?,?,?,?,'agent',?,'{}',?,?,?,?)",
-            (
-                intent,
-                exp["id"],
-                stage,
-                exp["evidence_revision"],
-                manifest["snapshot_hash"],
-                manifest["snapshot_hash"],
-                clock.now(),
-                str(root),
-                encode(manifest),
-            ),
-        )
-        for ref in refs:
-            db.execute(
-                "INSERT INTO output_bindings VALUES(?,?,?)",
-                (intent, ref["id"], "selected dependency producer"),
-            )
-        db.execute(
-            "UPDATE stages SET state='running',updated_at=? WHERE experiment_id=? AND id=?",
-            (clock.now(), exp["id"], stage),
-        )
-        wf.store.emit(db, exp["id"], "agent_stage_intent", {"intent_id": intent, "stage": stage})
-    return agent_job(wf, exp, "agent:" + stage)
 
 
 def agent_prompt(wf, exp, phase):
@@ -327,66 +109,6 @@ def agent_prompt(wf, exp, phase):
         + "\nPAYLOAD:\n"
         + encode({**payload, "result_schema": ExperimentResult.model_json_schema()})
     )
-
-
-def finish_agent(wf, exp, phase, value):
-    from .models import AgentStageResult
-
-    result = AgentStageResult.model_validate(value)
-    job = agent_job(wf, exp, phase)
-    if job["state"] == "complete":
-        return
-    if result.outcome != "completed":
-        outcome_phase = "training" if result.outcome == "blocked" else "failed"
-        with wf.store.tx() as db:
-            previous = db.execute("SELECT phase FROM experiments WHERE id=?", (exp["id"],)).fetchone()[0]
-            db.execute(
-                "UPDATE stages SET state=?,error=?,updated_at=? WHERE experiment_id=? AND id=?",
-                (
-                    "pending" if result.outcome == "blocked" else "failed",
-                    result.summary,
-                    clock.now(),
-                    exp["id"],
-                    job["stage_id"],
-                ),
-            )
-            db.execute(
-                "UPDATE experiments SET phase=?,hold_reason=?,error=? WHERE id=?",
-                (
-                    outcome_phase,
-                    "agent_stage_blocked" if result.outcome == "blocked" else "agent_stage_failed",
-                    result.summary,
-                    exp["id"],
-                ),
-            )
-            advancement_decisions.sync_lifetime(db, exp["id"], previous, outcome_phase)
-            wf.store.emit(
-                db,
-                exp["id"],
-                "agent_stage_" + result.outcome,
-                {"stage": job["stage_id"], "intent_id": job["intent_id"], "summary": result.summary},
-            )
-        return
-    manifest = json.loads(job["execution_manifest"])
-    root = Path(job["execution_root"])
-    check_stage(root, job["stage_id"], manifest)
-    with wf.store.tx() as db:
-        complete(wf, exp, job, manifest, root, db)
-        db.execute(
-            "UPDATE jobs SET state='complete',ended_at=? WHERE intent_id=?", (clock.now(), job["intent_id"])
-        )
-        db.execute(
-            "UPDATE stages SET state='complete',error=NULL,updated_at=? WHERE experiment_id=? AND id=?",
-            (clock.now(), exp["id"], job["stage_id"]),
-        )
-        db.execute("UPDATE experiments SET hold_reason=NULL,error=NULL WHERE id=?", (exp["id"],))
-        wf.store.emit(
-            db,
-            exp["id"],
-            "agent_stage_complete",
-            {"stage": job["stage_id"], "intent_id": job["intent_id"], "summary": value["summary"]},
-        )
-        queue_working_report(wf, exp, job, db)
 
 
 def check_stage(root, stage, manifest):
@@ -530,43 +252,6 @@ def reuse(wf, exp, plan):
             "rationale": plan.reuse_rationale,
         }
     return reused
-
-
-def prepare_manifest(root, plan, *, python, project, workspace, reused, remote_execution):
-    import hashlib
-
-    target = root / "snapshot/manifest.json"
-    if target.exists():
-        saved = artifacts.read_json(target, root)
-        if saved["plan"] != plan.model_dump():
-            raise ValueError("implementation record differs from saved plan")
-        return saved
-    # Only a complete manifest makes this bounded source record immutable.
-    # A failed pre-dispatch capture must not strand subsequent output corrections.
-    snapshot = root / "snapshot"
-    if snapshot.exists() or snapshot.is_symlink():
-        import shutil
-
-        if snapshot.is_symlink():
-            raise ValueError("source staging directory cannot be a symlink")
-        shutil.rmtree(snapshot)
-    files, project_sources, _ = capture_sources(root, plan, workspace, project)
-    manifest = {
-        "schema_version": 1,
-        "recipe_id": "agent_experiment_v1",
-        "files": files,
-        "plan": plan.model_dump(),
-        "parameters": json.loads(plan.parameters_json),
-        "parameters_hash": hashlib.sha256(plan.parameters_json.encode()).hexdigest(),
-        "expected_outputs": {s.id: s.outputs for s in plan.stages},
-        "python_executable": str(python),
-        "project_sources": project_sources,
-        "reused_stages": reused or {},
-        "remote_execution": remote_execution,
-    }
-    manifest["snapshot_hash"] = hashlib.sha256(encode(manifest).encode()).hexdigest()
-    target.write_text(encode(manifest))
-    return manifest
 
 
 def queue_working_report(wf, exp, job, db):

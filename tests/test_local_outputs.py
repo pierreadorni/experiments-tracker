@@ -6,8 +6,7 @@ import time
 from uuid import uuid4
 
 import pytest
-from helpers import seed_saved_contract3
-from test_dag import PLAN as DAG_PLAN
+from helpers import save_snapshot, seed_saved_contract3
 from test_generic import PLAN, SOURCE
 
 from experimenttracker import artifacts
@@ -53,16 +52,6 @@ def historical_manifest(root, plan):
     return manifest
 
 
-@pytest.mark.parametrize("schema_version", [1, 2])
-def test_legacy_implementation_cannot_be_frozen(tmp_path, schema_version):
-    root = tmp_path / "untouched"
-    payload = {**(DAG_PLAN if schema_version == 2 else PLAN), "schema_version": schema_version}
-    plan = Implementation.model_validate(payload)
-    with pytest.raises(ValueError, match="only schema-3"):
-        artifacts.freeze_implementation(root, plan)
-    assert not root.exists()
-
-
 @pytest.mark.parametrize("change", ["modify", "add", "delete", "rename", "empty_directory"])
 def test_sealed_directory_detects_content_and_membership_changes(tmp_path, change):
     cache = tmp_path / "cache"
@@ -102,7 +91,7 @@ def failed_directory_run(runtime):
     plan = Implementation.model_validate(PLAN)
     plan.stages[0].local_outputs = ["cache"]
     manifest = historical_manifest(root, plan)
-    store.resolve_implementation(eid, manifest)
+    save_snapshot(store, eid, manifest)
     store.stage(eid, "prepare", "complete")
     (root / "raw.json").write_text('{"value":42}')
     (root / "cache").mkdir()

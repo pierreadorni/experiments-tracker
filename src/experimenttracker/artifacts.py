@@ -1,6 +1,5 @@
 import contextlib
 import hashlib
-import html
 import json
 import math
 import mimetypes
@@ -10,7 +9,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 from . import clock
 from .core import report_obligations
-from .models import Analysis, ExperimentResult, ExperimentValidation, Implementation
+from .models import Analysis, ExperimentResult, ExperimentValidation
 from .store import encode
 
 MAX_ARTIFACT_BYTES = 10 * 1024 * 1024
@@ -67,31 +66,6 @@ def ensure_finite_json(value):
     elif isinstance(value, list):
         for item in value:
             ensure_finite_json(item)
-
-
-def freeze_implementation(
-    root: Path,
-    plan: Implementation,
-    *,
-    python=None,
-    project=None,
-    workspace=None,
-    reused=None,
-    remote_execution=False,
-):
-    if plan.schema_version == 3:
-        from .iteration import prepare_manifest
-
-        return prepare_manifest(
-            root,
-            plan,
-            python=python,
-            project=project,
-            workspace=workspace,
-            reused=reused,
-            remote_execution=remote_execution,
-        )
-    raise ValueError("only schema-3 implementations can be frozen")
 
 
 def verify_snapshot(root: Path, manifest):
@@ -339,55 +313,3 @@ def validate_analysis(value, evidence_ids):
     if any(not text.strip() or len(text) > 4000 for text in analysis.limitations + analysis.next_ideas):
         raise ValueError("invalid analysis text")
     return analysis
-
-
-def render_report(exp, result, analysis: Analysis, figure_id, artifact_ids):
-    esc = html.escape
-    rows = "".join(
-        f"<tr><th scope='row'>{esc(m['variant'])}</th><td>{esc(m['name'])}</td>"
-        f"<td>{m['value']:.6g}</td><td>{esc(m['unit'])}</td></tr>"
-        for m in result["metrics"]
-    )
-    header = "<tr><th>Variant</th><th>Metric</th><th>Value</th><th>Unit</th></tr>"
-    figures = figure_id if isinstance(figure_id, list) else [figure_id]
-    figure_html = "".join(
-        f'<figure><img src="/api/artifacts/{esc(i)}" alt="{esc(artifact_ids.get(i, "Experiment figure"))}"><figcaption>{esc(artifact_ids.get(i, ""))}</figcaption></figure>'
-        for i in figures
-    )
-    label = "SYNTHETIC EXPERIMENT" if exp["contract"].get("synthetic_demo") else "EXPERIMENT"
-    observations = "".join(
-        f"<li>{esc(o.text)} <small>Evidence: "
-        + ", ".join(
-            f"<a href='/api/artifacts/{esc(i)}'>{esc(artifact_ids.get(i, i))}</a>" for i in o.evidence_ids
-        )
-        + "</small></li>"
-        for o in analysis.observations
-    )
-    limitations = "".join(f"<li>{esc(t)}</li>" for t in analysis.limitations)
-    ideas = "".join(f"<li>{esc(t)}</li>" for t in analysis.next_ideas)
-    provenance = esc(
-        json.dumps(
-            {
-                "experiment_id": exp["id"],
-                "contract": exp["contract"],
-                "snapshot": exp["snapshot"],
-                "model": exp["model"],
-                "generated_at": clock.now(),
-            },
-            indent=2,
-        )
-    )
-    return f"""<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-    <title>{esc(analysis.title)}</title><style>
-    body{{font:17px/1.6 system-ui,sans-serif;color:#172c35;background:#f8faf9;margin:0 auto;padding:32px 20px;max-width:900px}}
-    h1{{line-height:1.2}}small{{display:block;color:#536976}}table{{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}}
-    th,td{{border-bottom:1px solid #dce5e5;text-align:left;padding:10px}}img{{width:100%;background:white;border-radius:12px}}
-    pre{{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}}a{{color:#087a70}}li{{margin-bottom:12px}}
-    </style><body><p>{label} · Evidence revision {exp["evidence_revision"]}</p>
-    <h1>{esc(analysis.title)}</h1><p>{esc(analysis.summary)}</p><h2>Question</h2><p>{esc(exp["brief"])}</p>
-    <h2>Measured results</h2><p>Values rendered from validated result JSON. Scientific checks are recorded in the evidence.</p>
-    <table><thead>{header}</thead>
-    <tbody>{rows}</tbody></table><h2>Figures</h2>{figure_html}
-    <h2>Interpretation</h2><ul>{observations}</ul><h2>Limitations</h2><ul>{limitations}</ul>
-    <h2>Saved next ideas</h2><p>These suggestions do not launch jobs.</p><ul>{ideas}</ul>
-    <h2>Runnable provenance</h2><pre>{provenance}</pre></body></html>"""

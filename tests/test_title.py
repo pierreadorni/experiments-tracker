@@ -1,8 +1,7 @@
-import asyncio
 from uuid import uuid4
 
 import pytest
-from helpers import IterationAgent, seed_saved_contract3
+from helpers import seed_saved_contract3
 from pydantic import ValidationError
 from test_generic import ImplementationAgent
 from test_steering import wait_for
@@ -29,58 +28,6 @@ def test_title_output_is_bounded_and_prompt_includes_brief():
     prompt = title_prompt("Frozen DINOv3 at scale 1", "anyup-rs", "Segmentation baseline")
     assert "Frozen DINOv3 at scale 1" in prompt
     assert "avoid adding claims about results" in prompt
-
-
-@pytest.mark.usefixtures("contract_three_engine")
-async def test_saved_luna_turn_is_reconciled_after_plan_approval(runtime):
-    store, scheduler, _, old = runtime
-
-    class TitleAgent(IterationAgent):
-        models = [{"id": "gpt-6-luna", "name": "GPT-6 Luna", "reasoning_efforts": ["low"]}]
-
-        async def session(self, thread_id, workspace, *, writable=False, model=None):
-            self.chosen = model
-            return await super().session(thread_id, workspace, writable=writable)
-
-        async def begin(self, thread, prompt, schema, *, workspace=None, effort=None, **kwargs):
-            if "Plan title:" in prompt:
-                assert self.chosen == "gpt-6-luna" and effort == "low"
-                self.calls += 1
-                turn = f"title-{self.calls}"
-                self.results[(thread, turn)] = {"title": "Concise managed title"}
-                self.title_turn = turn
-                return turn
-            return await super().begin(thread, prompt, schema, workspace=workspace, **kwargs)
-
-        async def finish(self, thread, turn):
-            if turn == getattr(self, "title_turn", None):
-                await asyncio.Event().wait()
-            return await super().finish(thread, turn)
-
-    agent = TitleAgent()
-    workflow = Workflow(old.config, store, scheduler, agent)
-    eid = seed_saved_contract3(store, "Test an entirely new method and show its frontier.")
-    assert store.experiment(eid)["contract"]["execution_contract"] == 3
-    await wait_for(
-        workflow,
-        store,
-        eid,
-        lambda exp: bool(
-            store.one(
-                "SELECT 1 FROM agent_actions WHERE experiment_id=? AND phase='title' AND state='running'",
-                (eid,),
-            )
-        ),
-    )
-    assert scheduler.submissions == 0
-    store.command(uuid4(), "plan_review", {"decision": "approve", "plan_revision": 1}, eid=eid)
-    await workflow.close()
-    calls = agent.calls
-    restored = Workflow(old.config, store, scheduler, agent)
-    await wait_for(restored, store, eid, lambda exp: exp["title"] == "Concise managed title")
-    assert store.one("SELECT state FROM agent_actions WHERE phase='title'")["state"] == "completed"
-    assert agent.calls <= calls + 1  # preparation may start; the saved title is not dispatched again
-    await restored.close()
 
 
 @pytest.mark.usefixtures("contract_three_engine")

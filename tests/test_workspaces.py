@@ -5,12 +5,9 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from helpers import IterationAgent, approve_plan, seed_saved_contract3, until
+from helpers import seed_saved_contract3
 from test_projects import register
 
-from experimenttracker.codex_client import DemoAgent
-from experimenttracker.slurm import Observation
-from experimenttracker.workflow import Workflow
 from experimenttracker.workspaces import Workspaces, WorkspaceUnavailable, git, initialize_project
 
 
@@ -32,74 +29,6 @@ def source_repo(config, store, tmp_path):
     (source / ".venv").mkdir()
     (source / ".venv/token").write_text("private runtime sentinel")
     return source
-
-
-@pytest.mark.usefixtures("contract_three_fixture")
-async def test_auto_worktree_implementation_during_training(runtime, tmp_path):
-    store, scheduler, _, old = runtime
-    source = source_repo(old.config, store, tmp_path)
-
-    class ProjectAgent(IterationAgent):
-        async def session(self, thread_id, workspace, *, writable=False, **kwargs):
-            self.cwd, self.writable = workspace, writable
-            return await DemoAgent.session(self, thread_id, workspace, writable=writable)
-
-        async def begin(self, thread, prompt, schema, *, workspace=None, project_workspace=None, **kwargs):
-            phase = json.loads(prompt.split("\nPAYLOAD:\n", 1)[1])["phase"]
-            if phase == "plan":
-                assert not self.writable
-            elif phase == "prepare":
-                assert self.writable and self.cwd == project_workspace
-            if workspace:
-                self.workspace = workspace
-            return await super().begin(
-                thread, prompt, schema, workspace=workspace, project_workspace=project_workspace, **kwargs
-            )
-
-    workflow = Workflow(old.config, store, scheduler, ProjectAgent())
-
-    async def running(job_id):
-        return Observation("RUNNING", None)
-
-    scheduler.observe = running
-    first = experiment(store)
-    assert store.experiment(first)["contract"]["execution_contract"] == 3
-    await approve_plan(workflow, store, first)
-    await until(workflow, store, first, lambda e: e["phase"] == "training")
-    source_before = git(source, "status", "--porcelain", "-z")
-    second = experiment(store)
-    assert store.experiment(second)["contract"]["execution_contract"] == 3
-    await approve_plan(workflow, store, second)
-    await until(workflow, store, second, lambda e: e["hold_reason"] == "compute_busy")
-    row = workflow.workspaces.row(second)
-    assert row["state"] == "ready"
-    # The original implementation may repair in its stable folder while the
-    # second run trains in an isolated checkout. It must never be relocated.
-    assert await workflow.prepare_workspace(store.experiment(first))
-    assert workflow.workspaces.row(first) is None
-    checkout = Path(row["folder"])
-    assert checkout != source
-    assert (checkout / "tracked.py").read_text() == "value = 2\n"
-    assert (checkout / "untracked.py").read_text() == "value = 3\n"
-    assert not (checkout / "deleted.py").exists()
-    assert not (checkout / ".venv").exists()
-    assert git(source, "status", "--porcelain", "-z") == source_before
-    context = workflow.project_context(store.experiment(second))
-    assert context["checkout"] == str(checkout) and context["source_checkout"] == str(source)
-    action = store.one(
-        "SELECT input,thread_id FROM agent_actions WHERE experiment_id=? AND phase='prepare'", (second,)
-    )
-    assert '"isolation":"worktree"' in action["input"]
-    assert '"checkout":' + '"' + str(checkout) + '"' in action["input"]
-    # Ready worktrees retain agent changes rather than reapplying their baseline.
-    (checkout / "tracked.py").write_text("value = 4\n")
-    await workflow.close()
-    restored = Workflow(old.config, store, scheduler, IterationAgent())
-    await restored.tick(force_observe=True)
-    assert restored.workspaces.checkout(second) == str(checkout)
-    assert (checkout / "tracked.py").read_text() == "value = 4\n"
-    assert store.one("SELECT job_id FROM jobs WHERE experiment_id=?", (first,))["job_id"]
-    await restored.close()
 
 
 def test_uncertain_worktree_creation_adopts_only_exact_identity(runtime, tmp_path, monkeypatch):

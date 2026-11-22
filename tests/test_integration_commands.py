@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from helpers import seed_saved_contract4
+from helpers import prepare_branch, seed_saved_contract4
 from test_branch_workspaces import git_project
 
 from experimenttracker import clock
@@ -191,7 +191,7 @@ async def branch_experiment(runtime, tmp_path, monkeypatch):
             "project_id": "anyup-rs",
         },
     )["experiment_id"]
-    assert await workflow.prepare_workspace(store.experiment(eid))
+    assert await prepare_branch(workflow, eid)
     return source, store, workflow, eid
 
 

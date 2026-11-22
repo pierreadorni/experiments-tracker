@@ -1,5 +1,4 @@
 import asyncio
-import json
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -38,29 +37,6 @@ async def make_title_action(store, workflow, monkeypatch, eid):
         await task
     workflow.agent_task = None
     return action
-
-
-@pytest.mark.asyncio
-@pytest.mark.usefixtures("contract_three_fixture")
-async def test_workflow_action_creation_opens_admission_obligation(runtime, monkeypatch):
-    store, _, _, workflow = runtime
-    eid = seed_saved_contract3(store, "A new brief")
-    monkeypatch.setattr(workflow, "prompt", lambda exp, phase: f"saved {phase} prompt")
-    monkeypatch.setattr(workflow.research.service, "authority", lambda *args: "quota_hold")
-    await workflow.agent_stage(store.experiment(eid), "plan")
-    action = store.one("SELECT * FROM agent_actions WHERE experiment_id=? AND phase='plan'", (eid,))
-    rows = obligations_for(store, action["id"])
-    assert [(row["owner"], row["kind"], row["wait"], row["state"]) for row in rows] == [
-        ("backend", "agent_turn", "admission", "open")
-    ]
-    queued_events = store.rows(
-        "SELECT payload FROM events WHERE experiment_id=? AND kind='agent_action_queued'", (eid,)
-    )
-    assert any(
-        (payload := json.loads(event["payload"])).get("action_id") == action["id"]
-        and payload.get("phase") == "plan"
-        for event in queued_events
-    )
 
 
 @pytest.mark.asyncio

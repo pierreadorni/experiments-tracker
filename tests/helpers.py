@@ -98,6 +98,16 @@ async def role_step(controller):
     controller.workflow.agent_pool.admit()
 
 
+async def prepare_branch(workflow, eid):
+    """Create or verify the saved checkout as a contract 4 dispatch does before a turn."""
+    if workflow.store.experiment(eid)["contract"].get("branch_workspace"):
+        await asyncio.to_thread(workflow.workspaces.ensure_branch, eid)
+        await asyncio.to_thread(workflow.workspaces.shared_runtime, eid)
+    elif workflow.workspaces.row(eid):
+        await asyncio.to_thread(workflow.workspaces.ensure, eid)
+    return True
+
+
 async def approve_plan(workflow, store, eid):
     await wait_until(
         lambda: (store.experiment(eid)["plan_review"] or {}).get("state") == "awaiting_review",
@@ -230,6 +240,36 @@ class IterationAgent(DemoAgent):
             }
         self.results[(thread_id, turn)] = result
         return turn
+
+
+def save_snapshot(store, eid, manifest):
+    """Write a historical C3 snapshot and its stage graph as saved state, without the engine."""
+    from experimenttracker import clock
+
+    with store.tx() as db:
+        contract = json.loads(db.execute("SELECT contract FROM experiments WHERE id=?", (eid,)).fetchone()[0])
+        contract.update(
+            parameters=manifest["parameters"],
+            synthetic_demo=manifest["plan"].get("synthetic_demo", False),
+            plan=manifest["plan"],
+        )
+        graph = [
+            *(["plan"] if contract.get("planning_version") else []),
+            "prepare",
+            *[stage["id"] for stage in manifest["plan"]["stages"]],
+            "interpret",
+            "publish",
+        ]
+        for ordinal, stage in enumerate(graph):
+            db.execute(
+                "INSERT INTO stages(experiment_id,id,ordinal,updated_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(experiment_id,id) DO UPDATE SET ordinal=excluded.ordinal",
+                (eid, stage, ordinal, clock.now()),
+            )
+        db.execute(
+            "UPDATE experiments SET contract=?,snapshot=? WHERE id=?",
+            (encode(contract), encode(manifest), eid),
+        )
 
 
 def seed_saved_contract3(

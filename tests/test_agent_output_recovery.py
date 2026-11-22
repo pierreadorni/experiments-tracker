@@ -3,8 +3,6 @@
 import copy
 import json
 import sys
-from unittest.mock import AsyncMock
-from uuid import uuid4
 
 import pytest
 from helpers import PLAN as CURRENT_PLAN
@@ -15,7 +13,6 @@ from test_dag import PLAN as DAG_PLAN
 from test_generic import PLAN
 
 from experimenttracker.models import Implementation, ResearchPlan
-from experimenttracker.store import encode
 from experimenttracker.workflow import Workflow
 
 
@@ -87,72 +84,6 @@ async def saved_plan_failure(runtime):
         plan_review={"state": "drafting", "revision": 1},
     )
     return store, scheduler, agent, workflow, eid, action
-
-
-@pytest.mark.usefixtures("contract_three_engine")
-async def test_revalidate_exact_plan_is_idempotent_and_survives_restart(runtime):
-    store, scheduler, agent, workflow, eid, action = await saved_plan_failure(runtime)
-    calls = agent.calls
-    await workflow.reconcile_agent_output(eid)
-    await workflow.reconcile_agent_output(eid)
-    await workflow.close()
-    workflow = Workflow(workflow.config, store, scheduler, agent)
-    await until_current(workflow, store, eid, lambda e: e["hold_reason"] == "plan_review")
-    assert agent.calls == calls and scheduler.submissions == 0
-    saved = store.one("SELECT * FROM agent_actions WHERE id=?", (action["id"],))
-    assert saved["attempts"] == action["attempts"] and saved["turn_id"] == action["turn_id"]
-    assert json.loads(saved["result"]) == research_plan(3)
-    review = store.experiment(eid)["plan_review"]
-    assert [stage["id"] for stage in review["stages"]] == ["compute_prepare_1", "compute_prepare"]
-    assert review["stages"][1]["needs"] == ["compute_prepare_1"]
-    assert len(store.rows("SELECT * FROM events WHERE kind='agent_output_reconciled'")) == 1
-    await workflow.close()
-
-
-@pytest.mark.parametrize("block", ["uncertain", "mismatch", "nonterminal", "steering"])
-@pytest.mark.usefixtures("contract_three_engine")
-async def test_output_recovery_refuses_unestablished_outcomes(runtime, block, monkeypatch):
-    store, scheduler, agent, workflow, eid, action = await saved_plan_failure(runtime)
-    calls = agent.calls
-    if block == "uncertain":
-        workflow._action_state(action["id"], "uncertain")
-    elif block == "mismatch":
-        agent.results[(action["thread_id"], action["turn_id"])] = {
-            **research_plan(3),
-            "title": "Different turn result",
-        }
-    elif block == "nonterminal":
-        agent.read_turn = AsyncMock(side_effect=ValueError("turn is still running"))
-    else:
-        from experimenttracker import creation_policy
-
-        # The outstanding restart was accepted under C3 before any cutover.
-        with monkeypatch.context() as patch:
-            patch.setattr(creation_policy, "MODE", "legacy")
-            store.command(uuid4(), "steer", {"text": "Change the experiment", "mode": "restart"}, eid=eid)
-    with pytest.raises(ValueError):
-        await workflow.reconcile_agent_output(eid)
-    assert store.experiment(eid)["phase"] == "failed"
-    assert not store.rows("SELECT * FROM events WHERE kind='agent_output_reconciled'")
-    assert agent.calls == calls and scheduler.submissions == 0
-    await workflow.close()
-
-
-@pytest.mark.usefixtures("contract_three_engine")
-async def test_archived_agent_output_reconciliation_refuses_adoption(runtime):
-    store, _, agent, workflow, eid, action = await saved_plan_failure(runtime)
-    contract = store.experiment(eid)["contract"]
-    contract.pop("execution_contract")
-    with store.tx() as db:
-        db.execute("UPDATE experiments SET contract=? WHERE id=?", (encode(contract), eid))
-    calls = agent.calls
-    before = store.one("SELECT state,error,result FROM agent_actions WHERE id=?", (action["id"],))
-    with pytest.raises(ValueError, match="archived legacy"):
-        await workflow.reconcile_agent_output(eid)
-    assert store.one("SELECT state,error,result FROM agent_actions WHERE id=?", (action["id"],)) == before
-    assert not store.rows("SELECT * FROM events WHERE kind='agent_output_reconciled'")
-    assert agent.calls == calls
-    await workflow.close()
 
 
 def test_repair_can_reuse_only_exact_saved_runtime_from_its_own_experiment(runtime, tmp_path):

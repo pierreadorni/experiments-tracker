@@ -6,7 +6,7 @@ from pathlib import Path
 from uuid import UUID
 
 from . import artifacts, clock, iteration
-from .core import advancement_decisions, job_obligations, review_obligations
+from .core import advancement_decisions, review_obligations
 from .store import encode
 
 TERMINAL = {
@@ -25,34 +25,6 @@ TERMINAL = {
 
 def preparing(exp):
     return exp["contract"].get("early_repair", {}).get("state") == "preparing"
-
-
-def active_predecessor(wf, exp, stage):
-    jobs = wf.store.rows(
-        "SELECT * FROM jobs WHERE experiment_id=? AND stage_id=? AND attempt<? ORDER BY attempt DESC",
-        (exp["id"], stage, exp["evidence_revision"]),
-    )
-    for job in jobs:
-        agent = json.loads(job["execution_manifest"] or "{}").get("executor") == "agent"
-        if agent:
-            if job["state"] not in ("complete", "failed", "cancelled"):
-                return job
-        elif not job["job_id"] or job["scheduler_state"] not in TERMINAL or job["exit_code"] is None:
-            if job_obligations.not_submitted(job):
-                # The resolver proved this intent never reached the scheduler, so
-                # it has no exact identity left for a later attempt to wait on.
-                continue
-            return job
-    return None
-
-
-def submission_hold(wf, exp, stage):
-    if preparing(exp):
-        return {"state": "held", "reason": "repair_preparation"}
-    previous = active_predecessor(wf, exp, stage)
-    if previous:
-        return {"state": "held", "reason": "predecessor_pending", "intent_id": previous["intent_id"]}
-    return None
 
 
 def selected(wf, exp, job):

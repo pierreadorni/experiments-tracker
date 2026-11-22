@@ -3,7 +3,7 @@
 import json
 
 import pytest
-from helpers import IterationAgent, approve_plan, seed_saved_contract3, wait_for_experiment
+from helpers import IterationAgent
 from pydantic import ValidationError
 
 from experimenttracker import artifacts
@@ -16,7 +16,6 @@ from experimenttracker.models import (
     ExperimentValidation,
     Implementation,
 )
-from experimenttracker.workflow import Workflow
 
 PLAN = {
     "schema_version": 1,
@@ -191,20 +190,3 @@ class BrokenSourceAgent(IterationAgent):
             assert self.writable and workspace == self.workspace
             (workspace / "recipe.py").write_text("def broken(:\n")
         return turn
-
-
-@pytest.mark.usefixtures("contract_three_engine")
-async def test_invalid_prepared_source_fails_bounded_repair_before_compute(runtime):
-    store, scheduler, _, old = runtime
-    agent = BrokenSourceAgent()
-    workflow = Workflow(old.config, store, scheduler, agent)
-    eid = seed_saved_contract3(store, "Exercise synthetic iteration mechanisms.")
-    assert store.experiment(eid)["contract"]["execution_contract"] == 3
-    await approve_plan(workflow, store, eid)
-    await wait_for_experiment(workflow, store, eid, lambda e: e["phase"] == "failed")
-    exp = store.experiment(eid)
-    assert "does not compile" in exp["error"]
-    assert exp["snapshot"] is None
-    assert scheduler.submissions == 0 and agent.calls == 4
-    assert not store.rows("SELECT * FROM jobs WHERE experiment_id=?", (eid,))
-    await workflow.close()

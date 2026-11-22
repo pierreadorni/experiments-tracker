@@ -10,7 +10,7 @@ import json
 from uuid import uuid4
 
 import pytest
-from helpers import seed_saved_contract3
+from helpers import save_snapshot, seed_saved_contract3
 
 MANIFEST = {
     "snapshot_hash": "synthetic-contract-immutability",
@@ -57,11 +57,11 @@ def test_every_store_contract_rewrite_preserves_the_execution_contract(runtime):
 
     resolved = create(store)
     before = store.experiment(resolved)["contract"]
-    store.resolve_implementation(resolved, MANIFEST)  # store.py:885
+    save_snapshot(store, resolved, MANIFEST)  # store.py:885
     rewrite(store, resolved, before, {"parameters", "synthetic_demo", "plan"})
 
     repaired = create(store)
-    store.resolve_implementation(repaired, MANIFEST)
+    save_snapshot(store, repaired, MANIFEST)
     store.update(repaired, phase="training", hold_reason="agent_stage_blocked")
     action(store, repaired, "agent:train", state="completed", result=json.dumps({"outcome": "blocked"}))
     job(store, repaired, "train", "agent")
@@ -79,7 +79,7 @@ def test_every_store_contract_rewrite_preserves_the_execution_contract(runtime):
     rewrite(store, budgeted, before, {"manual_agent_turn_requests"})
 
     failed = create(store)
-    store.resolve_implementation(failed, MANIFEST)
+    save_snapshot(store, failed, MANIFEST)
     store.update(failed, phase="failed", hold_reason="compute_failed")
     before = store.experiment(failed)["contract"]
     store.command(uuid4(), "action", {"action": "retry_agent"}, eid=failed)  # store.py:1412

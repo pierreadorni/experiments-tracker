@@ -13,7 +13,6 @@ from helpers import seed_saved_contract3
 from scenario import (
     FakeClock,
     FakeCodexBackend,
-    FakeGate,
     FakeSlurmBackend,
     ScenarioTimeout,
     diagnostics,
@@ -24,7 +23,6 @@ from scenario.conftest import Scenario
 from experimenttracker import clock, resolver
 from experimenttracker.config import JobResources
 from experimenttracker.core import job_obligations
-from experimenttracker.slurm import Observation
 from experimenttracker.store import Store
 
 GATE_SECONDS = 20.0  # a real-time failure bound, never a progress condition
@@ -201,51 +199,6 @@ async def planned(scenario, brief):
     return eid
 
 
-@pytest.mark.usefixtures("contract_three_engine")
-async def test_observation_of_an_in_flight_submission_decides_nothing(scenario):
-    store, backend = scenario.store, scenario.slurm_backend
-    eid = await planned(scenario, "Synthetic in-flight submission.")
-    gate = FakeGate()
-    scenario.slurm.submit_gate = gate
-    tick = await tick_until_gated(scenario, gate)
-    try:
-        [intent] = store.rows("SELECT * FROM jobs WHERE experiment_id=?", (eid,))
-        assert (intent["state"], intent["job_id"], intent["error"]) == ("submitting", None, None)
-        assert backend.submit_calls == [intent["intent_id"]]
-        assert scenario.workflow.submissions_in_flight == {intent["intent_id"]}
-
-        # Observation of that saved state, far past the accounting lag, belongs to the
-        # submission owner: it neither holds the experiment nor proves absence.
-        scenario.clock.advance(601)
-        await scenario.workflow.observe_jobs()
-        await scenario.workflow.observe_jobs()
-
-        assert backend.reconcile_calls == []
-        assert store.one("SELECT state,job_id,error FROM jobs WHERE intent_id=?", (intent["intent_id"],)) == {
-            "state": "submitting",
-            "job_id": None,
-            "error": None,
-        }
-        assert events(store, eid, "job_reconciled") == []
-        assert len(events(store, eid, "submission_intent")) == 1
-        assert store.experiment(eid)["hold_reason"] is None
-    finally:
-        gate.release.set()
-    await tick
-    await settle(scenario.workflow)
-
-    [accepted] = backend.accepted
-    saved = store.one("SELECT state,job_id FROM jobs WHERE intent_id=?", (intent["intent_id"],))
-    assert saved == {"state": "submitted", "job_id": accepted["job_id"]}
-    assert events(store, eid, "job_submitted") == [
-        {"intent_id": intent["intent_id"], "job_id": accepted["job_id"]}
-    ]
-    assert events(store, eid, "job_reconciled") == []
-    assert backend.submit_calls == [intent["intent_id"]]
-    assert scenario.workflow.submissions_in_flight == set()
-    assert store.experiment(eid)["hold_reason"] is None
-
-
 async def test_a_snapshot_decided_before_resolve_is_not_decided_again(runtime):
     store, _, _, workflow = runtime
     eid, snapshot = saved_intent(store)
@@ -290,73 +243,3 @@ async def test_a_row_decided_during_the_scheduler_read_writes_no_hold(runtime, w
     }
     assert len(events(store, eid, "job_reconciled")) == 1
     assert store.experiment(eid)["hold_reason"] is None
-
-
-@pytest.mark.usefixtures("contract_three_engine")
-async def test_a_lost_response_after_the_gated_submission_adopts_the_identity_once(scenario):
-    store, backend = scenario.store, scenario.slurm_backend
-    eid = await planned(scenario, "Synthetic lost response after an in-flight submission.")
-    gate = FakeGate()
-    scenario.slurm.submit_gate = gate
-    backend.lose_response = True
-    tick = await tick_until_gated(scenario, gate)
-    gate.release.set()
-    await tick
-    await settle(scenario.workflow)
-
-    [intent] = store.rows("SELECT * FROM jobs WHERE experiment_id=?", (eid,))
-    assert (intent["state"], intent["job_id"]) == ("submitting", None)
-    assert store.experiment(eid)["hold_reason"] == "submission_uncertain"
-    assert backend.reconcile_calls == []
-    assert events(store, eid, "job_reconciled") == []
-    # The submission token is transient: once its outcome is saved, resolution is the
-    # next observer's job again and adopts the exact accepted identity exactly once.
-    assert scenario.workflow.submissions_in_flight == set()
-
-    [accepted] = backend.accepted
-    backend.observations[accepted["job_id"]] = Observation("PENDING", pending_reason="Synthetic queue")
-    await scenario.workflow.tick(force_observe=True)
-    await settle(scenario.workflow)
-
-    assert backend.reconcile_calls == [intent["intent_id"]]
-    saved = store.one("SELECT state,job_id FROM jobs WHERE intent_id=?", (intent["intent_id"],))
-    assert saved == {"state": "submitted", "job_id": accepted["job_id"]}
-    assert events(store, eid, "job_reconciled") == [
-        {
-            "intent_id": intent["intent_id"],
-            "job_id": accepted["job_id"],
-            "evidence": {"query": "squeue+sacct", "observer": "observe_jobs", "matched": 1},
-        }
-    ]
-    assert backend.submit_calls == [intent["intent_id"]]
-    assert store.experiment(eid)["hold_reason"] is None
-
-
-@pytest.mark.usefixtures("contract_three_engine")
-async def test_absence_after_the_accounting_lag_still_records_one_receipt(scenario):
-    store, backend = scenario.store, scenario.slurm_backend
-    eid = await planned(scenario, "Synthetic absence after the accounting lag.")
-    backend.lose_response = backend.lag = True
-    await scenario.run(lambda: store.experiment(eid)["hold_reason"] == "submission_uncertain")
-    [intent] = store.rows("SELECT * FROM jobs WHERE experiment_id=?", (eid,))
-    assert backend.submit_calls == [intent["intent_id"]]
-    assert scenario.workflow.submissions_in_flight == set()
-
-    scenario.clock.advance(601)
-    await scenario.workflow.tick(force_observe=True)
-    await settle(scenario.workflow)
-
-    saved = store.one("SELECT * FROM jobs WHERE intent_id=?", (intent["intent_id"],))
-    assert (saved["state"], saved["job_id"]) == ("failed", None)
-    assert job_obligations.not_submitted(saved)
-    [receipt] = events(store, eid, "job_reconciled")
-    assert (receipt["outcome"], receipt["intent_id"]) == ("not_submitted", intent["intent_id"])
-    assert receipt["evidence"]["accounting_lag_seconds"] == 600
-
-    # A scheduler record that appears afterwards never revives the ended intent.
-    backend.reveal()
-    await scenario.workflow.tick(force_observe=True)
-    await settle(scenario.workflow)
-    assert store.one("SELECT job_id FROM jobs WHERE intent_id=?", (intent["intent_id"],))["job_id"] is None
-    assert len(events(store, eid, "job_reconciled")) == 1
-    assert backend.submit_calls == [intent["intent_id"]]

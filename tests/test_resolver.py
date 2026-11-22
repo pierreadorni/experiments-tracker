@@ -181,23 +181,3 @@ async def test_absence_is_proven_only_after_the_accounting_lag(runtime, waited, 
     # A replay while the row is terminal changes nothing more.
     assert await resolver.resolve(workflow, store.experiment(eid), saved) is None
     assert len(decisions(store, eid)) == 1
-
-
-async def test_proven_absence_is_not_an_active_predecessor(runtime):
-    from experimenttracker import early_repair
-
-    store, _, _, workflow = runtime
-    eid, job = saved_intent(store, created_at=clock.now() - 700, lag=600)
-    store.db.execute("UPDATE experiments SET evidence_revision=2 WHERE id=?", (eid,))
-    workflow.scheduler_for = lambda exp, saved: Scheduler(match=None)
-    assert await resolver.resolve(workflow, store.experiment(eid), job) is None
-
-    assert early_repair.active_predecessor(workflow, store.experiment(eid), "prepare") is None
-    store.db.execute("UPDATE jobs SET error='known local failure' WHERE intent_id=?", (job["intent_id"],))
-    assert not job_obligations.not_submitted(
-        store.one("SELECT * FROM jobs WHERE intent_id=?", (job["intent_id"],))
-    )
-    assert (
-        early_repair.active_predecessor(workflow, store.experiment(eid), "prepare")["intent_id"]
-        == job["intent_id"]
-    )

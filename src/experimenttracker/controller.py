@@ -623,8 +623,6 @@ class Controller:
             return self.status(eid, intent_ids=requested, summary_only=args.get("summary_only", False))
         if name == "schedule_wakeup":
             return self.schedule(eid, args["request_id"], args["delay_seconds"], args["reason"], action["id"])
-        if name == "submit_stage":
-            return await wf.submit_prepared_stage(exp, args["stage_id"], str(UUID(args["request_id"])))
         if name == "register_result":
             job = wf.store.one(
                 "SELECT j.* FROM jobs j JOIN stage_producers p ON p.intent_id=j.intent_id WHERE p.experiment_id=? AND p.stage_id=?",

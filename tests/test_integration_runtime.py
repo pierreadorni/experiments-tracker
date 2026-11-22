@@ -14,6 +14,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from helpers import prepare_branch
 from test_branch_workspaces import create, git_project
 
 from experimenttracker.config import IntegrationConfig
@@ -69,7 +70,7 @@ async def queued_branch(runtime, tmp_path, monkeypatch, *, edit="value = 2\n", c
         settings(store, **declared)
     monkeypatch.setattr(gitworkspace, "_today", lambda: "20260101")
     eid = create(store)
-    assert await workflow.prepare_workspace(store.experiment(eid))
+    assert await prepare_branch(workflow, eid)
     if edit is not None:
         (Path(branch_row(workflow, eid)["worktree"]) / "shared.py").write_text(edit)
     request_id = str(uuid4())
@@ -397,7 +398,7 @@ async def test_one_driver_per_repository_drains_the_queue_in_order(runtime, tmp_
     monkeypatch.setattr(gitworkspace, "_today", lambda: "20260101")
     requests, names = [], []
     for eid in (create(store), create(store)):
-        assert await workflow.prepare_workspace(store.experiment(eid))
+        assert await prepare_branch(workflow, eid)
         names.append(f"{eid}.txt")
         (Path(branch_row(workflow, eid)["worktree"]) / names[-1]).write_text("work\n")
         requests.append(str(uuid4()))

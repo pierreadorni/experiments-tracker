@@ -3,7 +3,6 @@ import io
 import json
 import struct
 import sys
-import time
 from uuid import uuid4
 
 import pytest
@@ -16,7 +15,6 @@ from tensorboard.compat.tensorflow_stub.pywrap_tensorflow import masked_crc32c
 
 from experimenttracker import artifacts
 from experimenttracker.models import Implementation, TensorBoardDisplay
-from experimenttracker.slurm import Observation
 from experimenttracker.tfevents import _CACHE, read_previews
 
 
@@ -208,53 +206,6 @@ def test_curve_preserves_history_as_events_arrive(events):
 def test_event_directory_is_confined(directory):
     with pytest.raises(ValueError):
         TensorBoardDisplay(log_dir=directory, scalar_tag="loss")
-
-
-@pytest.mark.usefixtures("contract_three_engine")
-async def test_preview_is_persisted_with_projection_and_survives_restart(runtime, monkeypatch):
-    store, scheduler, _, workflow = runtime
-    eid = tensorboard_experiment(store, workflow)
-    now, intent = time.time(), str(uuid4())
-    root = workflow.root(eid)
-    directory = root / "tensorboard/fit"
-    directory.mkdir(parents=True)
-    manifest = {
-        "plan": {
-            "stages": [
-                {"id": "train_linear", "tensorboard": {"log_dir": "tensorboard/fit", "scalar_tag": "loss"}}
-            ]
-        }
-    }
-    with store.tx() as db:
-        db.execute(
-            "INSERT INTO jobs(intent_id,experiment_id,stage_id,state,script_hash,resources,snapshot_hash,created_at,job_id,scheduler_state,execution_manifest) VALUES(?,?,?,'submitted','hash','{}','hash',?,'123','RUNNING',?)",
-            (intent, eid, "train_linear", now, json.dumps(manifest)),
-        )
-    (directory / "events.out.tfevents.test").write_bytes(
-        record(event(1, Summary.Value(tag="loss", simple_value=0.5), wall_time=now))
-    )
-
-    async def observe(_):
-        return Observation("RUNNING")
-
-    monkeypatch.setattr(scheduler, "observe", observe)
-    await workflow.observe_jobs()
-    published = store.projection(eid)["jobs"][0]["tensorboard"]
-    assert published["scalar"]["points"] == [[1, 0.5]]
-    assert store.rows("SELECT * FROM events WHERE kind='job_progress'")
-    before = store.experiment(eid)["revision"]
-    await workflow.observe_jobs()
-    assert store.experiment(eid)["revision"] == before
-
-    def fail(*args, **kwargs):
-        raise RuntimeError("outbox interrupted")
-
-    with (directory / "events.out.tfevents.test").open("ab") as stream:
-        stream.write(record(event(2, Summary.Value(tag="loss", simple_value=0.25), wall_time=now + 1)))
-    monkeypatch.setattr(store, "emit", fail)
-    with pytest.raises(RuntimeError, match="outbox interrupted"):
-        await workflow.observe_jobs()
-    assert store.projection(eid)["jobs"][0]["tensorboard"] == published
 
 
 def test_public_preview_budget_prefers_active_jobs_without_mutating_saved_data():

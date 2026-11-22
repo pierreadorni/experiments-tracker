@@ -63,54 +63,6 @@ def add_steering(store, eid, identity, mode):
         )
 
 
-@pytest.mark.usefixtures("contract_three_engine")
-async def test_step_control_advance_selects_only_a_saved_contract_three(
-    runtime, widened_archive, monkeypatch
-):
-    store, _, _, wf = runtime
-    current = saved(store, contract=3)
-    later = saved(store, contract=4)
-    assert not legacy_archive.execution_frozen(store.experiment(later))
-    advanced = []
-
-    async def advance(eid):
-        advanced.append(eid)
-
-    monkeypatch.setattr(wf, "advance", advance)
-    await wf.step_control_advance()
-    assert advanced == [current]
-
-
-async def test_direct_advance_refuses_a_saved_contract_four(runtime, widened_archive):
-    store, scheduler, agent, wf = runtime
-    eid = saved(store, contract=4)
-    before = store.experiment(eid)
-    stages = store.rows("SELECT * FROM stages WHERE experiment_id=?", (eid,))
-    assert not legacy_archive.execution_frozen(before)
-
-    await wf.advance(eid)
-
-    after = store.experiment(eid)
-    assert (after["phase"], after["hold_reason"]) == (before["phase"], before["hold_reason"])
-    assert store.rows("SELECT * FROM stages WHERE experiment_id=?", (eid,)) == stages
-    assert not store.rows("SELECT * FROM agent_actions WHERE experiment_id=?", (eid,))
-    assert not store.rows("SELECT * FROM jobs WHERE experiment_id=?", (eid,))
-    assert agent.calls == 0 and scheduler.submissions == 0
-
-
-async def test_agent_stage_refuses_a_saved_contract_four_turn(runtime, widened_archive):
-    store, scheduler, agent, wf = runtime
-    eid = saved(store, contract=4)
-    exp = store.experiment(eid)
-
-    for phase in ("plan", "prepare", "interpret"):
-        await wf.agent_stage(exp, phase)
-
-    assert store.experiment(eid)["phase"] == exp["phase"]
-    assert not store.rows("SELECT * FROM agent_actions WHERE experiment_id=?", (eid,))
-    assert agent.calls == 0 and scheduler.submissions == 0
-
-
 async def test_planning_steering_and_restart_leave_a_saved_contract_four_unchanged(runtime, widened_archive):
     store, _, _, wf = runtime
     planning = saved(store, contract=4, phase="preparing")
@@ -219,17 +171,3 @@ async def test_stage_tools_refuse_a_saved_contract_four_session(runtime, widened
     # Contract-4 job reads are scoped to the live research turn, not every saved phase.
     with pytest.raises(ValueError, match="active research turn"):
         await wf.controller.call(eid, "job_status", {"request_id": str(uuid4())})
-
-
-async def test_stage_recovery_commands_refuse_a_saved_contract_four(runtime, widened_archive):
-    store, scheduler, _, wf = runtime
-    eid = saved(
-        store,
-        contract=4,
-        snapshot={"plan": {"schema_version": 3, "protocol": "Saved", "stages": []}},
-    )
-    with pytest.raises(ValueError):
-        await wf.submit_prepared_stage(store.experiment(eid), "train")
-    with pytest.raises(ValueError, match="execution contract 3"):
-        await wf.reconcile_outputs(eid)
-    assert scheduler.submissions == 0

@@ -999,42 +999,6 @@ class Store:
                     advancement_decisions.open_cancellation(db, eid, unconfirmed=True)
             self.emit(db, eid, kind, fields)
 
-    def resolve_implementation(self, eid, manifest):
-        with self.tx() as db:
-            row = db.execute("SELECT contract,snapshot FROM experiments WHERE id=?", (eid,)).fetchone()
-            if row["snapshot"]:
-                if json.loads(row["snapshot"]) != manifest:
-                    raise ValueError("resolved implementation cannot change")
-                return
-            contract = json.loads(row["contract"])
-            contract.update(
-                parameters=manifest["parameters"],
-                synthetic_demo=manifest["plan"]["synthetic_demo"],
-                plan=manifest["plan"],
-            )
-            if contract.get("execution_contract") == 3:
-                db.execute(
-                    "DELETE FROM stages WHERE experiment_id=? AND id='validate' AND state='pending'", (eid,)
-                )
-            graph = [
-                *(["plan"] if contract.get("planning_version") else []),
-                "prepare",
-                *[stage["id"] for stage in manifest["plan"]["stages"]],
-                "interpret",
-                "publish",
-            ]
-            for ordinal, stage in enumerate(graph):
-                db.execute(
-                    "INSERT INTO stages(experiment_id,id,ordinal,updated_at) VALUES(?,?,?,?) "
-                    "ON CONFLICT(experiment_id,id) DO UPDATE SET ordinal=excluded.ordinal",
-                    (eid, stage, ordinal, clock.now()),
-                )
-            db.execute(
-                "UPDATE experiments SET contract=?,snapshot=? WHERE id=?",
-                (encode(contract), encode(manifest), eid),
-            )
-            self.emit(db, eid, "implementation_frozen", {"snapshot_hash": manifest["snapshot_hash"]})
-
     def stage(self, eid, stage_id, state, *, error=None, outputs=None):
         if self.experiment(eid)["phase"] == "cancelled":
             return

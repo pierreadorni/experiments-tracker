@@ -12,7 +12,7 @@ import json
 from uuid import uuid4
 
 import pytest
-from helpers import seed_saved_contract3, wait_until
+from helpers import seed_saved_contract3
 from test_iteration_autopilot import activated
 from test_knowledge import completed
 
@@ -117,104 +117,6 @@ async def settle(wf, tasks):
     GatedAgent.gate.set()
     await asyncio.gather(*tasks)
     await wf.tick(force_observe=True)
-
-
-@pytest.mark.usefixtures("contract_three_fixture")
-async def test_two_connections_overlap_an_experiment_and_a_project_decision(runtime, monkeypatch):
-    service, run = activated(runtime, monkeypatch)
-    wf = await pooled(runtime)
-    store, eid = wf.store, create(wf.store)
-    # One central quota decision and one registry serve both configured connections.
-    assert {id(slot.workflow) for slot in wf.agent_pool.slots} == {id(wf)}
-    with store.tx() as db:
-        service.wake(db, run["id"], "synthetic-input", "experiment_change", {"synthetic": True})
-    # The research step prepares its turn; the next control pass selects both roles.
-    await wf.tick(force_observe=True)
-    plan = await wait_until(lambda: running(store, eid), ticks=lambda: wf.tick(force_observe=True))
-    decision = await wait_until(
-        lambda: store.one("SELECT * FROM autopilot_actions WHERE state='running'", ()),
-        ticks=lambda: wf.tick(force_observe=True),
-    )
-    # Two saved rows run at the same time on different configured connections.
-    left = wf.agent_pool.lookup("agent_actions", plan["id"])
-    right = wf.agent_pool.lookup("autopilot_actions", decision["id"])
-    assert (left.connection.slot, right.connection.slot) == (0, 1)
-    assert (plan["thread_id"], plan["turn_id"]) == ("demo-thread-" + eid, "demo-turn-1")
-    assert (decision["thread_id"], decision["turn_id"]) == ("demo-thread-work", "decision-1")
-    # Each connection sent exactly its own turn: the primary never spoke for slot two.
-    assert (wf.agent.calls, wf.agent_pool.slots[1].agent.calls) == (1, 1)
-    tasks = (wf.agent_task, wf.research.task)
-    await settle(wf, tasks)
-    assert store.one("SELECT state FROM agent_actions WHERE id=?", (plan["id"],))["state"] == "completed"
-    assert (store.experiment(eid)["plan_review"] or {}).get("state") == "awaiting_review"
-    assert store.one("SELECT state FROM autopilot_actions WHERE id=?", (decision["id"],))["state"] in (
-        "received",
-        "completed",
-    )
-    await wf.close()
-
-
-@pytest.mark.usefixtures("contract_three_fixture")
-async def test_two_connections_overlap_an_experiment_and_an_owner_project_turn(runtime):
-    wf = await pooled(runtime)
-    store, eid = wf.store, create(wf.store)
-    plan = await wait_until(lambda: running(store, eid), ticks=lambda: wf.tick(force_observe=True))
-    identity = wf.supervisor.memory.enqueue(
-        "test-project", {"request_id": str(uuid4()), "kind": "chat", "text": "Summarize the measurement."}
-    )["request_id"]
-    # An experiment turn stays live on the primary connection; the owner's project
-    # turn is admitted on the free one instead of waiting behind a global slot guard.
-    reservation = await wait_until(
-        lambda: reserved(wf, "project_turns", identity), ticks=lambda: wf.tick(force_observe=True)
-    )
-    assert reserved(wf, "agent_actions", plan["id"]).connection.slot == 0
-    assert reservation.connection.slot == 1
-    turn = store.one("SELECT * FROM project_turns WHERE id=?", (identity,))
-    second = id(wf.agent_pool.slots[1].agent)
-    sent = [entry for entry in GatedAgent.begun if entry[0] == second]
-    assert turn["state"] == "running" and len(sent) == 1
-    assert (turn["thread_id"], turn["turn_id"]) == sent[0][2:]
-    assert (wf.agent.calls, wf.agent_pool.slots[1].agent.calls) == (1, 1)
-    tasks = (wf.agent_task, wf.supervisor.task)
-    await settle(wf, tasks)
-    assert store.one("SELECT state FROM project_turns WHERE id=?", (identity,))["state"] in (
-        "received",
-        "completed",
-    )
-    await wf.close()
-
-
-@pytest.mark.usefixtures("contract_three_fixture")
-async def test_one_configured_turn_serves_the_higher_priority_role_first(runtime, monkeypatch):
-    service, run = activated(runtime, monkeypatch)
-    wf = await pooled(runtime, sessions=1)
-    store, eid = wf.store, create(wf.store)
-    with store.tx() as db:
-        service.wake(db, run["id"], "synthetic-input", "experiment_change", {"synthetic": True})
-    await wf.tick(force_observe=True)
-    plan = await wait_until(lambda: running(store, eid), ticks=lambda: wf.tick(force_observe=True))
-    (decision,) = store.rows("SELECT * FROM autopilot_actions WHERE run_id=?", (run["id"],))
-    # The experiment class outranks research, and one configured turn is occupied.
-    assert (decision["state"], decision["thread_id"], decision["turn_id"]) == ("pending", None, None)
-    assert wf.research.task is None and wf.agent.calls == 1
-    tasks = (wf.agent_task,)
-    await settle(wf, tasks)
-    await wait_until(
-        lambda: (
-            store.one("SELECT state FROM autopilot_actions WHERE id=?", (decision["id"],))["state"]
-            in ("received", "completed")
-        ),
-        ticks=lambda: wf.tick(force_observe=True),
-    )
-    # The one configured turn passed to research after the experiment's saved turn
-    # settled, and the decision's saved identity is the turn research really sent.
-    sent = store.one("SELECT * FROM autopilot_actions WHERE id=?", (decision["id"],))
-    decisions = [entry for entry in GatedAgent.begun if entry[1] not in ("plan", "prepare", "discuss")]
-    assert len(decisions) == 1
-    assert (sent["thread_id"], sent["turn_id"]) == decisions[0][2:]
-    assert store.one("SELECT state FROM agent_actions WHERE id=?", (plan["id"],))["state"] == "completed"
-    assert wf.agent.calls == 2
-    await wf.close()
 
 
 @pytest.mark.usefixtures("contract_three_fixture")

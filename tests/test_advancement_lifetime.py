@@ -82,48 +82,6 @@ def test_command_replay_and_phase_handoffs_keep_the_episode_age(runtime, monkeyp
     assert episodes(store, eid) == opened
 
 
-def test_complete_satisfies_the_lifetime_and_keeps_its_final_decision(runtime):
-    store = runtime[0]
-    eid = saved_experiment(store)
-    exp = store.experiment(eid)
-    with store.tx() as db:
-        save(db, eid, exp, "quota_hold", "admission:quota")
-    store.update(eid, phase="complete", hold_reason=None)
-    assert [(row["id"], row["state"]) for row in episodes(store, eid)] == [
-        (f"advancement:{eid}:0", "satisfied")
-    ]
-    with store.tx() as db:
-        assert advancement_decisions.read(db, eid) == {
-            "version": 1,
-            "phase": exp["phase"],
-            "evidence_revision": exp["evidence_revision"],
-            "reason": "quota_hold",
-            "wait": "admission:quota",
-        }
-
-
-def test_failed_abandons_and_an_approved_retry_opens_the_next_episode(runtime):
-    store = runtime[0]
-    eid = saved_experiment(store)
-    exp = store.experiment(eid)
-    with store.tx() as db:
-        save(db, eid, exp)
-    store.update(eid, phase="failed", hold_reason="compute_failed", error="synthetic failure")
-    assert [(row["id"], row["state"]) for row in episodes(store, eid)] == [
-        (f"advancement:{eid}:0", "abandoned")
-    ]
-    store.update(eid, phase="preparing", hold_reason="automatic_repair", error="synthetic failure")
-    retried = episodes(store, eid)
-    assert [(row["id"], row["state"], row["detail"] is None) for row in retried] == [
-        (f"advancement:{eid}:0", "abandoned", False),
-        (f"advancement:{eid}:1", "open", True),
-    ]
-    with store.tx() as db:
-        assert advancement_decisions.read(db, eid) is None
-        save(db, eid, store.experiment(eid), "agent_busy", "admission:agent_busy")
-        assert advancement_decisions.read(db, eid)["reason"] == "agent_busy"
-
-
 def test_cancellation_closes_advancement_and_opens_its_own_responsibility(runtime):
     store = runtime[0]
     eid = saved_experiment(store)
