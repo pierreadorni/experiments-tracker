@@ -29,19 +29,18 @@ def legacy(store, contract="missing", phase="training", deleted=False):
     return eid
 
 
-@pytest.mark.usefixtures("contract_three_engine")
 def test_archive_sweeps_only_unfinished_non_current_contracts(runtime):
     store, *_ = runtime
-    old = [legacy(store, contract) for contract in ("missing", 1, 2)]
-    current = legacy(store, 3)
+    old = [legacy(store, contract) for contract in ("missing", 1, 2, 3)]
+    current = legacy(store, 4)
     terminal = [legacy(store, 2, phase) for phase in ("complete", "failed", "cancelled")]
     deleted = legacy(store, 2, deleted=True)
     store.archive_legacy_experiments()
-    assert [store.experiment(eid)["hold_reason"] for eid in old] == ["legacy_contract_archived"] * 3
+    assert [store.experiment(eid)["hold_reason"] for eid in old] == ["legacy_contract_archived"] * 4
     assert store.experiment(current)["hold_reason"] is None
     assert all(store.experiment(eid)["hold_reason"] is None for eid in terminal + [deleted])
     assert all(store.experiment(eid)["pending_request"] == {"identity": "saved-rpc"} for eid in old)
-    assert len(store.rows("SELECT * FROM inbox WHERE kind='required_decision'")) == 3
+    assert len(store.rows("SELECT * FROM inbox WHERE kind='required_decision'")) == 4
 
 
 def test_archive_is_replay_safe_and_preserves_saved_identities(runtime):

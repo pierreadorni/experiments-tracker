@@ -1,17 +1,10 @@
 import pytest
 
-from experimenttracker import legacy_archive
 from experimenttracker.codex_client import DemoAgent
 from experimenttracker.config import Config
 from experimenttracker.slurm import DemoScheduler
 from experimenttracker.store import Store
 from experimenttracker.workflow import Workflow
-
-
-@pytest.fixture
-def contract_three_engine(monkeypatch):
-    """Run the retired stage engine for a test of stage behaviour; deleted with the engine."""
-    monkeypatch.setattr(legacy_archive, "SUPPORTED_EXECUTION_CONTRACTS", (3, 4))
 
 
 @pytest.fixture

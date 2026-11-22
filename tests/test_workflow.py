@@ -7,8 +7,6 @@ from test_research_create import git_project
 from experimenttracker import artifacts
 from experimenttracker.store import Conflict, Store
 
-pytestmark = pytest.mark.usefixtures("contract_three_engine")
-
 
 def submit(store):
     return seed_saved_contract3(store, "Compare linear and quadratic models on shared synthetic data.")
