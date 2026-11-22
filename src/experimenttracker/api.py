@@ -493,6 +493,32 @@ def create_app(config, *, components=None, config_path=None, current_release=Non
             raise HTTPException(404, "Unknown command")
         return {"schema_version": 1, **row}
 
+    async def projections():
+        from .publish.projections import Projections
+
+        status = {
+            **await app.state.workflow_status(),
+            "schema_version": 1,
+            "mode": config.mode,
+            "executor_id": config.executor_id,
+        }
+        return Projections(store(), status=status, catalog=status["projects"])
+
+    @app.get("/api/projections", dependencies=[Depends(authorize)])
+    async def projection_list(
+        prefix: str = Query(default="", max_length=100), limit: int = Query(default=100, ge=1, le=200)
+    ):
+        built = await projections()
+        keys = [key for key in built.keys() if key.startswith(prefix)][:limit]
+        return {"schema_version": 1, "projections": [p for key in keys if (p := built.build(key))]}
+
+    @app.get("/api/projections/{key}", dependencies=[Depends(authorize)])
+    async def projection(key: str):
+        result = (await projections()).build(key)
+        if not result:
+            raise HTTPException(404, "Unknown projection")
+        return {"schema_version": 1, **result}
+
     @app.get("/api/artifacts/{artifact_id}", dependencies=[Depends(authorize)])
     async def artifact(artifact_id: UUID):
         row = store().one("SELECT * FROM artifacts WHERE id=? AND local_valid=1", (str(artifact_id),))
