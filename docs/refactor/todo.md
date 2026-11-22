@@ -613,6 +613,25 @@ validation, an idempotent `request_id`, unit tests, and a scenario test.
 
 ---
 
+## Phase 6 — Selectable agent backends: Codex or Claude Agent SDK (C14)
+
+Plan, owner decisions and design: [notes/t6-agent-backends.md](notes/t6-agent-backends.md).
+Starts after the T4.8 engine deletion; T6.0 blocks T6.5 onward. No live use without
+owner authorization (T6.9).
+
+### [ ] T6.0 Owner decisions: API-billed Claude credential, spend limits, per-project data opt-in, AGENTS.md rule amendment · owner · note
+### [ ] T6.1 Capability probe: scripted fixtures plus one owner-authorized, budget-capped live probe recording transcripts for completed, interrupted and killed turns, structured output, MCP stdio and the Bash sandbox on the executor host · S · note
+### [ ] T6.2 `AgentBackend` protocol and neutral `agent_errors.py`; `CodexAgent` and `DemoAgent` conform; no behaviour change · F+R · M
+### [ ] T6.3 Backend binding: optional `ClaudeConfig`, project default, `contract.agent` saved at create (absent means Codex), refuse resume on a different backend, neutral MCP server spec · F+R · M
+### [ ] T6.4 Per-backend admission: `AdmissionSource` (Codex windows unchanged; Claude spend ledger, per-turn cap, `RateLimitEvent`); `AgentPool` capacity per backend · S · M
+### [ ] T6.5 `ClaudeAgent` backend: session, begin, finish, interrupt, structured output, MCP, permissions, sandbox, isolated `CLAUDE_CONFIG_DIR`, protected credential file · S · M
+### [ ] T6.6 Exact Claude turn readback and restart scenarios (C12); uncertain turns never retried · F+R · M
+### [ ] T6.7 Neutral activity events; UI and Worker show backend, model and spend; backend choice in project settings and creation · F · M
+### [ ] T6.8 Lock the SDK in `uv.lock`; `doctor` version and credential checks; install and operations docs · F · S
+### [ ] T6.9 Live pilot on Claude: owner-authorized, small brief, measured turns, cost and interventions (mirrors T4.7) · owner + S
+
+---
+
 ## Log
 
 - **T4.8 recovery scenarios:** migrates shared recovery to C4, and isolates three C3-specific stage and monitor cases. C4 now reads back saved turns after restart and wakes on resolver-proven submission absence. Ruff and the normal full suite (1,481 Python tests in isolated shards) passed. The archive-on scenario, historical compatibility and C4 synthetic group passed all 88 tests. Source +21/−7 and tests/docs +458/−494 across the three migration cards.

@@ -136,7 +136,9 @@ Stop and ask if: acceptance conflicts with existing tests in a way the card does
 
 **T4.8 is current.** Contract 4 is the default for new experiments. Contract 3
 retirement still requires fresh drain evidence and a separate archive step. Phase 5
-follows retirement. See [the task cards](todo.md#phase-4--research-loop-execution-contract-4-c7).
+follows retirement. Phase 6 (selectable Codex or Claude agent backends, C14) starts
+after the engine deletion; its owner decisions (T6.0) block implementation from
+T6.5 onward. See [the plan](notes/t6-agent-backends.md). See [the task cards](todo.md#phase-4--research-loop-execution-contract-4-c7).
 
 T1 is complete under the owner-approved scope cut; see
 [notes/t1-acceptance.md](notes/t1-acceptance.md). Historical handoff notes describe

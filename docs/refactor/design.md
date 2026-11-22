@@ -407,6 +407,17 @@ Each catches and logs its own errors, and slow I/O always runs in threads.
   repeated everywhere.
 - Installation evidence stays in `.local/installation/` without ceremony.
 
+## C14. Agent backends
+
+Every agent role runs through one `AgentBackend` protocol, extracted from
+`CodexAgent`. There are two implementations: Codex (`codex app-server`, managed
+ChatGPT login, quota windows) and Claude (Claude Agent SDK, API-billed credential,
+owner spend budget). The backend is bound per experiment or role at creation and
+saved in the contract; saved contracts without it mean Codex. A session never
+changes backend. Exact turn readback, admission per backend, MCP translation and
+the write boundary are specified in
+[notes/t6-agent-backends.md](notes/t6-agent-backends.md).
+
 ## Migration strategy
 
 - Use a strangler approach. Each todo phase ships independently through the normal
