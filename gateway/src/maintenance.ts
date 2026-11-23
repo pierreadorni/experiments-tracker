@@ -60,15 +60,7 @@ export async function maintenanceRoute(
   env: Env,
   path: string,
 ): Promise<Response | null> {
-  if (
-    ![
-      '/api/maintenance',
-      '/api/maintenance/install',
-      '/api/executor/maintenance',
-      '/api/executor/maintenance-commands',
-    ].includes(path)
-  )
-    return null;
+  if (!['/api/maintenance', '/api/maintenance/install'].includes(path)) return null;
   const read = async () => {
     const text = await request.text();
     if (new TextEncoder().encode(text).byteLength > 16384)
@@ -132,52 +124,6 @@ export async function maintenanceRoute(
         return response({ detail: 'Another installation request is pending' }, 409);
     }
     return response({ request_id: value.request_id, state: 'pending', error: null }, 202);
-  }
-  if (path === '/api/executor/maintenance-commands' && request.method === 'GET') {
-    const rows = await env.DB.prepare(
-      "SELECT request_id,release_id FROM maintenance_commands WHERE executor_id=? AND state='pending' ORDER BY received_at LIMIT 20",
-    )
-      .bind(env.EXECUTOR_ID)
-      .all();
-    return response({ commands: rows.results });
-  }
-  if (path === '/api/executor/maintenance-commands' && request.method === 'POST') {
-    const value = z
-      .object({
-        schema_version: z.literal(1),
-        request_id: z.string().uuid(),
-        release_id: commit,
-        state: z.enum(['accepted', 'rejected']),
-        error: z.string().max(1000).nullable(),
-      })
-      .strict()
-      .parse(await read());
-    const row = await env.DB.prepare(
-      'SELECT * FROM maintenance_commands WHERE request_id=? AND executor_id=?',
-    )
-      .bind(value.request_id, env.EXECUTOR_ID)
-      .first();
-    if (
-      !row ||
-      row.release_id !== value.release_id ||
-      (row.state !== 'pending' && (row.state !== value.state || row.error !== value.error))
-    )
-      return response({ detail: 'Maintenance receipt identity or outcome changed' }, 409);
-    await env.DB.prepare(
-      "UPDATE maintenance_commands SET state=?,error=? WHERE request_id=? AND state='pending'",
-    )
-      .bind(value.state, value.error, value.request_id)
-      .run();
-    return response({ accepted: value.request_id });
-  }
-  if (path === '/api/executor/maintenance' && request.method === 'POST') {
-    const value = status.parse(await read());
-    await env.DB.prepare(
-      'INSERT INTO maintenance_status(executor_id,payload,observed_at) VALUES(?,?,?) ON CONFLICT(executor_id) DO UPDATE SET payload=excluded.payload,observed_at=excluded.observed_at WHERE excluded.observed_at>maintenance_status.observed_at',
-    )
-      .bind(env.EXECUTOR_ID, JSON.stringify(value), value.observed_at)
-      .run();
-    return response({ accepted: true });
   }
   return response({ detail: 'Method not allowed' }, 405);
 }

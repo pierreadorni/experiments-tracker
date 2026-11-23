@@ -39,18 +39,6 @@ const logicalName = z.enum([
   'handoff',
   'guidelines',
 ]);
-const document = z
-  .object({
-    project_id: project,
-    run_id: z.string().uuid(),
-    name: logicalName,
-    version: z.number().int().positive(),
-    content: z.string().min(1).max(200000),
-    sources: z.array(z.record(z.string(), z.unknown())).max(100),
-    author: z.string().max(200),
-    created_at: z.number().finite(),
-  })
-  .strict();
 const reply = (value: object, status = 200) =>
   Response.json(
     { schema_version: 1, ...value },
@@ -68,7 +56,7 @@ export async function autopilotRoute(
     /^\/api\/projects\/([^/]+)\/autopilot(?:\/(commands|handoff)|\/documents\/([^/]+)\/versions\/(\d+))?$/,
   );
   const filePath = path.match(/^\/api\/projects\/([^/]+)\/autopilot\/files\/([^/]+)$/);
-  if (!match && !filePath && !path.startsWith('/api/executor/autopilot')) return null;
+  if (!match && !filePath) return null;
   const read = async () => {
     const text = await request.text();
     if (new TextEncoder().encode(text).byteLength > 1024 * 1024)
@@ -219,190 +207,6 @@ export async function autopilotRoute(
       });
     }
     return reply({ detail: 'Method not allowed' }, 405);
-  }
-  const upload = path.match(/^\/api\/executor\/autopilot-files\/([^/]+)$/);
-  if (upload && request.method === 'POST') {
-    const id = z.string().uuid().parse(upload[1]),
-      pid = project.parse(request.headers.get('X-Project-Id')),
-      run = z.string().uuid().parse(request.headers.get('X-Run-Id'));
-    const bytes = await request.arrayBuffer();
-    if (
-      bytes.byteLength > 10 * 1024 * 1024 ||
-      new TextDecoder().decode(bytes.slice(0, 5)) !== '%PDF-'
-    )
-      return reply({ detail: 'Invalid or oversized PDF' }, 422);
-    const key = 'autopilot-pdf/' + id,
-      old = await env.BUCKET.get(key);
-    if (old) {
-      const previous = new Uint8Array(await old.arrayBuffer()),
-        next = new Uint8Array(bytes);
-      if (previous.length !== next.length || previous.some((byte, i) => byte !== next[i]))
-        return reply({ detail: 'Published PDF is immutable' }, 409);
-    } else await env.BUCKET.put(key, bytes, { httpMetadata: { contentType: 'application/pdf' } });
-    await env.DB.prepare('INSERT OR IGNORE INTO autopilot_documents VALUES(?,?,?,?,?,?)')
-      .bind(id, pid, run, 'paper.pdf', 1, key)
-      .run();
-    return reply({ accepted: id });
-  }
-  if (path === '/api/executor/autopilot-commands' && request.method === 'GET') {
-    const rows = await env.DB.prepare(
-      "SELECT request_id,project_id,payload FROM autopilot_commands WHERE executor_id=? AND state='pending' ORDER BY received_at LIMIT 20",
-    )
-      .bind(env.EXECUTOR_ID)
-      .all();
-    return reply({
-      commands: rows.results.map((row) => ({ ...row, payload: JSON.parse(String(row.payload)) })),
-    });
-  }
-  if (path === '/api/executor/autopilot-commands' && request.method === 'POST') {
-    const result = z
-      .object({
-        request_id: z.string().uuid(),
-        state: z.enum(['accepted', 'rejected']),
-        error: z.string().max(1000).nullable(),
-      })
-      .strict()
-      .parse(await read());
-    const row = await env.DB.prepare(
-      'SELECT state,error FROM autopilot_commands WHERE request_id=? AND executor_id=?',
-    )
-      .bind(result.request_id, env.EXECUTOR_ID)
-      .first();
-    if (
-      !row ||
-      (row.state !== 'pending' && (row.state !== result.state || row.error !== result.error))
-    )
-      return reply({ detail: 'Command receipt identity/outcome changed' }, 409);
-    await env.DB.prepare(
-      "UPDATE autopilot_commands SET state=?,error=? WHERE request_id=? AND state='pending'",
-    )
-      .bind(result.state, result.error, result.request_id)
-      .run();
-    return reply({ accepted: result.request_id });
-  }
-  if (path === '/api/executor/autopilot-documents' && request.method === 'POST') {
-    const value = document.parse(await read()),
-      id = docIdentity(value.run_id, value.name, value.version),
-      key = 'autopilot/' + id;
-    const old = await env.BUCKET.get(key);
-    if (old && (await old.text()) !== value.content)
-      return reply({ detail: 'Published document bytes are immutable' }, 409);
-    if (!old)
-      await env.BUCKET.put(key, value.content, {
-        httpMetadata: { contentType: 'text/plain; charset=utf-8' },
-      });
-    await env.DB.prepare('INSERT OR IGNORE INTO autopilot_documents VALUES(?,?,?,?,?,?)')
-      .bind(id, value.project_id, value.run_id, value.name, value.version, key)
-      .run();
-    const row = await env.DB.prepare('SELECT project_id FROM autopilot_documents WHERE identity=?')
-      .bind(id)
-      .first();
-    if (row?.project_id !== value.project_id)
-      return reply({ detail: 'Document belongs to another project' }, 409);
-    return reply({ accepted: id });
-  }
-  if (path === '/api/executor/autopilot' && request.method === 'POST') {
-    const value = z
-      .object({
-        project_id: project,
-        run_id: z.string().uuid(),
-        revision: z.number().int().nonnegative(),
-        observed_at: z.number().finite(),
-        view: z.record(z.string(), z.unknown()),
-      })
-      .strict()
-      .parse(await read());
-    const view = value.view as any;
-    if (
-      view.run?.id !== value.run_id ||
-      view.run?.project_id !== value.project_id ||
-      view.run?.revision !== value.revision
-    )
-      return reply({ detail: 'Project projection identity mismatch' }, 409);
-    for (const doc of view.documents || []) {
-      const row = await env.DB.prepare(
-        'SELECT object_key FROM autopilot_documents WHERE identity=? AND project_id=?',
-      )
-        .bind(docIdentity(value.run_id, doc.name, doc.version), value.project_id)
-        .first<{ object_key: string }>();
-      if (!row || !(await env.BUCKET.head(row.object_key)))
-        return reply({ detail: 'Publish documents before readiness' }, 409);
-    }
-    for (const file of view.files || []) {
-      const row = await env.DB.prepare(
-        'SELECT object_key FROM autopilot_documents WHERE identity=? AND project_id=?',
-      )
-        .bind(z.string().uuid().parse(file.id), value.project_id)
-        .first<{ object_key: string }>();
-      if (!row || !(await env.BUCKET.head(row.object_key)))
-        return reply({ detail: 'Publish paper files before readiness' }, 409);
-    }
-    const old = await env.DB.prepare(
-      'SELECT run_id,revision,observed_at,payload FROM autopilot_views WHERE project_id=? AND executor_id=?',
-    )
-      .bind(value.project_id, env.EXECUTOR_ID)
-      .first<{ run_id: string; revision: number; observed_at: number; payload: string }>();
-    if (old && old.run_id !== value.run_id && old.observed_at >= value.observed_at)
-      return reply({ accepted: true });
-    const statements: D1PreparedStatement[] = [
-      env.DB.prepare(
-        'INSERT INTO autopilot_views VALUES(?,?,?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET executor_id=excluded.executor_id,run_id=excluded.run_id,revision=excluded.revision,payload=excluded.payload,observed_at=excluded.observed_at WHERE (excluded.run_id=autopilot_views.run_id AND excluded.revision>=autopilot_views.revision AND excluded.observed_at>autopilot_views.observed_at) OR (excluded.run_id!=autopilot_views.run_id AND excluded.observed_at>autopilot_views.observed_at)',
-      ).bind(
-        value.project_id,
-        env.EXECUTOR_ID,
-        value.run_id,
-        value.revision,
-        JSON.stringify(view),
-        value.observed_at,
-      ),
-    ];
-    // Durable attention-only notifications reuse devices already following a linked experiment.
-    // Stable notice IDs prevent repeated pushes on unchanged budget observations.
-    const priorNotices = new Set(
-      old ? (JSON.parse(old.payload).notices || []).map((n: any) => n.id) : [],
-    );
-    if (
-      view.policy?.notifications &&
-      (!old ||
-        (value.observed_at > old.observed_at &&
-          (value.run_id !== old.run_id || value.revision >= old.revision)))
-    ) {
-      const experimentIds = (view.experiments || []).map((e: any) =>
-        z.string().uuid().parse(e.experiment_id),
-      );
-      for (const notice of view.notices || []) {
-        if (
-          priorNotices.has(notice.id) ||
-          notice.resolved_at ||
-          !['researcher_input', 'handoff'].includes(notice.kind)
-        )
-          continue;
-        const payload = JSON.stringify({
-          title: 'Research Autopilot',
-          body: String(notice.text).slice(0, 240),
-          alert: true,
-          url: `/?project=${encodeURIComponent(value.project_id)}&view=memory`,
-          timestamp: Date.now(),
-        });
-        statements.push(
-          env.DB.prepare(
-            `INSERT OR IGNORE INTO push_outbox(id,subscription_id,experiment_id,revision,payload,next_attempt_at,created_at)
-          SELECT ? || ':' || f.subscription_id,f.subscription_id,MIN(f.experiment_id),?,json_set(?,'$.experiment_id',MIN(f.experiment_id)),?,?
-          FROM push_follows f JOIN projections p ON p.id=f.experiment_id
-          WHERE f.experiment_id IN (SELECT value FROM json_each(?)) AND p.deleted_at IS NULL GROUP BY f.subscription_id`,
-          ).bind(
-            'autopilot:' + notice.id,
-            value.revision,
-            payload,
-            Date.now() / 1000,
-            Date.now() / 1000,
-            JSON.stringify(experimentIds),
-          ),
-        );
-      }
-    }
-    await env.DB.batch(statements);
-    return reply({ accepted: true });
   }
   return reply({ detail: 'Method not allowed' }, 405);
 }
