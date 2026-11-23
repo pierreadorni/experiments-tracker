@@ -3,16 +3,7 @@ import { relayRoute } from './relay';
 import { z } from 'zod';
 import { maintenanceRoute } from './maintenance';
 import { assets } from './generated-assets';
-import {
-  pushConfigured,
-  pushOwner,
-  pushHash,
-  pushEndpointSchema,
-  pushFollowSchema,
-  pushStatements,
-  experimentNotification,
-  drainPush,
-} from './push';
+import { pushConfigured, pushOwner, pushHash, pushEndpointSchema, drainPush } from './push';
 
 export interface Env {
   DB: D1Database;
@@ -1259,9 +1250,6 @@ async function publish(env: Env, value: z.infer<typeof publishSchema>) {
         'INSERT OR IGNORE INTO events(id,experiment_id,revision,received_at) VALUES(?,?,?,?)',
       ).bind(message.event_id, exp.id, exp.revision, Date.now() / 1000),
     );
-    statements.push(
-      ...pushStatements(env, exp, existing ? JSON.parse(String(existing.payload)) : null),
-    );
     if (!existing || exp.revision > Number(existing.revision)) {
       const messages = exp.conversation || [];
       if (
@@ -1791,22 +1779,6 @@ async function route(request: Request, env: Env): Promise<Response> {
       available: pushConfigured(env),
       public_key: pushConfigured(env) ? env.VAPID_PUBLIC_KEY : null,
     });
-  if (p === '/api/push/status' && request.method === 'POST') {
-    const payload = z
-      .object({ endpoint: pushEndpointSchema })
-      .strict()
-      .parse(await body(request, 4096));
-    const id = await pushHash(payload.endpoint);
-    const follows = await all(
-      env,
-      `SELECT f.experiment_id FROM push_follows f
-      JOIN push_subscriptions s ON s.id=f.subscription_id JOIN projections p ON p.id=f.experiment_id
-      WHERE s.id=? AND s.owner=? AND p.deleted_at IS NULL`,
-      id,
-      pushOwner(request, env),
-    );
-    return json({ experiments: follows.map((f) => f.experiment_id) });
-  }
   if (p === '/api/push/forget' && request.method === 'POST') {
     const payload = z
       .object({ endpoint: pushEndpointSchema })
@@ -1816,137 +1788,6 @@ async function route(request: Request, env: Env): Promise<Response> {
       .bind(await pushHash(payload.endpoint), pushOwner(request, env))
       .run();
     return json({ removed: true });
-  }
-  const follow = p.match(/^\/api\/experiments\/([^/]+)\/push$/);
-  if (follow && request.method === 'POST') {
-    if (!pushConfigured(env)) throw new HttpError(503, 'Notifications are not configured');
-    const eid = uuid.parse(follow[1]);
-    const projection = await requiredProjection(env, eid);
-    const payload = pushFollowSchema.parse(await body(request, 8192));
-    // Import validates that the subscription point is actually on P-256.
-    const publicBytes = Uint8Array.from(
-      atob(payload.subscription.keys.p256dh.replaceAll('-', '+').replaceAll('_', '/')),
-      (c) => c.charCodeAt(0),
-    );
-    try {
-      await crypto.subtle.importKey(
-        'raw',
-        publicBytes,
-        { name: 'ECDH', namedCurve: 'P-256' },
-        false,
-        [],
-      );
-    } catch {
-      throw new HttpError(422, 'Invalid subscription public key');
-    }
-    const owner = pushOwner(request, env);
-    const id = await pushHash(payload.subscription.endpoint);
-    const hash = await pushHash(JSON.stringify([eid, payload]));
-    const receipt = await first(
-      env,
-      'SELECT owner,payload_hash FROM push_receipts WHERE request_id=?',
-      payload.request_id,
-    );
-    if (receipt) {
-      if (receipt.owner !== owner || receipt.payload_hash !== hash)
-        throw new HttpError(409, 'Notification request identity is immutable');
-      return json({ following: payload.following });
-    }
-    const prior = await first(env, 'SELECT owner FROM push_subscriptions WHERE id=?', id);
-    if (prior && prior.owner !== owner)
-      throw new HttpError(409, 'This browser subscription belongs to another signed-in user');
-    if (
-      !prior &&
-      Number(
-        (await first(env, 'SELECT count(*) AS n FROM push_subscriptions WHERE owner=?', owner))?.n,
-      ) >= 32
-    )
-      throw new HttpError(409, 'Too many notification devices; remove an old subscription first');
-    const now = Date.now() / 1000;
-    const guard =
-      'EXISTS(SELECT 1 FROM push_receipts WHERE request_id=? AND owner=? AND payload_hash=?)';
-    const saved = JSON.parse(String(projection.payload));
-    const initial = experimentNotification(saved).data;
-    initial.alert = true;
-    const statements = [
-      env.DB.prepare(
-        'INSERT OR IGNORE INTO push_receipts(request_id,owner,payload_hash) VALUES(?,?,?)',
-      ).bind(payload.request_id, owner, hash),
-    ];
-    if (payload.following) {
-      statements.push(
-        env.DB.prepare(
-          `INSERT INTO push_subscriptions(id,owner,subscription,updated_at)
-        SELECT ?,?,?,? WHERE ${guard} ON CONFLICT(id) DO UPDATE SET subscription=excluded.subscription,updated_at=excluded.updated_at WHERE push_subscriptions.owner=excluded.owner`,
-        ).bind(
-          id,
-          owner,
-          JSON.stringify(payload.subscription),
-          now,
-          payload.request_id,
-          owner,
-          hash,
-        ),
-      );
-      statements.push(
-        env.DB.prepare(
-          `INSERT OR IGNORE INTO push_outbox(id,subscription_id,experiment_id,revision,payload,next_attempt_at,created_at)
-        SELECT ?,?,?,?,?,?,? WHERE ${guard} AND EXISTS(SELECT 1 FROM push_subscriptions WHERE id=? AND owner=?)
-        AND NOT EXISTS(SELECT 1 FROM push_follows WHERE subscription_id=? AND experiment_id=?)`,
-        ).bind(
-          `follow:${payload.request_id}`,
-          id,
-          eid,
-          saved.revision,
-          JSON.stringify(initial),
-          now,
-          now,
-          payload.request_id,
-          owner,
-          hash,
-          id,
-          owner,
-          id,
-          eid,
-        ),
-      );
-      statements.push(
-        env.DB.prepare(
-          `INSERT OR IGNORE INTO push_follows(subscription_id,experiment_id,created_at)
-        SELECT ?,?,? WHERE ${guard} AND EXISTS(SELECT 1 FROM push_subscriptions WHERE id=? AND owner=?)`,
-        ).bind(id, eid, now, payload.request_id, owner, hash, id, owner),
-      );
-    } else {
-      statements.push(
-        env.DB.prepare(
-          `DELETE FROM push_follows WHERE subscription_id=? AND experiment_id=? AND ${guard}`,
-        ).bind(id, eid, payload.request_id, owner, hash),
-      );
-      statements.push(
-        env.DB.prepare(
-          `DELETE FROM push_outbox WHERE subscription_id=? AND experiment_id=? AND ${guard}`,
-        ).bind(id, eid, payload.request_id, owner, hash),
-      );
-      statements.push(
-        env.DB.prepare(
-          `DELETE FROM push_subscriptions WHERE id=? AND owner=? AND ${guard} AND NOT EXISTS(SELECT 1 FROM push_follows WHERE subscription_id=?)`,
-        ).bind(id, owner, payload.request_id, owner, hash, id),
-      );
-    }
-    await env.DB.batch(statements);
-    const committed = await first(
-      env,
-      'SELECT owner,payload_hash FROM push_receipts WHERE request_id=?',
-      payload.request_id,
-    );
-    if (committed?.owner !== owner || committed?.payload_hash !== hash)
-      throw new HttpError(409, 'Notification request identity is immutable');
-    if (
-      payload.following &&
-      (await first(env, 'SELECT owner FROM push_subscriptions WHERE id=?', id))?.owner !== owner
-    )
-      throw new HttpError(409, 'This browser subscription belongs to another signed-in user');
-    return json({ following: payload.following });
   }
   if (p === '/api/session' && request.method === 'POST')
     return json(
@@ -2625,7 +2466,7 @@ export default {
         response.ok &&
         pushConfigured(env) &&
         (new URL(request.url).pathname.startsWith('/api/executor/') ||
-          /\/push$/.test(new URL(request.url).pathname))
+          /^\/api\/push\/follows\//.test(new URL(request.url).pathname))
       )
         ctx.waitUntil(
           drainPush(env).catch(() => {

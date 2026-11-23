@@ -128,6 +128,7 @@ export const pushSubscriptions = sqliteTable('push_subscriptions', {
   subscription: text('subscription').notNull(),
   updatedAt: real('updated_at').notNull(),
 });
+// Unused since T5.2f: follows live in relay_follows. Kept so drizzle-kit generates no DROP.
 export const pushFollows = sqliteTable(
   'push_follows',
   {
@@ -146,6 +147,7 @@ export const pushReceipts = sqliteTable('push_receipts', {
   owner: text('owner').notNull(),
   payloadHash: text('payload_hash').notNull(),
 });
+// Unused since T5.2f: deliveries live in relay_push_outbox. Kept so drizzle-kit generates no DROP.
 export const pushOutbox = sqliteTable(
   'push_outbox',
   {

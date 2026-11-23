@@ -60,11 +60,11 @@ export function FollowExperiment({ id }: { id: string }) {
           await forgetNotificationDevice();
           return;
         }
-        const status = await api<{ experiments: string[] }>('/api/push/status', {
+        const status = await api<{ keys: string[] }>('/api/push/follows/status', {
           method: 'POST',
           body: JSON.stringify({ endpoint: subscription.endpoint }),
         });
-        if (active) setFollowing(status.experiments.includes(id));
+        if (active) setFollowing(status.keys.includes(`experiment:${id}`));
       } catch (e) {
         if (active) {
           if (e instanceof RequestError && e.status === 404) setAvailable(false);
@@ -106,15 +106,18 @@ export function FollowExperiment({ id }: { id: string }) {
         setFollowing(false);
         return;
       }
-      const result = await api<{ following: boolean }>(`/api/experiments/${id}/push`, {
-        method: 'POST',
-        body: JSON.stringify({
-          schema_version: 1,
-          request_id: crypto.randomUUID(),
-          subscription: subscription.toJSON(),
-          following: !following,
-        }),
-      });
+      const result = await api<{ following: boolean }>(
+        `/api/push/follows/${encodeURIComponent(`experiment:${id}`)}`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            schema_version: 1,
+            request_id: crypto.randomUUID(),
+            subscription: subscription.toJSON(),
+            following: !following,
+          }),
+        },
+      );
       setFollowing(result.following);
       if (!result.following)
         for (const notice of await registration.getNotifications({ tag: `experiment:${id}` }))

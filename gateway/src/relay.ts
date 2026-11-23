@@ -1,4 +1,16 @@
 import type { Env } from './index';
+import {
+  experimentNotification,
+  pushConfigured,
+  pushEndpointSchema,
+  pushFollowSchema,
+  pushHash,
+  pushOwner,
+  relayPushStatements,
+  relayTombstoneStatements,
+  type RelayNotify,
+} from './push';
+import { z } from 'zod';
 
 // Relay surface (T5.2a): auth, size, executor identity and monotonic revisions only.
 // The main router authenticates the executor and browser roles before calling relayRoute.
@@ -126,25 +138,195 @@ async function putProjection(request: Request, env: Env, path: string) {
   // A null document is a tombstone: it hides the key and the blobs it owns.
   const doc = value.document === undefined ? null : value.document;
   const payload = doc === null ? null : JSON.stringify(doc);
-  const notify = value.notify as { fingerprint?: unknown } | undefined;
-  if (
-    notify !== undefined &&
-    (typeof notify !== 'object' || typeof notify?.fingerprint !== 'string')
-  )
-    throw new Refusal(400, 'Invalid notify');
+  const notify = value.notify as RelayNotify | undefined;
+  if (notify !== undefined) {
+    const t = notify?.targets;
+    if (
+      typeof notify !== 'object' ||
+      typeof notify?.fingerprint !== 'string' ||
+      typeof notify.title !== 'string' ||
+      typeof notify.body !== 'string' ||
+      typeof notify.url !== 'string' ||
+      typeof notify.alert !== 'boolean' ||
+      !Array.isArray(t) ||
+      t.length > 50 ||
+      !t.every((x) => typeof x === 'string' && KEY.test(x))
+    )
+      throw new Refusal(400, 'Invalid notify');
+  }
   const digest = await sha256(payload ?? '\u0000tombstone');
   const now = Date.now() / 1000;
-  const written = await env.DB.prepare(
-    'INSERT INTO relay_projections(key,executor_id,revision,payload,digest,notify_fingerprint,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET revision=excluded.revision,payload=excluded.payload,digest=excluded.digest,notify_fingerprint=excluded.notify_fingerprint,updated_at=excluded.updated_at WHERE excluded.revision>relay_projections.revision',
-  )
-    .bind(k, env.EXECUTOR_ID, rev, payload, digest, notify?.fingerprint ?? null, now)
-    .run();
+  const prior = await first(
+    env,
+    'SELECT revision,notify_fingerprint FROM relay_projections WHERE key=?',
+    k,
+  );
+  const newer = !prior || rev > Number(prior.revision);
+  const extra = !newer
+    ? []
+    : doc === null
+      ? relayTombstoneStatements(env, k, rev)
+      : notify && notify.fingerprint !== prior?.notify_fingerprint
+        ? relayPushStatements(env, k, rev, notify)
+        : [];
+  const [written] = await env.DB.batch([
+    env.DB.prepare(
+      'INSERT INTO relay_projections(key,executor_id,revision,payload,digest,notify_fingerprint,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET revision=excluded.revision,payload=excluded.payload,digest=excluded.digest,notify_fingerprint=excluded.notify_fingerprint,updated_at=excluded.updated_at WHERE excluded.revision>relay_projections.revision',
+    ).bind(k, env.EXECUTOR_ID, rev, payload, digest, notify?.fingerprint ?? null, now),
+    ...extra,
+  ]);
   if (written.meta.changes)
     return reply({ schema_version: 1, key: k, revision: rev, applied: true });
-  const prior = await first(env, 'SELECT revision,digest FROM relay_projections WHERE key=?', k);
-  if (prior && prior.revision === rev && prior.digest === digest)
+  const same = await first(env, 'SELECT revision,digest FROM relay_projections WHERE key=?', k);
+  if (same && same.revision === rev && same.digest === digest)
     return reply({ schema_version: 1, key: k, revision: rev, applied: false });
   throw new Refusal(409, 'stale revision');
+}
+
+const FOLLOW = new RegExp(`^experiment:${uuid}$`);
+const followOwner = (request: Request, env: Env) => pushOwner(request, env);
+
+async function followStatus(request: Request, env: Env) {
+  const { endpoint } = z
+    .object({ endpoint: pushEndpointSchema })
+    .strict()
+    .parse((await readJson(request, 4096)).value);
+  const found = await rows(
+    env,
+    `SELECT f.key FROM relay_follows f JOIN push_subscriptions s ON s.id=f.subscription_id
+    JOIN relay_projections p ON p.key=f.key WHERE s.id=? AND s.owner=? AND p.payload IS NOT NULL`,
+    await pushHash(endpoint),
+    followOwner(request, env),
+  );
+  return reply({ schema_version: 1, keys: found.map((f) => f.key) });
+}
+
+// Follow or unfollow one projection key. Receipts make a replayed request idempotent.
+async function follow(request: Request, env: Env, k: string) {
+  if (!pushConfigured(env)) throw new Refusal(503, 'Notifications are not configured');
+  if (!FOLLOW.test(k)) throw new Refusal(400, 'Only experiments can be followed');
+  const projection = await first(
+    env,
+    'SELECT revision,payload FROM relay_projections WHERE key=? AND payload IS NOT NULL',
+    k,
+  );
+  if (!projection) throw new Refusal(404, 'Unknown projection');
+  const payload = pushFollowSchema.parse((await readJson(request, 8192)).value);
+  // Import validates that the subscription point is actually on P-256.
+  const publicBytes = Uint8Array.from(
+    atob(payload.subscription.keys.p256dh.replaceAll('-', '+').replaceAll('_', '/')),
+    (c) => c.charCodeAt(0),
+  );
+  try {
+    await crypto.subtle.importKey(
+      'raw',
+      publicBytes,
+      { name: 'ECDH', namedCurve: 'P-256' },
+      false,
+      [],
+    );
+  } catch {
+    throw new Refusal(422, 'Invalid subscription public key');
+  }
+  const owner = followOwner(request, env);
+  const id = await pushHash(payload.subscription.endpoint);
+  const hash = await pushHash(JSON.stringify([k, payload]));
+  const immutable = () => new Refusal(409, 'Notification request identity is immutable');
+  const saved = await first(
+    env,
+    'SELECT owner,payload_hash FROM push_receipts WHERE request_id=?',
+    payload.request_id,
+  );
+  if (saved) {
+    if (saved.owner !== owner || saved.payload_hash !== hash) throw immutable();
+    return reply({ following: payload.following });
+  }
+  const prior = await first(env, 'SELECT owner FROM push_subscriptions WHERE id=?', id);
+  if (prior && prior.owner !== owner)
+    throw new Refusal(409, 'This browser subscription belongs to another signed-in user');
+  if (
+    !prior &&
+    Number(
+      (await first(env, 'SELECT count(*) AS n FROM push_subscriptions WHERE owner=?', owner))?.n,
+    ) >= 32
+  )
+    throw new Refusal(409, 'Too many notification devices; remove an old subscription first');
+  const now = Date.now() / 1000;
+  const guard =
+    'EXISTS(SELECT 1 FROM push_receipts WHERE request_id=? AND owner=? AND payload_hash=?)';
+  const mine = [payload.request_id, owner, hash];
+  const statements = [
+    env.DB.prepare(
+      'INSERT OR IGNORE INTO push_receipts(request_id,owner,payload_hash) VALUES(?,?,?)',
+    ).bind(...mine),
+  ];
+  if (payload.following) {
+    let initial: Record<string, unknown>;
+    try {
+      initial = experimentNotification(JSON.parse(String(projection.payload))).data;
+    } catch {
+      initial = { title: 'ExperimentTracker', body: 'You are following this experiment', url: '/' };
+    }
+    initial = {
+      ...initial,
+      alert: true,
+      revision: projection.revision,
+      experiment_id: k.slice(11),
+    };
+    statements.push(
+      env.DB.prepare(
+        `INSERT INTO push_subscriptions(id,owner,subscription,updated_at)
+        SELECT ?,?,?,? WHERE ${guard} ON CONFLICT(id) DO UPDATE SET subscription=excluded.subscription,updated_at=excluded.updated_at WHERE push_subscriptions.owner=excluded.owner`,
+      ).bind(id, owner, JSON.stringify(payload.subscription), now, ...mine),
+      env.DB.prepare(
+        `INSERT OR IGNORE INTO relay_push_outbox(id,subscription_id,key,revision,payload,next_attempt_at,created_at)
+        SELECT ?,?,?,?,?,?,? WHERE ${guard} AND EXISTS(SELECT 1 FROM push_subscriptions WHERE id=? AND owner=?)
+        AND NOT EXISTS(SELECT 1 FROM relay_follows WHERE subscription_id=? AND key=?)`,
+      ).bind(
+        `follow:${payload.request_id}`,
+        id,
+        k,
+        projection.revision,
+        JSON.stringify(initial),
+        now,
+        now,
+        ...mine,
+        id,
+        owner,
+        id,
+        k,
+      ),
+      env.DB.prepare(
+        `INSERT OR IGNORE INTO relay_follows(subscription_id,key,created_at)
+        SELECT ?,?,? WHERE ${guard} AND EXISTS(SELECT 1 FROM push_subscriptions WHERE id=? AND owner=?)`,
+      ).bind(id, k, now, ...mine, id, owner),
+    );
+  } else {
+    statements.push(
+      env.DB.prepare(
+        `DELETE FROM relay_follows WHERE subscription_id=? AND key=? AND ${guard}`,
+      ).bind(id, k, ...mine),
+      env.DB.prepare(
+        `DELETE FROM relay_push_outbox WHERE subscription_id=? AND key=? AND ${guard}`,
+      ).bind(id, k, ...mine),
+      env.DB.prepare(
+        `DELETE FROM push_subscriptions WHERE id=? AND owner=? AND ${guard} AND NOT EXISTS(SELECT 1 FROM relay_follows WHERE subscription_id=?)`,
+      ).bind(id, owner, ...mine, id),
+    );
+  }
+  await env.DB.batch(statements);
+  const committed = await first(
+    env,
+    'SELECT owner,payload_hash FROM push_receipts WHERE request_id=?',
+    payload.request_id,
+  );
+  if (committed?.owner !== owner || committed?.payload_hash !== hash) throw immutable();
+  if (
+    payload.following &&
+    (await first(env, 'SELECT owner FROM push_subscriptions WHERE id=?', id))?.owner !== owner
+  )
+    throw new Refusal(409, 'This browser subscription belongs to another signed-in user');
+  return reply({ following: payload.following });
 }
 
 async function putBlob(request: Request, env: Env, blobId: string) {
@@ -312,6 +494,9 @@ async function run(request: Request, env: Env, p: string, url: URL): Promise<Res
     if (p === '/api/executor/relay/receipts' && m === 'POST') return postReceipt(request, env);
     throw new Refusal(404, 'Unknown endpoint');
   }
+  if (p === '/api/push/follows/status' && m === 'POST') return followStatus(request, env);
+  if ((match = p.match(/^\/api\/push\/follows\/([^/]+)$/)) && m === 'POST')
+    return follow(request, env, param(match[1]));
   if (p === '/api/session' && m === 'GET')
     return reply({ schema_version: 1, authenticated: true, host: 'gateway' });
   if (p === '/api/projections' && m === 'GET') return list(url, env);
@@ -359,7 +544,8 @@ async function run(request: Request, env: Env, p: string, url: URL): Promise<Res
 }
 
 export async function relayRoute(request: Request, env: Env, p: string): Promise<Response | null> {
-  if (!/^\/api\/(executor\/relay\/|projections|commands|blobs\/|session$)/.test(p)) return null;
+  if (!/^\/api\/(executor\/relay\/|projections|commands|blobs\/|session$|push\/follows)/.test(p))
+    return null;
   try {
     return await run(request, env, p, new URL(request.url));
   } catch (error) {

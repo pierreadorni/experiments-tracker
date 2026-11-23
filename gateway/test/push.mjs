@@ -57,11 +57,12 @@ function decrypt(body) {
   assert.equal(plain[end], 2);
   return JSON.parse(plain.subarray(0, end).toString());
 }
-async function req(url, body, machine = false) {
+async function req(url, body, machine = false, method = 'POST') {
   return mf.dispatchFetch('https://gateway.test' + url, {
-    method: body === undefined ? 'GET' : 'POST',
+    method: body === undefined ? 'GET' : method,
     headers: {
       Authorization: `Bearer ${machine ? executor : user}`,
+      ...(machine ? { 'x-executor-id': 'acacia' } : {}),
       'Content-Type': 'application/json',
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -71,7 +72,7 @@ async function settled() {
   for (let i = 0; i < 100; i++) {
     const row = await db
       .prepare(
-        "SELECT count(*) AS n FROM push_outbox WHERE state='dispatching' OR (state='pending' AND next_attempt_at<=?)",
+        "SELECT count(*) AS n FROM relay_push_outbox WHERE state='dispatching' OR (state='pending' AND next_attempt_at<=?)",
       )
       .bind(Date.now() / 1000)
       .first();
@@ -81,30 +82,48 @@ async function settled() {
   throw new Error('Synthetic notification delivery did not settle');
 }
 async function create() {
-  const r = await req('/api/experiments', {
-    schema_version: 1,
-    request_id: randomUUID(),
+  const exp = {
+    id: randomUUID(),
+    revision: 1,
     brief: 'Synthetic notification acceptance experiment.',
-    recipe_id: 'agent_experiment_v1',
-  });
-  assert.equal(r.status, 202);
-  const { experiment_id } = await r.json();
-  return (await req(`/api/experiments/${experiment_id}`)).json();
+    phase: 'preparing',
+    hold_reason: null,
+    stages: [],
+    jobs: [],
+  };
+  assert.equal((await publish(exp)).status, 200);
+  return exp;
 }
-function publish(exp, event = randomUUID(), inbox = []) {
+// The executor's projection PUT with its notify envelope (T5.2f).
+function publish(exp, revision = exp.revision) {
+  const n = experimentNotification({ ...exp, revision });
+  const key = `experiment:${exp.id}`;
   return req(
-    '/api/executor/publish',
-    {
-      schema_version: 1,
-      executor_id: 'acacia',
-      messages: [{ schema_version: 1, event_id: event, experiment: exp, inbox }],
-    },
+    `/api/executor/relay/projections/${key}`,
+    exp.deleted_at
+      ? { schema_version: 1, key, revision }
+      : {
+          schema_version: 1,
+          key,
+          revision,
+          document: { ...exp, revision },
+          notify: {
+            fingerprint: n.fingerprint,
+            title: n.data.title,
+            body: n.data.body,
+            url: n.data.url,
+            alert: n.data.alert,
+            targets: [key],
+          },
+        },
     true,
+    'PUT',
   );
 }
+const followUrl = (exp) => `/api/push/follows/experiment:${exp.id}`;
 async function follow(exp, following = true, request_id = randomUUID()) {
   const payload = { schema_version: 1, request_id, subscription, following };
-  const r = await req(`/api/experiments/${exp.id}/push`, payload);
+  const r = await req(followUrl(exp), payload);
   assert.equal(r.status, 200, await r.clone().text());
   await settled();
   return payload;
@@ -266,134 +285,113 @@ test('push service validation rejects credentials, redirects and arbitrary netwo
     assert.equal(pushEndpoint(url), false);
   assert.equal(pushEndpoint('https://web.push.apple.com/send'), true);
   const exp = await create();
-  const r = await req(`/api/experiments/${exp.id}/push`, {
+  const r = await req(followUrl(exp), {
     request_id: randomUUID(),
     following: true,
     subscription: { ...subscription, endpoint: 'https://localhost/send' },
   });
   assert.equal(r.status, 422);
   assert.equal((await req('/api/push/config', {}, true)).status, 401);
+  assert.equal((await req(followUrl(exp), {}, true)).status, 401);
+  const missing = { ...exp, id: randomUUID() };
+  assert.equal(
+    (await req(followUrl(missing), { request_id: randomUUID(), following: true, subscription }))
+      .status,
+    404,
+  );
+  assert.equal(
+    (await req('/api/push/follows/projects', { request_id: randomUUID(), subscription })).status,
+    400,
+  );
 });
-test('follow receipts, encrypted delivery, monotonic updates and transaction rollback are idempotent', async () => {
+test('follow receipts, encrypted delivery, monotonic updates and fingerprint changes are idempotent', async () => {
   const exp = await create();
   const before = deliveries.length;
   const payload = await follow(exp);
   assert.equal(deliveries.length, before + 1);
   assert.equal(deliveries.at(-1).experiment_id, exp.id);
   assert.match(deliveries.at(-1).url, new RegExp(exp.id));
-  await req(`/api/experiments/${exp.id}/push`, payload);
+  await req(followUrl(exp), payload);
   await settled();
   assert.equal(deliveries.length, before + 1);
-  assert.equal(
-    (await req(`/api/experiments/${exp.id}/push`, { ...payload, following: false })).status,
-    409,
-  );
+  assert.equal((await req(followUrl(exp), { ...payload, following: false })).status, 409);
   const updated = {
     ...exp,
-    revision: 1,
     phase: 'preparing',
     plan_review: { state: 'awaiting_review', revision: 1, stages: [] },
   };
-  const event = randomUUID();
-  assert.equal((await publish(updated, event)).status, 200);
+  assert.equal((await publish(updated, 2)).status, 200);
   await settled();
   assert.equal(deliveries.at(-1).alert, true);
   assert.match(deliveries.at(-1).body, /approval/);
   const sent = deliveries.length;
-  assert.equal((await publish(updated, event)).status, 200);
-  assert.equal((await publish(exp)).status, 200);
-  assert.equal(
-    (await publish({ ...updated, revision: 2, updated_at: Date.now() / 1000 })).status,
-    200,
-  );
+  // Replays, stale revisions and an unchanged fingerprint deliver nothing.
+  assert.equal((await publish(updated, 2)).status, 200);
+  assert.equal((await publish(exp, 1)).status, 409);
+  assert.equal((await publish({ ...updated, updated_at: Date.now() / 1000 }, 3)).status, 200);
   await settled();
   assert.equal(deliveries.length, sent);
-  const failed = { ...updated, revision: 3, phase: 'failed', plan_review: null };
-  assert.equal(
-    (
-      await publish(failed, randomUUID(), [
-        {
-          id: randomUUID(),
-          experiment_id: randomUUID(),
-          kind: 'required_decision',
-          text: 'Invalid',
-          created_at: 1,
-        },
-      ])
-    ).status,
-    400,
-  );
-  assert.equal(
-    (await db.prepare('SELECT revision FROM projections WHERE id=?').bind(exp.id).first()).revision,
-    2,
-  );
-  await settled();
-  assert.equal(deliveries.length, sent);
-  assert.equal((await publish(failed)).status, 200);
+  const failed = { ...updated, phase: 'failed', plan_review: null };
+  assert.equal((await publish(failed, 4)).status, 200);
   await settled();
   assert.equal(deliveries.length, sent + 1);
   assert.match(deliveries.at(-1).body, /failed/);
+  assert.equal(
+    (await (await req('/api/push/follows/status', { endpoint: subscription.endpoint })).json()).keys
+      .length >= 1,
+    true,
+  );
   await follow(exp, false);
-  assert.equal(
-    (
-      await db
-        .prepare('SELECT count(*) AS n FROM push_follows WHERE experiment_id=?')
-        .bind(exp.id)
-        .first()
-    ).n,
-    0,
-  );
+  const count = () =>
+    db
+      .prepare('SELECT count(*) AS n FROM relay_follows WHERE key=?')
+      .bind(`experiment:${exp.id}`)
+      .first();
+  assert.equal((await count()).n, 0);
   // Replaying an old follow receipt cannot restore a later-removed follow.
-  await req(`/api/experiments/${exp.id}/push`, payload);
+  await req(followUrl(exp), payload);
   await settled();
-  assert.equal(
-    (
-      await db
-        .prepare('SELECT count(*) AS n FROM push_follows WHERE experiment_id=?')
-        .bind(exp.id)
-        .first()
-    ).n,
-    0,
-  );
+  assert.equal((await count()).n, 0);
 });
 test('transient delivery retries persisted intent; expired endpoints remove all device follows', async () => {
   const exp = await create();
   responseStatus = 503;
   await follow(exp);
   let row = await db
-    .prepare('SELECT * FROM push_outbox WHERE experiment_id=?')
-    .bind(exp.id)
+    .prepare('SELECT * FROM relay_push_outbox WHERE key=?')
+    .bind(`experiment:${exp.id}`)
     .first();
   assert.equal(row.state, 'pending');
   assert.equal(row.attempts, 1);
   assert.equal(row.last_status, 503);
-  await db.prepare('UPDATE push_outbox SET next_attempt_at=0 WHERE id=?').bind(row.id).run();
+  await db.prepare('UPDATE relay_push_outbox SET next_attempt_at=0 WHERE id=?').bind(row.id).run();
   responseStatus = 201;
-  await req('/api/executor/commands', undefined, true);
+  await req('/api/executor/relay/commands', undefined, true);
   await settled();
-  row = await db.prepare('SELECT * FROM push_outbox WHERE id=?').bind(row.id).first();
+  row = await db.prepare('SELECT * FROM relay_push_outbox WHERE id=?').bind(row.id).first();
   assert.equal(row.state, 'sent');
   assert.equal(row.attempts, 2);
   const another = await create();
   await follow(another);
   responseStatus = 410;
-  await publish({ ...exp, revision: 1, phase: 'failed' });
+  await publish({ ...exp, phase: 'failed' }, 2);
   await settled();
   assert.equal((await db.prepare('SELECT count(*) AS n FROM push_subscriptions').first()).n, 0);
-  assert.equal((await db.prepare('SELECT count(*) AS n FROM push_follows').first()).n, 0);
+  assert.equal((await db.prepare('SELECT count(*) AS n FROM relay_follows').first()).n, 0);
   responseStatus = 201;
 });
-test('deletion and sign-out revoke follows and queued intents; subscriptions are bound to their user', async () => {
+test('tombstone and sign-out revoke follows and queued intents; subscriptions are bound to their user', async () => {
   const exp = await create();
   await follow(exp);
   await db.prepare("UPDATE push_subscriptions SET owner='sites:another-user'").run();
   assert.deepEqual(
-    (await (await req('/api/push/status', { endpoint: subscription.endpoint })).json()).experiments,
+    (await (await req('/api/push/follows/status', { endpoint: subscription.endpoint })).json())
+      .keys,
     [],
   );
   assert.equal(
     (
-      await req(`/api/experiments/${exp.id}/push`, {
+      await req(followUrl(exp), {
         request_id: randomUUID(),
         following: true,
         subscription,
@@ -405,11 +403,25 @@ test('deletion and sign-out revoke follows and queued intents; subscriptions are
   await req('/api/push/forget', { endpoint: subscription.endpoint });
   assert.equal((await db.prepare('SELECT count(*) AS n FROM push_subscriptions').first()).n, 0);
   await follow(exp);
-  assert.equal(
-    (await publish({ ...exp, revision: 1, phase: 'failed', deleted_at: Date.now() / 1000 })).status,
-    200,
-  );
+  assert.equal((await publish({ ...exp, deleted_at: 1 }, 2)).status, 200);
   await settled();
-  assert.equal((await db.prepare('SELECT count(*) AS n FROM push_follows').first()).n, 0);
-  assert.equal((await db.prepare('SELECT count(*) AS n FROM push_outbox').first()).n, 0);
+  assert.equal((await db.prepare('SELECT count(*) AS n FROM relay_follows').first()).n, 0);
+  assert.equal((await db.prepare('SELECT count(*) AS n FROM relay_push_outbox').first()).n, 0);
+});
+test('migration 0011 copies old follows by key and ignores repeats', async () => {
+  const sql = (await readFile('drizzle/0011_relay_follows.sql', 'utf8')).trim();
+  assert.doesNotMatch(sql, /\b(DROP|ALTER)\b/i);
+  const id = randomUUID();
+  await db
+    .prepare('INSERT INTO projections(id,revision,payload,updated_at) VALUES(?,1,?,1)')
+    .bind(id, '{}')
+    .run();
+  await db.prepare("INSERT INTO push_subscriptions VALUES('copy-dev','local-owner','{}',1)").run();
+  await db.prepare('PRAGMA foreign_keys=OFF').run();
+  await db.prepare("INSERT INTO push_follows VALUES('copy-dev',?,5)").bind(id).run();
+  for (let i = 0; i < 2; i++) await db.prepare(sql.replace(/^--.*\n/, '')).run();
+  const rows = await db
+    .prepare("SELECT key,created_at FROM relay_follows WHERE subscription_id='copy-dev'")
+    .all();
+  assert.deepEqual(rows.results, [{ key: `experiment:${id}`, created_at: 5 }]);
 });

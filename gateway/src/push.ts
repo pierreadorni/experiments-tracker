@@ -191,38 +191,67 @@ export function experimentNotification(exp: PushExperiment) {
     },
   };
 }
-export function pushStatements(env: Env, exp: PushExperiment, previous: PushExperiment | null) {
-  if (previous && previous.revision >= exp.revision) return [];
-  if (exp.deleted_at)
-    return [
-      env.DB.prepare(
-        'DELETE FROM push_outbox WHERE experiment_id=? AND EXISTS(SELECT 1 FROM projections WHERE id=? AND revision=? AND deleted_at IS NOT NULL)',
-      ).bind(exp.id, exp.id, exp.revision),
-      env.DB.prepare(
-        'DELETE FROM push_follows WHERE experiment_id=? AND EXISTS(SELECT 1 FROM projections WHERE id=? AND revision=? AND deleted_at IS NOT NULL)',
-      ).bind(exp.id, exp.id, exp.revision),
-    ];
-  const notice = experimentNotification(exp);
-  if (previous && experimentNotification(previous).fingerprint === notice.fingerprint) return [];
+// Delivery is driven by the executor's notify envelope on a projection PUT (T5.2f).
+// A changed fingerprint queues one delivery per device following any target; a
+// tombstone drops the follows of its key. Both are guarded by the stored revision.
+export type RelayNotify = {
+  fingerprint: string;
+  title: string;
+  body: string;
+  url: string;
+  alert: boolean;
+  targets: string[];
+};
+export function relayPushStatements(env: Env, key: string, revision: number, notify: RelayNotify) {
+  const live =
+    'EXISTS(SELECT 1 FROM relay_projections WHERE key=? AND revision=? AND payload IS NOT NULL)';
   const now = Date.now() / 1000;
-  return [
+  const payload = JSON.stringify({
+    title: notify.title.slice(0, 100),
+    body: notify.body.slice(0, 240),
+    url: notify.url,
+    alert: notify.alert,
+    revision,
+    timestamp: Date.now(),
+  });
+  const statements = [];
+  // Only a notice about its own experiment replaces that experiment's older pending notice.
+  if (notify.targets.length === 1 && notify.targets[0] === key)
+    statements.push(
+      env.DB.prepare(
+        `UPDATE relay_push_outbox SET state='superseded' WHERE key=? AND revision<? AND state='pending' AND ${live}`,
+      ).bind(key, revision, key, revision),
+    );
+  statements.push(
     env.DB.prepare(
-      "UPDATE push_outbox SET state='superseded' WHERE experiment_id=? AND revision<? AND state='pending' AND id NOT LIKE 'autopilot:%' AND EXISTS(SELECT 1 FROM projections WHERE id=? AND revision=?)",
-    ).bind(exp.id, exp.revision, exp.id, exp.revision),
-    env.DB.prepare(
-      `INSERT OR IGNORE INTO push_outbox(id,subscription_id,experiment_id,revision,payload,next_attempt_at,created_at)
-      SELECT ? || ':' || f.subscription_id,f.subscription_id,f.experiment_id,?,?,?,?
-      FROM push_follows f JOIN projections p ON p.id=f.experiment_id
-      WHERE p.id=? AND p.revision=? AND p.deleted_at IS NULL`,
+      `INSERT OR IGNORE INTO relay_push_outbox(id,subscription_id,key,revision,payload,next_attempt_at,created_at)
+      SELECT ? || ':' || f.subscription_id,f.subscription_id,MIN(f.key),?,json_set(?,'$.experiment_id',substr(MIN(f.key),12)),?,?
+      FROM relay_follows f JOIN relay_projections p ON p.key=f.key
+      WHERE f.key IN (SELECT value FROM json_each(?)) AND p.payload IS NOT NULL AND ${live}
+      GROUP BY f.subscription_id`,
     ).bind(
-      `${exp.id}:${exp.revision}`,
-      exp.revision,
-      JSON.stringify(notice.data),
+      `${key}:${revision}`,
+      revision,
+      payload,
       now,
       now,
-      exp.id,
-      exp.revision,
+      JSON.stringify(notify.targets),
+      key,
+      revision,
     ),
+  );
+  return statements;
+}
+export function relayTombstoneStatements(env: Env, key: string, revision: number) {
+  const gone =
+    'EXISTS(SELECT 1 FROM relay_projections WHERE key=? AND revision=? AND payload IS NULL)';
+  return [
+    env.DB.prepare(`DELETE FROM relay_push_outbox WHERE key=? AND ${gone}`).bind(
+      key,
+      key,
+      revision,
+    ),
+    env.DB.prepare(`DELETE FROM relay_follows WHERE key=? AND ${gone}`).bind(key, key, revision),
   ];
 }
 
@@ -233,10 +262,10 @@ export async function drainPush(env: Env) {
   // notifications replace the same experiment tag; never replay execution work.
   const rows = (
     await env.DB.prepare(
-      `SELECT o.* FROM push_outbox o
+      `SELECT o.* FROM relay_push_outbox o
     WHERE o.state IN ('pending','dispatching') AND o.next_attempt_at<=?
-    AND NOT EXISTS(SELECT 1 FROM push_outbox busy WHERE busy.subscription_id=o.subscription_id
-      AND busy.experiment_id=o.experiment_id AND busy.state='dispatching' AND busy.next_attempt_at>?)
+    AND NOT EXISTS(SELECT 1 FROM relay_push_outbox busy WHERE busy.subscription_id=o.subscription_id
+      AND busy.key=o.key AND busy.state='dispatching' AND busy.next_attempt_at>?)
     ORDER BY o.created_at LIMIT 8`,
     )
       .bind(now, now)
@@ -246,24 +275,24 @@ export async function drainPush(env: Env) {
     rows.map(async (row) => {
       const lease = crypto.randomUUID();
       const claimed = await env.DB.prepare(
-        `UPDATE push_outbox SET state='dispatching',lease=?,attempts=attempts+1,next_attempt_at=?
+        `UPDATE relay_push_outbox SET state='dispatching',lease=?,attempts=attempts+1,next_attempt_at=?
       WHERE id=? AND state IN ('pending','dispatching') AND next_attempt_at<=?
-      AND NOT EXISTS(SELECT 1 FROM push_outbox busy WHERE busy.subscription_id=? AND busy.experiment_id=?
+      AND NOT EXISTS(SELECT 1 FROM relay_push_outbox busy WHERE busy.subscription_id=? AND busy.key=?
         AND busy.state='dispatching' AND busy.next_attempt_at>?) RETURNING attempts`,
       )
-        .bind(lease, now + 60, row.id, now, row.subscription_id, row.experiment_id, now)
+        .bind(lease, now + 60, row.id, now, row.subscription_id, row.key, now)
         .first<{ attempts: number }>();
       if (!claimed) return;
       const subscription = await env.DB.prepare(
         `SELECT s.subscription FROM push_subscriptions s
-      JOIN push_follows f ON f.subscription_id=s.id JOIN projections p ON p.id=f.experiment_id
-      WHERE s.id=? AND p.id=? AND p.deleted_at IS NULL`,
+      JOIN relay_follows f ON f.subscription_id=s.id JOIN relay_projections p ON p.key=f.key
+      WHERE s.id=? AND f.key=? AND p.payload IS NOT NULL`,
       )
-        .bind(row.subscription_id, row.experiment_id)
+        .bind(row.subscription_id, row.key)
         .first<{ subscription: string }>();
       if (!subscription) {
         await env.DB.prepare(
-          "UPDATE push_outbox SET state='superseded',lease=NULL WHERE id=? AND lease=?",
+          "UPDATE relay_push_outbox SET state='superseded',lease=NULL WHERE id=? AND lease=?",
         )
           .bind(row.id, lease)
           .run();
@@ -315,14 +344,14 @@ export async function drainPush(env: Env) {
         ),
       );
       await env.DB.prepare(
-        'UPDATE push_outbox SET state=?,lease=NULL,last_status=?,next_attempt_at=? WHERE id=? AND lease=?',
+        'UPDATE relay_push_outbox SET state=?,lease=NULL,last_status=?,next_attempt_at=? WHERE id=? AND lease=?',
       )
         .bind(state, status, Date.now() / 1000 + delay, row.id, lease)
         .run();
     }),
   );
   await env.DB.prepare(
-    "DELETE FROM push_outbox WHERE id IN (SELECT id FROM push_outbox WHERE state IN ('sent','failed','superseded') AND created_at<? LIMIT 100)",
+    "DELETE FROM relay_push_outbox WHERE id IN (SELECT id FROM relay_push_outbox WHERE state IN ('sent','failed','superseded') AND created_at<? LIMIT 100)",
   )
     .bind(now - 7 * 86400)
     .run();
