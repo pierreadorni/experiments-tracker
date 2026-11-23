@@ -1,7 +1,10 @@
 """Typed relay projection documents, built once for hosted publication and local reads.
 
-Keys: ``experiment:<uuid>``, ``projects``, ``status`` and ``inbox``. An experiment
-document keeps ``experiments.revision``; aggregate documents take a time-based
+Keys: ``experiment:<uuid>``, ``conversation:<uuid>:<seq>`` (one message each),
+``projects``, ``status``, ``inbox``, ``knowledge:<pid>``, ``knowledge-report:<pid>:<v>``,
+``autopilot:<pid>`` and ``maintenance``. An experiment document keeps
+``experiments.revision``, knowledge its own revision, a conversation message its last
+update, and a report version is immutable. Aggregate documents take a time-based
 revision that the publisher raises above the last acknowledged one. Documents carry
 no executor-local paths.
 """
@@ -14,8 +17,9 @@ from decimal import Decimal
 from uuid import UUID
 
 from .. import clock
+from ..knowledge import Knowledge
 from ..store import public_projection
-from .notifications import experiment_notification
+from .notifications import autopilot_notification, experiment_notification
 
 # Executor-local locations that private rows or catalogs may hold.
 LOCAL_FIELDS = frozenset({"path", "folder", "checkout", "state_dir", "job_output_root"})
@@ -111,28 +115,85 @@ def experiment_key(eid):
     return f"experiment:{eid}"
 
 
+# Documents whose revision is the clock; the publisher sends them only when the digest changes.
+AGGREGATES = ("projects", "status", "inbox", "maintenance", "autopilot")
+_PROJECT = r"[A-Za-z0-9_-]{1,100}"
+_KEYS = {
+    "knowledge": re.compile(_PROJECT + r"\Z"),
+    "autopilot": re.compile(_PROJECT + r"\Z"),
+    "knowledge-report": re.compile(_PROJECT + r":\d+\Z"),
+    "conversation": re.compile(r"[0-9a-f-]{36}:\d{10}\Z"),
+}
+
+
 def parse_key(key):
     """Return the key's kind, or None when it is not a published key."""
-    if key in ("projects", "status", "inbox"):
+    if key in ("projects", "status", "inbox", "maintenance"):
         return key
     kind, _, rest = key.partition(":")
-    if kind == "experiment":
+    if kind == "experiment" or kind == "conversation":
         try:
-            return kind if str(UUID(rest)) == rest else None
+            if str(UUID(rest[:36])) != rest[:36]:
+                return None
         except ValueError:
             return None
-    return None
+        if kind == "experiment":
+            return kind if len(rest) == 36 else None
+    return kind if kind in _KEYS and _KEYS[kind].match(rest) else None
+
+
+def conversation_key(eid, seq):
+    return f"conversation:{eid}:{seq:010d}"
 
 
 class Projections:
-    def __init__(self, store, *, status=None, catalog=None):
+    """``memory`` and ``autopilot`` are factories for the services the old routes read;
+    ``maintenance`` returns the status dict, or None where the host has no updater."""
+
+    def __init__(self, store, *, status=None, catalog=None, memory=None, autopilot=None, maintenance=None):
         self.store = store
         self.status = status or {}
         self.catalog = catalog or []
+        self.memory = memory or (lambda: Knowledge(store))
+        self.autopilot = autopilot
+        self.maintenance = maintenance
 
-    def keys(self):
+    def keys(self, prefix=""):
         live = self.store.rows("SELECT id FROM experiments WHERE deleted_at IS NULL ORDER BY created_at")
-        return ["projects", "status", "inbox", *(experiment_key(r["id"]) for r in live)]
+        keys = ["projects", "status", "inbox", *(experiment_key(r["id"]) for r in live)]
+        if self.maintenance and self.maintenance():
+            keys.append("maintenance")
+        keys += self.autopilot_keys()
+        keys += self.revisions()
+        return [k for k in keys if k.startswith(prefix)]
+
+    def autopilot_keys(self):
+        if not self.autopilot:
+            return []
+        runs = self.store.rows("SELECT DISTINCT project_id FROM autopilot_runs ORDER BY project_id")
+        return [f"autopilot:{r['project_id']}" for r in runs if r["project_id"] in self.store.projects]
+
+    def revisions(self):
+        """``{key: revision}`` for conversation messages, knowledge and its report versions."""
+        found = {}
+        for r in self.store.rows(self._CONVERSATION + " ORDER BY d.experiment_id,d.seq"):
+            found[conversation_key(r["experiment_id"], r["seq"])] = int(r["changed"] * 1000)
+        state = {r["project_id"]: r["revision"] for r in self.store.rows("SELECT * FROM project_knowledge")}
+        for pid in self.store.projects:
+            found[f"knowledge:{pid}"] = state.get(pid, 0)
+        for r in self.store.rows(
+            "SELECT project_id,version FROM project_reports ORDER BY project_id,version"
+        ):
+            if r["project_id"] in self.store.projects:
+                found[f"knowledge-report:{r['project_id']}:{r['version']}"] = 1
+        return found
+
+    # A message changes when its row or one of its activity lines does.
+    _CONVERSATION = (
+        "SELECT d.experiment_id,d.seq,MAX(d.updated_at,COALESCE((SELECT MAX(s.created_at) "
+        "FROM stage_activity s WHERE s.action_id=d.action_id),0)) AS changed "
+        "FROM discussions d JOIN experiments e ON e.id=d.experiment_id WHERE e.deleted_at IS NULL"
+    )
 
     def inbox(self):
         entries = self.store.rows(
@@ -153,22 +214,63 @@ class Projections:
         view["inbox"] = self.store.rows("SELECT * FROM inbox WHERE experiment_id=?", (eid,))
         return view, view["revision"], int(row["updated_at"] * 1000)
 
+    def conversation(self, key):
+        eid, _, seq = key.partition(":")[2].partition(":")
+        row = self.store.one(self._CONVERSATION + " AND d.experiment_id=? AND d.seq=?", (eid, int(seq)))
+        if not row:
+            return None
+        # The old paged route returns the 20 messages below a seq; ours is the newest of them.
+        message = self.store.conversation(eid, int(seq) + 1)[-1]
+        return {"experiment_id": eid, **message}, int(row["changed"] * 1000)
+
+    def knowledge(self, key):
+        kind, _, rest = key.partition(":")
+        pid, _, version = rest.partition(":")
+        if pid not in self.store.projects:
+            return None
+        memory = self.memory()
+        if kind == "knowledge":
+            view = memory.view(pid)
+            return view, view["revision"]
+        report = memory.report(pid, int(version))
+        return ({"schema_version": 1, "report": report}, 1) if report else None
+
+    def autopilot_view(self, pid):
+        if not self.autopilot or pid not in self.store.projects:
+            return None
+        if not self.store.one("SELECT 1 FROM autopilot_runs WHERE project_id=?", (pid,)):
+            return None
+        return self.autopilot().view(pid)
+
     def build(self, key, *, last_acked=0):
         """Return ``{key, revision, updated_at, document}``, or None for an absent or deleted key."""
         kind = parse_key(key)
+        now = int(clock.now() * 1000)
         if kind == "experiment":
             built = self.experiment(key.partition(":")[2])
             if not built:
                 return None
             document, revision, updated_at = built
-        elif kind:
-            document = {
-                "projects": lambda: {"projects": self.catalog},
-                "status": lambda: self.status,
-                "inbox": self.inbox,
-            }[kind]()
-            revision = aggregate_revision(last_acked)
-            updated_at = int(clock.now() * 1000)
+        elif kind in ("conversation", "knowledge", "knowledge-report"):
+            built = self.conversation(key) if kind == "conversation" else self.knowledge(key)
+            if not built:
+                return None
+            document, revision = built
+            updated_at = revision if kind == "conversation" else now
+        elif kind in AGGREGATES:
+            if kind == "autopilot":
+                document = self.autopilot_view(key.partition(":")[2])
+            elif kind == "maintenance":
+                document = self.maintenance() if self.maintenance else None
+            else:
+                document = {
+                    "projects": lambda: {"projects": self.catalog},
+                    "status": lambda: self.status,
+                    "inbox": self.inbox,
+                }[kind]()
+            if document is None:
+                return None
+            revision, updated_at = aggregate_revision(last_acked), now
         else:
             return None
         return {"key": key, "revision": revision, "updated_at": updated_at, "document": scrub(document)}
@@ -178,13 +280,19 @@ class Projections:
 
 
 def envelope(projection):
-    """The publication envelope; the notification belongs to experiment documents."""
+    """The publication envelope; notifications belong to experiment and Autopilot documents."""
     result = {
         "schema_version": 1,
         "key": projection["key"],
         "revision": projection["revision"],
         "document": projection["document"],
     }
-    if parse_key(projection["key"]) == "experiment":
-        result["notify"] = experiment_notification(projection["document"])
+    kind = parse_key(projection["key"])
+    notify = None
+    if kind == "experiment":
+        notify = experiment_notification(projection["document"])
+    elif kind == "autopilot":
+        notify = autopilot_notification(projection["key"].partition(":")[2], projection["document"])
+    if notify:
+        result["notify"] = notify
     return result

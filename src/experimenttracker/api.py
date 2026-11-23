@@ -33,7 +33,7 @@ from .models import (
     SteerCommand,
     UpdateProjectSettings,
 )
-from .publish.commands import Services, dispatch
+from .publish.commands import Services, dispatch, saved_receipt
 from .publish.commands import receipt as command_receipt
 from .store import Conflict
 
@@ -526,27 +526,41 @@ def create_app(config, *, components=None, config_path=None, current_release=Non
             if row:
                 row["state"] = "rejected"
         if not row:
-            raise HTTPException(404, "Unknown command")
+            saved = saved_receipt(store(), request_id)
+            if not saved:
+                raise HTTPException(404, "Unknown command")
+            return saved
         return {"schema_version": 1, **row}
 
     async def projections():
         from .publish.projections import Projections
 
+        workflow = app.state.workflow
         status = {
             **await app.state.workflow_status(),
             "schema_version": 1,
             "mode": config.mode,
             "executor_id": config.executor_id,
         }
-        return Projections(store(), status=status, catalog=status["projects"])
+        return Projections(
+            store(),
+            status=status,
+            catalog=status["projects"],
+            memory=lambda: workflow.supervisor.memory,
+            autopilot=lambda: workflow.research.service,
+            maintenance=lambda: workflow.maintenance.status(workflow),
+        )
 
     @app.get("/api/projections", dependencies=[Depends(authorize)])
     async def projection_list(
-        prefix: str = Query(default="", max_length=100), limit: int = Query(default=100, ge=1, le=200)
+        prefix: str = Query(default="", max_length=100),
+        before: str = Query(default="\uffff", max_length=200),
+        limit: int = Query(default=50, ge=1, le=100),
     ):
+        # The hosted list: newest key first, each page resumed with the last key seen.
         built = await projections()
-        keys = [key for key in built.keys() if key.startswith(prefix)][:limit]
-        return {"schema_version": 1, "projections": [p for key in keys if (p := built.build(key))]}
+        keys = sorted((k for k in built.keys(prefix) if k < before), reverse=True)[:limit]
+        return {"schema_version": 1, "items": [p for key in keys if (p := built.build(key))]}
 
     @app.get("/api/projections/{key}", dependencies=[Depends(authorize)])
     async def projection(key: str):

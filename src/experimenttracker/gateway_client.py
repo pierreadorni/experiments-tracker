@@ -31,10 +31,12 @@ from .models import (
 from .projects import Projects
 from .publish.commands import Services, dispatch
 from .publish.projections import (
+    AGGREGATES,
     TOMBSTONE_DIGEST,
     Projections,
     envelope,
     experiment_key,
+    parse_key,
     scrub_local,
     wire,
     wire_digest,
@@ -460,12 +462,14 @@ class GatewayClient:
             "SELECT id,revision FROM experiments WHERE deleted_at IS NULL ORDER BY created_at"
         )
         keys = []
-        projections = Projections(self.store)
+        projections = self.relay_projections()
         if now - self.relay_aggregates_at >= RELAY_AGGREGATE_SECONDS:
             try:
                 status = await self.relay_status()
-                projections = Projections(self.store, status=status, catalog=status.get("projects", []))
-                keys += ["status", "projects", "inbox"]
+                projections = self.relay_projections(status)
+                keys += ["status", "projects", "inbox", *projections.autopilot_keys()]
+                if projections.maintenance and projections.maintenance():
+                    keys.append("maintenance")
                 self.relay_aggregates_at = now
                 self.operation_errors.pop("relay:status-provider", None)
             except Exception as exc:
@@ -475,11 +479,15 @@ class GatewayClient:
             for r in live
             if experiment_key(r["id"]) not in manifest or manifest[experiment_key(r["id"])][0] < r["revision"]
         ]
-        present = {experiment_key(r["id"]) for r in live}
+        revisions = projections.revisions()
+        keys += [k for k, rev in revisions.items() if k not in manifest or manifest[k][0] < rev]
+        present = {experiment_key(r["id"]) for r in live} | set(revisions)
         keys += [
             k
             for k, (_, digest) in manifest.items()
-            if k.startswith("experiment:") and k not in present and digest != TOMBSTONE_DIGEST
+            if k.startswith(("experiment:", "conversation:"))
+            and k not in present
+            and digest != TOMBSTONE_DIGEST
         ]
         for key in keys[:RELAY_BATCH]:
             if self.relay_key_retry_at.get(key, 0) > now:
@@ -495,6 +503,24 @@ class GatewayClient:
                 self.relay_key_retry_at[key] = now + RELAY_RETRY_SECONDS
                 self.operation_errors["relay:" + key] = self.error_text(exc)
                 log.warning("gateway relay %s retained for retry: %s", key, self.error_text(exc))
+
+    def relay_projections(self, status=None):
+        def autopilot():
+            from .autopilot import Autopilot
+
+            return Autopilot(self.store, self.config)
+
+        def maintenance():
+            manager = getattr(self, "maintenance_provider", lambda: None)()
+            return manager.status(getattr(self, "maintenance_workflow", None)) if manager else None
+
+        return Projections(
+            self.store,
+            status=status,
+            catalog=(status or {}).get("projects", []),
+            autopilot=autopilot,
+            maintenance=maintenance,
+        )
 
     async def relay_status(self):
         status = self.status_provider() if self.status_provider else {"projects": []}
@@ -514,22 +540,20 @@ class GatewayClient:
         return [*roots, *(p.checkout for p in config.projects if p.checkout)]
 
     async def relay_put(self, key, projections, prior):
-        if key.startswith("experiment:") and not projections.store.one(
-            "SELECT 1 FROM experiments WHERE id=? AND deleted_at IS NULL", (key.partition(":")[2],)
-        ):
-            body = {"schema_version": 1, "key": key, "revision": (prior or [0])[0] + 1}
-        else:
-            built = projections.build(key, last_acked=(prior or [0])[0])
-            if not built:
+        built = projections.build(key, last_acked=(prior or [0])[0])
+        if not built:
+            if (
+                not prior
+                or prior[1] == TOMBSTONE_DIGEST
+                or not key.startswith(("experiment:", "conversation:"))
+            ):
                 return
+            body = {"schema_version": 1, "key": key, "revision": prior[0] + 1}  # tombstone
+        else:
             roots = [r for r in self.relay_roots() if r]
             # Only the status block can carry free-text paths from the host.
             built["document"] = scrub_local(built["document"], roots, paths=key == "status")
-            if (
-                key in ("status", "projects", "inbox")
-                and prior
-                and prior[1] == wire_digest(built["document"])
-            ):
+            if parse_key(key) in AGGREGATES and prior and prior[1] == wire_digest(built["document"]):
                 return
             if key.startswith("experiment:"):
                 await self.relay_upload_blobs(key, built["document"])

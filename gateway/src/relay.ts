@@ -312,6 +312,8 @@ async function run(request: Request, env: Env, p: string, url: URL): Promise<Res
     if (p === '/api/executor/relay/receipts' && m === 'POST') return postReceipt(request, env);
     throw new Refusal(404, 'Unknown endpoint');
   }
+  if (p === '/api/session' && m === 'GET')
+    return reply({ schema_version: 1, authenticated: true, host: 'gateway' });
   if (p === '/api/projections' && m === 'GET') return list(url, env);
   if ((match = p.match(/^\/api\/projections\/([^/]+)$/)) && m === 'GET') {
     const row = await first(
@@ -332,7 +334,14 @@ async function run(request: Request, env: Env, p: string, url: URL): Promise<Res
       env.EXECUTOR_ID,
       PENDING_MAX,
     );
-    return reply({ schema_version: 1, commands: found.map(receipt) });
+    return reply({
+      schema_version: 1,
+      commands: found.map((r) => ({
+        ...receipt(r),
+        // The saved body, so a reloaded page can show what a pending command says.
+        payload: (JSON.parse(String(r.payload)) as { payload?: unknown }).payload ?? null,
+      })),
+    });
   }
   if ((match = p.match(/^\/api\/commands\/([^/]+)$/)) && m === 'GET') {
     const row = await first(
@@ -350,7 +359,7 @@ async function run(request: Request, env: Env, p: string, url: URL): Promise<Res
 }
 
 export async function relayRoute(request: Request, env: Env, p: string): Promise<Response | null> {
-  if (!/^\/api\/(executor\/relay\/|projections|commands|blobs\/)/.test(p)) return null;
+  if (!/^\/api\/(executor\/relay\/|projections|commands|blobs\/|session$)/.test(p)) return null;
   try {
     return await run(request, env, p, new URL(request.url));
   } catch (error) {

@@ -1,6 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { api } from './api';
-import { projectKey, send as sendCommand } from './relay';
+import { getProjection, projectKey, reportKey, send as sendCommand } from './relay';
 import { Select } from './Select';
 import { ResearchMemory, type SavedIdea } from './ResearchMemory';
 import type { Experiment } from './types';
@@ -89,13 +88,13 @@ export function ProjectKnowledge({
   const [effort, setEffort] = useState('');
   const [version, setVersion] = useState('');
   const [older, setOlder] = useState<Report | null>(null);
-  const path = `/api/projects/${encodeURIComponent(projectId)}/knowledge`;
-  const refresh = async () => setMemory(await api<Memory>(path));
+  const key = projectKey('knowledge', projectId);
+  const refresh = async () => setMemory((await getProjection<Memory>(key)).document);
   useEffect(() => {
     let active = true;
     const poll = async () => {
       try {
-        const value = await api<Memory>(path);
+        const value = (await getProjection<Memory>(key)).document;
         if (active) {
           setMemory(value);
           setError(null);
@@ -110,14 +109,14 @@ export function ProjectKnowledge({
       active = false;
       clearInterval(timer);
     };
-  }, [path]);
+  }, [key]);
   useEffect(() => {
     let active = true;
     setOlder(null);
     if (version)
-      void api<{ report: Report }>(`${path}/reports/${version}`)
+      void getProjection<{ report: Report }>(reportKey(projectId, version))
         .then((value) => {
-          if (active) setOlder(value.report);
+          if (active) setOlder(value.document.report);
         })
         .catch((e) => {
           if (active) setError(e.message);
@@ -125,7 +124,7 @@ export function ProjectKnowledge({
     return () => {
       active = false;
     };
-  }, [path, version]);
+  }, [projectId, version]);
   const send = async (kind: string, extra: Record<string, unknown> = {}) => {
     setBusy(true);
     setError(null);

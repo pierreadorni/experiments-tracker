@@ -2,6 +2,7 @@ import hashlib
 import json
 import shutil
 import subprocess
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -126,7 +127,13 @@ async def test_backfill_blob_first_scrubbed_status_and_unchanged_views_stay_quie
     outbox = store.rows("SELECT id,delivered_at,attempts,error FROM outbox ORDER BY id")
 
     await client.publish_relay()
-    assert set(worker.projections) == {"status", "projects", "inbox", f"experiment:{eid}"}
+    assert set(worker.projections) == {
+        "status",
+        "projects",
+        "inbox",
+        f"experiment:{eid}",
+        *(f"knowledge:{pid}" for pid in store.projects),
+    }
     artifact_id = store.one("SELECT id FROM artifacts")["id"]
     assert worker.blobs == {artifact_id: f"experiment:{eid}"}
     order = [call[1] for call in worker.calls]
@@ -294,3 +301,56 @@ async def test_blobs_follow_the_old_upload_gating_and_oversize_is_recorded(confi
 
 async def _async(value):
     return value
+
+
+async def test_conversation_knowledge_reports_and_maintenance_publish_by_their_own_revision(
+    config, runtime, tmp_path
+):
+    store, _, _, _ = runtime
+    eid = publication_experiment(store)
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET phase='complete' WHERE id=?", (eid,))
+    store.command(uuid4(), "discuss", {"text": "Explain the result"}, eid=eid)
+    key = f"conversation:{eid}:{store.conversation(eid)[0]['seq']:010d}"
+    worker = Worker()
+    client = relay_client(config, store, tmp_path, worker)
+    with_status(client, config)
+    client.maintenance_provider = lambda: type(
+        "M", (), {"status": lambda self, w: {"observed_at": clock.now()}}
+    )()
+    pid = next(iter(store.projects))
+    await client.publish_relay()
+    assert {key, f"knowledge:{pid}", "maintenance"} <= set(worker.projections)
+    assert worker.projections[key]["document"]["text"] == "Explain the result"
+    assert "notify" not in worker.projections[key]["body"]
+    first = {k: v["revision"] for k, v in worker.projections.items()}
+
+    # Unchanged revisions are not sent again; a changed message and a new report version are.
+    client.relay_aggregates_at = 0
+    puts = len([c for c in worker.calls if c[0] == "PUT"])
+    await client.publish_relay()
+    sent = [c[1] for c in worker.calls[-5:] if c[0] == "PUT"]
+    assert key not in sent and f"knowledge:{pid}" not in sent
+    later = clock.now() + 5
+    with store.tx() as db:
+        db.execute("UPDATE discussions SET updated_at=? WHERE experiment_id=?", (later, eid))
+        db.execute(
+            "INSERT INTO project_reports VALUES(?,?,?,?,?,?)", (pid, 1, str(uuid4()), "{}", "{}", later)
+        )
+        db.execute(
+            "INSERT OR IGNORE INTO project_knowledge(project_id,next_due,updated_at) VALUES(?,?,?)",
+            (pid, later, later),
+        )
+        db.execute("UPDATE project_knowledge SET revision=revision+1 WHERE project_id=?", (pid,))
+    await client.publish_relay()
+    assert worker.projections[key]["revision"] > first[key]
+    assert worker.projections[f"knowledge:{pid}"]["revision"] > first[f"knowledge:{pid}"]
+    assert worker.projections[f"knowledge-report:{pid}:1"]["document"]["report"]["version"] == 1
+    assert len([c for c in worker.calls if c[0] == "PUT"]) > puts
+
+    # A deleted experiment takes its messages with it.
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET deleted_at=? WHERE id=?", (clock.now(), eid))
+    await client.publish_relay()
+    assert worker.projections[key]["digest"] == TOMBSTONE_DIGEST
+    await client.close()

@@ -141,6 +141,37 @@ def test_local_post_returns_a_terminal_receipt_and_get_serves_it(config, runtime
         )
 
 
+def test_local_get_answers_non_experiment_kinds_from_their_saved_tables(config, runtime):
+    store, _, _, workflow = runtime
+    headers = {"Authorization": "Bearer " + "t" * 40}
+    pid = next(iter(store.projects))
+
+    def command(name, target, **payload):
+        request_id = str(uuid4())
+        return {
+            "request_id": request_id,
+            "kind": name,
+            "target": target,
+            "payload": {"schema_version": 1, "request_id": request_id, **payload},
+        }
+
+    with TestClient(create_app(config, components=(None, store, workflow))) as client:
+        sent = {
+            "knowledge": command("knowledge", f"knowledge:{pid}", kind="chat", text="What did we learn?"),
+            "project_settings": command("project_settings", f"knowledge:{pid}", instructions="Be brief."),
+        }
+        for kind, body in sent.items():
+            posted = client.post("/api/commands", headers=headers, json=body).json()
+            assert posted["state"] == "applied", posted
+            got = client.get("/api/commands/" + body["request_id"], headers=headers).json()
+            assert got["kind"] == kind and got["state"] == "applied" and got["target"] == body["target"]
+        bad = command("project_settings", "knowledge:nowhere", instructions="x")
+        client.post("/api/commands", headers=headers, json=bad)
+        refused = client.get("/api/commands/" + bad["request_id"], headers=headers).json()
+        assert refused["state"] == "rejected" and refused["error"]
+        assert client.get(f"/api/commands/{uuid4()}", headers=headers).status_code == 404
+
+
 def client_for(config, store, tmp_path, handler):
     credential = tmp_path / "executor-token"
     credential.write_text("e" * 40)

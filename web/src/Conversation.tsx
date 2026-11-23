@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { ArrowUp, LoaderCircle, MessageSquare, X } from 'lucide-react';
-import { api } from './api';
-import { experimentKey, onRejection, send as sendCommand } from './relay';
+import { experimentKey, olderMessages, onRejection, send as sendCommand } from './relay';
 import type { Discussion, Experiment, Status } from './types';
 import { Select } from './Select';
 import { useDialog } from './useDialog';
@@ -119,9 +118,7 @@ export function Conversation({
     setBusy(true);
     setError(null);
     try {
-      const result = await api<{ messages: Discussion[]; has_more: boolean }>(
-        `/api/experiments/${exp.id}/conversation?before=${messages[0]?.seq || Number.MAX_SAFE_INTEGER}`,
-      );
+      const result = await olderMessages(exp.id, messages[0]?.seq || 9999999999);
       nearBottom.current = false;
       setOlder((list) => [...result.messages, ...list]);
       setHasMore(result.has_more);

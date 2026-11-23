@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { api, RequestError } from './api';
-import type { Experiment, Status } from './types';
+import type { Discussion, Experiment, Status } from './types';
 
 // Reads come from projections, writes are commands, and every command has a receipt.
 // Hosted refusals are asynchronous: the receipt settles after the executor applies or refuses.
@@ -19,17 +19,15 @@ export type Host = 'local' | 'gateway';
 
 export const experimentKey = (id: string) => `experiment:${id}`;
 export const projectKey = (kind: 'knowledge' | 'autopilot', id: string) => `${kind}:${id}`;
+export const reportKey = (project: string, version: number | string) =>
+  `knowledge-report:${project}:${version}`;
+const conversationKey = (id: string, seq: number) =>
+  `conversation:${id}:${String(seq).padStart(10, '0')}`;
 
 let host: Host | null = null;
 export async function loadHost(): Promise<Host> {
   if (host) return host;
-  try {
-    host = (await api<{ host?: Host }>('/api/session')).host === 'local' ? 'local' : 'gateway';
-  } catch (error) {
-    // A hosted Worker without this route answers 404; other failures are retried by the caller.
-    if (!(error instanceof RequestError) || error.status !== 404) throw error;
-    host = 'gateway';
-  }
+  host = (await api<{ host: Host }>('/api/session')).host === 'local' ? 'local' : 'gateway';
   return host;
 }
 
@@ -52,13 +50,21 @@ export async function listProjections<T>(prefix: string): Promise<Projection<T>[
   }
   return found;
 }
+// One page of messages older than `before`; each message is its own document.
+export async function olderMessages(id: string, before: number, size = 20) {
+  const found = await api<{ items?: Projection<Discussion>[] }>(
+    `/api/projections?prefix=${encodeURIComponent(`conversation:${id}:`)}&limit=${size + 1}&before=${encodeURIComponent(conversationKey(id, before))}`,
+  );
+  const items = found.items || [];
+  return { messages: items.slice(0, size).map((i) => i.document), has_more: items.length > size };
+}
 export async function loadStatus(): Promise<Status> {
   const [where, status] = await Promise.all([loadHost(), getProjection<Status>('status')]);
   // The publication time stands in for the Worker's heartbeat stamp.
   return { ...status.document, host: where, heartbeat_received_at: seconds(status.updated_at) };
 }
 
-// Commands this page sent keep their payload, which the pending list does not carry.
+// The hosted pending list carries each saved payload; this page also remembers its own.
 const sent = new Map<string, Record<string, unknown>>();
 const ids = new Map<string, string>();
 let pending: PendingCommand[] = [];
@@ -73,8 +79,8 @@ export const onRejection = (fn: (receipt: Receipt) => void) => {
   return () => void rejections.delete(fn);
 };
 export async function refreshPending() {
-  const { commands } = await api<{ commands: Receipt[] }>('/api/commands?state=pending');
-  publish(commands.map((c) => ({ ...c, payload: sent.get(c.request_id) })));
+  const { commands } = await api<{ commands: PendingCommand[] }>('/api/commands?state=pending');
+  publish(commands.map((c) => ({ ...c, payload: c.payload ?? sent.get(c.request_id) })));
 }
 export function usePendingCommands() {
   return useSyncExternalStore(
@@ -116,7 +122,7 @@ async function watch(id: string) {
       const receipt = await api<Receipt>(`/api/commands/${id}`);
       if (receipt.state !== 'pending') return settle(receipt);
     } catch (error) {
-      // Locally only experiment receipts are readable; an unknown id has nothing to wait for.
+      // An unknown id has nothing to wait for.
       if (error instanceof RequestError && error.status === 404) break;
     }
   }

@@ -125,3 +125,30 @@ def experiment_notification(exp):
         "alert": alert,
         "targets": [f"experiment:{exp['id']}"],
     }
+
+
+def autopilot_notification(project_id, view):
+    """Attention notices of a project run, for devices following its linked experiments.
+
+    The newest unresolved researcher_input or handoff notice names the notification, so a
+    repeated publication of the same notice stays silent.
+    """
+    if not (view.get("policy") or {}).get("notifications"):
+        return None
+    notices = [
+        n
+        for n in view.get("notices") or []
+        if not n.get("resolved_at") and n.get("kind") in ("researcher_input", "handoff")
+    ]
+    targets = [f"experiment:{e['experiment_id']}" for e in view.get("experiments") or []]
+    if not notices or not targets:
+        return None
+    safe = "-_.!~*'()"
+    return {
+        "fingerprint": _stringify(["autopilot", notices[0]["id"]]),
+        "title": "Research Autopilot",
+        "body": _slice(str(notices[0]["text"]), 240),
+        "url": f"/?project={quote(project_id, safe=safe)}&view=memory",
+        "alert": True,
+        "targets": targets,
+    }

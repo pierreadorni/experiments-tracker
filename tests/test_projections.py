@@ -57,8 +57,12 @@ def test_local_projections_equal_builder_output_without_local_paths(served):
     client, store, tmp_path = served
     eid = create(client)
     assert client.get("/api/projections").status_code == 401
-    listed = client.get("/api/projections", headers=HEADERS).json()["projections"]
-    assert [p["key"] for p in listed] == ["projects", "status", "inbox", f"experiment:{eid}"]
+    listed = client.get("/api/projections?limit=100", headers=HEADERS).json()["items"]
+    assert sorted(p["key"] for p in listed) == sorted(
+        ["projects", "status", "inbox", "maintenance", f"experiment:{eid}"]
+        + [f"knowledge:{pid}" for pid in store.projects]
+    )
+    assert [p["key"] for p in listed] == sorted((p["key"] for p in listed), reverse=True)
     # The builder is the single source: a document equals what the route returns.
     one = client.get(f"/api/projections/experiment:{eid}", headers=HEADERS).json()
     built = Projections(store).build(f"experiment:{eid}")
@@ -69,9 +73,9 @@ def test_local_projections_equal_builder_output_without_local_paths(served):
     projects = client.get("/api/projections/projects", headers=HEADERS).json()
     assert [p["id"] for p in projects["document"]["projects"]] == ["test-project", "research"]
     assert client.get("/api/projections/status", headers=HEADERS).json()["document"]["executor_id"]
-    assert client.get("/api/projections?prefix=experiment:&limit=1", headers=HEADERS).json()[
-        "projections"
-    ] == [built]
+    assert client.get("/api/projections?prefix=experiment:&limit=1", headers=HEADERS).json()["items"] == [
+        built
+    ]
     for item in listed:
         assert str(tmp_path) not in json.dumps(item), item["key"]
 
@@ -101,3 +105,65 @@ def test_envelope_digest_and_aggregate_revisions(served):
     assert sent["schema_version"] == 1 and sent["notify"]["targets"] == [f"experiment:{eid}"]
     assert "notify" not in envelope(inbox)
     assert parse_key("status") == "status" and parse_key("experiment:x") is None
+
+
+def test_conversation_knowledge_report_autopilot_and_maintenance_documents(served, monkeypatch):
+    client, store, tmp_path = served
+    eid = create(client)
+    with store.tx() as db:
+        db.execute("UPDATE experiments SET phase='complete' WHERE id=?", (eid,))
+    first = store.command(uuid4(), "discuss", {"text": "Explain the setup"}, eid=eid)
+    second = store.command(uuid4(), "discuss", {"text": "And the budget?"}, eid=eid)
+    messages = store.conversation(eid)
+    keys = [f"conversation:{eid}:{m['seq']:010d}" for m in messages]
+    assert len(messages) == 2 and first["request_id"] != second["request_id"]
+    projections = Projections(store, maintenance=lambda: {"available": False, "observed_at": 1.0})
+    for key, message in zip(keys, messages, strict=True):
+        built = projections.build(key)
+        assert built["document"] == {"experiment_id": eid, **message}
+        assert parse_key(key) == "conversation"
+    # Paging is the hosted list: newest key first, resumed with the last key seen.
+    page = client.get(f"/api/projections?prefix=conversation:{eid}:&limit=1", headers=HEADERS).json()["items"]
+    assert [p["key"] for p in page] == [keys[1]]
+    rest = client.get(
+        f"/api/projections?prefix=conversation:{eid}:&before={keys[1]}", headers=HEADERS
+    ).json()["items"]
+    assert [p["key"] for p in rest] == [keys[0]]
+    assert projections.build(f"conversation:{eid}:{99:010d}") is None
+    # Knowledge keeps the old view and its own revision; report versions are immutable.
+    knowledge = projections.build("knowledge:research")
+    assert knowledge["document"]["project_id"] == "research" and knowledge["revision"] == 0
+    assert projections.build("knowledge:unknown") is None
+    assert projections.build("knowledge-report:research:1") is None
+    with store.tx() as db:
+        db.execute(
+            "INSERT INTO project_reports VALUES(?,?,?,?,?,?)",
+            ("research", 1, "{}", "{}", 1.0, "turn"),
+        )
+    report = projections.build("knowledge-report:research:1")
+    assert report["revision"] == 1 and report["document"]["report"]["version"] == 1
+    assert projections.revisions()["knowledge-report:research:1"] == 1
+    # Maintenance is an aggregate; without an updater there is no document.
+    assert projections.build("maintenance")["document"]["available"] is False
+    assert Projections(store).build("maintenance") is None
+    monkeypatch.setattr(Projections, "autopilot_view", lambda self, pid: {"policy": {}, "pid": pid})
+    assert Projections(store, autopilot=lambda: None).build("autopilot:research")["document"]["pid"]
+    for key in ("conversation:x:1", "knowledge-report:p:v", "autopilot:a b", "knowledge:"):
+        assert parse_key(key) is None, key
+
+
+def test_autopilot_notifications_name_the_newest_unresolved_attention_notice():
+    view = {
+        "policy": {"notifications": True},
+        "experiments": [{"experiment_id": "e1"}],
+        "notices": [
+            {"id": "n2", "kind": "handoff", "text": "Paper ready", "resolved_at": None},
+            {"id": "n1", "kind": "budget", "text": "Low", "resolved_at": None},
+        ],
+    }
+    sent = envelope({"key": "autopilot:p-q", "revision": 1, "document": view})
+    assert sent["notify"]["targets"] == ["experiment:e1"] and "n2" in sent["notify"]["fingerprint"]
+    assert sent["notify"]["url"] == "/?project=p-q&view=memory" and sent["notify"]["alert"] is True
+    assert "notify" not in envelope({"key": "autopilot:p", "revision": 1, "document": {**view, "policy": {}}})
+    view["notices"][0]["resolved_at"] = 5
+    assert "notify" not in envelope({"key": "autopilot:p", "revision": 1, "document": view})

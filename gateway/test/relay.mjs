@@ -82,6 +82,18 @@ test('credentials do not cross roles', async () => {
   );
 });
 
+test('the session route names the host for browsers only', async () => {
+  const session = await browser('/api/session');
+  assert.equal(session.status, 200);
+  assert.deepEqual(await session.json(), {
+    schema_version: 1,
+    authenticated: true,
+    host: 'gateway',
+  });
+  assert.equal((await call('/api/session', 'GET', undefined, machine)).status, 401);
+  assert.equal((await call('/api/session', 'GET', undefined, 'x'.repeat(40))).status, 401);
+});
+
 test('executor identity mismatch is 403', async () => {
   const k = experiment();
   for (const headers of [{ 'x-executor-id': 'jean-zay' }, {}]) {
@@ -184,7 +196,9 @@ test('command replay, conflict and terminal receipts', async () => {
   const mine = queue.commands.find((c) => c.request_id === body.request_id);
   assert.deepEqual([mine.kind, mine.target, mine.payload], [body.kind, body.target, body.payload]);
   const pending = await (await browser('/api/commands?state=pending')).json();
-  assert.ok(pending.commands.some((c) => c.request_id === body.request_id));
+  const shown = pending.commands.find((c) => c.request_id === body.request_id);
+  assert.deepEqual(shown.payload, body.payload, 'a reloaded page sees the pending payload');
+  assert.deepEqual([shown.kind, shown.target, shown.state], [body.kind, body.target, 'pending']);
 
   const settle = (extra) =>
     exec(`${X}/receipts`, 'POST', { request_id: body.request_id, ...extra });

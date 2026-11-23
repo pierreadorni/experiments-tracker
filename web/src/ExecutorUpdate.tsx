@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { LoaderCircle, RefreshCw, X } from 'lucide-react';
-import { api } from './api';
-import { send } from './relay';
+import { getProjection, onRejection, send, usePendingCommands } from './relay';
 import { useDialog } from './useDialog';
 
 export type MaintenanceStatus = {
@@ -59,16 +58,27 @@ export function ExecutorUpdate({
   const [confirm, setConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
   const [queued, setQueued] = useState(false);
+  const [rejected, setRejected] = useState<string | null>(null);
+  const waiting = usePendingCommands().some((c) => c.kind === 'maintenance');
+  useEffect(
+    () =>
+      onRejection((receipt) => {
+        if (receipt.kind !== 'maintenance') return;
+        setQueued(false);
+        setRejected(receipt.error || 'The install request was refused.');
+      }),
+    [],
+  );
   const dialog = useRef<HTMLElement>(null);
   useDialog(dialog, confirm, () => setConfirm(false));
   useEffect(() => {
     let active = true;
     const poll = async () => {
       try {
-        const next = await api<MaintenanceStatus>('/api/maintenance');
+        const next = (await getProjection<MaintenanceStatus>('maintenance')).document;
         if (active) {
           setStatus(next);
-          if (next.operation || next.pending?.state === 'rejected') setQueued(false);
+          if (next.operation) setQueued(false);
           setError('');
         }
       } catch {
@@ -82,12 +92,21 @@ export function ExecutorUpdate({
       window.clearInterval(timer);
     };
   }, []);
+  // The executor publishes progress; a saved request and its refusal come from the command queue.
+  const shown: MaintenanceStatus = {
+    ...status,
+    pending: waiting
+      ? { request_id: '', state: 'pending', error: null }
+      : rejected
+        ? { request_id: '', state: 'rejected', error: rejected }
+        : null,
+  };
   const stale = Boolean(status.observed_at && Date.now() / 1000 - status.observed_at > 45);
   const operation = status.operation;
   const installing = Boolean(
     operation && !['complete', 'failed', 'cancelled'].includes(operation.state),
   );
-  const pending = status.pending?.state === 'pending' || queued;
+  const pending = waiting || queued;
   const canInstall = Boolean(
     status.available &&
       status.release?.state === 'ready' &&
@@ -96,7 +115,7 @@ export function ExecutorUpdate({
       !pending,
   );
   const label = status.observed_at
-    ? updateLabel(status)
+    ? updateLabel(shown)
     : error
       ? 'Update status unavailable'
       : 'Checking for updates…';
@@ -133,7 +152,7 @@ export function ExecutorUpdate({
         </p>
       )}
       {operation?.error && <p className="error">{operation.error}</p>}
-      {status.pending?.error && <p className="error">{status.pending.error}</p>}
+      {shown.pending?.error && <p className="error">{shown.pending.error}</p>}
       {status.release?.error && <p className="error">{status.release.error}</p>}
       {installing && (
         <p>Saved jobs continue in Slurm. New dispatch stays held until recovery checks pass.</p>
@@ -202,13 +221,13 @@ export function ExecutorUpdate({
                 onClick={async () => {
                   if (!status.release || busy) return;
                   setBusy(true);
+                  setRejected(null);
                   try {
                     await send('maintenance', 'maintenance', {
                       release_id: status.release.commit_id,
                     });
                     setQueued(true);
                     setConfirm(false);
-                    setStatus(await api<MaintenanceStatus>('/api/maintenance'));
                   } catch (err) {
                     setError(
                       err instanceof Error

@@ -7,6 +7,7 @@ reports it. The caller reports a receipt only after ``dispatch`` returns, so a r
 in between redelivers the command and the same saved outcome answers it.
 """
 
+import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -78,6 +79,53 @@ def receipt(request_id, kind, target, outcome, received_at):
         "received_at": received_at,
         "settled_at": None if outcome["state"] == "pending" else clock.now(),
     }
+
+
+def saved_receipt(store, request_id):
+    """The receipt of a non-experiment command, from the table its handler saved it in."""
+    request_id = str(request_id)
+    for table, kind in (
+        ("project_requests", "project_create"),
+        ("project_settings_requests", "project_settings"),
+    ):
+        row = store.one(f"SELECT * FROM {table} WHERE request_id=?", (request_id,))
+        if row:
+            if row["state"] == "applied":
+                saved = json.loads(row["result"]) if row["result"] else None
+                result = (
+                    {"project_id": row["project_id"], "project": saved} if kind == "project_create" else saved
+                )
+                state = {"state": "applied", "result": result}
+            elif row["state"] == "rejected":
+                state = {"state": "rejected", "error": row["error"]}
+            else:
+                state = {"state": "pending"}
+            target = None if kind == "project_create" else f"knowledge:{row['project_id']}"
+            return receipt(request_id, kind, target, state, row["created_at"])
+    row = store.one("SELECT * FROM project_turns WHERE id=?", (request_id,))
+    if row:
+        result = {"schema_version": 1, "request_id": request_id, "state": row["state"]}
+        outcome = {"state": "applied", "result": result}
+        return receipt(request_id, "knowledge", f"knowledge:{row['project_id']}", outcome, row["created_at"])
+    row = store.one("SELECT * FROM autopilot_requests WHERE request_id=?", (request_id,))
+    if row:
+        outcome = (
+            {"state": "rejected", "error": row["error"]}
+            if row["state"] == "rejected"
+            else {"state": "applied", "result": json.loads(row["result"]) if row["result"] else None}
+        )
+        return receipt(request_id, "autopilot", f"autopilot:{row['project_id']}", outcome, row["created_at"])
+    row = store.one("SELECT * FROM maintenance WHERE request_id=?", (request_id,))
+    if row:
+        result = {"schema_version": 1, "request_id": request_id, "state": row["state"]}
+        return receipt(
+            request_id,
+            "maintenance",
+            "maintenance",
+            {"state": "applied", "result": result},
+            row["created_at"],
+        )
+    return None
 
 
 def _experiment(target, *, required):

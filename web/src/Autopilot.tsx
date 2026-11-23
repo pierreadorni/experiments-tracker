@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Download, Pause, Play, Square, FileText, ChevronDown } from 'lucide-react';
-import { api } from './api';
-import { projectKey, send as sendCommand, usePendingCommands } from './relay';
+import { RequestError } from './api';
+import { getProjection, projectKey, send as sendCommand, usePendingCommands } from './relay';
 import type { Status } from './types';
 
 type Policy = {
@@ -154,7 +154,18 @@ export function Autopilot({
   open: (id: string) => void;
   onActive?: (active: boolean) => void;
 }) {
-  const path = `/api/projects/${encodeURIComponent(projectId)}/autopilot`;
+  const path = `/api/projects/${encodeURIComponent(projectId)}/autopilot`; // downloads only
+  const key = projectKey('autopilot', projectId);
+  const load = async (): Promise<View> => {
+    try {
+      return (await getProjection<View>(key)).document;
+    } catch (e) {
+      // Nothing is published for a project without a run.
+      if (e instanceof RequestError && e.status === 404)
+        return { available: true, run: null } as View;
+      throw e;
+    }
+  };
   const [view, setView] = useState<View | null>(null),
     [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false),
@@ -170,12 +181,12 @@ export function Autopilot({
     [answerText, setAnswerText] = useState('');
   const [control, setControl] = useState<{ eid: string; operation: string } | null>(null);
   const [doc, setDoc] = useState<{ name: string; version: number; content: string } | null>(null);
-  const refresh = async () => setView(await api<View>(path));
+  const refresh = async () => setView(await load());
   useEffect(() => {
     let active = true;
     const poll = async () => {
       try {
-        const result = await api<View>(path);
+        const result = await load();
         if (active) {
           setView(result);
           setError(null);
@@ -191,7 +202,7 @@ export function Autopilot({
       active = false;
       clearInterval(timer);
     };
-  }, [path, status?.autopilot?.available]);
+  }, [key, status?.autopilot?.available]);
   useEffect(() => {
     onActive?.(!!view?.run && !['draft', 'stopped', 'completed'].includes(view.run.status));
   }, [view?.run?.status, onActive]);
