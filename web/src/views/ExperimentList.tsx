@@ -2,6 +2,7 @@ import { Badge } from '../Badge';
 import { date, experimentTitle } from '../format';
 import { ArrowRight, Beaker, Check, ChevronRight, Plus, Search } from 'lucide-react';
 import { usePendingCommands } from '../relay';
+import { leadRunId } from '../lead';
 import type { ViewProps } from './props';
 
 export function ExperimentList(
@@ -107,6 +108,11 @@ export function ExperimentList(
                 <span className="row-finding">{e.analysis.summary}</span>
               )}
               <small>
+                {leadRunId(e.contract) && (
+                  <>
+                    Autopilot lead <span>·</span>{' '}
+                  </>
+                )}
                 {Boolean(e.contract.synthetic_demo) && (
                   <>
                     Synthetic experiment <span>·</span>{' '}

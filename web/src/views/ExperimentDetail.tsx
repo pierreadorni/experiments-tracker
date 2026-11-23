@@ -14,6 +14,7 @@ import { downloadEvidenceBundle } from '../evidence';
 import { date, experimentTitle, pretty, researchRequestQuestion, terminal } from '../format';
 import { holdExplanation, holdGuidance, holdTitle } from '../holds';
 import { timelineStages } from '../progress';
+import { leadRunId } from '../lead';
 import { Experiment } from '../types';
 import {
   ArrowLeft,
@@ -195,6 +196,7 @@ export function ExperimentDetail(
           ))}
         <div className="detail-meta">
           <Badge exp={exp} />
+          {leadRunId(exp.contract) && <span>Autopilot lead</span>}
           {Boolean(exp.contract.synthetic_demo) && <span>Synthetic experiment</span>}
           <span>
             <Clock3 size={14} />

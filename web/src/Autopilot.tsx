@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Download, Pause, Play, Square, FileText, ChevronDown } from 'lucide-react';
 import { RequestError } from './api';
+import { leadId } from './lead';
 import { getProjection, projectKey, send as sendCommand, usePendingCommands } from './relay';
 import type { Status } from './types';
 
@@ -80,8 +81,10 @@ type View = {
     experiment_id: string;
     phase: string;
     deferred: number;
-    priority: number;
-    defer_reason: string | null;
+    // Members of retired runs carry a backlog item and rationale; new runs leave them empty.
+    backlog_id?: string | null;
+    rationale?: string | null;
+    defer_reason?: string | null;
     hold_reason?: string | null;
   }[];
   notices?: { id: string; kind: string; text: string; resolved_at: number | null }[];
@@ -89,7 +92,7 @@ type View = {
     id: string;
     author: string;
     created_at: number;
-    document: { name?: string; arguments?: { rationale?: string; reason?: string } };
+    document?: { name?: string; arguments?: { rationale?: string; reason?: string } };
   }[];
   messages?: { seq: number; kind: string; document: string }[];
   responses?: { id: string; cursor: number; result: string; created_at: number }[];
@@ -97,16 +100,24 @@ type View = {
   backlog?: {
     id: string;
     document: {
-      question: string;
-      stop_condition: string;
-      review_at: number;
-      priority: number;
-      status: string;
+      question?: string;
+      stop_condition?: string;
+      review_at?: number;
+      priority?: number;
+      status?: string;
     };
   }[];
 };
 const label = (value: string) =>
   value === 'autopilot_researcher_input' ? 'Waiting for your reply' : value.replaceAll('_', ' ');
+const saved = (text: string | null | undefined): Record<string, unknown> => {
+  try {
+    const value = JSON.parse(text || '');
+    return value && typeof value === 'object' ? value : {};
+  } catch {
+    return {};
+  }
+};
 const hours = (seconds: number) =>
   new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(seconds / 3600);
 const date = (seconds: number, zone?: string) => {
@@ -275,7 +286,10 @@ export function Autopilot({
       <div className="autopilot-heading">
         <div>
           <h2 id="autopilot-heading">Research Autopilot</h2>
-          <p className="muted">A bounded research project, from first review to paper handoff.</p>
+          <p className="muted">
+            A bounded research project led by one Autopilot experiment, from first review to paper
+            handoff.
+          </p>
         </div>
         {capable && !editing && (
           <button
@@ -481,16 +495,6 @@ export function Autopilot({
             </div>
             <div className="autopilot-fields">
               <label>
-                Borrowing from ablations (percentage points)
-                <input
-                  type="number"
-                  min="0"
-                  step="any"
-                  value={draft.borrowing_percent}
-                  onChange={(e) => field('borrowing_percent', Number(e.target.value))}
-                />
-              </label>
-              <label>
                 Protected writing time (days)
                 <input
                   type="number"
@@ -631,6 +635,45 @@ export function Autopilot({
               {(view?.calendar?.weeks_remaining || 0).toFixed(2)} weeks remaining
             </span>
           </div>
+          <section aria-labelledby="autopilot-policy-heading">
+            <h3 id="autopilot-policy-heading">Saved policy</h3>
+            <dl className="autopilot-ledger">
+              <div>
+                <dt>Subject</dt>
+                <dd>{policy.subject}</dd>
+              </div>
+              <div>
+                <dt>Goal</dt>
+                <dd>
+                  {policy.publication_goal} · {policy.venue}
+                </dd>
+              </div>
+              <div>
+                <dt>Handoff</dt>
+                <dd>{date(policy.handoff_at, policy.timezone)}</dd>
+              </div>
+              <div>
+                <dt>Submission</dt>
+                <dd>{date(policy.submission_at, policy.timezone)}</dd>
+              </div>
+              <div>
+                <dt>Allowance</dt>
+                <dd>{policy.weekly_gpu_hours} GPU-h per week</dd>
+              </div>
+              <div>
+                <dt>Open experiments</dt>
+                <dd>{policy.max_open_experiments}</dd>
+              </div>
+            </dl>
+            {run.status !== 'draft' && (
+              <p>
+                <button className="text-button" onClick={() => open(leadId(run.id))}>
+                  Open the Autopilot lead experiment
+                </button>
+                <span className="muted small"> · its research turns, questions and reports</span>
+              </p>
+            )}
+          </section>
           <div className="autopilot-actions">
             {run.status === 'draft' && !review && (
               <button
@@ -708,12 +751,6 @@ export function Autopilot({
               Pause and stop hold new work. Already submitted queued and running jobs continue and
               may finish after handoff. Explicit cancellation uses the experiment's existing
               cancellation flow.
-            </p>
-          )}
-          {run.foundation !== 'ready' && (
-            <p className="notice">
-              Foundation {label(run.foundation)}. Initial literature and protocol work must finish
-              before main experiments.
             </p>
           )}
           {run.hold_reason && run.hold_reason !== 'autopilot_researcher_input' && (
@@ -918,6 +955,7 @@ export function Autopilot({
                           ? 'Cancellation unconfirmed'
                           : label(e.phase)}
                       {e.deferred ? ' · deferred' : ''}
+                      {e.rationale ? ` · ${e.rationale}` : ''}
                     </span>
                     {!['complete', 'cancelled'].includes(e.phase) && (
                       <div>
@@ -993,91 +1031,92 @@ export function Autopilot({
               </button>
             </form>
           )}
-          <section>
-            <h3>Working documents and paper</h3>
-            {!view?.documents?.length && (
-              <p className="muted">Documents appear after the first admitted foundation turn.</p>
-            )}
-            <ul className="autopilot-documents">
-              {view?.documents?.map((d) => {
-                const file = download('document', d.name);
-                return (
-                  <li key={d.name}>
-                    <FileText size={16} />
-                    <button
-                      className="text-button"
-                      disabled={!file?.available}
-                      title={file?.available ? undefined : 'Document is not available'}
-                      onClick={async () => {
-                        try {
-                          const response = await fetch(`/api/blobs/${file?.blob_id}`, {
-                            credentials: 'same-origin',
-                          });
-                          if (!response.ok) throw new Error('Document is not available');
-                          setDoc({ ...d, content: await response.text() });
-                        } catch (e) {
-                          setError(String(e));
-                        }
-                      }}
-                    >
-                      {label(d.name)} · v{d.version}
-                    </button>
-                    {file?.available && (
-                      <a
-                        href={`/api/blobs/${file.blob_id}`}
-                        download={d.name}
-                        aria-label={`Download ${d.name}`}
+          {!!(view?.documents?.length || view?.downloads?.length) && (
+            <section>
+              <h3>Saved documents and files</h3>
+              <ul className="autopilot-documents">
+                {view?.documents?.map((d) => {
+                  const file = download('document', d.name);
+                  return (
+                    <li key={d.name}>
+                      <FileText size={16} />
+                      <button
+                        className="text-button"
+                        disabled={!file?.available}
+                        title={file?.available ? undefined : 'Document is not available'}
+                        onClick={async () => {
+                          try {
+                            const response = await fetch(`/api/blobs/${file?.blob_id}`, {
+                              credentials: 'same-origin',
+                            });
+                            if (!response.ok) throw new Error('Document is not available');
+                            setDoc({ ...d, content: await response.text() });
+                          } catch (e) {
+                            setError(String(e));
+                          }
+                        }}
                       >
-                        <Download size={15} />
-                      </a>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-            {doc && (
-              <details open>
-                <summary>
-                  {doc.name} · v{doc.version}
-                </summary>
-                <pre className="autopilot-document">{doc.content}</pre>
-                <button className="secondary" onClick={() => setDoc(null)}>
-                  Close document
-                </button>
-              </details>
-            )}
-            {(() => {
-              const paper = download('file');
-              return paper?.available ? (
-                <a className="secondary" href={`/api/blobs/${paper.blob_id}`} download="paper.pdf">
+                        {label(d.name)} · v{d.version}
+                      </button>
+                      {file?.available && (
+                        <a
+                          href={`/api/blobs/${file.blob_id}`}
+                          download={d.name}
+                          aria-label={`Download ${d.name}`}
+                        >
+                          <Download size={15} />
+                        </a>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+              {doc && (
+                <details open>
+                  <summary>
+                    {doc.name} · v{doc.version}
+                  </summary>
+                  <pre className="autopilot-document">{doc.content}</pre>
+                  <button className="secondary" onClick={() => setDoc(null)}>
+                    Close document
+                  </button>
+                </details>
+              )}
+              {(() => {
+                const paper = download('file');
+                return paper?.available ? (
+                  <a
+                    className="secondary"
+                    href={`/api/blobs/${paper.blob_id}`}
+                    download="paper.pdf"
+                  >
+                    <Download size={16} />
+                    Download saved paper
+                  </a>
+                ) : paper ? (
+                  <p className="muted">The saved paper is unavailable for download.</p>
+                ) : null;
+              })()}
+              {download('handoff')?.available && (
+                <a
+                  className="secondary"
+                  href={`/api/blobs/${download('handoff')?.blob_id}`}
+                  download="autopilot-handoff.zip"
+                >
                   <Download size={16} />
-                  Download compiled paper
+                  Download current handoff
                 </a>
-              ) : paper ? (
-                <p className="muted">The compiled paper is unavailable for download.</p>
-              ) : null;
-            })()}
-            {download('handoff')?.available ? (
-              <a
-                className="secondary"
-                href={`/api/blobs/${download('handoff')?.blob_id}`}
-                download="autopilot-handoff.zip"
-              >
-                <Download size={16} />
-                Download current handoff
-              </a>
-            ) : (
-              <p className="muted">The handoff archive is not available yet.</p>
-            )}
-            {run.handoff && (
-              <p className="notice">
-                {run.status === 'handoff_ready'
-                  ? 'Controller reports a review-ready draft.'
-                  : 'Handoff includes known gaps and missing deliverables.'}{' '}
-                Researcher judgment is required before submission.
-              </p>
-            )}
-          </section>
+              )}
+              {run.handoff && (
+                <p className="notice">
+                  {run.status === 'handoff_ready'
+                    ? 'Controller reports a review-ready draft.'
+                    : 'Handoff includes known gaps and missing deliverables.'}{' '}
+                  Researcher judgment is required before submission.
+                </p>
+              )}
+            </section>
+          )}
           {!control && !['draft', 'completed', 'stopped'].includes(run.status) && (
             <section className="autopilot-guidance" aria-labelledby="autopilot-guidance-heading">
               <h3 id="autopilot-guidance-heading">Project guidance and questions</h3>
@@ -1116,7 +1155,7 @@ export function Autopilot({
                     .reverse()
                     .map((m) => (
                       <p className="autopilot-message" key={m.seq}>
-                        <strong>Researcher:</strong> {JSON.parse(m.document).text}
+                        <strong>Researcher:</strong> {String(saved(m.document).text ?? '')}
                       </p>
                     ))}
                   {view?.responses
@@ -1124,7 +1163,7 @@ export function Autopilot({
                     .reverse()
                     .map((response) => (
                       <p className="autopilot-message" key={response.id}>
-                        <strong>Autopilot:</strong> {JSON.parse(response.result).summary}
+                        <strong>Autopilot:</strong> {String(saved(response.result).summary ?? '')}
                       </p>
                     ))}
                 </details>
@@ -1145,12 +1184,21 @@ export function Autopilot({
                   </summary>
                   {view.backlog.map((item) => (
                     <article key={item.id}>
-                      <h4>{item.document.question}</h4>
+                      <h4>{item.document.question || 'Saved item'}</h4>
                       <p>
-                        {item.document.status} · priority {item.document.priority} · review{' '}
-                        {date(item.document.review_at, policy.timezone)}
+                        {[
+                          item.document.status,
+                          item.document.priority !== undefined &&
+                            `priority ${item.document.priority}`,
+                          item.document.review_at &&
+                            `review ${date(item.document.review_at, policy.timezone)}`,
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')}
                       </p>
-                      <p>Stop condition: {item.document.stop_condition}</p>
+                      {item.document.stop_condition && (
+                        <p>Stop condition: {item.document.stop_condition}</p>
+                      )}
                     </article>
                   ))}
                 </details>
@@ -1164,11 +1212,11 @@ export function Autopilot({
                   {view.decisions.map((d) => (
                     <p key={d.id}>
                       {date(d.created_at)} ·{' '}
-                      {d.document.arguments?.rationale ||
-                        d.document.arguments?.reason ||
-                        label(d.document.name || 'Decision')}{' '}
+                      {d.document?.arguments?.rationale ||
+                        d.document?.arguments?.reason ||
+                        label(d.document?.name || 'Decision')}{' '}
                       <span className="muted">
-                        ({d.author.startsWith('agent:') ? 'Autopilot' : 'Researcher'})
+                        ({(d.author || '').startsWith('agent:') ? 'Autopilot' : 'Researcher'})
                       </span>
                     </p>
                   ))}
