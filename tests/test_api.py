@@ -5,7 +5,6 @@ from fastapi.testclient import TestClient
 
 from experimenttracker.api import create_app
 from experimenttracker.config import GatewayConfig, ProjectConfig
-from experimenttracker.execution_settings import ExecutionSettings
 from experimenttracker.workspaces import initialize_project
 
 
@@ -57,17 +56,19 @@ def test_api_authentication_csrf_and_idempotency(config, runtime, tmp_path, monk
         eid = first.json()["experiment_id"]
         assert store.experiment(eid)["contract"]["execution_contract"] == 4
         assert client.post("/api/session", headers=headers).status_code == 200
-        note = {"request_id": str(uuid4()), "text": "Preserve my text"}
+        note_id = str(uuid4())
+        note = {
+            "request_id": note_id,
+            "kind": "note",
+            "target": f"experiment:{eid}",
+            "payload": {"schema_version": 1, "request_id": note_id, "text": "Preserve my text"},
+        }
         assert (
-            client.post(
-                f"/api/experiments/{eid}/notes", json=note, headers={"Origin": "https://evil.example"}
-            ).status_code
+            client.post("/api/commands", json=note, headers={"Origin": "https://evil.example"}).status_code
             == 403
         )
         assert (
-            client.post(
-                f"/api/experiments/{eid}/notes", json=note, headers={"Origin": "http://testserver"}
-            ).status_code
+            client.post("/api/commands", json=note, headers={"Origin": "http://testserver"}).status_code
             == 200
         )
         assert client.get("/api/artifacts/../../etc/passwd").status_code in (400, 404)
@@ -154,46 +155,54 @@ def test_stale_answer_rejected(config, runtime, tmp_path, monkeypatch):
             },
         ).json()
         assert store.experiment(result["experiment_id"])["contract"]["execution_contract"] == 4
+        answer_id = str(uuid4())
         response = client.post(
-            f"/api/experiments/{result['experiment_id']}/answers",
+            "/api/commands",
             headers=headers,
-            json={"request_id": str(uuid4()), "pending_request_id": "old-request", "answer": "accept"},
+            json={
+                "request_id": answer_id,
+                "kind": "answer",
+                "target": f"experiment:{result['experiment_id']}",
+                "payload": {
+                    "schema_version": 1,
+                    "request_id": answer_id,
+                    "pending_request_id": "old-request",
+                    "answer": "accept",
+                },
+            },
         )
-        assert response.status_code == 409
+        assert response.json()["state"] == "rejected"
     assert scheduler.submissions == 0
 
 
-def test_project_settings_api_has_durable_receipt(config, runtime):
+def test_project_settings_command_has_durable_receipt(config, runtime):
     store, _, _, workflow = runtime
     app = create_app(config, components=(None, store, workflow))
     with TestClient(app) as client:
         headers = {"Authorization": "Bearer " + "t" * 40}
+        request_id = str(uuid4())
         payload = {
-            "schema_version": 1,
-            "request_id": str(uuid4()),
-            "instructions": "Prefer the next capable GPU over an occupied A6000.",
+            "request_id": request_id,
+            "kind": "project_settings",
+            "target": "knowledge:test-project",
+            "payload": {
+                "schema_version": 1,
+                "request_id": request_id,
+                "instructions": "Prefer the next capable GPU over an occupied A6000.",
+            },
         }
-        url = "/api/projects/test-project/settings"
-        response = client.patch(url, json=payload, headers=headers)
-        assert response.status_code == 202
+        first = client.post("/api/commands", json=payload, headers=headers).json()
+        assert first["state"] == "applied"
+        assert client.post("/api/commands", json=payload, headers=headers).json()["result"] == first["result"]
         workflow.projects.settings_tick()
-        receipt = client.get(f"/api/projects/settings/requests/{payload['request_id']}", headers=headers)
-        assert receipt.status_code == 200
-        assert receipt.json()["settings"] == {
-            "instructions": payload["instructions"],
-            "revision": 1,
-            "execution": ExecutionSettings().model_dump(),
-        }
-        assert client.patch(url, json=payload, headers=headers).json() == receipt.json()
         template = client.get("/api/projects/agents-template", headers=headers)
         assert template.status_code == 200 and template.json()["filename"] == "AGENTS.md"
         assert "named branch" in template.json()["content"]
         assert client.get("/api/projects/agents-template").status_code == 401
-        assert (
-            client.patch(url, json={**payload, "instructions": "changed"}, headers=headers).status_code == 409
-        )
+        changed = {**payload, "payload": {**payload["payload"], "instructions": "changed"}}
+        assert client.post("/api/commands", json=changed, headers=headers).json()["state"] == "rejected"
         status = client.get("/api/status", headers=headers).json()
-        assert status["projects"][0]["instructions"] == payload["instructions"]
+        assert status["projects"][0]["instructions"] == payload["payload"]["instructions"]
 
 
 def test_executor_loop_failure_has_unhealthy_status(config, runtime):

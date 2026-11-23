@@ -104,6 +104,13 @@ def wire_digest(document):
     return hashlib.sha256(wire(document).encode()).hexdigest()
 
 
+def local_roots(config):
+    """Executor-local directories that must not appear in published documents."""
+    roots = [config.state_dir, config.job_output_root, config.backup_dir, config.web_dir]
+    roots += [config.projects_root, config.api_token_file]
+    return [r for r in (*roots, *(p.checkout for p in config.projects if p.checkout)) if r]
+
+
 def scrub_local(value, roots=(), *, paths=False):
     """Replace executor-local roots, and with ``paths`` any absolute path, in every string."""
     roots = sorted({r for r in map(str, roots) if len(r) > 1}, key=len, reverse=True)

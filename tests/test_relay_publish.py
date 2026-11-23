@@ -124,7 +124,7 @@ async def test_backfill_blob_first_scrubbed_status_and_unchanged_views_stay_quie
     worker = Worker()
     client = relay_client(config, store, tmp_path, worker)
     with_status(client, config)
-    outbox = store.rows("SELECT id,delivered_at,attempts,error FROM outbox ORDER BY id")
+    assert store.one("SELECT COUNT(*) AS n FROM outbox WHERE delivered_at IS NULL")["n"] > 0
 
     await client.publish_relay()
     assert set(worker.projections) == {
@@ -143,7 +143,11 @@ async def test_backfill_blob_first_scrubbed_status_and_unchanged_views_stay_quie
     assert str(config.state_dir) not in status and "/opt/other" not in status
     assert "/secret/checkout" not in json.dumps(worker.projections["projects"]["document"])
     assert "<local>" in status
-    assert store.rows("SELECT id,delivered_at,attempts,error FROM outbox ORDER BY id") == outbox
+    # The blob upload emitted one event, so the next cycle publishes that revision and settles all.
+    await client.publish_relay()
+    assert store.one("SELECT COUNT(*) AS n FROM outbox WHERE delivered_at IS NULL")["n"] == 0
+    # A blob the Worker accepted marks the artifact published, which report building waits for.
+    assert store.one("SELECT remote_published FROM artifacts")["remote_published"] == 1
 
     # Nothing changed: no further PUT, even when the aggregate window opens again.
     before = list(worker.calls)
@@ -201,38 +205,52 @@ async def test_stale_409_keeps_the_outbox_row_records_an_error_and_backs_off(con
     await client.close()
 
 
-async def test_a_404_means_relay_unsupported_quietly_and_the_old_path_is_unchanged(config, runtime, tmp_path):
+async def test_a_404_backs_off_and_reports_the_old_worker_once(config, runtime, tmp_path):
     store, _, _, _ = runtime
     eid = publication_experiment(store)
     worker = Worker()
     worker.status = 404
-    old = []
-
-    def handler(request):
-        if "/relay/" in request.url.path:
-            return worker.handler(request)
-        old.append(request.url.path)
-        body = json.loads(request.content)
-        return httpx.Response(
-            200, json={"schema_version": 1, "accepted": [m["event_id"] for m in body["messages"]]}
-        )
-
-    client = publication_client(config, store, tmp_path, handler)
-    config.executor_id = "test-executor"
-    await client.publish_outbox()
-    assert old == ["/api/executor/publish"]
-    assert store.one("SELECT COUNT(*) AS n FROM outbox WHERE delivered_at IS NULL")["n"] == 0
+    client = relay_client(config, store, tmp_path, worker)
     await client.isolated("relay", client.publish_relay)
-    assert not client.operation_errors
+    assert list(client.operation_errors) == ["relay:unsupported"]
+    assert "publish the current Worker" in client.operation_errors["relay:unsupported"]
+    assert store.one("SELECT COUNT(*) AS n FROM outbox WHERE delivered_at IS NULL")["n"] > 0
     calls = len(worker.calls)
     await client.isolated("relay", client.publish_relay)
     assert len(worker.calls) == calls, "backs off instead of polling every tick"
-    # The relay appears later: publication starts after the back-off.
+    # The relay appears later: publication starts after the back-off and the error clears.
     worker.status = None
     client.relay_retry_at = 0
     await client.publish_relay()
     assert f"experiment:{eid}" in worker.projections
+    assert not client.operation_errors
     await client.close()
+
+
+async def test_publication_keeps_only_safe_branch_and_integration_identity(config, runtime, tmp_path):
+    from test_integration_commands import awaiting, make_experiment, seed_branch
+
+    store, _, _, _ = runtime
+    eid = make_experiment(store)
+    repo = tmp_path / "repo"
+    seed_branch(store, eid, repo)
+    request_id, candidate = awaiting(store, eid, repo)
+    store.update(eid, kind="job_progress", error="saved progress")
+    worker = Worker()
+    client = relay_client(config, store, tmp_path, worker)
+    try:
+        await client.publish_relay()
+    finally:
+        await client.close()
+    experiment = worker.projections[f"experiment:{eid}"]["document"]
+    assert (experiment["branch"], experiment["head_commit"]) == (f"exp/20260101-{eid}", "b" * 40)
+    assert experiment["branch_state"] == "active"
+    assert experiment["integration"] == {
+        "stage": "awaiting_approval",
+        "request_id": request_id,
+        "candidate_commit": candidate["candidate_commit"],
+    }
+    assert str(repo.resolve()) not in json.dumps(experiment)
 
 
 async def test_deleted_experiment_is_tombstoned_once(config, runtime, tmp_path):

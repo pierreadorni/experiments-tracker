@@ -418,54 +418,6 @@ def test_pause_survives_deadline_and_revised_deadline_resumes_only_explicitly(ru
     assert service.run("test-project")["status"] == "paused"
 
 
-async def test_gateway_autopilot_lost_ack_and_durable_refusal(runtime, config, tmp_path, monkeypatch):
-    import httpx
-
-    from experimenttracker.config import GatewayConfig
-    from experimenttracker.gateway_client import GatewayClient
-
-    service, _ = activated(runtime, monkeypatch)
-    token = tmp_path / "machine-token"
-    token.write_text("e" * 40)
-    config.gateway = GatewayConfig(url="https://gateway.example", credential_file=token)
-    payload = {
-        "schema_version": 1,
-        "request_id": str(uuid4()),
-        "kind": "pause",
-        "expected_revision": service.run("test-project")["revision"],
-    }
-    row = {"request_id": payload["request_id"], "project_id": "test-project", "payload": payload}
-    attempts = []
-
-    async def handler(request):
-        if request.method == "GET":
-            return httpx.Response(200, json={"schema_version": 1, "commands": [row]})
-        if request.url.path.endswith("autopilot-commands"):
-            attempts.append(json.loads(request.content))
-            if len(attempts) == 1:
-                raise httpx.ConnectError("lost command receipt")
-            return httpx.Response(200, json={"schema_version": 1, "accepted": payload["request_id"]})
-        return httpx.Response(200, json={"schema_version": 1, "accepted": True})
-
-    client = GatewayClient(config, service.store, transport=httpx.MockTransport(handler))
-    with pytest.raises(httpx.ConnectError):
-        await client.autopilot()
-    await client.autopilot()
-    assert attempts[0] == attempts[1]
-    assert service.run("test-project")["status"] == "paused"
-    payload.update(request_id=str(uuid4()), expected_revision=0, kind="resume")
-    row["request_id"] = payload["request_id"]
-    await client.autopilot()
-    assert attempts[-1]["state"] == "rejected"
-    assert (
-        service.store.one(
-            "SELECT state FROM autopilot_requests WHERE request_id=?", (payload["request_id"],)
-        )["state"]
-        == "rejected"
-    )
-    await client.close()
-
-
 def test_cpu_terminal_without_timestamps_cannot_hold_gpu_admission(runtime, monkeypatch):
     service, run = activated(runtime, monkeypatch)
     _, intent = linked(service, run, gpus=0)

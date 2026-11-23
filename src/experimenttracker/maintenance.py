@@ -367,16 +367,30 @@ def publish_progress(config, status):
         headers["OAI-Sites-Authorization"] = (
             "Bearer " + config.gateway.sites_credential_file.read_text().strip()
         )
+    from .publish.projections import aggregate_revision, envelope, local_roots, scrub_local, wire
+
+    headers["x-executor-id"] = config.executor_id
+    base = config.gateway.url.rstrip("/") + "/api/executor/relay/"
     try:
-        response = httpx.post(
-            config.gateway.url.rstrip("/") + "/api/executor/maintenance",
-            headers=headers,
-            json=status,
+        manifest = httpx.get(base + "revisions", headers=headers, timeout=15, follow_redirects=False)
+        manifest.raise_for_status()
+        last = manifest.json().get("revisions", {}).get("maintenance", [0])[0]
+        body = envelope(
+            {
+                "key": "maintenance",
+                "revision": aggregate_revision(last),
+                "document": scrub_local(status, local_roots(config)),
+            }
+        )
+        response = httpx.put(
+            base + "projections/maintenance",
+            headers={**headers, "Content-Type": "application/json"},
+            content=wire(body).encode(),
             timeout=15,
             follow_redirects=False,
         )
         response.raise_for_status()
-    except httpx.HTTPError:
+    except (httpx.HTTPError, ValueError, LookupError):
         # SQLite remains authoritative; the resumed bridge republishes the outcome.
         print("Gateway progress delivery unavailable; local maintenance state retained.", flush=True)
 

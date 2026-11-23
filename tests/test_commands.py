@@ -244,42 +244,7 @@ async def test_relay_refusal_is_saved_before_its_receipt(config, runtime, tmp_pa
         await client.close()
 
 
-async def test_old_and_relay_queues_give_one_effect(config, runtime, tmp_path, monkeypatch):
-    monkeypatch.setattr(creation_policy, "MODE", "legacy")
-    store, _, _, _ = runtime
-    command = create_command()
-    old = {
-        "request_id": command["request_id"],
-        "experiment_id": command["target"].split(":")[1],
-        "executor_id": config.executor_id,
-        "kind": "create",
-        "payload": command["payload"],
-    }
-    receipts = []
-
-    async def handler(request):
-        path = request.url.path
-        if path == "/api/executor/commands":
-            return httpx.Response(200, json={"schema_version": 1, "commands": [old]})
-        if path == "/api/executor/ack":
-            return httpx.Response(200, json={"schema_version": 1})
-        if path.endswith("/relay/commands"):
-            return httpx.Response(200, json={"schema_version": 1, "commands": [command]})
-        receipts.append(json.loads(request.content))
-        return httpx.Response(200, json={"schema_version": 1})
-
-    client = client_for(config, store, tmp_path, handler)
-    try:
-        await client.commands()
-        await client.relay_commands()
-        assert len(store.rows("SELECT * FROM experiments")) == 1
-        assert len(store.rows("SELECT * FROM commands")) == 1
-        assert receipts[0]["state"] == "applied"
-    finally:
-        await client.close()
-
-
-async def test_relay_commands_404_is_quiet_and_backs_off(config, runtime, tmp_path):
+async def test_relay_commands_404_backs_off_and_reports_the_old_worker(config, runtime, tmp_path):
     store, _, _, _ = runtime
     calls = []
 
@@ -292,6 +257,7 @@ async def test_relay_commands_404_is_quiet_and_backs_off(config, runtime, tmp_pa
         await client.relay_commands()
         await client.relay_commands()
         assert calls == ["/api/executor/relay/commands"]
-        assert client.operation_errors == {}
+        assert list(client.operation_errors) == ["relay:unsupported"]
+        assert "publish the current Worker" in client.operation_errors["relay:unsupported"]
     finally:
         await client.close()

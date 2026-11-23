@@ -474,34 +474,37 @@ async def test_invalid_reply_and_concurrent_report_change_preserve_original(runt
     await workflow.close()
 
 
-async def test_pagination_and_authenticated_commands(runtime, config):
+async def test_authenticated_discussion_command_is_idempotent(runtime, config):
     store, _, _, workflow = runtime
     eid = load_legacy_completed(store, workflow)
     app = create_app(config, components=(None, store, workflow))
     app.state.store = store
     with TestClient(app) as client:
-        payload = {"request_id": str(uuid4()), "text": "What next?"}
-        url = f"/api/experiments/{eid}/conversation"
-        assert client.post(url, json=payload).status_code == 401
+        request_id = str(uuid4())
+
+        def post(headers, text="What next?", identity=request_id):
+            return client.post(
+                "/api/commands",
+                headers=headers,
+                json={
+                    "request_id": identity,
+                    "kind": "discuss",
+                    "target": f"experiment:{eid}",
+                    "payload": {"schema_version": 1, "request_id": identity, "text": text},
+                },
+            )
+
+        assert post({}).status_code == 401
         auth = {"Authorization": "Bearer " + config.api_token_file.read_text()}
-        assert client.post(url, json=payload, headers=auth).status_code == 202
-        assert client.post(url, json=payload, headers=auth).status_code == 202
-        assert client.post(url, json={**payload, "text": "Changed"}, headers=auth).status_code == 409
-        assert (
-            client.post(url, json={"request_id": str(uuid4()), "text": "   "}, headers=auth).status_code
-            == 422
-        )
+        assert post(auth).json()["state"] == "applied"
+        assert post(auth).json()["state"] == "applied"
+        assert post(auth, "Changed").json()["state"] == "rejected"
+        assert post(auth, "   ", str(uuid4())).json()["state"] == "rejected"
         for i in range(24):
             identity = send(store, eid, f"Saved historical message {i}")
             store.discussion_state(identity, "failed", error="Fixture: no inference")
-        latest = client.get(url, headers=auth).json()
-        earlier = client.get(url + f"?before={latest['messages'][0]['seq']}", headers=auth).json()
-        assert latest["has_more"] and len(latest["messages"]) == 20
-        assert not earlier["has_more"] and len(earlier["messages"]) == 5
-        assert latest["messages"][0]["seq"] == 6 and earlier["messages"][0]["seq"] == 1
         assert len(store.projection(eid)["conversation"]) == 20
         assert store.projection(eid)["conversation_total"] == 25
-        assert client.get(url + "?before=0", headers=auth).status_code == 422
 
 
 async def test_incomplete_and_deleted_runs_do_not_accept_discussion(runtime):

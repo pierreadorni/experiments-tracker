@@ -92,8 +92,14 @@ def test_missing_deleted_and_malformed_keys_are_not_served(served):
     assert client.get("/api/projections/other", headers=HEADERS).status_code == 404
     with store.tx() as db:
         db.execute("UPDATE experiments SET phase='failed' WHERE id=?", (eid,))
-    deleted = {"schema_version": 1, "request_id": str(uuid4())}
-    assert client.post(f"/api/experiments/{eid}/delete", json=deleted, headers=HEADERS).status_code == 200
+    request_id = str(uuid4())
+    deleted = {
+        "request_id": request_id,
+        "kind": "delete",
+        "target": f"experiment:{eid}",
+        "payload": {"schema_version": 1, "request_id": request_id},
+    }
+    assert client.post("/api/commands", json=deleted, headers=HEADERS).json()["state"] == "applied"
     assert client.get(f"/api/projections/experiment:{eid}", headers=HEADERS).status_code == 404
     assert f"experiment:{eid}" not in Projections(store).keys()
 

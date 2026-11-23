@@ -326,29 +326,35 @@ async def test_terminal_failure_releases_slot_and_quota_hold_does_not_dispatch(r
     await wf.close()
 
 
-def test_project_knowledge_api_auth_and_validation(config, runtime):
+def test_project_knowledge_command_auth_and_validation(config, runtime):
     from fastapi.testclient import TestClient
 
     from experimenttracker.api import create_app
 
     store, _, _, wf = runtime
     with TestClient(create_app(config, components=(None, store, wf))) as client:
-        path = "/api/projects/test-project/knowledge"
         headers = {"Authorization": "Bearer " + "t" * 40}
-        assert client.get(path).status_code == 401
-        assert client.get(path, headers=headers).json()["report"] is None
-        body = {"request_id": str(uuid4()), "kind": "schedule", "weekly": False}
-        assert client.post(path, json=body, headers=headers).status_code == 202
-        assert client.get(path, headers=headers).json()["weekly"] is False
-        assert client.post(path, json={**body, "weekly": True}, headers=headers).status_code == 409
-        assert (
-            client.post(
-                path, json={"request_id": str(uuid4()), "kind": "chat", "text": "  "}, headers=headers
-            ).status_code
-            == 422
-        )
-        assert client.get(path + "/reports/1", headers=headers).status_code == 404
-        assert client.get("/api/projects/missing/knowledge", headers=headers).status_code == 404
+
+        def post(target="knowledge:test-project", identity=None, auth=headers, **payload):
+            identity = identity or str(uuid4())
+            return client.post(
+                "/api/commands",
+                headers=auth,
+                json={
+                    "request_id": identity,
+                    "kind": "knowledge",
+                    "target": target,
+                    "payload": {"schema_version": 1, "request_id": identity, **payload},
+                },
+            )
+
+        assert post(auth={}, kind="schedule", weekly=False).status_code == 401
+        identity = str(uuid4())
+        assert post(identity=identity, kind="schedule", weekly=False).json()["state"] == "applied"
+        assert wf.supervisor.memory.view("test-project")["weekly"] is False
+        assert post(identity=identity, kind="schedule", weekly=True).json()["state"] == "rejected"
+        assert post(kind="chat", text="  ").json()["state"] == "rejected"
+        assert post(target="knowledge:missing", kind="schedule", weekly=False).json()["state"] == "rejected"
 
 
 async def test_remove_saved_idea_is_exact_durable_and_does_not_dispatch(runtime):

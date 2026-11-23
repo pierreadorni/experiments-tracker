@@ -1,7 +1,6 @@
 import asyncio
 import hashlib
 import inspect
-import json
 import logging
 from pathlib import Path
 from urllib.parse import quote
@@ -12,22 +11,6 @@ import httpx
 from . import artifacts, clock
 from .knowledge import Knowledge
 from .legacy_archive import ALL_REVISIONS_EVIDENCE_CONTRACTS
-from .models import (
-    ActionCommand,
-    AnswerCommand,
-    ApproveIntegrationCommand,
-    CreateExperiment,
-    DeleteCommand,
-    DiscussCommand,
-    DontMergeCommand,
-    IntegrateCommand,
-    NoteCommand,
-    PlanReviewCommand,
-    PresentCommand,
-    ReserveCommand,
-    RevertIntegrationCommand,
-    SteerCommand,
-)
 from .projects import Projects
 from .publish.commands import Services, dispatch
 from .publish.projections import (
@@ -37,37 +20,40 @@ from .publish.projections import (
     Projections,
     envelope,
     experiment_key,
+    local_roots,
     parse_key,
     scrub_local,
     wire,
     wire_digest,
 )
-from .store import Conflict, encode, public_projection
 
 log = logging.getLogger(__name__)
 
 _ALL_REVISIONS_CONTRACT_SQL = ",".join(str(version) for version in ALL_REVISIONS_EVIDENCE_CONTRACTS)
 
-# Which artifact bytes may leave the host; shared by the old upload and relay blobs.
+# Which artifact bytes may leave the host.
 _ARTIFACT_ELIGIBLE_SQL = (
     "a.local_valid=1 AND x.deleted_at IS NULL AND x.phase!='cancelled' "
     "AND (COALESCE(json_extract(x.contract,'$.execution_contract'),0) "
     f"IN ({_ALL_REVISIONS_CONTRACT_SQL}) OR a.evidence_revision=x.evidence_revision)"
 )
 
-RELAY_BATCH = 20  # documents per tick, so a backfill cannot starve the old publication
+RELAY_BATCH = 20  # documents per tick, so a backfill cannot starve other work
 RELAY_BLOB_MAX = BLOB_MAX
 RELAY_AGGREGATE_SECONDS = 30  # status carries clocks, so an unchanged view still changes
 RELAY_RETRY_SECONDS = 30
 RELAY_UNSUPPORTED_SECONDS = 300
 
 
+UNSUPPORTED_ERROR = "Worker lacks relay routes; publish the current Worker"
+
+
 class RelayUnsupported(Exception):
-    """The gateway has no relay routes yet; this is not an error."""
+    """The gateway answered 404 on a relay route: it is an older Worker."""
 
 
 class GatewayClient:
-    """Outbound only. Commands are committed before ACK; events remain durable until accepted."""
+    """Outbound only. Commands are committed before their receipt; documents follow the Worker manifest."""
 
     def __init__(self, config, store, *, status_provider=None, transport=None):
         self.config = config
@@ -89,279 +75,13 @@ class GatewayClient:
             transport=transport,
             follow_redirects=False,
         )
-        self.last_heartbeat = 0
-        self.last_autopilot_publish = 0
         self.operation_errors = {}
-        self.artifact_retry_at = {}
         # Relay publication keeps no SQLite state: the Worker's revisions manifest is the
         # ledger, and these are only throttles and a cache of blobs already accepted.
         self.relay_retry_at = 0
         self.relay_key_retry_at = {}
         self.relay_aggregates_at = 0
         self.relay_blobs = set()
-
-    async def request(self, method, path, **kwargs):
-        response = await self.client.request(method, path, **kwargs)
-        response.raise_for_status()
-        result = response.json()
-        if result.get("schema_version") != 1:
-            raise ValueError("unsupported gateway response schema")
-        return result
-
-    async def commands(self):
-        received = await self.request("GET", "/api/executor/commands")
-        commands = received.get("commands")
-        if not isinstance(commands, list) or len(commands) > 20:
-            raise ValueError("invalid gateway command batch")
-        acknowledged = []
-        rejected = []
-        models = {
-            "create": CreateExperiment,
-            "delete": DeleteCommand,
-            "present": PresentCommand,
-            "discuss": DiscussCommand,
-            "note": NoteCommand,
-            "action": ActionCommand,
-            "answer": AnswerCommand,
-            "plan_review": PlanReviewCommand,
-            "steer": SteerCommand,
-            "integrate": IntegrateCommand,
-            "revert_integration": RevertIntegrationCommand,
-            "approve_integration": ApproveIntegrationCommand,
-            "dont_merge": DontMergeCommand,
-            "reserve": ReserveCommand,
-        }
-        for command in commands:
-            try:
-                if command["executor_id"] != self.config.executor_id:
-                    raise ValueError("command targets another executor")
-                kind = command["kind"]
-                eid = None if kind == "reserve" else str(UUID(command["experiment_id"]))
-                if kind == "reserve" and command.get("experiment_id") is not None:
-                    raise ValueError("reserve command must not target an experiment")
-                receipt = self.store.one(
-                    "SELECT error FROM rejected_gateway_commands WHERE request_id=?", (command["request_id"],)
-                )
-                if receipt:
-                    rejected.append({"request_id": command["request_id"], "reason": receipt["error"]})
-                    continue
-                payload = (
-                    models[kind].model_validate(command["payload"]).model_dump(mode="json", exclude_none=True)
-                )
-                if payload["request_id"] != command["request_id"]:
-                    raise ValueError("command request identity mismatch")
-                self.store.command(
-                    payload["request_id"],
-                    kind,
-                    payload,
-                    origin="gateway",
-                    eid=None if kind in ("create", "reserve") else eid,
-                    experiment_id=eid if kind == "create" else None,
-                )
-                # Local commit has completed. Redelivery after a lost ACK returns the prior result.
-                acknowledged.append(payload["request_id"])
-            except (ValueError, KeyError) as exc:
-                # Persist refusal before acknowledgement, just like accepted commands.
-                # An expired answer must not poison the oldest command batch indefinitely.
-                if command.get("executor_id") != self.config.executor_id:
-                    raise ValueError("gateway delivered a command for another executor") from exc
-                request_id = str(UUID(command["request_id"]))
-                eid = str(UUID(command["experiment_id"])) if command.get("experiment_id") is not None else ""
-                reason = (
-                    str(exc)[:1000]
-                    if isinstance(exc, Conflict)
-                    else "Command does not match the supported schema or experiment"
-                )
-                with self.store.tx() as db:
-                    db.execute(
-                        "INSERT OR IGNORE INTO rejected_gateway_commands VALUES(?,?,?,?,?,?)",
-                        (
-                            request_id,
-                            eid,
-                            command.get("kind", "unknown"),
-                            encode(command.get("payload", {})),
-                            reason,
-                            clock.now(),
-                        ),
-                    )
-                rejected.append({"request_id": request_id, "reason": reason})
-                log.warning("gateway command %s rejected: %s", request_id, reason)
-        if acknowledged:
-            await self.request(
-                "POST", "/api/executor/ack", json={"schema_version": 1, "request_ids": acknowledged}
-            )
-        if rejected:
-            await self.request(
-                "POST", "/api/executor/reject", json={"schema_version": 1, "rejections": rejected}
-            )
-
-    async def publish_outbox(self):
-        # A current view must never wait behind thousands of obsolete projections.
-        # Its original event identity stays unchanged; older identities replay separately.
-        rows = self.store.rows(
-            "SELECT o.* FROM experiments x JOIN events e ON e.experiment_id=x.id "
-            "AND e.revision=x.revision JOIN outbox o ON o.id=e.id "
-            "WHERE o.delivered_at IS NULL AND o.next_attempt_at<=? ORDER BY e.seq LIMIT 20",
-            (clock.now(),),
-        )
-        for row in rows:
-            with self.store.tx() as db:
-                event = db.execute(
-                    "SELECT experiment_id,revision FROM events WHERE id=?", (row["id"],)
-                ).fetchone()
-                eid = event["experiment_id"]
-                revision = db.execute("SELECT revision FROM experiments WHERE id=?", (eid,)).fetchone()[0]
-                if revision != event["revision"]:
-                    continue
-                message = {
-                    "schema_version": 1,
-                    "event_id": row["id"],
-                    "experiment": public_projection(self.store.projection(eid)),
-                    "inbox": self.store.rows("SELECT * FROM inbox WHERE experiment_id=?", (eid,)),
-                }
-            try:
-                response = await self.request(
-                    "POST",
-                    "/api/executor/publish",
-                    json={"schema_version": 1, "executor_id": self.config.executor_id, "messages": [message]},
-                )
-                if response.get("accepted") != [row["id"]]:
-                    raise ValueError("gateway did not acknowledge the exact event identity")
-                with self.store.tx() as db:
-                    # Save only metadata actually acknowledged, even if progress
-                    # committed while the request was in flight.
-                    db.executemany(
-                        "INSERT INTO artifact_registrations(artifact_id,event_id,sha256,size) "
-                        "VALUES(?,?,?,?) ON CONFLICT(artifact_id) DO UPDATE SET "
-                        "event_id=excluded.event_id,sha256=excluded.sha256,size=excluded.size",
-                        [
-                            (a["id"], row["id"], a["sha256"], a["size"])
-                            for a in message["experiment"]["artifacts"]
-                        ],
-                    )
-                    db.execute(
-                        "UPDATE outbox SET delivered_at=?,error=NULL WHERE id=?", (clock.now(), row["id"])
-                    )
-                self.operation_errors.pop("projection:" + eid, None)
-            except Exception as exc:
-                attempts = row["attempts"] + 1
-                with self.store.tx() as db:
-                    db.execute(
-                        "UPDATE outbox SET attempts=?,next_attempt_at=?,error=? WHERE id=?",
-                        (
-                            attempts,
-                            clock.now() + min(120, 2 ** min(attempts, 7)),
-                            self.error_text(exc),
-                            row["id"],
-                        ),
-                    )
-                self.operation_errors["projection:" + eid] = self.error_text(exc)
-                log.warning("gateway projection %s retained for retry: %s", eid, self.error_text(exc))
-                # Failure of this experiment must not suppress other current views.
-        await self.replay_events()
-
-    async def replay_events(self):
-        # D1 event records contain identity/revision only. Once the current projection
-        # is acknowledged, sending obsolete full scientific views adds no information.
-        rows = self.store.rows(
-            "SELECT o.id,o.attempts,e.experiment_id,e.revision FROM outbox o JOIN events e ON e.id=o.id "
-            "JOIN experiments x ON x.id=e.experiment_id "
-            "JOIN events latest ON latest.experiment_id=x.id AND latest.revision=x.revision "
-            "JOIN outbox current ON current.id=latest.id "
-            "WHERE o.delivered_at IS NULL AND o.next_attempt_at<=? AND current.delivered_at IS NOT NULL "
-            "AND e.revision<x.revision ORDER BY e.seq LIMIT 500",
-            (clock.now(),),
-        )
-        if not rows:
-            return
-        try:
-            response = await self.request(
-                "POST",
-                "/api/executor/events",
-                json={
-                    "schema_version": 1,
-                    "executor_id": self.config.executor_id,
-                    "events": [
-                        {"event_id": r["id"], "experiment_id": r["experiment_id"], "revision": r["revision"]}
-                        for r in rows
-                    ],
-                },
-            )
-            if response.get("accepted") != [r["id"] for r in rows]:
-                raise ValueError("gateway did not acknowledge the exact replayed event identities")
-            with self.store.tx() as db:
-                db.executemany(
-                    "UPDATE outbox SET delivered_at=?,error=NULL WHERE id=?",
-                    [(clock.now(), r["id"]) for r in rows],
-                )
-        except Exception as exc:
-            with self.store.tx() as db:
-                db.executemany(
-                    "UPDATE outbox SET attempts=?,next_attempt_at=?,error=? WHERE id=?",
-                    [
-                        (
-                            r["attempts"] + 1,
-                            clock.now() + min(120, 2 ** min(r["attempts"] + 1, 7)),
-                            self.error_text(exc),
-                            r["id"],
-                        )
-                        for r in rows
-                    ],
-                )
-            raise
-
-    async def upload_artifacts(self):
-        # Compact receipts prove metadata registration for reference-only rows.
-        # Retain the snapshot lookup for acknowledged rows from older owners.
-        rows = self.store.rows(
-            "SELECT a.* FROM artifacts a JOIN experiments x ON x.id=a.experiment_id "
-            "JOIN events e ON e.experiment_id=x.id AND e.revision=("
-            "SELECT MAX(e2.revision) FROM events e2 JOIN outbox o2 ON o2.id=e2.id "
-            "WHERE e2.experiment_id=x.id AND o2.delivered_at IS NOT NULL) "
-            "JOIN outbox o ON o.id=e.id "
-            f"WHERE {_ARTIFACT_ELIGIBLE_SQL} AND a.remote_published=0 "
-            "AND (EXISTS (SELECT 1 FROM artifact_registrations r WHERE r.artifact_id=a.id "
-            "AND r.sha256=a.sha256 AND r.size=a.size) "
-            "OR EXISTS (SELECT 1 FROM json_each(o.payload,'$.experiment.artifacts') j "
-            "WHERE json_extract(j.value,'$.id')=a.id "
-            "AND json_extract(j.value,'$.sha256')=a.sha256 "
-            "AND json_extract(j.value,'$.size')=a.size)) ORDER BY a.rowid",
-        )
-        attempts = 0
-        for row in rows:
-            if self.artifact_retry_at.get(row["id"], 0) > clock.now():
-                continue
-            if attempts >= 3:
-                break
-            attempts += 1
-            try:
-                root = self.projects.base_root(row["experiment_id"])
-
-                content = await asyncio.to_thread(self.artifact_bytes, row, root)
-                response = await self.request(
-                    "PUT",
-                    f"/api/executor/artifacts/{row['id']}",
-                    content=content,
-                    headers={"Content-Type": row["media_type"]},
-                )
-                if (
-                    response.get("artifact_id") != row["id"]
-                    or response.get("sha256") != row["sha256"]
-                    or response.get("size") != row["size"]
-                    or response.get("available") is not True
-                ):
-                    raise ValueError("gateway upload verification response mismatch")
-                with self.store.tx() as db:
-                    db.execute("UPDATE artifacts SET remote_published=1 WHERE id=?", (row["id"],))
-                    self.store.emit(
-                        db, row["experiment_id"], "artifact_published", {"artifact_id": row["id"]}
-                    )
-                self.artifact_retry_at.pop(row["id"], None)
-                self.operation_errors.pop("artifact:" + row["id"], None)
-            except Exception as exc:
-                self.artifact_retry_at[row["id"]] = clock.now() + 30
-                self.operation_errors["artifact:" + row["id"]] = self.error_text(exc)
-                log.warning("gateway artifact %s retained for retry: %s", row["id"], self.error_text(exc))
 
     async def relay_request(self, method, path, **kwargs):
         headers = {"x-executor-id": self.config.executor_id, **kwargs.pop("headers", {})}
@@ -375,18 +95,21 @@ class GatewayClient:
         return result
 
     async def publish_relay(self):
-        """Publish relay projections beside the old path, diffed against the Worker's manifest."""
+        """Publish relay projections, diffed against the Worker's manifest."""
         if clock.now() < self.relay_retry_at:
             return
         try:
             await self.relay_cycle()
+            self.operation_errors.pop("relay:unsupported", None)
         except RelayUnsupported:
             self.relay_unsupported()
 
     def relay_unsupported(self):
+        # An older Worker cannot be served at all: back off quietly, but say why.
         self.relay_retry_at = clock.now() + RELAY_UNSUPPORTED_SECONDS
-        for name in [n for n in self.operation_errors if n.startswith("relay:")]:
-            del self.operation_errors[name]
+        if "relay:unsupported" not in self.operation_errors:
+            log.warning(UNSUPPORTED_ERROR)
+        self.operation_errors["relay:unsupported"] = UNSUPPORTED_ERROR
 
     def command_services(self):
         def autopilot():
@@ -408,6 +131,7 @@ class GatewayClient:
             return
         try:
             batch = (await self.relay_request("GET", "/api/executor/relay/commands")).get("commands")
+            self.operation_errors.pop("relay:unsupported", None)
             if not isinstance(batch, list) or len(batch) > RELAY_BATCH:
                 raise ValueError("invalid relay command batch")
             services = self.command_services()
@@ -444,13 +168,6 @@ class GatewayClient:
                         raise
                     log.warning("relay receipt for %s differs from its terminal receipt", request_id)
                     continue
-                # The old project pollers must not re-deliver a result the relay already settled.
-                with self.store.tx() as db:
-                    for table in ("project_requests", "project_settings_requests"):
-                        db.execute(
-                            f"UPDATE {table} SET delivered_at=? WHERE request_id=? AND delivered_at IS NULL",
-                            (clock.now(), request_id),
-                        )
         except RelayUnsupported:
             self.relay_unsupported()
 
@@ -534,12 +251,6 @@ class GatewayClient:
             "publication": {"failed_operations": sorted(self.operation_errors)},
         }
 
-    def relay_roots(self):
-        config = self.config
-        roots = [config.state_dir, config.job_output_root, config.backup_dir, config.web_dir]
-        roots += [config.projects_root, config.api_token_file]
-        return [*roots, *(p.checkout for p in config.projects if p.checkout)]
-
     async def relay_put(self, key, projections, prior):
         built = projections.build(key, last_acked=(prior or [0])[0])
         if not built:
@@ -551,7 +262,7 @@ class GatewayClient:
                 return
             body = {"schema_version": 1, "key": key, "revision": prior[0] + 1}  # tombstone
         else:
-            roots = [r for r in self.relay_roots() if r]
+            roots = local_roots(self.config)
             # Only the status block can carry free-text paths from the host.
             built["document"] = scrub_local(built["document"], roots, paths=key == "status")
             if parse_key(key) in AGGREGATES and prior and prior[1] == wire_digest(built["document"]):
@@ -567,6 +278,14 @@ class GatewayClient:
             content=wire(body).encode(),
             headers={"Content-Type": "application/json"},
         )
+        if key.startswith("experiment:") and built:
+            # The Worker accepted this revision: its events are delivered (retention reads this).
+            with self.store.tx() as db:
+                db.execute(
+                    "UPDATE outbox SET delivered_at=?,error=NULL WHERE delivered_at IS NULL AND id IN "
+                    "(SELECT id FROM events WHERE experiment_id=? AND revision<=?)",
+                    (clock.now(), key.partition(":")[2], built["revision"]),
+                )
 
     async def relay_upload_blobs(self, key, document):
         # Blobs are accepted before the document revision that references them.
@@ -579,7 +298,7 @@ class GatewayClient:
                 (artifact["id"],),
             )
             if not row:
-                continue  # withheld like the old upload; the document still lists it
+                continue  # withheld; the document still lists it
             if row["size"] > RELAY_BLOB_MAX:
                 # Recorded once, never retried: the Worker would answer 413 every time.
                 self.operation_errors["relay:blob:" + row["id"]] = (
@@ -603,6 +322,13 @@ class GatewayClient:
             if response.get("sha256") != row["sha256"] or response.get("size") != row["size"]:
                 raise ValueError("relay blob verification response mismatch")
             self.relay_blobs.add((row["id"], row["sha256"]))
+            if not row["remote_published"]:
+                # Report building waits for this; the event republishes the document.
+                with self.store.tx() as db:
+                    db.execute("UPDATE artifacts SET remote_published=1 WHERE id=?", (row["id"],))
+                    self.store.emit(
+                        db, row["experiment_id"], "artifact_published", {"artifact_id": row["id"]}
+                    )
 
     async def relay_upload_autopilot_blobs(self, key, projections, document):
         items = projections.autopilot_items(key.partition(":")[2])
@@ -655,369 +381,11 @@ class GatewayClient:
             self.operation_errors[name] = self.error_text(exc)
             log.warning("gateway %s retained for retry: %s", name, self.error_text(exc))
 
-    async def heartbeat(self):
-        if clock.now() - self.last_heartbeat < 30:
-            return
-        status = (
-            self.status_provider()
-            if self.status_provider
-            else {
-                "last_tick": None,
-                "agent_ready": False,
-                "agent_error": None,
-                "quota": {
-                    "admitted": False,
-                    "reason": "No workflow status provider",
-                    "remaining": {},
-                    "observed_at": None,
-                },
-            }
-        )
-        if inspect.isawaitable(status):
-            status = await status
-        status = {
-            **status,
-            "publication": {
-                "pending_events": self.store.one(
-                    "SELECT COUNT(*) AS n FROM outbox WHERE delivered_at IS NULL"
-                )["n"],
-                "failed_operations": sorted(self.operation_errors),
-            },
-        }
-        await self.request(
-            "POST",
-            "/api/executor/publish",
-            json={
-                "schema_version": 1,
-                "executor_id": self.config.executor_id,
-                "messages": [],
-                "heartbeat": status,
-            },
-        )
-        self.last_heartbeat = clock.now()
-
-    async def project_commands(self):
-        response = await self.request("GET", "/api/executor/project-commands")
-        commands = response.get("commands")
-        if not isinstance(commands, list) or len(commands) > 20:
-            raise ValueError("invalid project command batch")
-        for row in commands:
-            identity = str(UUID(row["request_id"]))
-            if (
-                row["project_id"] != "project-" + UUID(identity).hex
-                or row["payload"].get("request_id") != identity
-            ):
-                raise ValueError("project request identity mismatch")
-            self.projects.enqueue(row["payload"], origin="gateway")
-        # Save registration/filesystem outcomes before publishing their receipts.
-        self.projects.tick()
-        rows = self.store.rows(
-            "SELECT request_id FROM project_requests WHERE state IN ('applied','rejected') AND origin='gateway' AND delivered_at IS NULL ORDER BY created_at LIMIT 20"
-        )
-        if rows:
-            results = [self.projects.receipt(row["request_id"]) for row in rows]
-            response = await self.request(
-                "POST",
-                "/api/executor/project-results",
-                json={
-                    "schema_version": 1,
-                    "results": [
-                        {
-                            key: result[key]
-                            for key in ("request_id", "project_id", "state", "error", "project")
-                        }
-                        for result in results
-                    ],
-                },
-            )
-            if response.get("accepted") != [row["request_id"] for row in rows]:
-                raise ValueError("project acknowledgement identity mismatch")
-            with self.store.tx() as db:
-                db.executemany(
-                    "UPDATE project_requests SET delivered_at=? WHERE request_id=?",
-                    [(clock.now(), row["request_id"]) for row in rows],
-                )
-            self.last_heartbeat = 0
-
-    async def project_settings_commands(self):
-        response = await self.request("GET", "/api/executor/project-settings-commands")
-        commands = response.get("commands")
-        if not isinstance(commands, list) or len(commands) > 20:
-            raise ValueError("invalid project settings command batch")
-        for row in commands:
-            identity = str(UUID(row["request_id"]))
-            if row["payload"].get("request_id") != identity:
-                raise ValueError("project settings request identity mismatch")
-            self.projects.enqueue_settings(row["project_id"], row["payload"], origin="gateway")
-        self.projects.settings_tick()
-        rows = self.store.rows(
-            "SELECT request_id FROM project_settings_requests WHERE state IN ('applied','rejected') "
-            "AND origin='gateway' AND delivered_at IS NULL ORDER BY created_at LIMIT 20"
-        )
-        if rows:
-            results = [self.projects.settings_receipt(row["request_id"]) for row in rows]
-            response = await self.request(
-                "POST",
-                "/api/executor/project-settings-results",
-                json={
-                    "schema_version": 1,
-                    "results": [
-                        {
-                            key: result[key]
-                            for key in ("request_id", "project_id", "state", "error", "settings")
-                        }
-                        for result in results
-                    ],
-                },
-            )
-            if response.get("accepted") != [row["request_id"] for row in rows]:
-                raise ValueError("project settings acknowledgement identity mismatch")
-            with self.store.tx() as db:
-                db.executemany(
-                    "UPDATE project_settings_requests SET delivered_at=? WHERE request_id=?",
-                    [(clock.now(), row["request_id"]) for row in rows],
-                )
-            self.last_heartbeat = 0
-
-    async def project_memory(self):
-        memory = Knowledge(self.store)
-        batch = await self.request("GET", "/api/executor/project-memory-commands")
-        commands = batch.get("commands")
-        if not isinstance(commands, list) or len(commands) > 20:
-            raise ValueError("invalid project memory command batch")
-        outcomes = []
-        for command in commands:
-            if command.get("request_id") != command.get("payload", {}).get("request_id"):
-                raise ValueError("project memory command identity mismatch")
-            prior = self.store.one(
-                "SELECT * FROM project_memory_rejections WHERE request_id=?", (command["request_id"],)
-            )
-            if prior:
-                if prior["project_id"] != command["project_id"] or prior["payload"] != encode(
-                    command["payload"]
-                ):
-                    raise ValueError("rejected project memory command identity changed")
-                outcomes.append(
-                    {"request_id": command["request_id"], "state": "rejected", "error": prior["error"]}
-                )
-                continue
-            try:
-                memory.enqueue(command["project_id"], command["payload"], origin="gateway")
-                outcomes.append({"request_id": command["request_id"], "state": "accepted", "error": None})
-            except (ValueError, KeyError) as exc:
-                with self.store.tx() as db:
-                    db.execute(
-                        "INSERT INTO project_memory_rejections VALUES(?,?,?,?)",
-                        (
-                            command["request_id"],
-                            command["project_id"],
-                            encode(command["payload"]),
-                            str(exc)[:1000],
-                        ),
-                    )
-                outcomes.append(
-                    {"request_id": command["request_id"], "state": "rejected", "error": str(exc)[:1000]}
-                )
-        if outcomes:
-            response = await self.request(
-                "POST",
-                "/api/executor/project-memory-commands",
-                json={"schema_version": 1, "results": outcomes},
-            )
-            if response.get("accepted") != [r["request_id"] for r in outcomes]:
-                raise ValueError("project memory command acknowledgement identity mismatch")
-        # Immutable versions travel before their ready projection. Every event remains
-        # in the local outbox until its exact project/revision has been acknowledged.
-        for row in self.store.rows(
-            "SELECT * FROM project_memory_events WHERE delivered_at IS NULL ORDER BY created_at,revision LIMIT 20"
-        ):
-            value = json.loads(row["payload"])
-            response = await self.request("POST", "/api/executor/project-memory", json=value)
-            if response.get("project_id") != row["project_id"] or response.get("revision") != row["revision"]:
-                raise ValueError("project memory acknowledgement identity mismatch")
-            with self.store.tx() as db:
-                db.execute(
-                    "UPDATE project_memory_events SET delivered_at=? WHERE project_id=? AND revision=?",
-                    (clock.now(), row["project_id"], row["revision"]),
-                )
-
-    async def autopilot(self):
-        from .autopilot import Autopilot
-        from .autopilot_models import AutopilotCommand
-
-        service = Autopilot(self.store, self.config)
-        response = await self.request("GET", "/api/executor/autopilot-commands")
-        commands = response.get("commands")
-        if not isinstance(commands, list) or len(commands) > 20:
-            raise ValueError("invalid Autopilot command batch")
-        for row in commands:
-            identity = str(UUID(row["request_id"]))
-            if identity != row["payload"].get("request_id"):
-                raise ValueError("Autopilot command identity mismatch")
-            state, error = "accepted", None
-            prior = self.store.one("SELECT * FROM autopilot_requests WHERE request_id=?", (identity,))
-            if prior and prior["state"] == "rejected":
-                if prior["project_id"] != row["project_id"] or prior["payload"] != encode(row["payload"]):
-                    raise ValueError("Autopilot rejection identity changed")
-                state, error = "rejected", prior["error"]
-            else:
-                try:
-                    service.command(row["project_id"], AutopilotCommand.model_validate(row["payload"]))
-                except (ValueError, KeyError) as exc:
-                    state, error = "rejected", str(exc)[:1000]
-                    with self.store.tx() as db:
-                        db.execute(
-                            "INSERT OR IGNORE INTO autopilot_requests VALUES(?,?,NULL,?,'researcher','rejected',NULL,?,?)",
-                            (identity, row["project_id"], encode(row["payload"]), error, clock.now()),
-                        )
-            ack = await self.request(
-                "POST",
-                "/api/executor/autopilot-commands",
-                json={"request_id": identity, "state": state, "error": error},
-            )
-            if ack.get("accepted") != identity:
-                raise ValueError("Autopilot acknowledgement identity mismatch")
-        if clock.now() - self.last_autopilot_publish < 30 and not self.store.one(
-            "SELECT 1 FROM autopilot_events WHERE delivered_at IS NULL"
-        ):
-            return
-        # Deliver immutable objects before the current view advertises their versions.
-        # Publishing current views also refreshes deterministic reset/accounting diagnostics.
-        for run in self.store.rows("SELECT * FROM autopilot_runs ORDER BY created_at"):
-            for doc in self.store.rows(
-                "SELECT d.* FROM autopilot_documents d LEFT JOIN autopilot_deliveries p ON p.identity=d.run_id || ':' || d.name || ':' || d.version WHERE d.run_id=? AND p.identity IS NULL",
-                (run["id"],),
-            ):
-                await self.request(
-                    "POST",
-                    "/api/executor/autopilot-documents",
-                    json={
-                        "project_id": run["project_id"],
-                        "run_id": run["id"],
-                        "name": doc["name"],
-                        "version": doc["version"],
-                        "content": doc["content"],
-                        "sources": json.loads(doc["sources"]),
-                        "author": doc["author"],
-                        "created_at": doc["created_at"],
-                    },
-                )
-                with self.store.tx() as db:
-                    db.execute(
-                        "INSERT OR IGNORE INTO autopilot_deliveries VALUES(?,?)",
-                        (f"{run['id']}:{doc['name']}:{doc['version']}", clock.now()),
-                    )
-            for file in self.store.rows(
-                "SELECT f.* FROM autopilot_files f LEFT JOIN autopilot_deliveries p ON p.identity=f.id WHERE f.run_id=? AND p.identity IS NULL",
-                (run["id"],),
-            ):
-                data = await asyncio.to_thread(Path(file["path"]).read_bytes)
-                if len(data) != file["size"] or len(data) > 10 * 1024 * 1024:
-                    raise ValueError("published manuscript file changed or is oversized")
-                response = await self.client.post(
-                    "/api/executor/autopilot-files/" + file["id"],
-                    content=data,
-                    headers={
-                        "Content-Type": "application/pdf",
-                        "X-Project-Id": run["project_id"],
-                        "X-Run-Id": run["id"],
-                    },
-                )
-                response.raise_for_status()
-                with self.store.tx() as db:
-                    db.execute(
-                        "INSERT OR IGNORE INTO autopilot_deliveries VALUES(?,?)", (file["id"], clock.now())
-                    )
-            current = service.run(run["project_id"])
-            if current["id"] != run["id"]:
-                continue
-            view = service.view(run["project_id"])
-            await self.request(
-                "POST",
-                "/api/executor/autopilot",
-                json={
-                    "project_id": run["project_id"],
-                    "run_id": run["id"],
-                    "revision": view["run"]["revision"],
-                    "observed_at": view["observed_at"],
-                    "view": view,
-                },
-            )
-            with self.store.tx() as db:
-                db.execute(
-                    "UPDATE autopilot_events SET delivered_at=? WHERE run_id=? AND revision<=? AND delivered_at IS NULL",
-                    (clock.now(), run["id"], view["run"]["revision"]),
-                )
-
-        self.last_autopilot_publish = clock.now()
-
-    async def maintenance(self):
-        from .maintenance import InstallCommand
-
-        manager = self.maintenance_provider() if getattr(self, "maintenance_provider", None) else None
-        if manager is None:
-            return
-        response = await self.request("GET", "/api/executor/maintenance-commands")
-        commands = response.get("commands", [])
-        if not isinstance(commands, list) or len(commands) > 20:
-            raise ValueError("invalid maintenance command batch")
-        for row in commands:
-            command = InstallCommand.model_validate(row)
-            wire = encode(command.model_dump(mode="json"))
-            prior = self.store.one(
-                "SELECT * FROM rejected_gateway_commands WHERE request_id=?", (str(command.request_id),)
-            )
-            try:
-                if prior:
-                    if prior["kind"] != "maintenance" or prior["payload"] != wire:
-                        raise ValueError("maintenance request identity conflicts with a saved rejection")
-                    raise Conflict(prior["error"])
-                manager.install(command)
-                state, error = "accepted", None
-            except Conflict as exc:
-                state, error = "rejected", str(exc)[:1000]
-                with self.store.tx() as db:
-                    db.execute(
-                        "INSERT OR IGNORE INTO rejected_gateway_commands VALUES(?,?,?,?,?,?)",
-                        (str(command.request_id), "", "maintenance", wire, error, clock.now()),
-                    )
-            receipt = await self.request(
-                "POST",
-                "/api/executor/maintenance-commands",
-                json={
-                    "schema_version": 1,
-                    "request_id": str(command.request_id),
-                    "release_id": command.release_id,
-                    "state": state,
-                    "error": error,
-                },
-            )
-            if receipt.get("accepted") != str(command.request_id):
-                raise ValueError("maintenance acknowledgement identity mismatch")
-        await self.request(
-            "POST",
-            "/api/executor/maintenance",
-            json=manager.status(getattr(self, "maintenance_workflow", None)),
-        )
-
     async def once(self):
-        async def publication():
-            await self.isolated("projections", self.publish_outbox)
-            await self.isolated("artifacts", self.upload_artifacts)
-            await self.isolated("relay", self.publish_relay)
-
-        # Command polling, heartbeat and publication can wait on independent RPCs.
-        # SQLite writes still run transactionally under the one executor owner.
+        # Polling and publication wait on independent RPCs; SQLite writes stay under the one owner.
         await asyncio.gather(
-            self.isolated("project_commands", self.project_commands),
-            self.isolated("project_memory", self.project_memory),
-            self.isolated("project_settings", self.project_settings_commands),
-            self.isolated("commands", self.commands),
             self.isolated("relay_commands", self.relay_commands),
-            self.isolated("maintenance", self.maintenance),
-            self.isolated("autopilot", self.autopilot),
-            self.isolated("heartbeat", self.heartbeat),
-            publication(),
+            self.isolated("relay", self.publish_relay),
         )
 
     async def run(self):

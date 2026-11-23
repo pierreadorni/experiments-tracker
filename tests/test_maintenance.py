@@ -357,55 +357,6 @@ def test_real_demo_process_handover_without_model_or_scheduler(config, tmp_path)
         log.close()
 
 
-@pytest.mark.asyncio
-async def test_gateway_lost_ack_adopts_saved_install_and_rejection(config, runtime):
-    from experimenttracker.config import GatewayConfig
-    from experimenttracker.gateway_client import GatewayClient
-
-    store, *_ = runtime
-    manager = ready(config, store)
-    credential = config.api_token_file.parent / "executor-token"
-    credential.write_text("e" * 40)
-    credential.chmod(0o600)
-    config.gateway = GatewayConfig(url="https://synthetic.test", credential_file=credential)
-    first_id, second_id = str(uuid4()), str(uuid4())
-    command = {"request_id": first_id, "release_id": COMMIT}
-    outcomes = []
-    lose_ack = True
-
-    def transport(request):
-        nonlocal lose_ack
-        if request.url.path.endswith("maintenance-commands"):
-            if request.method == "GET":
-                return httpx.Response(200, json={"schema_version": 1, "commands": [command]})
-            value = json.loads(request.content)
-            outcomes.append(value)
-            if lose_ack:
-                lose_ack = False
-                raise httpx.ReadError("synthetic lost ACK", request=request)
-            return httpx.Response(200, json={"schema_version": 1, "accepted": value["request_id"]})
-        assert str(config.state_dir) not in request.content.decode()
-        return httpx.Response(200, json={"schema_version": 1, "accepted": True})
-
-    bridge = GatewayClient(config, store, transport=httpx.MockTransport(transport))
-    bridge.maintenance_provider = lambda: manager
-    try:
-        with pytest.raises(httpx.ReadError):
-            await bridge.maintenance()
-        await bridge.maintenance()
-        assert outcomes[0] == outcomes[1]
-        assert store.one("SELECT COUNT(*) AS n FROM maintenance")["n"] == 1
-        command = {"request_id": second_id, "release_id": COMMIT}
-        await bridge.maintenance()
-        assert outcomes[-1]["state"] == "rejected"
-        manager.step(StepUpdate(request_id=first_id, state="failed", error="synthetic pre-stop failure"))
-        await bridge.maintenance()
-        assert outcomes[-1] == outcomes[-2]
-        assert store.one("SELECT COUNT(*) AS n FROM maintenance")["n"] == 1
-    finally:
-        await bridge.close()
-
-
 def test_dead_release_preparer_never_stays_ready_or_testing(config, runtime, monkeypatch):
     store, *_ = runtime
     manager = Maintenance(config, store)
@@ -418,3 +369,36 @@ def test_dead_release_preparer_never_stays_ready_or_testing(config, runtime, mon
     manager.launch()
     assert manager.status()["release"]["state"] == "failed"
     assert "Preparation stopped" in manager.status()["release"]["error"]
+
+
+def test_progress_reaches_the_relay_with_a_monotonic_scrubbed_document(config, monkeypatch):
+    import httpx
+
+    from experimenttracker.config import GatewayConfig
+    from experimenttracker.maintenance import publish_progress
+
+    credential = config.api_token_file.parent / "executor-token"
+    credential.write_text("e" * 40)
+    config.gateway = GatewayConfig(url="https://synthetic.test", credential_file=credential)
+    sent = []
+
+    def get(url, **kwargs):
+        sent.append(("GET", url, kwargs["headers"]["x-executor-id"]))
+        return httpx.Response(
+            200,
+            json={"schema_version": 1, "revisions": {"maintenance": [2**60, "d"]}},
+            request=httpx.Request("GET", url),
+        )
+
+    def put(url, **kwargs):
+        sent.append(("PUT", url, json.loads(kwargs["content"])))
+        return httpx.Response(200, json={"schema_version": 1}, request=httpx.Request("PUT", url))
+
+    monkeypatch.setattr(httpx, "get", get)
+    monkeypatch.setattr(httpx, "put", put)
+    publish_progress(config, {"error": f"failed in {config.state_dir}/x"})
+    assert [call[0] for call in sent] == ["GET", "PUT"]
+    assert sent[1][1].endswith("/api/executor/relay/projections/maintenance")
+    body = sent[1][2]
+    assert body["key"] == "maintenance" and body["revision"] == 2**60 + 1
+    assert str(config.state_dir) not in json.dumps(body)

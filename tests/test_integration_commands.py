@@ -382,6 +382,20 @@ class IdleRunner:
         return None
 
 
+def send_command(client, headers, eid, kind, **payload):
+    """Post one relay-shaped command and return its terminal receipt."""
+    request_id = payload.pop("request_id", None) or str(uuid4())
+    body = {
+        "request_id": request_id,
+        "kind": kind,
+        "target": f"experiment:{eid}",
+        "payload": {"schema_version": 1, "request_id": request_id, **payload},
+    }
+    response = client.post("/api/commands", headers=headers, json=body)
+    assert response.status_code == 200
+    return response.json()
+
+
 def test_local_api_commands_carry_only_identity_and_saved_scope(config, runtime, tmp_path, monkeypatch):
     store, _, _, workflow = runtime
     monkeypatch.setattr("experimenttracker.api.Runner", IdleRunner)
@@ -392,12 +406,9 @@ def test_local_api_commands_carry_only_identity_and_saved_scope(config, runtime,
     headers = {"Authorization": "Bearer " + "t" * 40}
     with TestClient(app) as client:
         assert client.post(f"/api/experiments/{eid}/integrate", json={}).status_code == 401
-        sparse = client.post(
-            f"/api/experiments/{eid}/integrate",
-            headers=headers,
-            json={"request_id": str(uuid4()), "head_commit": "d" * 40, "repo": "/elsewhere"},
-        )
-        assert sparse.status_code == 422
+        assert client.post("/api/commands", json={}).status_code == 401
+        sparse = send_command(client, headers, eid, "integrate", head_commit="d" * 40, repo="/elsewhere")
+        assert sparse["state"] == "rejected"
         request_id = str(uuid4())
         response = client.post(
             f"/api/experiments/{eid}/integrate",
@@ -406,22 +417,8 @@ def test_local_api_commands_carry_only_identity_and_saved_scope(config, runtime,
         )
         assert response.status_code == 200
         assert client.get(f"/api/commands/{request_id}", headers=headers).json()["state"] == "applied"
-        assert (
-            client.post(
-                f"/api/experiments/{eid}/dont-merge",
-                headers=headers,
-                json={"request_id": str(uuid4()), "value": "yes"},
-            ).status_code
-            == 422
-        )
-        assert (
-            client.post(
-                f"/api/experiments/{eid}/dont-merge",
-                headers=headers,
-                json={"request_id": str(uuid4()), "value": True},
-            ).status_code
-            == 200
-        )
+        assert send_command(client, headers, eid, "dont_merge", value="yes")["state"] == "rejected"
+        assert send_command(client, headers, eid, "dont_merge", value=True)["state"] == "applied"
         # The queued merge is abandoned, so a new integrate is refused by the flag.
         assert (
             client.post(
@@ -438,21 +435,10 @@ def test_local_api_commands_carry_only_identity_and_saved_scope(config, runtime,
             )
         # A client-supplied merge SHA is forbidden; the exact saved one is used instead.
         assert (
-            client.post(
-                f"/api/experiments/{eid}/integrations/revert",
-                headers=headers,
-                json={"request_id": str(uuid4()), "merge_commit": "e" * 40},
-            ).status_code
-            == 422
+            send_command(client, headers, eid, "revert_integration", merge_commit="e" * 40)["state"]
+            == "rejected"
         )
-        assert (
-            client.post(
-                f"/api/experiments/{eid}/integrations/revert",
-                headers=headers,
-                json={"request_id": str(uuid4())},
-            ).status_code
-            == 200
-        )
+        assert send_command(client, headers, eid, "revert_integration")["state"] == "applied"
         assert any(
             detail["request"]["kind"] == "revert" and detail["request"]["merge_commit"] == "c" * 40
             for _, detail in queued(store)
@@ -470,25 +456,29 @@ def test_local_api_approve_binds_the_saved_candidate_behind_the_owner_token(
     pending, candidate = awaiting(store, eid, repo)
     app = create_app(config, components=(None, store, workflow))
     headers = {"Authorization": "Bearer " + "t" * 40}
-    path = f"/api/experiments/{eid}/integrations/approve"
     body = {
-        "request_id": str(uuid4()),
         "integration_request_id": pending,
         "candidate_commit": candidate["candidate_commit"],
         "action": "approve",
     }
+
+    def approve(**changes):
+        sent = {**body, **changes}
+        return send_command(
+            client, headers, eid, "approve_integration", **{k: v for k, v in sent.items() if v is not None}
+        )
+
     with TestClient(app) as client:
-        assert client.post(path, json=body).status_code == 401
-        assert client.post(path, headers=headers, json={**body, "repo": "/elsewhere"}).status_code == 422
-        assert client.post(path, headers=headers, json={**body, "action": "reject"}).status_code == 422
-        missing = {key: value for key, value in body.items() if key != "candidate_commit"}
-        assert client.post(path, headers=headers, json=missing).status_code == 422
-        stale = client.post(path, headers=headers, json={**body, "candidate_commit": "d" * 40})
-        assert stale.status_code == 409
-        response = client.post(path, headers=headers, json=body)
-        assert response.status_code == 200
-        assert response.json()["state"] == "applied"
-        assert client.get(f"/api/commands/{body['request_id']}", headers=headers).json()["state"] == "applied"
+        assert client.post("/api/commands", json={}).status_code == 401
+        assert approve(repo="/elsewhere")["state"] == "rejected"
+        assert approve(action="reject")["state"] == "rejected"
+        assert approve(candidate_commit=None)["state"] == "rejected"
+        assert approve(candidate_commit="d" * 40)["state"] == "rejected"
+        receipt = approve()
+        assert receipt["state"] == "applied"
+        assert (
+            client.get(f"/api/commands/{receipt['request_id']}", headers=headers).json()["state"] == "applied"
+        )
         assert saved(store, pending)["stage"] == "ready"
 
 

@@ -14,24 +14,12 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from . import artifacts, clock
 from .cli import runtime
 from .engine.runner import Runner
-from .knowledge import KnowledgeCommand
 from .models import (
     ActionCommand,
-    AnswerCommand,
-    ApproveIntegrationCommand,
     CreateExperiment,
-    CreateProject,
-    DeleteCommand,
-    DiscussCommand,
-    DontMergeCommand,
     IntegrateCommand,
-    NoteCommand,
     PlanReviewCommand,
     PresentCommand,
-    ReserveCommand,
-    RevertIntegrationCommand,
-    SteerCommand,
-    UpdateProjectSettings,
 )
 from .publish.commands import Services, dispatch, saved_receipt
 from .publish.commands import receipt as command_receipt
@@ -254,133 +242,6 @@ def create_app(config, *, components=None, config_path=None, current_release=Non
     async def project_agents_template():
         return await asyncio.to_thread(app.state.workflow.projects.agents_template)
 
-    @app.post("/api/projects", dependencies=[Depends(authorize)], status_code=202)
-    async def create_project(body: CreateProject):
-        try:
-            return app.state.workflow.projects.enqueue(body.model_dump(mode="json", exclude_none=True))
-        except Conflict as exc:
-            raise HTTPException(409, str(exc)) from None
-
-    @app.get("/api/projects/requests/{request_id}", dependencies=[Depends(authorize)])
-    async def project_request(request_id: UUID):
-        try:
-            return app.state.workflow.projects.receipt(request_id)
-        except KeyError:
-            raise HTTPException(404, "Unknown project request") from None
-
-    @app.patch("/api/projects/{project_id}/settings", dependencies=[Depends(authorize)], status_code=202)
-    async def update_project_settings(project_id: str, body: UpdateProjectSettings):
-        try:
-            return app.state.workflow.projects.enqueue_settings(project_id, body.model_dump(mode="json"))
-        except Conflict as exc:
-            raise HTTPException(409, str(exc)) from None
-
-    @app.get("/api/projects/settings/requests/{request_id}", dependencies=[Depends(authorize)])
-    async def project_settings_request(request_id: UUID):
-        try:
-            return app.state.workflow.projects.settings_receipt(request_id)
-        except KeyError:
-            raise HTTPException(404, "Unknown project settings request") from None
-
-    @app.get("/api/projects/{project_id}/knowledge", dependencies=[Depends(authorize)])
-    async def project_knowledge(project_id: str):
-        try:
-            return app.state.workflow.supervisor.memory.view(project_id)
-        except Conflict as exc:
-            raise HTTPException(404, str(exc)) from None
-
-    @app.get("/api/projects/{project_id}/knowledge/reports/{version}", dependencies=[Depends(authorize)])
-    async def project_report(project_id: str, version: int):
-        report = app.state.workflow.supervisor.memory.report(project_id, version)
-        if not report:
-            raise HTTPException(404, "Unknown working report version")
-        return {"schema_version": 1, "report": report}
-
-    @app.post("/api/projects/{project_id}/knowledge", dependencies=[Depends(authorize)], status_code=202)
-    async def project_knowledge_command(project_id: str, body: KnowledgeCommand):
-        try:
-            return app.state.workflow.supervisor.memory.enqueue(project_id, body.model_dump(mode="json"))
-        except Conflict as exc:
-            raise HTTPException(409, str(exc)) from None
-
-    from .autopilot_models import AutopilotCommand
-
-    @app.get("/api/projects/{project_id}/autopilot", dependencies=[Depends(authorize)])
-    async def autopilot_view(project_id: str):
-        if project_id not in store().projects:
-            raise HTTPException(404, "Unknown project")
-        return app.state.workflow.research.service.view(project_id)
-
-    @app.post(
-        "/api/projects/{project_id}/autopilot/commands", dependencies=[Depends(authorize)], status_code=202
-    )
-    async def autopilot_command(project_id: str, body: AutopilotCommand):
-        try:
-            return app.state.workflow.research.service.command(project_id, body)
-        except (Conflict, KeyError) as exc:
-            raise HTTPException(409, str(exc)) from None
-
-    @app.get(
-        "/api/projects/{project_id}/autopilot/documents/{name}/versions/{version}",
-        dependencies=[Depends(authorize)],
-    )
-    async def autopilot_document(project_id: str, name: str, version: int, run_id: UUID | None = None):
-        service = app.state.workflow.research.service
-        try:
-            run = service.run(project_id, str(run_id) if run_id else None)
-            if run["project_id"] != project_id:
-                raise KeyError("Wrong project")
-            doc = service.document(run["id"], name, version)
-        except KeyError:
-            raise HTTPException(404, "Unknown project document version") from None
-        return Response(
-            doc["content"],
-            media_type="text/plain; charset=utf-8",
-            headers={"Content-Disposition": f'attachment; filename="{name}"'},
-        )
-
-    @app.get("/api/projects/{project_id}/autopilot/files/{file_id}", dependencies=[Depends(authorize)])
-    def autopilot_file(project_id: str, file_id: UUID):
-        row = store().one(
-            "SELECT f.* FROM autopilot_files f JOIN autopilot_runs r ON r.id=f.run_id WHERE f.id=? AND r.project_id=?",
-            (str(file_id), project_id),
-        )
-        if not row or not Path(row["path"]).is_file() or Path(row["path"]).is_symlink():
-            raise HTTPException(404, "Published paper is unavailable")
-        return FileResponse(row["path"], media_type="application/pdf", filename="paper.pdf")
-
-    @app.get("/api/projects/{project_id}/autopilot/handoff", dependencies=[Depends(authorize)])
-    async def autopilot_handoff(project_id: str):
-        import io
-        import zipfile
-
-        service = app.state.workflow.research.service
-        try:
-            run = service.run(project_id)
-        except KeyError:
-            raise HTTPException(404, "No Autopilot run") from None
-        result = io.BytesIO()
-        with zipfile.ZipFile(result, "w", zipfile.ZIP_DEFLATED) as archive:
-            archive.writestr(
-                "handoff.json",
-                run["handoff"] or '{"incomplete":true,"summary":"Working draft; no handoff judgment yet"}',
-            )
-            import json
-
-            handoff = json.loads(run["handoff"]) if run["handoff"] else {}
-            for doc in handoff.get("documents", service.view(project_id)["documents"]):
-                saved = service.document(run["id"], doc["name"], doc["version"])
-                archive.writestr(doc["name"], saved["content"])
-            archive.writestr(
-                "BUILD.txt",
-                "Working source draft. Compile paper.tex with pdflatex -no-shell-escape.\nMissing results remain TODOs; researcher review is required.\n",
-            )
-        return Response(
-            result.getvalue(),
-            media_type="application/zip",
-            headers={"Content-Disposition": 'attachment; filename="autopilot-handoff.zip"'},
-        )
-
     @app.get("/api/experiments", dependencies=[Depends(authorize)])
     async def experiments():
         return {
@@ -416,68 +277,17 @@ def create_app(config, *, components=None, config_path=None, current_release=Non
     async def present(eid: UUID, command: PresentCommand):
         return apply(command, eid, "present")
 
-    @app.post("/api/experiments/{eid}/conversation", dependencies=[Depends(authorize)], status_code=202)
-    async def discuss(eid: UUID, command: DiscussCommand):
-        return apply(command, eid, "discuss")
-
-    @app.get("/api/experiments/{eid}/conversation", dependencies=[Depends(authorize)])
-    async def conversation(eid: UUID, before: int | None = Query(default=None, ge=1, le=9223372036854775807)):
-        experiment_id(eid)
-        messages = store().conversation(str(eid), before)
-        more = bool(
-            messages
-            and store().one(
-                "SELECT 1 FROM discussions WHERE experiment_id=? AND seq<?", (str(eid), messages[0]["seq"])
-            )
-        )
-        return {"schema_version": 1, "messages": messages, "has_more": more}
-
-    @app.post("/api/experiments/{eid}/delete", dependencies=[Depends(authorize)])
-    async def delete(eid: UUID, body: DeleteCommand):
-        return apply(body, eid, "delete")
-
-    @app.post("/api/experiments/{eid}/notes", dependencies=[Depends(authorize)])
-    async def note(eid: UUID, body: NoteCommand):
-        return apply(body, eid, "note")
-
     @app.post("/api/experiments/{eid}/actions", dependencies=[Depends(authorize)])
     async def action(eid: UUID, body: ActionCommand):
         return apply(body, eid, "action")
-
-    @app.post("/api/experiments/{eid}/answers", dependencies=[Depends(authorize)])
-    async def answer(eid: UUID, body: AnswerCommand):
-        return apply(body, eid, "answer")
 
     @app.post("/api/experiments/{eid}/plan-review", dependencies=[Depends(authorize)])
     async def plan_review(eid: UUID, body: PlanReviewCommand):
         return apply(body, eid, "plan_review")
 
-    @app.post("/api/experiments/{eid}/steering", dependencies=[Depends(authorize)])
-    async def steer(eid: UUID, body: SteerCommand):
-        return apply(body, eid, "steer")
-
     @app.post("/api/experiments/{eid}/integrate", dependencies=[Depends(authorize)])
     async def integrate(eid: UUID, body: IntegrateCommand):
         return apply(body, eid, "integrate")
-
-    @app.post("/api/experiments/{eid}/integrations/revert", dependencies=[Depends(authorize)])
-    async def revert_integration(eid: UUID, body: RevertIntegrationCommand):
-        return apply(body, eid, "revert_integration")
-
-    @app.post("/api/experiments/{eid}/integrations/approve", dependencies=[Depends(authorize)])
-    async def approve_integration(eid: UUID, body: ApproveIntegrationCommand):
-        return apply(body, eid, "approve_integration")
-
-    @app.post("/api/experiments/{eid}/dont-merge", dependencies=[Depends(authorize)])
-    async def dont_merge(eid: UUID, body: DontMergeCommand):
-        return apply(body, eid, "dont_merge")
-
-    @app.post("/api/quota/reserve", dependencies=[Depends(authorize)])
-    async def reserve(body: ReserveCommand):
-        try:
-            return store().command(body.request_id, "reserve", body.model_dump(mode="json"))
-        except Conflict as exc:
-            raise HTTPException(409, str(exc)) from None
 
     @app.get("/api/inbox", dependencies=[Depends(authorize)])
     async def inbox():
