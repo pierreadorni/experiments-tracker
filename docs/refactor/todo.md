@@ -628,6 +628,8 @@ Done: `advance_title` queues one small-model `summarize_title` turn per untitled
 
 ## Phase 5 — Simplification
 
+Install and publish order for Phase 5: [notes/t5-rollout.md](notes/t5-rollout.md).
+
 ### [ ] T5.1 Autopilot as a policy layer on contract 4 (C8) · S · L
 - Design and subcards T5.1a–g: [notes/t5.1-autopilot-c4-design.md](notes/t5.1-autopilot-c4-design.md). Owner approved the defaults 2026-11-22; T5.1b onward follows T5.2a–d.
 - [x] T5.1b: activation creates the lead as a C4 experiment (uuid5 of the run id, `contract.autopilot_lead.run_id`) in the same transaction; policy functions moved to `autopilot_policy.py`; a held run holds the lead's turns.
