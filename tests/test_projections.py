@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from experimenttracker import clock, creation_policy
 from experimenttracker.api import create_app
 from experimenttracker.config import ProjectConfig
+from experimenttracker.engine.runner import Runner
 from experimenttracker.publish.notifications import experiment_notification
 from experimenttracker.publish.projections import Projections, digest, envelope, parse_key
 from experimenttracker.workspaces import initialize_project
@@ -36,6 +37,9 @@ def served(config, runtime, tmp_path, monkeypatch):
     config.projects.append(project)
     store.projects[project.id] = project
     monkeypatch.setattr(creation_policy, "MODE", "candidate")
+    # The routes are under test, not the engine: a running loop advances the experiment
+    # (revision, branch checkout) between the reads the tests compare.
+    monkeypatch.setattr(Runner, "periods", lambda self: {})
     with TestClient(create_app(config, components=(None, store, workflow))) as client:
         yield client, store, tmp_path
 

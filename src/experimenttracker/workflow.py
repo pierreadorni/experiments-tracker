@@ -789,11 +789,25 @@ class Workflow:
                     action = follow_up_turn(self.store, eid) or action
                 if action is None or action["state"] != "pending":
                     continue
-                await asyncio.to_thread(self.workspaces.ensure_branch, eid)
+                await self.finish_threaded(self.workspaces.ensure_branch, eid)
             except ProjectUnavailable as exc:
                 self.store.update(eid, hold_reason="workspace_unavailable", error=str(exc))
             except Exception as exc:
                 log.warning("research preparation unavailable for %s: %s", eid, exc)
+
+    async def finish_threaded(self, call, *args):
+        """Run a blocking call in a thread that cancellation cannot orphan.
+
+        Cancelling a task awaiting ``asyncio.to_thread`` leaves its thread running, so a
+        shutdown that cancels this loop could close the store under a live Git and store
+        write. A cancelled caller waits for the saved outcome, then re-raises.
+        """
+        thread = asyncio.ensure_future(asyncio.to_thread(call, *args))
+        try:
+            return await asyncio.shield(thread)
+        except asyncio.CancelledError:
+            await asyncio.gather(thread, return_exceptions=True)
+            raise
 
     async def step_supervisor(self):
         """Advance the project supervisor; the next control pass selects its proposal."""

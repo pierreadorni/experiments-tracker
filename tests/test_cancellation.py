@@ -387,3 +387,25 @@ async def test_cancellation_during_report_render_cannot_revive_publication(runti
     assert not store.one("SELECT 1 FROM artifacts WHERE experiment_id=?", (eid,))
     assert not store.one("SELECT 1 FROM inbox WHERE experiment_id=? AND kind='report_ready'", (eid,))
     await wf.close()
+
+
+async def test_cancelled_threaded_call_finishes_before_the_caller_returns(runtime):
+    import threading
+
+    _, _, _, wf = runtime
+    entered, release, done = threading.Event(), threading.Event(), threading.Event()
+
+    def blocking():
+        entered.set()
+        release.wait(5)
+        done.set()
+
+    task = asyncio.create_task(wf.finish_threaded(blocking))
+    assert await asyncio.to_thread(entered.wait, 5)
+    task.cancel()
+    await asyncio.sleep(0.05)
+    assert not task.done() and not done.is_set()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert done.is_set()
