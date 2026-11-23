@@ -113,3 +113,11 @@ def test_project_status_block_is_bounded():
     assert "\nPROJECT STATUS\n" in prompt and "[truncated]" in prompt
     assert len(prompt.encode()) < MAX_PROMPT_BYTES
     assert "PROJECT STATUS" not in turn_prompt(brief="member")
+
+
+def test_the_lead_bridge_serves_project_tools_only(runtime, monkeypatch):
+    service, run = activated(runtime, monkeypatch)
+    wf = runtime[3]
+    monkeypatch.setattr(wf.controller, "server", object())
+    args = wf.controller.session_config(lead_id(run["id"]))["mcp_servers.experimenttracker"]["args"]
+    assert args[-2:] == ["--research", "--autopilot-lead"]

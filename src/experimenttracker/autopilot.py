@@ -555,69 +555,101 @@ class Autopilot:
             ):
                 raise Conflict("synthetic demonstration outputs cannot support research claims")
 
-    def publish(self, db, run, request_id, documents, author, action_id=None):
-        if (
-            len({d.name for d in documents}) != len(documents)
-            or sum(len(d.content.encode()) for d in documents) > 512000
+    def update_document(self, db, run, request_id, document, author, action_id=None):
+        """Save the next version of one logical document from its current base version."""
+        if document.name not in DOCUMENTS:
+            raise Conflict("unknown logical document name")
+        current = (
+            self.store.one(
+                "SELECT MAX(version) AS version FROM autopilot_documents WHERE run_id=? AND name=?",
+                (run["id"], document.name),
+            )["version"]
+            or 0
+        )
+        if document.base_version != current:
+            raise Conflict("document base version is stale")
+        self.validate_sources(run, document.sources)
+        db.execute(
+            "INSERT INTO autopilot_documents VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                run["id"],
+                document.name,
+                current + 1,
+                request_id,
+                author,
+                action_id,
+                run["policy_revision"],
+                document.text,
+                encode([s.model_dump() for s in document.sources]),
+                clock.now(),
+            ),
+        )
+        return {"versions": {document.name: current + 1}}
+
+    def project_status(self, run, document=None):
+        """The lead's bounded read: run status text, pending objectives and versions."""
+        result = {
+            "status": autopilot_policy.project_status(self.store.db, run["id"]),
+            "pending_objectives": [],
+            "documents": {
+                row["name"]: row["version"]
+                for row in self.store.rows(
+                    "SELECT name,MAX(version) AS version FROM autopilot_documents WHERE run_id=? GROUP BY name",
+                    (run["id"],),
+                )
+            },
+            "reports": {
+                row["experiment_id"]: row["version"]
+                for row in self.store.rows(
+                    "SELECT m.experiment_id,MAX(v.version) AS version FROM autopilot_members m "
+                    "JOIN report_versions v ON v.experiment_id=m.experiment_id AND v.state='ready' "
+                    "WHERE m.run_id=? GROUP BY m.experiment_id",
+                    (run["id"],),
+                )
+            },
+        }
+        for row in self.store.rows(
+            "SELECT e.id,e.pending_request FROM experiments e JOIN autopilot_members m "
+            "ON m.experiment_id=e.id WHERE m.run_id=? AND e.pending_request IS NOT NULL LIMIT 20",
+            (run["id"],),
         ):
-            raise Conflict("document publication exceeds bounded set")
-        versions = {}
-        for doc in documents:
-            if doc.name not in DOCUMENTS:
-                raise Conflict("unknown logical document name")
-            current = (
-                self.store.one(
-                    "SELECT MAX(version) AS version FROM autopilot_documents WHERE run_id=? AND name=?",
-                    (run["id"], doc.name),
-                )["version"]
-                or 0
-            )
-            if doc.base_version != current:
-                raise Conflict("document base version is stale")
-            self.validate_sources(run, doc.sources)
-            db.execute(
-                "INSERT INTO autopilot_documents VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (
-                    run["id"],
-                    doc.name,
-                    current + 1,
-                    request_id,
-                    author,
-                    action_id,
-                    run["policy_revision"],
-                    doc.content,
-                    encode([s.model_dump() for s in doc.sources]),
-                    clock.now(),
-                ),
-            )
-            versions[doc.name] = current + 1
-        return {"versions": versions}
+            pending = json.loads(row["pending_request"])
+            if pending.get("kind") == "approval" and not pending.get("answer"):
+                result["pending_objectives"].append(
+                    {
+                        "experiment_id": row["id"],
+                        "approval_request_id": pending["id"],
+                        "objective": pending.get("params", {}).get("objective"),
+                    }
+                )
+        if document is not None:
+            result["document"] = self.document(run["id"], document)
+        return result
+
+    def owned_member(self, run, eid):
+        member = self.member(eid)
+        if not member or member["run_id"] != run["id"] or member["project_id"] != run["project_id"]:
+            raise Conflict("experiment is not a member of this Autopilot run")
+        return member
 
     def invoke(self, action_id, name, arguments):
+        """Apply one lead project tool for the lead's saved research action."""
         from .autopilot_tools import MODELS
 
         if name not in MODELS:
-            raise Conflict("tool is outside project allowlist")
+            raise Conflict("tool is outside the lead's project allowlist")
         args = MODELS[name].model_validate(arguments)
-        action = self.store.one("SELECT * FROM autopilot_actions WHERE id=?", (action_id,))
-        if not action:
-            raise Conflict("unknown project action")
-        run = self.run(run_id=action["run_id"])
-        if name == "get_project_context":
-            return self.context(run)
-        if name == "get_document":
-            return self.document(run["id"], args.name, args.version)
-        if name in ("get_experiment", "get_results"):
-            exp = self.store.experiment(str(args.experiment_id))
-            if exp["contract"].get("project", {}).get("id", "test-project") != run["project_id"]:
-                raise Conflict("experiment is outside project")
-            return {
-                "experiment": self.store.projection(exp["id"]),
-                "outputs": self.store.rows(
-                    "SELECT * FROM output_refs WHERE experiment_id=? ORDER BY created_at DESC LIMIT 200",
-                    (exp["id"],),
-                ),
-            }
+        action = self.store.one(
+            "SELECT a.experiment_id,e.contract FROM agent_actions a JOIN experiments e ON e.id=a.experiment_id "
+            "WHERE a.id=?",
+            (action_id,),
+        )
+        run_id = autopilot_policy.lead_run_id(json.loads(action["contract"] or "{}")) if action else None
+        if not run_id or action["experiment_id"] != autopilot_policy.lead_id(run_id):
+            raise Conflict("unknown Autopilot lead action")
+        run = self.run(run_id=run_id)
+        if name == "project_status":
+            return self.project_status(run, args.document)
         request_id = str(args.request_id)
         payload = {"name": name, "arguments": args.model_dump(mode="json")}
         author = "agent:" + action_id
@@ -625,60 +657,31 @@ class Autopilot:
             prior = self.receipt(request_id, run["project_id"], payload, author)
             if prior:
                 return json.loads(prior["result"])
-            run = self.run(run_id=action["run_id"])
-            if action["state"] != "running" or action["control_revision"] != run["control_revision"]:
-                raise Conflict("project turn authority changed; refresh at a safe continuation")
+            run = self.run(run_id=run_id)
+            saved = db.execute(
+                "SELECT state,autopilot_control_revision FROM agent_actions WHERE id=?", (action_id,)
+            ).fetchone()
             if (
-                run["status"] not in ("active", "handoff_ready", "handoff_incomplete")
-                or args.expected_revision != run["revision"]
+                saved["state"] not in ("dispatching", "running")
+                or saved["autopilot_control_revision"] != run["control_revision"]
             ):
-                raise Conflict("Autopilot is held or revision is stale")
+                raise Conflict("project turn authority changed; refresh at a safe continuation")
+            if run["status"] not in autopilot_policy.ADMITTING:
+                raise Conflict("Autopilot is held")
             policy = self.policy(run)
             now = clock.now()
             result = {}
             if name == "create_experiment":
-                if run["foundation"] != "ready":
-                    raise Conflict("initial literature/protocol/documents are not ready")
-                backlog = self.store.one(
-                    "SELECT * FROM autopilot_backlog WHERE run_id=? AND id=?", (run["id"], args.backlog_id)
-                )
-                if not backlog:
-                    raise Conflict("save a stable investigation and stop/review point first")
-                item = json.loads(backlog["document"])
-                attempts = self.store.one(
-                    "SELECT COUNT(*) AS n FROM autopilot_members WHERE run_id=? AND backlog_id=?",
-                    (run["id"], args.backlog_id),
-                )["n"]
-                if (
-                    item["status"] not in ("proposed", "active")
-                    or now >= item["review_at"]
-                    or attempts >= item["max_attempts"]
-                ):
-                    raise Conflict("investigation reached its saved review point; record a decision first")
-                autopilot_policy.create_checks(
-                    self, run, policy, now, args.estimated_finish_at, item["purpose"]
-                )
+                autopilot_policy.create_checks(self, run, policy, now, args.estimated_finish_at, args.purpose)
                 eid = str(uuid5(NAMESPACE_URL, "autopilot-experiment:" + request_id))
-                if item["protocol_document"] != "protocol":
-                    raise Conflict("investigation must reference the project protocol document")
-                protocol = self.document(run["id"], item["protocol_document"])
-                brief = (
-                    args.brief
-                    + "\n\nAutopilot investigation: "
-                    + args.backlog_id
-                    + "; purpose: "
-                    + item["purpose"]
-                    + "; protocol version: "
-                    + str(protocol["version"])
-                    + ". Read the saved project guidance and protocol pointer in the prompt."
-                )
                 result = self.store.command(
                     request_id,
                     "create",
                     {
-                        "brief": brief,
+                        "brief": args.brief + "\n\nAutopilot purpose: " + args.purpose + ".",
                         "recipe_id": "agent_experiment_v1",
                         "project_id": run["project_id"],
+                        "execution_contract": 4,
                         "model": policy.model,
                         "reasoning_effort": policy.reasoning_effort,
                     },
@@ -687,18 +690,8 @@ class Autopilot:
                     _db=db,
                 )
                 db.execute(
-                    "INSERT INTO autopilot_members VALUES(?,?,?,?,?,?,?,?,0,NULL,'[]',?)",
-                    (
-                        eid,
-                        run["id"],
-                        run["project_id"],
-                        args.backlog_id,
-                        item["purpose"],
-                        args.scope_rationale,
-                        item["priority"],
-                        run["policy_revision"],
-                        now,
-                    ),
+                    "INSERT INTO autopilot_members VALUES(?,?,?,'',?,'',0,?,0,NULL,'[]',?)",
+                    (eid, run["id"], run["project_id"], args.purpose, run["policy_revision"], now),
                 )
                 self.store.emit(
                     db,
@@ -706,223 +699,31 @@ class Autopilot:
                     "autopilot_linked",
                     {"run_id": run["id"], "policy_revision": run["policy_revision"]},
                 )
-            elif name == "approve_experiment_objective":
+            elif name == "message_experiment":
                 eid = str(args.experiment_id)
-                member = self.member(eid)
-                if not member or member["run_id"] != run["id"] or member["project_id"] != run["project_id"]:
-                    raise Conflict("C4 approval is outside this project's membership")
-                exp = self.store.experiment(eid)
-                if exp["contract"].get("execution_contract") != 4:
-                    raise Conflict("C4 approval requires a contract-4 experiment")
-                pending = exp["pending_request"] or None
-                if (
-                    not pending
-                    or pending.get("id") != str(args.approval_request_id)
-                    or pending.get("kind") != "approval"
-                    or pending.get("params", {}).get("objective") != args.objective
-                    or pending.get("answer")
-                ):
-                    raise Conflict("C4 approval request is not currently pending")
-                requests = db.execute(
-                    "SELECT payload FROM events WHERE experiment_id=? AND kind='owner_approval_requested' "
-                    "AND json_extract(payload,'$.request_id')=? LIMIT 2",
-                    (eid, str(args.approval_request_id)),
-                ).fetchall()
-                if len(requests) != 1:
-                    raise Conflict("approval request is not one exact saved C4 request")
-                requested = json.loads(requests[0]["payload"])
-                if (
-                    requested.get("experiment_id") != eid
-                    or requested.get("project_id") != run["project_id"]
-                    or requested.get("brief") != exp["brief"]
-                    or requested.get("objective") != args.objective
-                ):
-                    raise Conflict("approval does not match the saved request and objective")
-                existing = db.execute(
-                    "SELECT 1 FROM events WHERE experiment_id=? AND kind='autopilot_objective_approved' "
-                    "AND json_extract(payload,'$.request_id')=? LIMIT 1",
-                    (eid, str(args.approval_request_id)),
-                ).fetchone()
-                if existing:
-                    raise Conflict("this C4 request already has an orchestrator decision")
-                approval = {
-                    "request_id": str(args.approval_request_id),
-                    "experiment_id": eid,
-                    "run_id": run["id"],
-                    "policy_revision": run["policy_revision"],
-                    "control_revision": run["control_revision"],
-                    "objective": args.objective,
-                }
-                self.store.emit(
-                    db,
-                    eid,
-                    "autopilot_objective_approved",
-                    {**approval, "author": author, "action_id": action_id},
+                self.owned_member(run, eid)
+                self.store.command(request_id, "steer", {"text": args.text}, eid=eid, origin=author, _db=db)
+            elif name == "request_integration":
+                eid = str(args.experiment_id)
+                self.owned_member(run, eid)
+                self.store.command(
+                    request_id, "integrate", {"reason": args.reason}, eid=eid, origin=author, _db=db
                 )
-                result = {"approval": approval}
+            elif name == "update_document":
+                result = self.update_document(db, run, request_id, args, author, action_id)
+            elif name == "approve_experiment_objective":
+                result = self.approve(db, run, args, author, action_id)
             elif name == "control_experiment":
-                eid = str(args.experiment_id)
-                self.control(db, run, eid, args.operation, args.reason, request_id, author)
-                # A tool's own exact control is accepted, while externally changed authority stays stale.
+                self.control(
+                    db, run, str(args.experiment_id), args.operation, args.reason, request_id, author
+                )
+                # The lead's own exact control is accepted; externally changed authority stays stale.
                 db.execute(
-                    "UPDATE autopilot_actions SET control_revision=(SELECT control_revision FROM autopilot_runs WHERE id=?) WHERE id=?",
+                    "UPDATE agent_actions SET autopilot_control_revision=(SELECT control_revision "
+                    "FROM autopilot_runs WHERE id=?) WHERE id=?",
                     (run["id"], action_id),
                 )
-            elif name == "update_backlog":
-                item = args.item
-                old = self.store.one(
-                    "SELECT * FROM autopilot_backlog WHERE run_id=? AND id=?", (run["id"], item.id)
-                )
-                if args.item_revision != (old["revision"] if old else 0):
-                    raise Conflict("backlog revision is stale")
-                if old:
-                    previous = json.loads(old["document"])
-                    if (
-                        item.question != previous["question"]
-                        or item.review_at > previous["review_at"]
-                        or item.max_attempts > previous["max_attempts"]
-                    ):
-                        raise Conflict(
-                            "stable question/review expansion requires a recorded research decision"
-                        )
-                if not math.isfinite(item.review_at) or not now < item.review_at <= policy.handoff_at:
-                    raise Conflict("review point must be within remaining calendar")
-                db.execute(
-                    "INSERT INTO autopilot_backlog VALUES(?,?,?,?) ON CONFLICT(run_id,id) DO UPDATE SET revision=excluded.revision,document=excluded.document",
-                    (run["id"], item.id, args.item_revision + 1, encode(item.model_dump())),
-                )
-            elif name == "record_decision":
-                if args.outcome == "borrow":
-                    borrowed = run["borrowed_percent"] + args.borrow_percent
-                    if (
-                        borrowed > policy.borrowing_percent
-                        or not args.dropped_work
-                        or not args.remaining_ablations
-                        or calendar(policy, now, run["borrowed_percent"])["phase"]
-                        not in ("foundation", "main_argument")
-                    ):
-                        raise Conflict("borrowing exceeds envelope or lacks dropped work/ablation priorities")
-                    db.execute(
-                        "UPDATE autopilot_runs SET borrowed_percent=? WHERE id=?", (borrowed, run["id"])
-                    )
-                elif args.backlog_id:
-                    old = self.store.one(
-                        "SELECT * FROM autopilot_backlog WHERE run_id=? AND id=?",
-                        (run["id"], args.backlog_id),
-                    )
-                    if not old:
-                        raise Conflict("unknown investigation")
-                    item = json.loads(old["document"])
-                    if args.outcome == "stop":
-                        item["status"] = "stopped"
-                    else:
-                        if (
-                            not args.next_review_at
-                            or not now < args.next_review_at <= policy.handoff_at
-                            or not args.next_max_attempts
-                        ):
-                            raise Conflict(
-                                "continuation requires bounded next review and total attempt limit"
-                            )
-                        item.update(
-                            review_at=args.next_review_at,
-                            max_attempts=args.next_max_attempts,
-                            status="active",
-                        )
-                    db.execute(
-                        "UPDATE autopilot_backlog SET document=?,revision=revision+1 WHERE run_id=? AND id=?",
-                        (encode(item), run["id"], args.backlog_id),
-                    )
-            elif name == "publish_documents":
-                result = self.publish(db, run, request_id, args.documents, author, action_id)
-            elif name == "set_foundation":
-                refs = {}
-                if args.state == "ready":
-                    for logical in (
-                        "research_plan",
-                        "literature",
-                        "protocol",
-                        "claims",
-                        "backlog",
-                        "paper.tex",
-                        "references.bib",
-                    ):
-                        doc = self.document(run["id"], logical)
-                        refs[logical] = doc["version"]
-                    literature = self.document(run["id"], "literature")
-                    if not any(
-                        s["kind"] == "literature" and s["access"] in ("abstract", "full_text")
-                        for s in literature["sources"]
-                    ):
-                        raise Conflict("foundation needs verified literature access, not placeholders")
-                    if not self.store.one("SELECT 1 FROM autopilot_backlog WHERE run_id=?", (run["id"],)):
-                        raise Conflict("foundation needs a prioritized investigation backlog")
-                db.execute(
-                    "UPDATE autopilot_runs SET foundation=?,foundation_refs=? WHERE id=?",
-                    (
-                        args.state,
-                        encode({"documents": refs, "gaps": args.gaps, "action_id": action_id}),
-                        run["id"],
-                    ),
-                )
-            elif name == "set_priorities":
-                for eid, priority in args.priorities.items():
-                    if (
-                        not -100 <= priority <= 100
-                        or not db.execute(
-                            "UPDATE autopilot_members SET priority=? WHERE run_id=? AND experiment_id=?",
-                            (priority, run["id"], eid),
-                        ).rowcount
-                    ):
-                        raise Conflict("priority requires a linked experiment and integer from -100 to 100")
-            elif name == "schedule_review":
-                if not math.isfinite(args.due_at) or not now + 60 <= args.due_at <= min(
-                    now + WEEK, policy.handoff_at
-                ):
-                    raise Conflict(
-                        "schedule one meaningful review between one minute and one week, before handoff"
-                    )
-                db.execute("UPDATE autopilot_runs SET next_review_at=? WHERE id=?", (args.due_at, run["id"]))
-            elif name == "request_researcher_input":
-                db.execute(
-                    "INSERT INTO autopilot_notices VALUES(?,?,?, ?,NULL,?)",
-                    (request_id, run["id"], "researcher_input", args.question, now),
-                )
-            elif name == "prepare_handoff":
-                paper = self.document(run["id"], "paper.tex")
-                if args.ready:
-                    for logical in ("claims", "protocol", "literature", "guidelines"):
-                        self.document(run["id"], logical)
-                status = "handoff_ready" if args.ready else "handoff_incomplete"
-                result = {
-                    "summary": args.summary,
-                    "known_issues": args.known_issues,
-                    "paper_version": paper["version"],
-                    "documents": self.store.rows(
-                        "SELECT name,MAX(version) AS version FROM autopilot_documents WHERE run_id=? GROUP BY name",
-                        (run["id"],),
-                    ),
-                    "files": self.store.rows(
-                        "SELECT id,name,size,created_at FROM autopilot_files WHERE run_id=? ORDER BY created_at DESC LIMIT 1",
-                        (run["id"],),
-                    ),
-                    "policy_revision": run["policy_revision"],
-                    "published_at": now,
-                    "judgment": "controller; researcher review required",
-                }
-                db.execute(
-                    "UPDATE autopilot_runs SET status=?,handoff=? WHERE id=?",
-                    (status, encode(result), run["id"]),
-                )
-            elif name == "compile_manuscript":
-                # Execution is handled outside this transaction by the bounded compile adapter.
-                raise Conflict("use the asynchronous project tool adapter for compilation")
-            if name in (
-                "record_decision",
-                "create_experiment",
-                "control_experiment",
-                "prepare_handoff",
-            ):
+            if name in ("create_experiment", "control_experiment"):
                 db.execute(
                     "INSERT INTO autopilot_decisions VALUES(?,?,?,?,?,?,?)",
                     (request_id, run["id"], author, action_id, run["policy_revision"], encode(payload), now),
@@ -933,7 +734,75 @@ class Autopilot:
                 "INSERT INTO autopilot_requests VALUES(?,?,?,?,?,'applied',?,NULL,?)",
                 (request_id, run["project_id"], run["id"], encode(payload), author, encode(result), now),
             )
+            if name == "approve_experiment_objective":
+                self.hand_off(db, run, result["approval"], action_id)
             return result
+
+    def approve(self, db, run, args, author, action_id):
+        eid = str(args.experiment_id)
+        self.owned_member(run, eid)
+        exp = self.store.experiment(eid)
+        if exp["contract"].get("execution_contract") != 4:
+            raise Conflict("C4 approval requires a contract-4 experiment")
+        pending = exp["pending_request"] or None
+        if (
+            not pending
+            or pending.get("id") != str(args.approval_request_id)
+            or pending.get("kind") != "approval"
+            or pending.get("params", {}).get("objective") != args.objective
+            or pending.get("answer")
+        ):
+            raise Conflict("C4 approval request is not currently pending")
+        requests = db.execute(
+            "SELECT payload FROM events WHERE experiment_id=? AND kind='owner_approval_requested' "
+            "AND json_extract(payload,'$.request_id')=? LIMIT 2",
+            (eid, str(args.approval_request_id)),
+        ).fetchall()
+        if len(requests) != 1:
+            raise Conflict("approval request is not one exact saved C4 request")
+        requested = json.loads(requests[0]["payload"])
+        if (
+            requested.get("experiment_id") != eid
+            or requested.get("project_id") != run["project_id"]
+            or requested.get("brief") != exp["brief"]
+            or requested.get("objective") != args.objective
+        ):
+            raise Conflict("approval does not match the saved request and objective")
+        if db.execute(
+            "SELECT 1 FROM events WHERE experiment_id=? AND kind='autopilot_objective_approved' "
+            "AND json_extract(payload,'$.request_id')=? LIMIT 1",
+            (eid, str(args.approval_request_id)),
+        ).fetchone():
+            raise Conflict("this C4 request already has an orchestrator decision")
+        approval = {
+            "request_id": str(args.approval_request_id),
+            "experiment_id": eid,
+            "run_id": run["id"],
+            "policy_revision": run["policy_revision"],
+            "control_revision": run["control_revision"],
+            "objective": args.objective,
+        }
+        self.store.emit(
+            db, eid, "autopilot_objective_approved", {**approval, "author": author, "action_id": action_id}
+        )
+        return {"approval": approval}
+
+    def hand_off(self, db, run, approval, action_id):
+        """Answer the member's pending request from the exact saved proof and wake the member."""
+        from .core import request_obligations
+        from .research import wakeups
+        from .research.autopilot_approval import approved
+
+        eid, request_id = approval["experiment_id"], approval["request_id"]
+        if approved(self.store, eid, request_id, approval["objective"], db=db) is None:
+            return
+        pending = self.store.experiment(eid)["pending_request"]
+        before = dict(pending)
+        pending["answer"] = "Approved by the project orchestrator."
+        pending["answer_source"] = {"kind": "orchestrator", "run_id": run["id"], "action_id": action_id}
+        db.execute("UPDATE experiments SET pending_request=? WHERE id=?", (encode(pending), eid))
+        request_obligations.sync_request(db, eid, before=before)
+        wakeups.record(self.store, eid, wakeups.ORCHESTRATOR_APPROVAL, request_id, db=db)
 
     def tick(self, now=None):
         """Calendar, current reports and result wakeups never require inference."""

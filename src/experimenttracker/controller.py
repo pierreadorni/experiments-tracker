@@ -10,7 +10,7 @@ from uuid import UUID
 
 from pydantic import Field
 
-from . import artifacts, clock, iteration, reporting
+from . import artifacts, autopilot_policy, autopilot_tools, clock, iteration, reporting
 from .agent_pool import experiment_owner
 from .config import StrictModel
 from .core import wakeup_obligations
@@ -142,11 +142,16 @@ RESEARCH_TOOLS = [
     ),
 ]
 RESEARCH_TOOL_NAMES = frozenset(item["name"] for item in RESEARCH_TOOLS)
+# An Autopilot lead (C8) gets its project tools and these shared research tools only;
+# compute tools such as submit_job and cancel_job are never served to it.
+LEAD_SHARED_TOOLS = ("cluster_info", "save_checkpoint", "update_report", "ask_owner")
+LEAD_TOOLS = autopilot_tools.TOOLS + [item for item in RESEARCH_TOOLS if item["name"] in LEAD_SHARED_TOOLS]
+LEAD_TOOL_NAMES = frozenset(item["name"] for item in LEAD_TOOLS)
 
 
-def served_tools(research=False):
+def served_tools(research=False, lead=False):
     """The tools an MCP process advertises for one saved execution contract."""
-    return RESEARCH_TOOLS if research else TOOLS
+    return LEAD_TOOLS if lead else RESEARCH_TOOLS if research else TOOLS
 
 
 class Controller:
@@ -177,7 +182,8 @@ class Controller:
         if not self.server:
             return None
         row = self.workflow.store.one("SELECT contract FROM experiments WHERE id=?", (eid,))
-        research = bool(row and (json.loads(row["contract"]) or {}).get("execution_contract") == 4)
+        contract = (json.loads(row["contract"]) or {}) if row else {}
+        research = contract.get("execution_contract") == 4
         args = [
             "-m",
             "experimenttracker.controller",
@@ -188,6 +194,8 @@ class Controller:
         ]
         if research:
             args.append("--research")
+        if research and autopilot_policy.lead_run_id(contract):
+            args.append("--autopilot-lead")
         return {
             "mcp_servers.experimenttracker": {
                 "command": sys.executable,
@@ -377,7 +385,20 @@ class Controller:
             and action["phase"] == "research"
             and name == "register_result"
         )
-        if (exp.get("contract") or {}).get("execution_contract") == 4 and name not in RESEARCH_TOOL_NAMES:
+        lead = autopilot_policy.lead_run_id(exp.get("contract"))
+        if lead and (exp.get("contract") or {}).get("execution_contract") == 4:
+            if name not in LEAD_TOOL_NAMES:
+                raise ValueError("an Autopilot lead may call only its project tools")
+            if name in autopilot_tools.MODELS:
+                require_research_write(wf, exp, action)
+                from .autopilot import Autopilot
+
+                # The service replays a saved receipt, then checks the action's control revision.
+                return Autopilot(wf.store, wf.config).invoke(action["id"], name, args)
+            run = wf.store.one("SELECT control_revision FROM autopilot_runs WHERE id=?", (lead,))
+            if not run or action["autopilot_control_revision"] != run["control_revision"]:
+                raise ValueError("project turn authority changed; refresh at a safe continuation")
+        elif (exp.get("contract") or {}).get("execution_contract") == 4 and name not in RESEARCH_TOOL_NAMES:
             raise ValueError("contract 4 turns permit only the listed research tools")
         if name == "submit_job":
             request = SubmitJobRequest.model_validate(args)
@@ -473,6 +494,7 @@ def main():
     parser.add_argument("--socket", required=True)
     parser.add_argument("--experiment", required=True)
     parser.add_argument("--research", action="store_true")
+    parser.add_argument("--autopilot-lead", action="store_true")
     args = parser.parse_args()
     for line in sys.stdin:
         try:
@@ -487,7 +509,7 @@ def main():
                     "serverInfo": {"name": "experimenttracker", "version": "1"},
                 }
             elif method == "tools/list":
-                result = {"tools": served_tools(args.research)}
+                result = {"tools": served_tools(args.research, args.autopilot_lead)}
             elif method == "tools/call":
                 with socket.socket(socket.AF_UNIX) as connection:
                     connection.settimeout(120)

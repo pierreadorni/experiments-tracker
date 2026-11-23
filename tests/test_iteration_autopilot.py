@@ -10,10 +10,9 @@ from experimenttracker.autopilot import Autopilot
 from experimenttracker.autopilot_budget import WEEK, window
 from experimenttracker.autopilot_models import AutopilotPolicy
 from experimenttracker.autopilot_policy import calendar, lead_id
-from experimenttracker.config import JobResources, ProjectConfig
+from experimenttracker.config import JobResources
 from experimenttracker.slurm import Observation
 from experimenttracker.store import Conflict
-from experimenttracker.workspaces import initialize_project
 
 
 def policy(now=1000000, **overrides):
@@ -189,7 +188,8 @@ def test_deadline_without_quota_and_foundation_not_implicit(runtime, monkeypatch
     assert len(service.store.rows("SELECT * FROM autopilot_transitions")) == count
 
 
-def action(service, run):
+def project_action(service, run):
+    """A saved turn of the retired project-turn engine (read until T5.1e)."""
     identity = str(uuid4())
     with service.store.tx() as db:
         db.execute(
@@ -199,114 +199,62 @@ def action(service, run):
     return identity
 
 
-def tool(service, identity, name, **arguments):
-    row = service.store.one("SELECT run_id FROM autopilot_actions WHERE id=?", (identity,))
-    run = service.run(run_id=row["run_id"])
-    return service.invoke(
-        identity, name, {"request_id": str(uuid4()), "expected_revision": run["revision"], **arguments}
-    )
-
-
-def foundation(service, identity):
-    docs = []
-    for name in (
-        "research_plan",
-        "literature",
-        "protocol",
-        "claims",
-        "backlog",
-        "paper.tex",
-        "references.bib",
-    ):
-        docs.append(
-            {
-                "name": name,
-                "base_version": 0,
-                "content": "Synthetic software fixture. TODO: real research is not performed.",
-                "sources": [
-                    {
-                        "kind": "literature",
-                        "id": "https://example.org/synthetic-fixture",
-                        "title": "Explicit synthetic retrieval adapter fixture",
-                        "access": "abstract",
-                        "retrieved_at": 1000000,
-                    }
-                ]
-                if name == "literature"
-                else [],
-            }
+def action(service, run, experiment_id=None):
+    """A running research action of the run's lead, snapshotting its control revision."""
+    identity = str(uuid4())
+    with service.store.tx() as db:
+        db.execute(
+            "INSERT INTO agent_actions(id,experiment_id,phase,evidence_revision,state,thread_id,turn_id,input,"
+            "created_at,updated_at,autopilot_control_revision) "
+            "VALUES(?,?,'research',0,'running','lead-thread','lead-turn','{}',1000000,1000000,?)",
+            (
+                identity,
+                experiment_id or lead_id(run["id"]),
+                service.run(run_id=run["id"])["control_revision"],
+            ),
         )
-    tool(service, identity, "publish_documents", documents=docs)
-    tool(
-        service,
-        identity,
-        "update_backlog",
-        item_revision=0,
-        item={
-            "id": "question",
-            "question": "Does synthetic admission preserve one experiment?",
-            "purpose": "exploration",
-            "decision_if_positive": "Continue software test",
-            "decision_if_negative": "Fix infrastructure",
-            "stop_condition": "Stop after fixture",
-            "review_at": 1000000 + WEEK,
-            "max_attempts": 2,
-            "priority": 3,
-            "resource_estimate": "Synthetic accounting, no real GPU use",
-        },
-    )
-    tool(
-        service,
-        identity,
-        "set_foundation",
-        state="ready",
-        gaps="All literature and measurements here are synthetic test fixtures.",
-    )
+    return identity
 
 
-def test_project_tools_lost_response_scoping_and_stale_documents(runtime, monkeypatch):
+def tool(service, identity, name, /, **arguments):
+    return service.invoke(identity, name, {"request_id": str(uuid4()), **arguments})
+
+
+def create(service, identity, **overrides):
+    arguments = {"brief": "Synthetic fixture", "purpose": "exploration", "estimated_finish_at": 1003600}
+    return tool(service, identity, "create_experiment", **{**arguments, **overrides})["experiment_id"]
+
+
+def test_lead_tools_replay_scoping_and_stale_documents(runtime, monkeypatch):
     service, run = activated(runtime, monkeypatch)
-    # The lead is created at activation; legacy mode applies to the later member creates.
-    monkeypatch.setattr(creation_policy, "MODE", "legacy")
     identity = action(service, run)
-    with pytest.raises(Conflict, match="not ready"):
-        tool(
-            service,
-            identity,
-            "create_experiment",
-            brief="Synthetic experiment",
-            backlog_id="question",
-            scope_rationale="Synthetic infrastructure test",
-            estimated_finish_at=1000000 + 3600,
-        )
-    foundation(service, identity)
-    run = service.run("test-project")
     arguments = {
         "request_id": str(uuid4()),
-        "expected_revision": run["revision"],
         "brief": "Synthetic scientific work is not authorized by this fixture.",
-        "backlog_id": "question",
-        "scope_rationale": "Test delegation only",
+        "purpose": "exploration",
         "estimated_finish_at": 1000000 + 3600,
     }
     first = service.invoke(identity, "create_experiment", arguments)
+    # A lost reply replays the saved receipt and creates nothing more.
     assert service.invoke(identity, "create_experiment", arguments) == first
-    # The lead experiment is not a member.
     assert len(service.store.rows("SELECT * FROM experiments")) == 2
-    assert service.store.experiment(first["experiment_id"])["contract"]["execution_contract"] == 3
-    assert len(service.store.rows("SELECT * FROM autopilot_members")) == 1
+    assert service.store.experiment(first["experiment_id"])["contract"]["execution_contract"] == 4
+    member = service.member(first["experiment_id"])
+    assert (member["run_id"], member["purpose"]) == (run["id"], "exploration")
     with pytest.raises(Conflict, match="different payload"):
         service.invoke(identity, "create_experiment", {**arguments, "brief": "Different"})
+    with pytest.raises(Conflict, match="handoff"):
+        create(service, identity, estimated_finish_at=policy().handoff_at + 1)
+    document = {"name": "paper.tex", "base_version": 0, "text": "Synthetic draft. TODO: no research."}
+    assert tool(service, identity, "update_document", **document)["versions"] == {"paper.tex": 1}
     with pytest.raises(Conflict, match="stale"):
-        tool(
-            service,
-            identity,
-            "publish_documents",
-            documents=[{"name": "paper.tex", "base_version": 0, "content": "Overwrite old draft"}],
-        )
+        tool(service, identity, "update_document", **{**document, "text": "Overwrite old draft"})
     assert service.document(run["id"], "paper.tex", 1)["content"].startswith("Synthetic")
-    with pytest.raises(Conflict, match="allowlist"):
-        service.invoke(identity, "revise_policy", {})
+    status = tool(service, identity, "project_status", document="paper.tex")
+    assert status["documents"] == {"paper.tex": 1} and status["document"]["version"] == 1
+    for retired in ("update_backlog", "record_decision", "compile_manuscript", "submit_job"):
+        with pytest.raises(Conflict, match="allowlist"):
+            service.invoke(identity, retired, {})
     with pytest.raises(Conflict, match="owned"):
         tool(
             service,
@@ -314,97 +262,74 @@ def test_project_tools_lost_response_scoping_and_stale_documents(runtime, monkey
             "control_experiment",
             experiment_id=str(uuid4()),
             operation="abandon",
-            reason="Not linked",
+            reason="x",
         )
-
-
-def test_candidate_autopilot_create_links_c4_and_routes_objective_approval(
-    runtime, config, tmp_path, monkeypatch
-):
-    store = runtime[0]
-    checkout = tmp_path / "project"
-    checkout.mkdir()
-    initialize_project(checkout)
-    project = ProjectConfig(id="test-project", name="Synthetic project", checkout=checkout)
-    config.projects.append(project)
-    store.projects[project.id] = project
-    service, run = activated(runtime, monkeypatch)
-    identity = action(service, run)
-    foundation(service, identity)
-    monkeypatch.setattr(creation_policy, "MODE", "candidate")
-
-    arguments = {
-        "request_id": str(uuid4()),
-        "expected_revision": service.run("test-project")["revision"],
-        "brief": "Synthetic software acceptance only; no scientific work.",
-        "backlog_id": "question",
-        "scope_rationale": "Verify candidate create binding and replay.",
-        "estimated_finish_at": 1003600,
+    with pytest.raises(Conflict, match="not a member"):
+        tool(service, identity, "message_experiment", experiment_id=str(uuid4()), text="Unlinked")
+    steer = tool(service, identity, "message_experiment", experiment_id=first["experiment_id"], text="Focus")
+    assert service.store.one("SELECT text FROM steering WHERE request_id=?", (steer["request_id"],)) == {
+        "text": "Focus"
     }
-    created = service.invoke(identity, "create_experiment", arguments)
-    eid = created["experiment_id"]
-    assert service.invoke(identity, "create_experiment", arguments) == created
-    assert store.experiment(eid)["contract"]["execution_contract"] == 4
-    member = store.one("SELECT * FROM autopilot_members WHERE experiment_id=?", (eid,))
-    assert member["run_id"] == run["id"]
-    assert member["project_id"] == "test-project"
-    assert {row["id"] for row in store.rows("SELECT id FROM experiments")} == {eid, lead_id(run["id"])}
+    # A member's own research action never carries the lead's authority.
+    with pytest.raises(Conflict, match="lead action"):
+        tool(service, action(service, run, first["experiment_id"]), "project_status")
 
-    research_action = str(uuid4())
-    with store.tx() as db:
-        db.execute("UPDATE experiments SET thread_id='synthetic-thread' WHERE id=?", (eid,))
-        db.execute(
-            "INSERT INTO agent_actions(id,experiment_id,phase,evidence_revision,state,thread_id,turn_id,input,created_at,updated_at) "
-            "VALUES(?,?,'research',0,'running','synthetic-thread','synthetic-turn','{}',1000000,1000000)",
-            (research_action, eid),
-        )
+
+def test_lead_approval_hands_off_and_a_policy_revision_makes_it_stale(runtime, monkeypatch):
+    from experimenttracker.research.autopilot_approval import approved
     from experimenttracker.research.owner_tool import AskOwnerQuestion, ask_owner
 
+    service, run = activated(runtime, monkeypatch)
+    store = service.store
+    identity = action(service, run)
+    eid = create(service, identity)
+    research_action = action(service, run, eid)
+    store.update(eid, thread_id="lead-thread")
     objective = "Run the bounded synthetic CPU comparison."
-    approval_id = uuid4()
+    approval_id = str(uuid4())
     ask_owner(
         store,
         store.one("SELECT * FROM agent_actions WHERE id=?", (research_action,)),
         AskOwnerQuestion(
-            request_id=approval_id,
-            question="May the synthetic comparison proceed?",
-            kind="approval",
-            objective=objective,
+            request_id=approval_id, question="May it proceed?", kind="approval", objective=objective
         ),
     )
-    prompt = runtime[3].research.prompt(store.one("SELECT * FROM autopilot_actions WHERE id=?", (identity,)))
-    assert "approve_experiment_objective" in prompt
-    assert "review_experiment_plan" not in prompt
-    approval_args = {
-        "request_id": str(uuid4()),
-        "expected_revision": service.run("test-project")["revision"],
-        "experiment_id": eid,
-        "approval_request_id": str(approval_id),
-        "objective": objective,
-    }
-    approved = service.invoke(identity, "approve_experiment_objective", approval_args)
-    assert approved["approval"]["objective"] == objective
+    assert tool(service, identity, "project_status")["pending_objectives"] == [
+        {"experiment_id": eid, "approval_request_id": approval_id, "objective": objective}
+    ]
+    arguments = {"experiment_id": eid, "approval_request_id": approval_id, "objective": objective}
+    with pytest.raises(Conflict, match="not currently pending"):
+        tool(service, identity, "approve_experiment_objective", **{**arguments, "objective": "altered"})
+    receipt = tool(service, identity, "approve_experiment_objective", **arguments)
+    assert receipt["approval"]["objective"] == objective
+    pending = store.experiment(eid)["pending_request"]
+    assert pending["answer_source"] == {"kind": "orchestrator", "run_id": run["id"], "action_id": identity}
+    assert store.one(
+        "SELECT 1 FROM agent_wakeups WHERE experiment_id=? AND json_extract(reason,'$.event')=?",
+        (eid, "orchestrator_approval"),
+    )
+    assert approved(store, eid, approval_id, objective).objective == objective
+
+    revised = policy().model_dump()
+    revised["weekly_reserve"] = 30
+    command(service, "revise", policy=revised)
+    # The saved proof and the lead's turn are both stale after a policy revision.
+    assert approved(store, eid, approval_id, objective) is None
+    with pytest.raises(Conflict, match="authority changed"):
+        create(service, identity)
 
 
 def test_scoped_defer_user_pause_and_cancellation_replay(runtime, monkeypatch):
     service, run = activated(runtime, monkeypatch)
-    # The lead is created at activation; legacy mode applies to the later member creates.
-    monkeypatch.setattr(creation_policy, "MODE", "legacy")
     identity = action(service, run)
-    foundation(service, identity)
-    eid = tool(
-        service,
-        identity,
-        "create_experiment",
-        brief="Synthetic fixture",
-        backlog_id="question",
-        scope_rationale="Software check",
-        estimated_finish_at=1003600,
-    )["experiment_id"]
+    eid = create(service, identity)
+    # The lead's own control keeps its turn's authority.
+    tool(service, identity, "control_experiment", experiment_id=eid, operation="defer", reason="Idle")
+    tool(service, identity, "control_experiment", experiment_id=eid, operation="resume", reason="Ready")
     service.store.update(eid, pause_agent=True, pause_compute=True)
     command(service, "control", experiment_id=eid, control="defer", text="Keep history and release idle slot")
     assert service.authority(eid) == "autopilot_deferred"
-    # Late child/project tools cannot undo a researcher control.
+    # Late lead tools cannot undo a researcher control.
     with pytest.raises(Conflict, match="authority changed"):
         tool(
             service,
@@ -430,67 +355,6 @@ def test_scoped_defer_user_pause_and_cancellation_replay(runtime, monkeypatch):
     assert service.store.experiment(eid)["phase"] == "cancelled"
     with pytest.raises(Conflict, match="terminal"):
         command(service, "control", experiment_id=eid, control="resume", text="Cannot resurrect")
-
-
-def test_investigation_review_and_cumulative_borrowing(runtime, monkeypatch):
-    service, run = activated(runtime, monkeypatch)
-    # The lead is created at activation; legacy mode applies to the later member creates.
-    monkeypatch.setattr(creation_policy, "MODE", "legacy")
-    identity = action(service, run)
-    foundation(service, identity)
-    for _ in range(2):
-        created = tool(
-            service,
-            identity,
-            "create_experiment",
-            brief="Synthetic fixture",
-            backlog_id="question",
-            scope_rationale="Software check",
-            estimated_finish_at=1003600,
-        )
-        service.store.update(created["experiment_id"], phase="complete")
-    with pytest.raises(Conflict, match="review point"):
-        tool(
-            service,
-            identity,
-            "create_experiment",
-            brief="Rename cannot bypass attempts",
-            backlog_id="question",
-            scope_rationale="test",
-            estimated_finish_at=1003600,
-        )
-    tool(
-        service,
-        identity,
-        "record_decision",
-        outcome="narrow",
-        backlog_id="question",
-        rationale="Repeated inconclusive fixture; narrow before spending",
-        next_review_at=1000000 + WEEK,
-        next_max_attempts=3,
-    )
-    tool(
-        service,
-        identity,
-        "record_decision",
-        outcome="borrow",
-        rationale="Synthetic schedule test",
-        borrow_percent=3,
-        dropped_work="Drop low-value variant",
-        remaining_ablations="One control remains",
-    )
-    with pytest.raises(Conflict, match="borrowing"):
-        tool(
-            service,
-            identity,
-            "record_decision",
-            outcome="borrow",
-            rationale="Second small request cannot evade total cap",
-            borrow_percent=3,
-            dropped_work="Drop more",
-            remaining_ablations="Keep controls",
-        )
-    assert service.run("test-project")["borrowed_percent"] == 3
 
 
 def test_quota_policy_hysteresis_does_not_mutate_owner(runtime, monkeypatch):
@@ -667,7 +531,7 @@ async def test_gateway_autopilot_lost_ack_and_durable_refusal(runtime, config, t
 
 async def test_managed_project_input_is_durable_and_scoped(runtime, monkeypatch):
     service, run = activated(runtime, monkeypatch)
-    identity = action(service, run)
+    identity = project_action(service, run)
     wf = runtime[3]
     with service.store.tx() as db:
         db.execute(
@@ -738,13 +602,7 @@ def test_project_guidance_change_wakes_and_invalidates_stale_authority(runtime, 
         "SELECT 1 FROM autopilot_inputs WHERE run_id=? AND kind='project_guidance'", (run["id"],)
     )
     with pytest.raises(Conflict, match="authority changed"):
-        tool(
-            service,
-            identity,
-            "record_decision",
-            outcome="stop",
-            rationale="Old context must not overwrite guidance",
-        )
+        tool(service, identity, "update_document", name="claims", base_version=0, text="Old context")
 
 
 def test_request_identity_cannot_cross_project_and_experiment_commands(runtime, monkeypatch):
@@ -821,7 +679,7 @@ def finish_guidance(wf, identity):
 async def test_rejected_question_becomes_durable_visible_wait_and_answer_resumes(runtime, monkeypatch):
     service, run = activated(runtime, monkeypatch)
     store, _, agent, wf = runtime
-    identity = action(service, run)
+    identity = project_action(service, run)
     finish_guidance(wf, identity)
     saved = service.run("test-project")
     assert saved["hold_reason"] == "autopilot_researcher_input"
@@ -862,10 +720,20 @@ async def test_rejected_question_becomes_durable_visible_wait_and_answer_resumes
 @pytest.mark.parametrize("resolved", [False, True])
 def test_guidance_completion_preserves_existing_question_without_duplicate(runtime, monkeypatch, resolved):
     service, run = activated(runtime, monkeypatch)
-    identity = action(service, run)
-    receipt = tool(service, identity, "request_researcher_input", question="Synthetic question?")
+    identity = project_action(service, run)
+    notice = str(uuid4())
+    with service.store.tx() as db:
+        db.execute(
+            "INSERT INTO autopilot_notices VALUES(?,?,'researcher_input','Synthetic question?',NULL,?)",
+            (notice, run["id"], 1000000),
+        )
+        # The receipt the retired request_researcher_input tool saved for this turn.
+        db.execute(
+            "INSERT INTO autopilot_requests VALUES(?,'test-project',?,'{}',?,'applied','{}',NULL,1000000)",
+            (notice, run["id"], "agent:" + identity),
+        )
     if resolved:
-        command(service, "answer", input_id=receipt["request_id"], text="Synthetic answer.")
+        command(service, "answer", input_id=notice, text="Synthetic answer.")
     finish_guidance(runtime[3], identity)
     assert len(service.store.rows("SELECT * FROM autopilot_notices")) == 1
     assert service.run("test-project")["hold_reason"] == (None if resolved else "autopilot_researcher_input")
@@ -873,7 +741,7 @@ def test_guidance_completion_preserves_existing_question_without_duplicate(runti
 
 def test_startup_recovers_old_guidance_without_replaying_turn_and_respects_new_input(runtime, monkeypatch):
     service, run = activated(runtime, monkeypatch)
-    identity = action(service, run)
+    identity = project_action(service, run)
     wf = runtime[3]
     wf.research.state(identity, "completed", result=json.dumps(guidance_result()))
     with service.store.tx() as db:

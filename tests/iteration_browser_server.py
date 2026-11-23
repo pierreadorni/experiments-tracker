@@ -68,7 +68,7 @@ def main():
         from uuid import uuid4
 
         from experimenttracker.autopilot_models import AutopilotPolicy
-        from experimenttracker.autopilot_tools import Document
+        from experimenttracker.autopilot_tools import UpdateDocument
 
         service = workflow.research.service
         now = time.time()
@@ -96,17 +96,17 @@ def main():
             )
             run = service.run("test-project")
             with store.tx() as db:
-                service.publish(
+                request_id = uuid4()
+                service.update_document(
                     db,
                     run,
-                    str(uuid4()),
-                    [
-                        Document(
-                            name="paper.tex",
-                            base_version=0,
-                            content="Synthetic browser source package. TODO: real research is not performed.",
-                        )
-                    ],
+                    str(request_id),
+                    UpdateDocument(
+                        request_id=request_id,
+                        name="paper.tex",
+                        base_version=0,
+                        text="Synthetic browser source package. TODO: real research is not performed.",
+                    ),
                     "synthetic-fixture",
                 )
                 service.emit(db, run["id"], "synthetic_handoff_fixture")

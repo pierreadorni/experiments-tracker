@@ -158,38 +158,45 @@ def test_autopilot_approval_proof_is_exact_and_separate_from_owner_answer(runtim
             "VALUES(?,?,0,?,'running',?,?)",
             (action_id, run["id"], run["control_revision"], now, now),
         )
-    discovery = service.invoke(
-        action_id,
-        "get_experiment",
-        {"experiment_id": eid},
-    )
-    assert discovery["experiment"]["pending_request"]["id"] == request_id
-    assert discovery["experiment"]["pending_request"]["kind"] == "approval"
-    assert discovery["experiment"]["pending_request"]["params"]["objective"] == objective
-
-    arguments = {
-        "request_id": str(uuid4()),
-        "expected_revision": run["revision"],
+    # The receipt and event a retired project turn saved; such proofs must still verify.
+    approval = {
+        "request_id": request_id,
         "experiment_id": eid,
-        "approval_request_id": request_id,
+        "run_id": run["id"],
+        "policy_revision": run["policy_revision"],
+        "control_revision": run["control_revision"],
         "objective": objective,
     }
-    with pytest.raises(Conflict, match="revision is stale"):
-        service.invoke(
-            action_id,
-            "approve_experiment_objective",
-            {**arguments, "expected_revision": run["revision"] - 1},
+    result = {"approval": approval, "request_id": str(uuid4()), "revision": run["revision"]}
+    payload = {
+        "name": "approve_experiment_objective",
+        "arguments": {
+            "request_id": result["request_id"],
+            "expected_revision": run["revision"],
+            "experiment_id": eid,
+            "approval_request_id": request_id,
+            "objective": objective,
+        },
+    }
+    with store.tx() as db:
+        store.emit(
+            db,
+            eid,
+            "autopilot_objective_approved",
+            {**approval, "author": "agent:" + action_id, "action_id": action_id},
         )
-    with pytest.raises(Conflict, match="not currently pending"):
-        service.invoke(action_id, "approve_experiment_objective", {**arguments, "objective": "altered"})
-    with pytest.raises(Conflict, match="membership"):
-        service.invoke(
-            action_id,
-            "approve_experiment_objective",
-            {**arguments, "experiment_id": str(uuid4())},
+        db.execute(
+            "INSERT INTO autopilot_requests VALUES(?,?,?,?,?,'applied',?,NULL,?)",
+            (
+                result["request_id"],
+                "test-project",
+                run["id"],
+                encode(payload),
+                "agent:" + action_id,
+                encode(result),
+                now,
+            ),
         )
-    result = service.invoke(action_id, "approve_experiment_objective", arguments)
-    assert result["approval"]["objective"] == objective
     assert approved(store, eid, request_id, objective, now=now) is None
     with store.tx() as db:
         db.execute(

@@ -5,6 +5,7 @@ from uuid import UUID
 
 from pydantic import Field, ValidationError, field_validator
 
+from ..autopilot_policy import lead_id
 from ..config import StrictModel
 
 
@@ -42,7 +43,10 @@ class OrchestratorApproval(StrictModel):
 
 
 def approved(store, experiment_id, request_id, objective, *, now=None, db=None, attributed_action_id=None):
-    """Return proof only for one completed, current orchestrator turn and exact C4 request.
+    """Return proof only for one current orchestrator decision and exact C4 request.
+
+    The decision is a lead tool receipt whose action snapshot is the run's current
+    control revision, or a saved completed project turn at that revision.
 
     This is deliberately separate from ``research.approval.approved``: it neither
     creates an owner answer command nor satisfies the owner's approval obligation.
@@ -104,9 +108,13 @@ def approved(store, experiment_id, request_id, objective, *, now=None, db=None, 
     if service.authority(eid, phase="compute", now=now) is not None:
         return None
 
+    # A lead tool receipt names the lead's agent action (C8); a saved receipt from the
+    # retired project-turn engine names a completed ``autopilot_actions`` turn.
     receipts = store.rows(
-        "SELECT r.result,r.author,r.payload,a.state,a.control_revision FROM autopilot_requests r "
-        "JOIN autopilot_actions a ON a.id=substr(r.author,7) "
+        "SELECT r.result,r.payload,o.state AS old_state,o.control_revision AS old_control,"
+        "l.experiment_id AS lead,l.autopilot_control_revision AS lead_control FROM autopilot_requests r "
+        "LEFT JOIN autopilot_actions o ON o.id=substr(r.author,7) "
+        "LEFT JOIN agent_actions l ON l.id=substr(r.author,7) "
         "WHERE r.project_id=? AND r.run_id=? AND r.author LIKE 'agent:%' "
         "AND json_extract(r.payload,'$.name')='approve_experiment_objective' "
         "AND json_extract(r.payload,'$.arguments.experiment_id')=? "
@@ -116,7 +124,10 @@ def approved(store, experiment_id, request_id, objective, *, now=None, db=None, 
     if len(receipts) != 1:
         return None
     receipt = receipts[0]
-    if receipt["state"] != "completed" or receipt["control_revision"] != run["control_revision"]:
+    if receipt["old_state"] is not None:
+        if receipt["old_state"] != "completed" or receipt["old_control"] != run["control_revision"]:
+            return None
+    elif receipt["lead"] != lead_id(run["id"]) or receipt["lead_control"] != run["control_revision"]:
         return None
     try:
         arguments = json.loads(receipt["payload"])["arguments"]

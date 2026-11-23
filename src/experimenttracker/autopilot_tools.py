@@ -1,4 +1,10 @@
-"""Project-only tool schemas. Authority and action identity come from the local session."""
+"""The Autopilot lead's project tools (C8). Authority comes from the lead's saved agent action.
+
+Each write carries an idempotent ``request_id``: a repeat with the same arguments
+replays the saved receipt. The lead also gets the shared contract 4 tools
+``save_checkpoint``, ``update_report``, ``ask_owner`` and ``cluster_info``; it is
+never served compute tools.
+"""
 
 from typing import Literal
 from uuid import UUID
@@ -7,74 +13,37 @@ from pydantic import Field
 
 from .config import StrictModel
 
-
-class Read(StrictModel):
-    pass
+PURPOSES = Literal["exploration", "ablation", "control", "correctness", "essential_result", "analysis"]
 
 
-class ExperimentRead(StrictModel):
-    experiment_id: UUID
-
-
-class DocumentRead(StrictModel):
-    name: str = Field(max_length=100)
-    version: int | None = Field(default=None, ge=1)
-
-
-class Mutation(StrictModel):
+class Request(StrictModel):
     request_id: UUID
-    expected_revision: int = Field(ge=0)
 
 
-class BacklogItem(StrictModel):
-    id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,80}$")
-    question: str = Field(min_length=1, max_length=4000)
-    purpose: Literal["exploration", "ablation", "control", "correctness", "essential_result", "analysis"]
-    decision_if_positive: str = Field(min_length=1, max_length=2000)
-    decision_if_negative: str = Field(min_length=1, max_length=2000)
-    stop_condition: str = Field(min_length=1, max_length=2000)
-    review_at: float
-    max_attempts: int = Field(ge=1, le=100)
-    priority: int = Field(default=0, ge=-100, le=100)
-    protocol_document: str = "protocol"
-    status: Literal["proposed", "active", "deferred", "stopped"] = "proposed"
-    resource_estimate: str = Field(min_length=1, max_length=2000)
-    dependencies: list[str] = Field(default_factory=list, max_length=30)
+class ProjectStatus(Request):
+    document: str | None = Field(default=None, max_length=100)
 
 
-class Backlog(Mutation):
-    item: BacklogItem
-    item_revision: int = Field(ge=0)
-
-
-class Decision(Mutation):
-    rationale: str = Field(min_length=1, max_length=8000)
-    outcome: Literal["continue", "narrow", "pivot", "stop", "borrow"]
-    backlog_id: str | None = Field(default=None, max_length=80)
-    next_review_at: float | None = None
-    next_max_attempts: int | None = Field(default=None, ge=1, le=100)
-    borrow_percent: float = Field(default=0, ge=0, le=30)
-    dropped_work: str = Field(default="", max_length=4000)
-    remaining_ablations: str = Field(default="", max_length=4000)
-
-
-class Create(Mutation):
+class CreateExperiment(Request):
     brief: str = Field(min_length=1, max_length=3000)
-    backlog_id: str = Field(max_length=80)
-    scope_rationale: str = Field(min_length=1, max_length=4000)
+    purpose: PURPOSES
     estimated_finish_at: float
 
 
-class ApproveObjective(Mutation):
+class MessageExperiment(Request):
     experiment_id: UUID
-    approval_request_id: UUID
-    objective: str = Field(min_length=1, max_length=2000)
+    text: str = Field(min_length=1, max_length=1000)
 
 
-class Control(Mutation):
+class ControlExperiment(Request):
     experiment_id: UUID
-    operation: Literal["defer", "resume", "abandon", "steer"]
+    operation: Literal["defer", "resume", "abandon"]
     reason: str = Field(min_length=1, max_length=4000)
+
+
+class RequestIntegration(Request):
+    experiment_id: UUID
+    reason: str = Field(min_length=1, max_length=2000)
 
 
 class Source(StrictModel):
@@ -86,80 +55,41 @@ class Source(StrictModel):
     title: str | None = Field(default=None, max_length=2000)
 
 
-class Document(StrictModel):
+class UpdateDocument(Request):
     name: str = Field(max_length=100)
     base_version: int = Field(ge=0)
-    content: str = Field(min_length=1, max_length=200000)
+    text: str = Field(min_length=1, max_length=200000)
     sources: list[Source] = Field(default_factory=list, max_length=100)
 
 
-class Publish(Mutation):
-    documents: list[Document] = Field(min_length=1, max_length=10)
+class ApproveObjective(Request):
+    experiment_id: UUID
+    approval_request_id: UUID
+    objective: str = Field(min_length=1, max_length=2000)
 
 
-class Foundation(Mutation):
-    state: Literal["in_progress", "blocked", "ready"]
-    gaps: str = Field(min_length=1, max_length=4000)
-
-
-class Schedule(Mutation):
-    due_at: float
-    reason: str = Field(min_length=1, max_length=2000)
-
-
-class Input(Mutation):
-    question: str = Field(min_length=1, max_length=4000)
-
-
-class Priorities(Mutation):
-    priorities: dict[str, int] = Field(max_length=100)
-
-
-class Handoff(Mutation):
-    ready: bool
-    summary: str = Field(min_length=1, max_length=8000)
-    known_issues: str = Field(min_length=1, max_length=8000)
-
-
-class Compile(Mutation):
-    pass
+class Compile(Request):
+    # Read only by the project-turn engine's compile adapter, which T5.1e deletes.
+    expected_revision: int = Field(ge=0)
 
 
 MODELS = {
-    "get_project_context": Read,
-    "get_experiment": ExperimentRead,
-    "get_results": ExperimentRead,
-    "get_document": DocumentRead,
-    "create_experiment": Create,
+    "project_status": ProjectStatus,
+    "create_experiment": CreateExperiment,
+    "message_experiment": MessageExperiment,
+    "control_experiment": ControlExperiment,
+    "request_integration": RequestIntegration,
+    "update_document": UpdateDocument,
     "approve_experiment_objective": ApproveObjective,
-    "control_experiment": Control,
-    "update_backlog": Backlog,
-    "record_decision": Decision,
-    "publish_documents": Publish,
-    "set_foundation": Foundation,
-    "set_priorities": Priorities,
-    "schedule_review": Schedule,
-    "request_researcher_input": Input,
-    "prepare_handoff": Handoff,
-    "compile_manuscript": Compile,
 }
 DESCRIPTIONS = {
-    "get_project_context": "Read current scope, policy, revision, phase, budget, backlog and changed inputs.",
-    "get_experiment": "Read a project experiment's saved status, plan and exact output references.",
-    "get_results": "Read bounded project experiment measurements, reports and direct outputs; never invent evidence.",
-    "get_document": "Read a registered immutable document version. Literature must distinguish verified full text and abstract access.",
-    "create_experiment": "Delegate a question to existing experiment agents within saved authority; never submit compute yourself.",
-    "approve_experiment_objective": "Record project-orchestrator approval for the exact pending C4 objective; this is not an owner answer.",
-    "control_experiment": "Defer/resume scoped work separately from user pauses, abandon using exact cancellation, or steer through the existing child agent.",
-    "update_backlog": "Save a stable investigation question and concrete stop/review point before spending; do not rename questions to evade reviews.",
-    "record_decision": "Record continue/narrow/pivot/stop or bounded borrowing, with rationale and dropped work.",
-    "publish_documents": "Publish immutable bounded document versions with source references. Numbers need actual compatible research evidence; missing results stay TODO.",
-    "set_foundation": "Record substantive initial review and working documents; ready requires literature, plan, protocol, claims, backlog and manuscript.",
-    "set_priorities": "Reorder linked work; priority cannot enlarge budgets or override holds.",
-    "schedule_review": "Save one future useful research checkpoint; do not poll unchanged jobs with recurring model turns.",
-    "request_researcher_input": "Create a durable project inbox question; does not send email or external messages.",
-    "prepare_handoff": "Register the latest paper and honest gaps for researcher review. Readiness is scientific judgment, not certification.",
-    "compile_manuscript": "Compile registered paper.tex/references.bib with no shell escape, bounded time/output. Missing TeX remains a prerequisite.",
+    "project_status": "Read the run, calendar, members, pending objectives, document versions and member report versions; optionally one document's latest text. Repeating a request_id is the same read.",
+    "create_experiment": "Delegate one question to a new member experiment within the calendar, open-experiment limit and writing-phase purpose; never submit compute yourself.",
+    "message_experiment": "Send bounded steering to one member experiment; it reaches the member's next turn.",
+    "control_experiment": "Defer or resume a member separately from owner pauses, or abandon it by exact cancellation when the policy allows.",
+    "request_integration": "Queue a member's saved branch for the integration worker; the worker owns any approval and the merge.",
+    "update_document": "Publish the next version of one project document from its current base_version, with source references. Numbers need actual project evidence; missing results stay TODO.",
+    "approve_experiment_objective": "Record project-orchestrator approval for a member's exact pending objective; this is not an owner answer.",
 }
 TOOLS = [
     {"name": name, "description": DESCRIPTIONS[name], "inputSchema": model.model_json_schema()}
