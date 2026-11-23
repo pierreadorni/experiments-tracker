@@ -195,3 +195,15 @@ def test_local_blob_alias_serves_autopilot_downloads(served):
     assert client.get("/api/blobs/" + by_kind["file"]["blob_id"], headers=HEADERS).content == pdf.read_bytes()
     assert client.get("/api/blobs/" + by_kind["handoff"]["blob_id"], headers=HEADERS).content[:2] == b"PK"
     assert client.get("/api/blobs/" + str(uuid4()), headers=HEADERS).status_code == 404
+
+
+def test_autopilot_notification_targets_fit_the_worker_limit():
+    from experimenttracker.publish.notifications import NOTIFY_TARGETS_MAX, autopilot_notification
+
+    view = {
+        "policy": {"notifications": True},
+        "notices": [{"id": "n1", "kind": "handoff", "text": "Ready", "resolved_at": None}],
+        "experiments": [{"experiment_id": f"00000000-0000-0000-0000-{i:012d}"} for i in range(80)],
+    }
+    notify = autopilot_notification("p", view)
+    assert len(notify["targets"]) == NOTIFY_TARGETS_MAX

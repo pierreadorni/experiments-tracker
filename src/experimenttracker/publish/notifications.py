@@ -127,6 +127,9 @@ def experiment_notification(exp):
     }
 
 
+NOTIFY_TARGETS_MAX = 50
+
+
 def autopilot_notification(project_id, view):
     """Attention notices of a project run, for devices following its linked experiments.
 
@@ -140,7 +143,8 @@ def autopilot_notification(project_id, view):
         for n in view.get("notices") or []
         if not n.get("resolved_at") and n.get("kind") in ("researcher_input", "handoff")
     ]
-    targets = [f"experiment:{e['experiment_id']}" for e in view.get("experiments") or []]
+    # The Worker refuses a notify envelope with more than 50 targets.
+    targets = [f"experiment:{e['experiment_id']}" for e in view.get("experiments") or []][:NOTIFY_TARGETS_MAX]
     if not notices or not targets:
         return None
     safe = "-_.!~*'()"
