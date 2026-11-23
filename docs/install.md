@@ -1,126 +1,194 @@
 # Installation
 
-Start with the local demo, then configure live execution. Hosting is optional. This release is source-installed; there is no published PyPI package or container image. Keep the repository: machine guidance, frontend assets and the locked Codex runtime are used alongside the Python package.
+Run the synthetic demo, discover the live environment, configure live execution,
+then add hosting if wanted. The application is installed from source: keep the
+checkout, because frontend assets, machine guides and the locked Codex runtime are
+loaded from it. Treat installation as discovery and acceptance: find facts
+read-only, ask the owner only for missing decisions, and record adaptations.
 
-## 1. Prepare an isolated checkout
+## 1. Isolated checkout and demo
 
-Use a Linux host with Python 3.11+, Git, uv, GNU make and Node 24/npm. Install tools through your system's approved mechanism. No root installation is needed for the application. Keep this checkout separate from research environments and existing deployments. Native Windows/macOS are not supported by the Linux filesystem checks and POSIX locking.
+Use Linux with Python 3.11+, Git, uv, GNU make and Node 24/npm, installed through
+the host's approved mechanism; no root is needed. Keep the checkout separate from
+research environments and running installations. Native Windows/macOS are not
+supported (POSIX locking, Linux filesystem checks).
 
 ```sh
 git clone https://github.com/pierreadorni/experiments-tracker.git
 cd experiments-tracker
-make setup-demo
-```
-
-`setup-demo` runs `uv sync --locked`, `npm ci --prefix web` and a production frontend build. It does not install Codex or the hosted gateway. An offline install needs prepopulated uv/npm caches; the demo needs no inference or scheduler once dependencies are installed.
-
-## 2. Complete the synthetic demo
-
-```sh
+make setup-demo        # uv sync --locked, npm ci and a frontend build
 uv run --locked experimenttracker --config .local/demo.yaml init
 uv run --locked experimenttracker --config .local/demo.yaml doctor
 uv run --locked experimenttracker --config .local/demo.yaml demo --max-seconds 60
 uv run --locked experimenttracker --config .local/demo.yaml serve
 ```
 
-Open <http://127.0.0.1:8765>. Enter `.local/api-token` privately. The CLI prints paths, not the token. A completed demo shows a report, a prediction figure and synthetic measurements. `demo` creates the current-contract synthetic experiment, approves that plan itself and runs two small local CPU tasks on generated data; it demonstrates the workflow and is not research. A brief outside the supported linear/quadratic comparison gets planning questions and a nonzero exit before any work starts. `demo` returns 2 if its time limit ends before completion; state is preserved. Stop `serve` with Ctrl+C. Do not run two owners of the same state directory.
+`demo` runs one contract-4 experiment in a temporary directory with a scripted
+agent and a demo scheduler: an approval request, one tiny CPU job, a registered
+result and a ready report. It prints a JSON summary and exits 0, or 2 if the time
+limit ends first. It needs no Slurm, model or hosting.
 
-`init` takes paths from the current directory. Always run it at the checkout root. Do not copy `config.example.yaml` unchanged: its absolute paths are illustrative. Initialization refuses to replace existing configuration. Demo and live configurations in the same checkout share the local browser token, but have distinct state/output directories.
+`serve` opens the UI at <http://127.0.0.1:8765>; enter `.local/api-token` privately
+(the CLI prints paths, never the token). Run `init` at the checkout root; it refuses
+to overwrite configuration, and `config.example.yaml` paths are only illustrative.
+For remote access, forward the loopback port: `ssh -N -L 8765:127.0.0.1:8765 HOST`.
+If 8765 is taken, change `port` in the generated configuration and the tunnel.
 
-For remote access, forward the loopback port from your own computer, using your host alias:
+## 2. Discover the live environment
 
-```sh
-ssh -N -L 8765:127.0.0.1:8765 YOUR_HOST
-```
+Record OS, tool versions and the noninteractive PATH, then establish:
 
-The service binds only to loopback. If another service uses 8765, change `port` in your generated configuration and both tunnel ports.
+- **Placement.** An approved host and process placement. A writable login node is
+  not permission for a permanent daemon.
+- **Storage.** Retained local disk for SQLite (NFS/CIFS are refused; `/var/tmp` is
+  only a candidate), a job output path visible to compute nodes, and a separate
+  backup destination with a retention policy.
+- **Slurm.** Working `sbatch`, `squeue`, `sacct`, `sinfo`, `scontrol`, `sacctmgr`;
+  account/QoS/partition authorization (a visible partition grants nothing),
+  accounting lag, job-name/comment visibility and Python on compute nodes. Use
+  read-only queries and authorized `sbatch --test-only`; neither replaces a real job.
+- **Agent runtime.** Outbound HTTPS, the managed login on the owning host and any
+  institutional limits on agents or background services.
 
-## 3. Discover your live environment
+A machine without Slurm runs the demo but needs source adaptation for real work.
 
-Work with [the agent checklist](agent-install.md). Establish:
+### Portability map
 
-- An approved host/process placement and a retained local disk path for SQLite. NFS/CIFS are rejected. `/var/tmp` is only a generated candidate, not a retention guarantee.
-- A job output path visible to compute nodes, a separate online-backup destination and a retention policy for source attempts, results and scientific data.
-- Working `sbatch`, `squeue`, `sacct`, `sinfo`, `scontrol`, `sacctmgr`, account/QoS/partition authorization, accounting visibility, and Python/runtime access on compute nodes. A visible partition alone does not grant permission.
-- Outbound HTTPS for the managed account, supported login on the owning host, and any institutional restrictions on agents or background services.
+| Area | Where to look |
+| --- | --- |
+| Paths and limits | `src/experimenttracker/config.py`, generated `.local/live.yaml` |
+| Linux assumptions | `cli.py`, `doctor.py`; POSIX flock, GNU `stat -f -c %T` |
+| Local Slurm policy | `slurm.py`: capabilities, authorization, wrapper flags, exact reconciliation |
+| Saved context identifiers | `execution_settings.py`, `research/`, `web/src/types.ts` |
+| Agent machine guides | `src/experimenttracker/machine_contexts/*.md` |
+| Remote scheduler and transfer | `remote.py`, `remote_worker.py`, `research/remote_*.py` |
+| Hosting | `gateway/src/index.ts`, `push.ts`, `gateway/drizzle` |
 
-The local Slurm route is the default. A machine without Slurm can run the demo, but needs source adaptation to run real experiments outside Slurm.
+In saved records, `acacia` names the owner's local Slurm route; it does not need
+that hostname. Keep the identifier and adjust the machine prose for your site.
+`executor_id` is the real configurable identity and must match the gateway.
+`jean-zay` is a specific remote adapter (SSH/rsync, 600-second minimum polling,
+memory-flag translation); a different SSH alias does not make it generic. For
+another remote cluster, write and test an adapter or stay on the local route. The
+machine guides hold historical observations; discover current facts instead.
+Containers, other schedulers and multi-user hosting are adaptations, not support.
 
-## 4. Install the pinned managed runtime
+## 3. Managed runtime
 
 ```sh
 make setup
-./tools/codex/node_modules/.bin/codex --version
+./tools/codex/node_modules/.bin/codex --version     # pinned 0.160.1
 ./tools/codex/node_modules/.bin/codex login status
 ```
 
-`tools/codex/package-lock.json` pins Codex **0.160.1**. Use this project-local executable rather than replacing another project's global runtime. If login is needed, have the owner complete supported `codex login` (or `login --device-auth` where enabled). Reuse the existing supported managed login; do not read/copy authentication files or put tokens in chat. See [official authentication guidance](https://learn.chatgpt.com/docs/auth).
+Use this project-local executable. If login is needed, the owner runs `codex login`
+(or `login --device-auth`); never read or copy authentication files. Codex runs on
+the managed ChatGPT login under fresh quota windows. The adapter checks an exact
+version; review generated protocol schemas and run the tests before changing it.
+No API-billed backend exists yet; one may be added only when the owner configures
+it explicitly with a spend budget.
 
-The adapter checks an exact version. Review generated protocol schemas and run the tests before changing versions; see [official App Server documentation](https://learn.chatgpt.com/docs/app-server). API keys are allowed only when explicitly configured for a backend with a spend budget, never as an automatic paid fallback. Account/model availability must be established on this installation.
-
-## 5. Generate and adapt live configuration
-
-Choose a verified durable local directory and pass its absolute path:
+## 4. Live configuration
 
 ```sh
 uv run --locked experimenttracker --config .local/live.yaml init --mode live \
-  --state-dir /YOUR/RETAINED/LOCAL/DISK/experimenttracker
+  --state-dir /RETAINED/LOCAL/DISK/experimenttracker
 ```
 
-Edit the generated file privately before starting it:
+Edit the generated file privately; every path is absolute.
 
 | Setting | What to establish |
 | --- | --- |
-| `executor_id` | A stable installation identity; use the same value in a gateway's `EXECUTOR_ID`. The historical default is `acacia`. |
-| `state_dir` | Retained local disk, writable by the owner; only one owning process. |
-| `job_output_root` | Absolute path visible on the compute nodes. |
+| `executor_id` | Stable installation identity; equals the gateway's `EXECUTOR_ID`. |
+| `state_dir` | Retained local disk, one owning process. |
+| `job_output_root` | Visible on compute nodes. |
 | `backup_dir` | Retained storage independent of the state disk. |
-| `projects_root`, `projects` | Authorized research directories; selected folders may be edited. Keep `test-project` for legacy/demo records. |
-| `web_dir` | Built frontend in this checkout. |
-| `api_token_file` | Generated protected token, absolute path, mode 600. |
-| `codex.executable` | Absolute path to this checkout's `tools/codex/node_modules/.bin/codex`. |
-| `codex.expected_version` | `0.160.1` for the pinned runtime. Generated legacy defaults otherwise expect `0.156.1`; explicitly override both fields. |
-| `slurm.partition`, `account`, `qos` | Verified authorized local defaults. `shortrun` is a historical default, not portable discovery. |
-| `slurm.limits` | Optional owner ceilings/allowlists; omitted fields defer to Slurm authorization. |
-| `slurm.max_concurrent_jobs` | Defaults to 1; explicit `null` removes this executor-wide cap. |
-| `port` | An unused loopback port, especially when retaining the demo owner. |
+| `projects`, `projects_root` | Authorized research checkouts (Git, with an initial commit). |
+| `codex.executable`, `codex.expected_version` | This checkout's `tools/codex/.../codex` and `0.160.1` (the generated default still says `0.156.1`). |
+| `slurm.partition`, `account`, `qos` | Verified authorized defaults. |
+| `slurm.limits`, `slurm.max_concurrent_jobs` | Optional owner ceilings; the cap defaults to 1, `null` removes it. |
+| `port` | An unused loopback port. |
 
-The retired `recipe_dir` key in older generated YAML is ignored; other unknown keys remain errors. No fixed recipe directory is required.
+Project options: `check_command` (argv for the integration check),
+`integration.require_approval` (default false) and `environment.python` (a fixed
+interpreter instead of the shared lock cache). The retired `recipe_dir` key is
+ignored. See [config.example.yaml](../config.example.yaml) and
+[config.py](../src/experimenttracker/config.py).
 
-All paths must be absolute. See [config.example.yaml](../config.example.yaml) and the validated fields in [config.py](../src/experimenttracker/config.py). Example live overrides, with placeholders you must replace:
+The agent picks resources from fresh cluster capabilities; the backend validates
+each request with `sbatch --test-only`. Contract-4 jobs are CPU-only until GPU
+budget accounting is wired.
+
+## 5. Preflight and first live experiment
+
+`doctor` is read-only: it checks files, filesystems, executables and versions, not
+permission, quota, scheduler authorization, host policy or phone access. Keep uv,
+Node 24 and Slurm tools on the daemon's PATH.
+
+After the owner authorizes the first live brief and its resource budget, run
+`serve` with the live configuration, create a small experiment in an authorized
+project, approve its objective and watch its first jobs and report. Test restart
+only at an authorized safe boundary: saved jobs and actions must be adopted, not
+resubmitted. Do not install a permanent service until host policy and storage
+retention are confirmed; setup installs none.
+
+## 6. Optional private gateway
+
+The loopback UI with an SSH tunnel is a complete installation. The Worker (see
+[architecture](architecture.md#hosted-relay)) is a Sites-compatible build with D1
+(`DB`) and R2 (`BUCKET`) bindings.
+
+Local checks use real D1/R2 emulation with synthetic identities:
+
+```sh
+npm run build --prefix gateway && npm run typecheck --prefix gateway && npm test --prefix gateway
+```
+
+`node gateway/scripts/dev.mjs` runs a local Worker on port 8788 (needs protected
+`.local/api-token` and `.local/executor-token`; state under
+`/tmp/experimenttracker-gateway-local` or `ET_GATEWAY_STATE`). It is not a
+production endpoint.
+
+For production, register your own owner-private Site with the Sites workflow and
+keep its identity in `.local/installation/site.json`. `gateway/.openai/hosting.json`
+holds binding metadata only. Keep the deployment checkout separate from research
+checkouts; `scripts/sync_site.py` refreshes `.local/phone-site` once it has its own
+registered manifest. Apply `gateway/drizzle` migrations in order through the
+hosting workflow; never rewrite an applied one.
+
+| Binding | Purpose |
+| --- | --- |
+| `AUTH_MODE=sites` | Platform browser identity; restrict the Site to the owner. `token` mode with `USER_TOKEN` is for controlled tests. |
+| `EXECUTOR_ID` | Equals the local `executor_id`. |
+| `EXECUTOR_TOKEN` | Independent machine secret, not a browser login. |
+| `DB`, `BUCKET` | D1 commands/projections, R2 blobs. |
+| `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | Optional Web Push. |
+
+Save secrets with a hidden-input tool such as `scripts/save_secret.py` and
+configure only paths:
 
 ```yaml
-codex:
-  executable: /YOUR/CHECKOUT/tools/codex/node_modules/.bin/codex
-  expected_version: 0.160.1
-slurm:
-  partition: YOUR_AUTHORIZED_PARTITION
-  account: null
-  qos: null
-  max_concurrent_jobs: 1
-  limits: {}  # add owner limits after discussing the desired budget
+gateway:
+  url: https://YOUR-PRIVATE-SITE-ORIGIN   # HTTPS origin, no path/query/credentials
+  credential_file: /ABSOLUTE/PROTECTED/executor-token   # sent as Authorization
+  sites_credential_file: /ABSOLUTE/PROTECTED/sites-token # sent as OAI-Sites-Authorization
+  poll_seconds: 5
 ```
 
-The small CPU defaults are fallbacks, not ceilings for live runs. The agent selects resources from fresh capabilities; the backend validates each request with `sbatch --test-only`. Synthetic demo mode retains its short CPU/no-GPU envelope. Legacy execution is archived: saved evidence remains readable and exact in-flight identities can settle, but old stages do not advance.
+## 7. Acceptance record
 
-## 6. Preflight, then accept live execution
+Keep a short record in `.local/installation/`: tool versions, verified paths and
+storage policy, the config path, source adaptations, checks run and remaining
+limits. Report each area separately, and name the missing prerequisite for any area
+not tested:
 
-```sh
-uv run --locked experimenttracker --config .local/live.yaml doctor
-```
-
-`doctor` is read-only. It checks files, filesystem, executable availability and version. It does not prove account permission/quota, scheduler authorization, host policy or phone access. Resolve failures instead of disabling checks. Keep uv, Node 24 and Slurm tools on the daemon's noninteractive PATH; preparation invokes uv independently of the Python executable.
-
-After the owner's explicit authorization for the first live brief and resource budget:
-
-```sh
-uv run --locked experimenttracker --config .local/live.yaml serve
-```
-
-Select/create an authorized research project in the UI, submit a small brief, review its plan and observe its first real jobs and working results. Use a Git checkout with an initial commit for parallel worktree isolation. Fresh included-usage permission and quota windows gate each agent dispatch. Do not bypass holds or assume a successful demo proves this step.
-
-Test restart only at an authorized safe boundary; the same saved jobs/actions must be adopted rather than submitted again. [Operations](operations.md) describes backup and reconciliation. A permanent service needs confirmed host policy and storage retention first; no systemd unit is installed by setup.
-
-## 7. Optional private gateway and phone access
-
-The loopback UI plus SSH tunnel is a complete local installation. To host published views, follow [gateway setup](gateway.md). Use your own private deployment and storage; no existing installation identity is included in the public snapshot. Validate private browser sign-in and executor access separately. A phone installation must be checked on the actual device.
+- **Demo:** synthetic lifecycle and loopback login.
+- **Source checks:** `make check` in an isolated checkout.
+- **Managed runtime:** login status; an authorized real turn under quota admission.
+- **Slurm:** authorized real job IDs, outputs and exact-intent recovery.
+- **Operations:** service placement, retained disk, online backup, restart adoption.
+- **Hosting:** signed-out and non-owner requests cannot read results; the executor
+  credential cannot reach browser routes; the executor fetches a command, commits it
+  locally, posts its receipt and publishes a blob; replay deduplicates; published
+  views stay readable while the executor is stopped.
+- **Phone:** sign-in and Add to Home Screen on the actual device.

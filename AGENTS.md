@@ -1,16 +1,47 @@
 # Working in this repository
 
-- Read docs/install.md, docs/agent-install.md, docs/architecture.md and docs/operations.md. Complete an isolated synthetic demo before live setup; distinguish synthetic demonstration from scientific research.
-- Refactoring and consolidation follow [docs/refactor/](docs/refactor/README.md): audit, design, ordered task cards and working rules.
-- Future brief-driven experiments use execution contract 3 / plan schema 3: bounded declared-source copies per attempt, direct output references, explicit reuse with rationale, metrics before independent figures and working report versions. Do not reintroduce scientific data hashing, recursive inventories, dependency freezes, a final validation barrier or completion cleanup. Keep archived historical contracts and evidence readable; the synthetic demo also uses contract 3.
-- SQLite on retained local disk owns execution; D1/R2 hold commands and published views. Keep user commands, events, outbox updates and readiness transitions transactional and idempotent.
-- Persist job/action/transfer intents before dispatch. Never retry uncertain submissions or turns without establishing the saved outcome. Reconcile exact identities.
-- Use generated local configuration and one ownership lock. Do not touch unrelated Slurm jobs or research checkouts. Live resources come from fresh cluster capabilities within Slurm authorization and optional owner limits. Keep bounded short-CPU/no-GPU synthetic demonstrations separate from live authorization. The retired fixed recipe survives only in archived records.
-- API-billed inference is allowed when the owner configures it explicitly (owner waiver 2026-11-22); it is never an automatic fallback. Every billed backend runs under an owner spend budget, and every subscription backend under fresh quota windows. Admission holds when either state is stale or unknown. Never extract or copy credentials. Ask the owner before the first live experiment.
-- Keep credentials in ignored protected files or runtime secrets, never source, argv, URLs, logs or browser storage. An executor credential cannot authorize a browser user. Keep hosting owner-private and D1 production migrations append-only. Register your own Site; never reuse another installation's identity.
-- Run make setup from locked manifests and source checks on Node 24. Run make check in an isolated checkout when an owner serves this checkout's web/dist. Python subprocess tests must run outside sandboxes whose NSS isolation changes subprocess behavior.
-- Browser smoke uses demo state and creates a synthetic experiment. Actual Slurm, managed runtime, private hosting and physical phone access need separate acceptance evidence.
-- Inspect the portability map before adapting saved acacia/jean-zay context identifiers or the site-specific remote scheduler policy. Preserve historical records.
-- Do not install a permanent service until host policy and local-disk retention are established. Keep adaptations and validation reviewable; do not publish local operations records.
+Read [install](docs/install.md), [operations](docs/operations.md) and [architecture](docs/architecture.md)
+first. Refactoring follows [docs/refactor/](docs/refactor/README.md).
 
-- Use GitHub main as the single shared code history and latest source. Read docs/development.md. Keep installation-specific records under ignored .local/installation/; consult its AGENTS.md when present. Commit and push reusable improvements through this repository, without snapshot-export workflows. Code publication does not authorize live activation.
+## Owner safety
+
+- Ask the owner before the first live experiment. Code publication does not authorize live activation:
+  installs, restarts, Worker publishes and Slurm or model calls each need the owner.
+- Run the isolated synthetic demo before live setup; a synthetic demo is not research.
+- Synthetic tests, fixtures and browser smoke scripts are not live acceptance. Real Slurm, the managed
+  runtime, private hosting and a physical phone each need their own evidence.
+- Never extract, read or copy credentials. Keep them in ignored protected files or runtime secrets, never
+  in source, argv, URLs, logs or browser storage. An executor credential cannot authorize a browser user.
+- API-billed inference runs only when the owner configures it explicitly (owner waiver 2026-11-22), never
+  as an automatic fallback. Every billed backend runs under an owner spend budget, every subscription
+  backend under fresh quota windows. Admission holds when either is stale or unknown.
+- Live resources come from fresh cluster capabilities within Slurm authorization and optional owner
+  limits. Keep the short CPU-only synthetic demo separate from live authorization.
+- Do not touch unrelated Slurm jobs or research checkouts. Do not install a permanent service until host
+  policy and local-disk retention are established.
+
+## Execution rules
+
+- SQLite on retained local disk owns execution; D1/R2 hold commands and published views. Keep user
+  commands, events, outbox updates and readiness transitions transactional and idempotent.
+- Persist job, action and transfer intents before dispatch. Never retry an uncertain submission or turn
+  before establishing its saved outcome; reconcile exact identities.
+- Use generated local configuration and one ownership lock per state directory.
+- New experiments use contract 4; archived contracts and their evidence stay readable. Do not add
+  scientific data hashing, recursive inventories, dependency freezes, a final validation barrier or
+  completion cleanup.
+- SQLite migrations are additive; D1 production migrations are append-only. Hosting is owner-private:
+  register your own Site and never reuse another installation's identity.
+- Read the [portability map](docs/install.md#portability-map) before adapting the saved `acacia` or
+  `jean-zay` contexts or the remote scheduler policy. Preserve historical records.
+
+## Code and checks
+
+- GitHub `main` is the single shared history. Commit and push reusable improvements here, with no
+  snapshot-export workflow; never force-push or publish production identities, research data,
+  databases, backups or secrets.
+- Installation records live in ignored `.local/installation/`; read its `AGENTS.md` when present. Keep
+  adaptations reviewable and do not publish local operations records.
+- Use Node 24 and `make setup` from the locked manifests. Run `make check` in an isolated checkout when an
+  owner serves this checkout's `web/dist`. Run Python subprocess tests outside sandboxes whose NSS
+  isolation changes subprocess behaviour.

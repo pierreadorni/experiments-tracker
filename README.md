@@ -26,9 +26,9 @@ The demo compares linear and quadratic regression on synthetic data. Its model i
 
 Give your agent this instruction:
 
-> Install ExperimentTracker on my system. Read AGENTS.md, docs/install.md, docs/agent-install.md, docs/architecture.md and docs/operations.md. First get the synthetic demo working in an isolated checkout. Discover my actual storage, Slurm, runtime and host-policy constraints. Prepare a local configuration and explain any source adaptations. Reuse my supported managed ChatGPT login without reading credentials. Ask me before the first live experiment or any permanent service installation. Report demo, live compute, hosting and phone checks separately. Preserve existing jobs and research files.
+> Install ExperimentTracker on my system. Read AGENTS.md, docs/install.md, docs/architecture.md and docs/operations.md. First get the synthetic demo working in an isolated checkout. Discover my actual storage, Slurm, runtime and host-policy constraints. Prepare a local configuration and explain any source adaptations. Reuse my supported managed ChatGPT login without reading credentials. Ask me before the first live experiment or any permanent service installation. Report demo, live compute, hosting and phone checks separately. Preserve existing jobs and research files.
 
-[Installation](docs/install.md) covers the path from demo to live use. [Agent installation](docs/agent-install.md) gives discovery steps, adaptation points and acceptance criteria. [Operations](docs/operations.md) covers access, recovery, backups and upgrades.
+[Installation](docs/install.md) covers the path from demo to live use. It also gives discovery steps, the portability map and acceptance criteria. [Operations](docs/operations.md) covers access, recovery, backups and upgrades.
 
 ## How it works
 
@@ -57,4 +57,4 @@ make audit
 
 Run checks in a temporary source checkout if an owner serves the current checkout's `web/dist`; the checks rebuild served assets. No live credentials or Slurm jobs are required for the test suite. Contribution guidance is in [CONTRIBUTING.md](CONTRIBUTING.md). Licensed under [MIT](LICENSE).
 
-Development follows the shared `main` branch; see [development and local installations](docs/development.md) for keeping private installation state outside Git.
+Development follows the shared `main` branch; see [operations](docs/operations.md#development-checks) for keeping private installation state outside Git.

@@ -1,8 +1,11 @@
 # Operations
 
-Use the same generated configuration for every command and restart. Keep uv, Node 24, Slurm commands and the pinned runtime available on the owner's noninteractive PATH. Run only one owner per state directory; unrelated jobs and checkouts are outside this application's authority.
+Use the same generated configuration for every command and restart, with uv,
+Node 24, Slurm tools and the pinned runtime on the owner's noninteractive PATH. Run
+one owner per state directory. Unrelated jobs and checkouts are outside this
+application's authority.
 
-## Read status and stop safely
+## Status, stop and restart
 
 ```sh
 uv run --locked experimenttracker --config .local/live.yaml doctor
@@ -10,20 +13,30 @@ uv run --locked experimenttracker --config .local/live.yaml status
 uv run --locked experimenttracker --config .local/live.yaml inspect EXPERIMENT_UUID
 ```
 
-`doctor` and saved-state inspection do not dispatch work. Start the owner with `serve`; stop with Ctrl+C or SIGTERM. Shutdown persists workflow state, takes an online backup and stops owned agent children. Slurm jobs survive. Restarting the same configuration adopts saved identities. Do not use broad process kills or cancel scheduler jobs as routine restart cleanup.
+These read saved state and dispatch nothing. Start the owner with `serve`; stop it
+with Ctrl+C or SIGTERM. Shutdown saves state, takes an online backup and stops its
+agent children; Slurm jobs keep running, and a restart with the same configuration
+adopts their saved identities. Never use broad process kills or cancel scheduler
+jobs as restart cleanup. Do not install a permanent supervisor until host policy and
+local-disk retention are confirmed, and keep its secrets out of unit arguments and
+logs.
 
-The UI's agent pause stops new inference; compute pause stops new submissions. Existing jobs continue. Fresh explicit included-usage permission and five-hour/week quota windows gate agent dispatch; stale, unknown or denied windows hold work. Defaults reserve 25%/10%, with 30%/15% recovery thresholds. Compute observation and publication can continue while inference is held. API-billed backends run only when explicitly configured, under the owner's spend budget; never as an automatic fallback, and never with extracted credentials.
+In the UI, pausing the agent stops new turns and pausing compute stops new
+submissions; running jobs continue. Turns also hold whenever the quota windows are
+stale, unknown or below the reserve.
 
 ## Uncertain dispatch
 
-Observe before retrying. These commands reconcile saved identities rather than launching jobs/turns:
+Observe before retrying. These reconcile saved identities and never launch work:
 
 ```sh
 uv run --locked experimenttracker --config .local/live.yaml reconcile --jobs
-uv run --locked experimenttracker --config .local/live.yaml reconcile --action-id ACTION_UUID
+uv run --locked experimenttracker --config .local/live.yaml reconcile --action-id ACTION_UUID [--turn-id TURN_ID]
 ```
 
-Use CLI help and the saved record for targeted output/turn recovery. Queue disappearance does not prove success; account for accounting lag. Never clear an uncertain intent or invent a replacement job ID to make progress. Preserve thread/turn identities and require evidence of the saved outcome.
+`--turn-id` recovers a lost response from an exact completed turn with matching
+input. A job missing from the queue has not necessarily succeeded; allow for
+accounting lag. Never clear an uncertain intent or invent a job ID to make progress.
 
 ## Backups and retention
 
@@ -31,55 +44,111 @@ Use CLI help and the saved record for targeted output/turn recovery. Queue disap
 uv run --locked experimenttracker --config .local/live.yaml backup
 ```
 
-The backup command uses SQLite online backup into the configured destination and can run while the owner is active. Do not copy only a live database file and omit its journal. Protect backups: they contain private briefs, notes and paths. Establish retention on a separate retained storage destination and verify SQLite integrity/foreign keys on a backup copy.
+This takes a SQLite online backup into `backup_dir` while the owner runs. Never copy
+the live database file alone. Backups contain private briefs and paths: protect
+them, keep them on separate retained storage and check integrity and foreign keys
+on a copy. They exclude scientific outputs, worktrees, Codex conversation storage,
+configuration and credentials; retain those separately. Nothing deletes outputs or
+worktrees automatically.
 
-Database backups do not include scientific files, attempt folders, Codex conversation storage, configuration or credentials. Retain those through approved separate procedures. Contract 3 never deletes large outputs, scratch or working folders automatically. Restores need an authorized stopped writer and reconciliation with external jobs/actions; an old backup cannot erase work already submitted externally.
+The running owner clears obsolete acknowledged outbox payloads in small batches; it
+never removes events, receipts or scientific records. The file shrinks only after
+offline compaction. Rehearse it on a completed backup, never the live database:
 
-## Upgrades
+```sh
+python -m experimenttracker.retention --backup /protected/backup/workflow.sqlite
+python -m experimenttracker.retention --backup /protected/backup/workflow.sqlite \
+  --output /local/disk/compacted.sqlite
+```
 
-Inspect running/paused work, pending commands, job/action/transfer intents and publication before selecting a restart boundary. Take a fresh online backup and retain the previous source/build identity. Build and run `make check` in an isolated checkout if the owner serves the current `web/dist`.
+The first form is a read-only audit. The second writes a verified compacted copy
+(it needs three times the input's free space and refuses to overwrite). Installing
+a compacted database is a separate owner operation: stop the owner, hold its
+ownership lock through a final backup, compaction, comparison and an atomic
+same-filesystem replacement, and keep a verified rollback snapshot until the
+restarted owner is accepted.
 
-Migrations occur under ownership. SQLite schema 21 adds owner-authorized software maintenance to contract 3; old binaries cannot necessarily reopen upgraded state. Preserve historical saved contracts. Deploy backward-compatible gateway changes before activating incompatible new projections. D1 production migrations are append-only. A source checkout rollback is not a database rollback: prefer a compatible forward fix, or explicitly approve a stopped-writer restore and reconcile all external effects.
+Restores need a stopped writer and reconciliation with external jobs and turns; an
+old backup cannot undo work already submitted.
 
-Do not install a permanent supervisor until host policy and local-disk retention are confirmed. Keep service secrets out of unit command arguments, logs and browser storage.
+## Application updates
 
-## Browser and phone
+Shared source lives on GitHub `main`. A push changes no installation: it does not
+restart the executor, migrate state, submit work or publish the Worker.
 
-Use loopback directly or an SSH tunnel. Hosted access must be private HTTPS with independent browser and executor authentication. For phone installation, open your own private URL in Safari/Chrome, sign in, then Add to Home Screen / Install app. Test sign-in and actual device behavior separately; browser automation is not physical-phone acceptance. Private results remain network-only; the PWA does not cache authenticated research data.
-
-## Development checks
-
-`make setup` installs locked manifests. `make check` runs Python lint/format/tests, frontend checks, gateway build/types and real local Miniflare D1/R2 tests. Run Python subprocess tests outside restrictive agent sandboxes if NSS isolation prevents user/SSH resolution. These tests need no live scheduler or account credentials. Synthetic browser smoke scripts create demo experiments with mocked scheduler/model boundaries.
-
-## Prepare updates without agent polling
-
-A maintenance-enabled owner exposes Application updates in Executor & quota. After
-committing changes, start a one-shot background preparation process:
+To prepare a release, commit it and start a one-shot background preparation:
 
 ```sh
 .venv/bin/python -m experimenttracker.maintenance prepare \
-  --config /absolute/path/to/config.local.yaml --commit FULL_COMMIT_SHA \
-  --summary 'Describe the update' --detach
+  --config /absolute/path/to/.local/live.yaml --commit FULL_COMMIT_SHA \
+  --summary 'What changes' --detach
 ```
 
-It installs locked dependencies and runs `make check` in a separate software release
-folder, then advertises the result. The browser owner can authorize backup,
-graceful restart and exact identity recovery later; Slurm jobs survive. Unknown
-launch outcomes or failed recovery hold new dispatch for operator inspection.
-There is no automatic restore or permanent service. The original executor needs
-one authorized bootstrap restart to load this capability; hosted gateways also
-need append-only migration `0008_executor_maintenance.sql`. Gateway code still
-uses the installation's normal private hosting deployment workflow.
+It extracts the commit into `state_dir/releases/COMMIT`, installs locked
+dependencies there (never into the running owner) and runs `make check`, outside
+NSS-isolating sandboxes. A failed check cannot produce a ready release, and
+preparation never grants install authority.
 
-Shared source updates use GitHub `main`; keep installation records under ignored `.local/installation/`. See [development](development.md). Schema 22 adds opt-in Research Autopilot records; installing its software does not activate a project.
+The owner installs from **Executor & quota → Application updates → Install
+update…**. The executor then holds new dispatch and waits up to 24 hours for a safe
+boundary (no uncertain turns or submissions, unfinished transfers or open owner
+requests), takes and verifies a backup, stops the owner through its loopback API,
+starts the release once and checks that saved jobs, actions and pause controls
+survived before dispatch resumes. Slurm jobs are never cancelled or resubmitted. A
+failure before shutdown leaves the old owner running; a later failure holds new work
+as **Update needs attention**. Nothing is retried blindly or restored
+automatically. Evidence lives in `state_dir/maintenance/REQUEST_UUID/`,
+`state_dir/release-preparation/` and `backup_dir/maintenance/`.
 
-## Incomplete implementation and agent stages
+Before installing a release that changes the engine, check a fresh offline backup:
 
-Implementation can return `outcome: blocked` with a concrete obstacle. Its partial
-graph is not accepted; **Retry with agent** resumes the saved implementation turn.
-For an already accepted contract 3 graph with a known blocked or failed agent
-stage, **Repair implementation** requests selective graph repair. Original source
-and producer records remain available; pending or uncertain agent outcomes must
-settle first. Successful reuse requires explicit decisions and rationale. The
-control requires a running executor that advertises support. Structural manifest
-checks do not establish scientific completeness.
+```sh
+uv run --locked python -m experimenttracker.drain_inventory BACKUP.sqlite
+```
+
+Worker changes are published separately through the owner's registered Site, in
+the order the release notes give (see [the Phase 5 rollout](refactor/notes/t5-rollout.md)).
+D1 production migrations are append-only. A source rollback is not a database
+rollback: prefer a compatible forward fix.
+
+## Autopilot
+
+Configure Autopilot in the project's Autopilot view: subject, scope, dates,
+open-experiment limit, approval envelope and subscription reserves. Saving a draft
+starts nothing; activating the run records the researcher's authorization and creates the
+lead experiment. Pause holds the lead and member turns while jobs and publication
+continue; Resume recomputes the calendar without catching up missed turns; Stop
+ends automatic dispatch and keeps results. The lead's questions arrive in the Inbox
+like any experiment's. Installing the software activates no project.
+
+## Browser and phone
+
+Use loopback directly or an SSH tunnel. Hosted access is private HTTPS with
+separate browser and executor authentication. On a phone, open your private URL,
+sign in, then Add to Home Screen. The PWA caches no research data.
+
+## Development checks
+
+`make setup` installs locked manifests. `make check` runs Ruff, the Python suite,
+frontend checks, the gateway build and types, and local D1/R2 tests; it needs no
+scheduler or credentials. Run it in an isolated checkout when an owner serves this
+checkout's `web/dist`, and run Python subprocess tests outside sandboxes whose NSS
+isolation breaks user or SSH resolution.
+
+Browser checks run against a temporary loopback fixture with synthetic state:
+
+```sh
+export PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/path/to/chrome   # if Playwright's default is missing
+node web/scripts/research-owner-acceptance.mjs   # starts the fixture and runs research-owner-smoke.mjs
+```
+
+`autopilot-smoke.mjs` and `cancellation-smoke.mjs` run against the same fixture:
+start `uv run --locked python web/scripts/research-owner-fixture.py --root EMPTY_DIR
+--port PORT`, then set `ET_UI_URL=http://127.0.0.1:PORT` and either
+`ET_C4_FIXTURE_ROOT=EMPTY_DIR` (Autopilot) or `ET_TOKEN_FILE=EMPTY_DIR/api-token`
+(cancellation, which uses Playwright's default browser). Stop the fixture afterwards.
+
+Keep generated configuration, credentials and installation records (host
+discovery, deployment identities, acceptance notes, the Site identity in
+`.local/installation/site.json`) under ignored `.local/`. Ignore rules do not remove
+files from history: inspect staged files before pushing.

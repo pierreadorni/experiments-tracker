@@ -65,7 +65,7 @@ Code publication does not authorize live activation.
   against the task card and design.md before the commit.
 - **Live state is off limits.** No edits to `.local/`, no live owner restarts, no
   Slurm or managed-model calls, no gateway deployment. Release preparation and
-  installation stay owner-authorized (`docs/executor-updates.md`).
+  installation stay owner-authorized ([operations](../operations.md#application-updates)).
 - **Additive schema.** SQLite migrations are additive; D1 migrations append-only.
   Saved job, action and turn identities keep their meaning.
 - **No new ceremony.** Do not add hashing, sealing, inventories, mandatory validation
@@ -134,11 +134,11 @@ Stop and ask if: acceptance conflicts with existing tests in a way the card does
 
 ## Order
 
-**Phase 5 is current.** T4 is complete: contract 4 is the only engine for new
-experiments and contract 3 is archived. T5.1 and T5.2 have design notes whose owner
-decisions gate implementation; T5.4 is done. Phase 6 (selectable Codex or Claude agent
-backends, C14) can proceed in parallel; its owner decisions (T6.0) block T6.5 onward. See
-[the plan](notes/t6-agent-backends.md) and [the task cards](todo.md#phase-5--simplification).
+**Phase 5 is nearly done; Phase 6 is next.** Contract 4 is the only engine for new
+experiments, Autopilot runs as a lead experiment and the Worker is a thin relay
+(T5.1, T5.2, T5.3, T5.4 done; T5.2j and T5.5 open). Phase 6 (selectable Codex or
+Claude agent backends, C14) follows [the plan](notes/t6-agent-backends.md); its owner
+decisions (T6.0) block T6.5 onward. See [the task cards](todo.md#phase-5--simplification).
 
 T1 is complete under the owner-approved scope cut; see
 [notes/t1-acceptance.md](notes/t1-acceptance.md). Historical handoff notes describe

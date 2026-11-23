@@ -6,4 +6,4 @@ Keep changes reviewable. Describe the concrete behavior, validation and remainin
 
 Never include research data, credentials, local configuration, database backups or private deployment identities. Report sensitive findings privately through the maintainer's GitHub profile rather than opening a public issue with secrets. This early project has no dedicated security response service.
 
-Use `main` as the latest shared source; see [development and local installations](docs/development.md). Keep installation records in ignored `.local/installation/`.
+Use `main` as the latest shared source; see [operations](docs/operations.md#application-updates). Keep installation records in ignored `.local/installation/`.
