@@ -630,7 +630,7 @@ Done: `advance_title` queues one small-model `summarize_title` turn per untitled
 
 Install and publish order for Phase 5: [notes/t5-rollout.md](notes/t5-rollout.md).
 
-### [ ] T5.1 Autopilot as a policy layer on contract 4 (C8) · S · L
+### [x] T5.1 Autopilot as a policy layer on contract 4 (C8) · S · L
 - Design and subcards T5.1a–g: [notes/t5.1-autopilot-c4-design.md](notes/t5.1-autopilot-c4-design.md). Owner approved the defaults 2026-11-22; T5.1b onward follows T5.2a–d.
 - [x] T5.1b: activation creates the lead as a C4 experiment (uuid5 of the run id, `contract.autopilot_lead.run_id`) in the same transaction; policy functions moved to `autopilot_policy.py`; a held run holds the lead's turns.
 - [x] T5.1c: the lead has project tools only (status, create/message/control experiment, request integration, update document, approve objective); compute tools are refused; tool authority follows the lead action's control revision; old approval proofs still verify. Thirteen old tools deleted.
@@ -639,7 +639,7 @@ Install and publish order for Phase 5: [notes/t5-rollout.md](notes/t5-rollout.md
 - [x] T5.1f: Autopilot view shows the saved policy, run status, reserves, allowance and a link to the lead (uuid5 derived client-side, checked against Python); saved backlog, decisions, files and historical turns render only when present; the lead is marked in experiment lists. `autopilot-smoke.mjs` rewritten for the relay and the lead model. Needs an owner-authorized Worker/asset publish.
 - [-] T5.1g: deferred by owner decision 7 (C4 stays CPU-only).
 - [x] T5.1a: deleted the C3 Autopilot admission/hold, plan review, stage controls, C3 tick wakes and the always-NULL child-turn authority check (source −176, tests −24). Kept stage-hold projections and the `deferred_stages` authority read for saved members.
-### [ ] T5.2 Gateway as a thin relay (C9) · S · L
+### [x] T5.2 Gateway as a thin relay (C9) · S · L
 - Design and subcards T5.2a–i: [notes/t5.2-gateway-relay-design.md](notes/t5.2-gateway-relay-design.md). Owner approved the defaults 2026-11-22.
 - [x] T5.2a: Worker relay routes and append-only migration `0010` (four `relay_*` tables); old routes unchanged, unknown receipt ids fall through to the old route until T5.2i.
 - [x] T5.2b: Python projection builder (experiment, projects, status, inbox), notification text ported with a shared TS/Python golden file, local `GET /api/projections`. Project folders are no longer in documents; T5.2e must handle the local folder display.
@@ -649,6 +649,10 @@ Install and publish order for Phase 5: [notes/t5-rollout.md](notes/t5-rollout.md
 - [x] T5.2e2: remaining documents (`conversation`, `knowledge`, `knowledge-report`, `autopilot`, `maintenance`) published and read by the UI; Worker `GET /api/session` and payloads in the pending list; local receipts for every kind. Old read routes now unused by the UI: project knowledge and report, Autopilot view, maintenance status, experiment conversation.
 - [x] T5.2e3: Autopilot document, paper-file and handoff downloads are relay blobs owned by `autopilot:<pid>` (uuid5 ids from saved identities). The UI no longer calls the old `/autopilot/documents|files|handoff` routes.
 - [x] T5.2f: push follows and delivery by projection key on the relay tables (`relay_follows`, `relay_push_outbox`), triggered by `notify` fingerprint changes; tombstones drop follows; data-only migration `0011` copies old follows; old follow handlers and `pushStatements` deleted. Autopilot notification targets are capped at 50. Deploy W2 (Worker + 0011) only after an executor release that publishes relay projections (E1) is live and backfilled. `autopilot.ts` still writes dead `push_outbox` rows until T5.2h.
+- [x] T5.2g: the executor publishes and receives only through the relay; old publish, replay, upload, heartbeat and six per-kind pollers deleted; unused local per-entity routes deleted. Relay blob upload now sets `remote_published`, an accepted revision marks the outbox delivered, and maintenance progress publishes a projection. An old Worker yields one `relay:unsupported` operation error.
+- [x] T5.2h: Worker executor-side routes deleted (`index.ts` 2,499 → 1,354 lines, executor half of `autopilot.ts`, maintenance executor routes); old executor paths return 404.
+- [x] T5.2i: Worker browser-side routes deleted; `autopilot.ts`, `maintenance.ts` and the TS notification derivation removed; `index.ts` is 210 lines (auth, PWA assets, relay hook, push config, session). Old D1 tables stay, unused.
+- [ ] T5.2j: rewrite `scripts/gateway_acceptance.py` on the relay (it still calls deleted client methods and Worker routes); serve or drop `/api/projects/agents-template` in hosted mode (the Worker never served it); mark the unused tables in `gateway/db/schema.ts`.
 - [x] Flaky crash: a cancelled research loop left an `ensure_branch` thread writing while the store closed (production shutdown race). `Workflow.finish_threaded` now waits for it; the projections fixture no longer runs engine loops. Follow-up: other `to_thread` calls in cancellable loops (`controller.py`, `research/dispatch.py` branch checkout, `research/settlement.py` commit) may need the same treatment.
 ### [ ] T5.3 Rewrite AGENTS.md and docs (C13) · F+R · M
 ### [x] T5.4 Split `web/src/main.tsx` by view; remove tracked design mocks · F · M
