@@ -6,6 +6,7 @@ import pytest
 from helpers import seed_saved_contract3
 from pydantic import ValidationError
 
+from experimenttracker import agent_conventions
 from experimenttracker.config import Config, ProjectConfig
 from experimenttracker.execution_settings import ExecutionSettings
 from experimenttracker.models import CreateExperiment
@@ -343,7 +344,7 @@ def test_a_registered_project_keeps_its_declared_owner_settings(config):
     assert saved.name == "Renamed by the owner"
 
 
-def test_import_preserves_owner_agents_file_and_offers_template(config, runtime, tmp_path):
+def test_import_preserves_owner_agents_file(config, runtime, tmp_path):
     store, _, _, workflow = runtime
     folder = tmp_path / "owner"
     folder.mkdir()
@@ -353,6 +354,5 @@ def test_import_preserves_owner_agents_file_and_offers_template(config, runtime,
     assert workflow.projects.receipt(payload["request_id"])["state"] == "applied"
     assert (folder / "AGENTS.md").read_text() == "# Owner conventions\n"
     assert [p.name for p in folder.iterdir()] == ["AGENTS.md"]
-    offered = workflow.projects.agents_template()
-    assert offered["filename"] == "AGENTS.md"
-    assert "experiments/<slug>/" in offered["content"]
+    # The web app bundles this same file, so the offer needs no API route.
+    assert "experiments/<slug>/" in agent_conventions.project_agents_template()

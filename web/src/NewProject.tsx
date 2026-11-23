@@ -5,6 +5,8 @@ import { send, type Receipt } from './relay';
 import { Select } from './Select';
 import { useDialog } from './useDialog';
 import type { Project } from './types';
+// Static text, bundled from the one template the backend also copies into new project folders.
+import agentsTemplate from '../../src/experimenttracker/templates/project-AGENTS.md?raw';
 
 export function NewProject({
   onClose,
@@ -17,7 +19,6 @@ export function NewProject({
   const [mode, setMode] = useState('new');
   const [folder, setFolder] = useState('');
   const [instructions, setInstructions] = useState('');
-  const [agentsTemplate, setAgentsTemplate] = useState('');
   const [requestId, setRequestId] = useState<string | null>(() =>
     new URLSearchParams(location.search).get('projectRequest'),
   );
@@ -28,11 +29,6 @@ export function NewProject({
   const ready = useRef(onReady);
   ready.current = onReady;
   useDialog(dialog, true, onClose);
-  useEffect(() => {
-    void api<{ content: string }>('/api/projects/agents-template')
-      .then((template) => setAgentsTemplate(template.content))
-      .catch(() => undefined);
-  }, []);
   const clearRequest = () => {
     const url = new URL(location.href);
     url.searchParams.delete('projectRequest');

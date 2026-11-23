@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { sqliteTable, text, integer, real, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
+// Unused since T5.2: the relay tables replaced it. Kept so drizzle-kit generates no DROP.
 export const projections = sqliteTable('projections', {
   id: text('id').primaryKey(),
   revision: integer('revision').notNull(),
@@ -8,6 +9,7 @@ export const projections = sqliteTable('projections', {
   updatedAt: real('updated_at').notNull(),
   deletedAt: real('deleted_at'),
 });
+// Unused since T5.2: the relay tables replaced it. Kept so drizzle-kit generates no DROP.
 export const commands = sqliteTable(
   'commands',
   {
@@ -24,6 +26,7 @@ export const commands = sqliteTable(
   },
   (t) => [index('idx_commands_executor_state').on(t.executorId, t.state)],
 );
+// Unused since T5.2: the relay tables replaced it. Kept so drizzle-kit generates no DROP.
 export const events = sqliteTable('events', {
   id: text('id').primaryKey(),
   experimentId: text('experiment_id')
@@ -32,6 +35,7 @@ export const events = sqliteTable('events', {
   revision: integer('revision').notNull(),
   receivedAt: real('received_at').notNull(),
 });
+// Unused since T5.2: the relay tables replaced it. Kept so drizzle-kit generates no DROP.
 export const artifacts = sqliteTable(
   'artifacts',
   {
@@ -48,6 +52,7 @@ export const artifacts = sqliteTable(
   },
   (t) => [index('idx_artifacts_experiment').on(t.experimentId)],
 );
+// Unused since T5.2: the relay tables replaced it. Kept so drizzle-kit generates no DROP.
 export const notes = sqliteTable(
   'notes',
   {
@@ -61,6 +66,7 @@ export const notes = sqliteTable(
   },
   (t) => [index('idx_notes_experiment').on(t.experimentId)],
 );
+// Unused since T5.2: the relay tables replaced it. Kept so drizzle-kit generates no DROP.
 export const inbox = sqliteTable('inbox', {
   id: text('id').primaryKey(),
   experimentId: text('experiment_id')
@@ -70,12 +76,14 @@ export const inbox = sqliteTable('inbox', {
   text: text('text').notNull(),
   createdAt: real('created_at').notNull(),
 });
+// Unused since T5.2: the relay tables replaced it. Kept so drizzle-kit generates no DROP.
 export const executorStatus = sqliteTable('executor_status', {
   id: text('id').primaryKey(),
   payload: text('payload').notNull(),
   receivedAt: real('received_at').notNull(),
 });
 
+// Unused since T5.2: the relay tables replaced it. Kept so drizzle-kit generates no DROP.
 export const conversation = sqliteTable(
   'conversation',
   {
@@ -90,6 +98,7 @@ export const conversation = sqliteTable(
   (t) => [uniqueIndex('idx_conversation_experiment_seq').on(t.experimentId, t.seq)],
 );
 
+// Unused since T5.2: the relay tables replaced it. Kept so drizzle-kit generates no DROP.
 export const projectRequests = sqliteTable('project_requests', {
   requestId: text('request_id').primaryKey(),
   projectId: text('project_id').notNull().unique(),
@@ -101,6 +110,7 @@ export const projectRequests = sqliteTable('project_requests', {
   receivedAt: real('received_at').notNull(),
 });
 
+// Unused since T5.2: the relay tables replaced it. Kept so drizzle-kit generates no DROP.
 export const settingsCommands = sqliteTable('settings_commands', {
   requestId: text('request_id').primaryKey(),
   executorId: text('executor_id').notNull(),
@@ -111,6 +121,7 @@ export const settingsCommands = sqliteTable('settings_commands', {
   receivedAt: real('received_at').notNull(),
 });
 
+// Unused since T5.2: the relay tables replaced it. Kept so drizzle-kit generates no DROP.
 export const projectSettingsRequests = sqliteTable('project_settings_requests', {
   requestId: text('request_id').primaryKey(),
   projectId: text('project_id').notNull(),
@@ -170,12 +181,14 @@ export const pushOutbox = sqliteTable(
   (t) => [index('idx_push_outbox_pending').on(t.state, t.nextAttemptAt)],
 );
 
+// Unused since T5.2: the relay tables replaced it. Kept so drizzle-kit generates no DROP.
 export const projectMemory = sqliteTable('project_memory', {
   projectId: text('project_id').primaryKey(),
   executorId: text('executor_id').notNull(),
   revision: integer('revision').notNull(),
   payload: text('payload').notNull(),
 });
+// Unused since T5.2: the relay tables replaced it. Kept so drizzle-kit generates no DROP.
 export const projectMemoryCommands = sqliteTable('project_memory_commands', {
   requestId: text('request_id').primaryKey(),
   projectId: text('project_id').notNull(),
@@ -185,6 +198,7 @@ export const projectMemoryCommands = sqliteTable('project_memory_commands', {
   error: text('error'),
   receivedAt: real('received_at').notNull(),
 });
+// Unused since T5.2: the relay tables replaced it. Kept so drizzle-kit generates no DROP.
 export const projectMemoryReports = sqliteTable('project_memory_reports', {
   identity: text('identity').primaryKey(),
   projectId: text('project_id').notNull(),
@@ -192,11 +206,13 @@ export const projectMemoryReports = sqliteTable('project_memory_reports', {
   payload: text('payload').notNull(),
 });
 
+// Unused since T5.2: the relay tables replaced it. Kept so drizzle-kit generates no DROP.
 export const maintenanceStatus = sqliteTable('maintenance_status', {
   executorId: text('executor_id').primaryKey(),
   payload: text('payload').notNull(),
   observedAt: real('observed_at').notNull(),
 });
+// Unused since T5.2: the relay tables replaced it. Kept so drizzle-kit generates no DROP.
 export const maintenanceCommands = sqliteTable(
   'maintenance_commands',
   {
@@ -214,6 +230,7 @@ export const maintenanceCommands = sqliteTable(
   ],
 );
 
+// Unused since T5.2: the relay tables replaced it. Kept so drizzle-kit generates no DROP.
 export const autopilotViews = sqliteTable('autopilot_views', {
   projectId: text('project_id').primaryKey(),
   executorId: text('executor_id').notNull(),
@@ -222,6 +239,7 @@ export const autopilotViews = sqliteTable('autopilot_views', {
   payload: text('payload').notNull(),
   observedAt: real('observed_at').notNull(),
 });
+// Unused since T5.2: the relay tables replaced it. Kept so drizzle-kit generates no DROP.
 export const autopilotCommands = sqliteTable('autopilot_commands', {
   requestId: text('request_id').primaryKey(),
   projectId: text('project_id').notNull(),
@@ -231,6 +249,7 @@ export const autopilotCommands = sqliteTable('autopilot_commands', {
   error: text('error'),
   receivedAt: real('received_at').notNull(),
 });
+// Unused since T5.2: the relay tables replaced it. Kept so drizzle-kit generates no DROP.
 export const autopilotDocuments = sqliteTable('autopilot_documents', {
   identity: text('identity').primaryKey(),
   projectId: text('project_id').notNull(),

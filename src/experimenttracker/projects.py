@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from uuid import UUID
 
-from . import agent_conventions, clock
+from . import clock
 from .config import EnvironmentConfig, IntegrationConfig, ProjectConfig
 from .execution_settings import ExecutionSettings
 from .models import CreateProject, UpdateProjectSettings
@@ -78,14 +78,6 @@ class Projects:
 
     def instructions(self, project_id):
         return self.settings(project_id)["instructions"]
-
-    def agents_template(self):
-        """Read-only offer for imported folders, whose AGENTS.md is never written."""
-        return {
-            "schema_version": 1,
-            "filename": "AGENTS.md",
-            "content": agent_conventions.project_agents_template(),
-        }
 
     def settings_receipt(self, request_id):
         row = self.store.one("SELECT * FROM project_settings_requests WHERE request_id=?", (str(request_id),))

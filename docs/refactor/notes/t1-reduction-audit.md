@@ -194,7 +194,20 @@ today, so a `TERMINAL = frozenset({...})` block needs ~8 lines there because of
 the 110-char line limit):
 
 ```python
-TERMINAL = frozenset({"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL", "PREEMPTED", "BOOT_FAIL", "DEADLINE", "REVOKED"})
+TERMINAL = frozenset(
+    {
+        "COMPLETED",
+        "FAILED",
+        "CANCELLED",
+        "TIMEOUT",
+        "OUT_OF_MEMORY",
+        "NODE_FAIL",
+        "PREEMPTED",
+        "BOOT_FAIL",
+        "DEADLINE",
+        "REVOKED",
+    }
+)
 TERMINAL_BAD = TERMINAL - {"COMPLETED"}
 TERMINAL_JOBS = tuple(sorted(TERMINAL - {"REVOKED"}))
 ```

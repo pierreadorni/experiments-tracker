@@ -195,10 +195,6 @@ def test_project_settings_command_has_durable_receipt(config, runtime):
         assert first["state"] == "applied"
         assert client.post("/api/commands", json=payload, headers=headers).json()["result"] == first["result"]
         workflow.projects.settings_tick()
-        template = client.get("/api/projects/agents-template", headers=headers)
-        assert template.status_code == 200 and template.json()["filename"] == "AGENTS.md"
-        assert "named branch" in template.json()["content"]
-        assert client.get("/api/projects/agents-template").status_code == 401
         changed = {**payload, "payload": {**payload["payload"], "instructions": "changed"}}
         assert client.post("/api/commands", json=changed, headers=headers).json()["state"] == "rejected"
         status = client.get("/api/status", headers=headers).json()

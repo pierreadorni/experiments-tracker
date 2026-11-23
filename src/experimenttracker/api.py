@@ -238,10 +238,6 @@ def create_app(config, *, components=None, config_path=None, current_release=Non
         app.state.request_shutdown()
         return {"schema_version": 1, "accepted": str(body.request_id)}
 
-    @app.get("/api/projects/agents-template", dependencies=[Depends(authorize)])
-    async def project_agents_template():
-        return await asyncio.to_thread(app.state.workflow.projects.agents_template)
-
     @app.get("/api/experiments", dependencies=[Depends(authorize)])
     async def experiments():
         return {
