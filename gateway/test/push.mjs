@@ -13,7 +13,7 @@ import {
   verify,
 } from 'node:crypto';
 import { Miniflare, createFetchMock } from 'miniflare';
-import { experimentNotification, pushEndpoint } from '../src/push.ts';
+import { pushEndpoint } from '../src/push.ts';
 
 const server = createECDH('prime256v1');
 server.generateKeys();
@@ -94,9 +94,16 @@ async function create() {
   assert.equal((await publish(exp)).status, 200);
   return exp;
 }
+// A stand-in for the executor's notify derivation: the Worker only compares fingerprints.
+function notification(exp) {
+  if (exp.plan_review?.state === 'awaiting_review')
+    return { body: 'Plan ready for your approval', alert: true };
+  if (exp.phase === 'failed') return { body: 'Experiment failed', alert: true };
+  return { body: String(exp.phase).replaceAll('_', ' '), alert: false };
+}
 // The executor's projection PUT with its notify envelope (T5.2f).
 function publish(exp, revision = exp.revision) {
-  const n = experimentNotification({ ...exp, revision });
+  const n = notification(exp);
   const key = `experiment:${exp.id}`;
   return req(
     `/api/executor/relay/projections/${key}`,
@@ -108,11 +115,11 @@ function publish(exp, revision = exp.revision) {
           revision,
           document: { ...exp, revision },
           notify: {
-            fingerprint: n.fingerprint,
-            title: n.data.title,
-            body: n.data.body,
-            url: n.data.url,
-            alert: n.data.alert,
+            fingerprint: JSON.stringify([n.body, n.alert]),
+            title: 'Synthetic experiment',
+            body: n.body,
+            url: `/?experiment=${exp.id}`,
+            alert: n.alert,
             targets: [key],
           },
         },
@@ -200,80 +207,6 @@ after(async () => {
   if (directory) await rm(directory, { recursive: true, force: true });
 });
 
-test('notification descriptions use saved stage state, review identities and ready report versions', () => {
-  const exp = {
-    id: randomUUID(),
-    revision: 1,
-    brief: 'Demo',
-    phase: 'training',
-    hold_reason: null,
-    contract: { synthetic_demo: true },
-    stages: [{ id: 'fit', state: 'running' }],
-    jobs: [{ stage_id: 'fit', state: 'submitted', scheduler_state: 'PENDING' }],
-    snapshot: { plan: { stages: [{ id: 'fit', title: 'Fit model' }] } },
-  };
-  const queued = experimentNotification(exp);
-  assert.match(queued.data.body, /Demo · Fit model · Queued/);
-  assert.equal(queued.data.alert, false);
-  const parallel = {
-    ...exp,
-    stages: [{ id: 'finished', state: 'running' }, ...exp.stages],
-    jobs: [{ stage_id: 'finished', state: 'complete', scheduler_state: 'COMPLETED' }, ...exp.jobs],
-  };
-  assert.match(experimentNotification(parallel).data.body, /Fit model · Queued/);
-  assert.match(experimentNotification({ ...exp, stages: [] }).data.body, /Fit model · Queued/);
-  for (const [scheduler_state, label] of [
-    [null, 'Waiting for scheduler'],
-    ['CONFIGURING', 'Queued'],
-    ['ACCOUNTING_PENDING', 'Waiting for accounting'],
-    ['COMPLETING', 'Finishing'],
-    ['SUSPENDED', 'Scheduler: suspended'],
-  ])
-    assert.ok(
-      experimentNotification({
-        ...exp,
-        jobs: [{ ...exp.jobs[0], scheduler_state }],
-      }).data.body.includes(label),
-    );
-  assert.match(
-    experimentNotification({
-      ...exp,
-      jobs: [{ ...exp.jobs[0], state: 'submitting', scheduler_state: null }],
-    }).data.body,
-    /Submitting/,
-  );
-  assert.match(
-    experimentNotification({
-      ...parallel,
-      jobs: [
-        ...parallel.jobs,
-        { stage_id: 'other', state: 'submitted', scheduler_state: 'RUNNING' },
-      ],
-    }).data.body,
-    /other · Running/,
-  );
-  const running = experimentNotification({
-    ...exp,
-    jobs: [{ ...exp.jobs[0], scheduler_state: 'RUNNING' }],
-  });
-  assert.notEqual(queued.fingerprint, running.fingerprint);
-  const review = experimentNotification({
-    ...exp,
-    plan_review: { state: 'awaiting_review', revision: 2 },
-  });
-  assert.equal(review.data.alert, true);
-  assert.notEqual(
-    review.fingerprint,
-    experimentNotification({ ...exp, plan_review: { state: 'awaiting_review', revision: 3 } })
-      .fingerprint,
-  );
-  const done = { ...exp, phase: 'complete', active_report_id: 'one' };
-  assert.notEqual(
-    experimentNotification(done).fingerprint,
-    experimentNotification({ ...done, active_report_id: 'two' }).fingerprint,
-  );
-  assert.equal(experimentNotification({ ...exp, phase: 'failed' }).data.alert, true);
-});
 test('push service validation rejects credentials, redirects and arbitrary network targets', async () => {
   for (const url of [
     'http://fcm.googleapis.com/send',

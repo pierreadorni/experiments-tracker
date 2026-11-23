@@ -2,6 +2,10 @@
 
 Start with the local UI and SSH tunnel. Hosting is a separate installation task, not required for the executor or demo. The source includes a Sites-compatible Worker with D1 (`DB`) and R2 (`BUCKET`) bindings; a generic Cloudflare production deployment is not preconfigured or accepted.
 
+## What the Worker does
+
+The Worker is a relay. It serves the PWA assets and the browser session, stores projection documents, command requests, receipts and blobs, and keeps Web Push follows and deliveries. The executor publishes revisioned documents with `PUT /api/executor/relay/projections/<key>` and blobs with `PUT /api/executor/relay/blobs/<id>`, polls `GET /api/executor/relay/commands`, and settles each command with `POST /api/executor/relay/receipts`. The browser reads `/api/projections` and `/api/blobs/<id>`, posts `/api/commands` and polls `/api/commands/<id>`. It knows no experiment, project or autopilot semantics and returns no synchronous domain refusals; the executor decides and answers through the receipt. The pre-relay tables (`projections`, `events`, `artifacts`, `commands` and the project, autopilot and maintenance tables) remain in D1 unused, so migrations stay append-only.
+
 ## Local development
 
 ```sh
@@ -45,4 +49,4 @@ The platform credential uses `OAI-Sites-Authorization`; the application machine 
 
 ## Acceptance
 
-Verify that signed-out/non-owner browser requests cannot read private results; a valid executor credential cannot access browser-only routes; and the executor can fetch/commit/acknowledge a command and publish a small artifact. Check D1 projection revisions and R2 availability through the application. Restart/replay must deduplicate commands and retain failed outbox publication. Stop the executor temporarily at an authorized boundary and verify published views remain readable. Finally test actual phone sign-in and installation. Keep these results separate from local emulation and mocked browser tests.
+Verify that signed-out/non-owner browser requests cannot read private results; a valid executor credential cannot access browser-only routes; and the executor can fetch a command, commit it locally, post its receipt and publish a small blob. Check D1 projection revisions and R2 availability through the application. Restart/replay must deduplicate commands and retain failed outbox publication. Stop the executor temporarily at an authorized boundary and verify published views remain readable. Finally test actual phone sign-in and installation. Keep these results separate from local emulation and mocked browser tests.

@@ -10,7 +10,7 @@ Submission and agent dispatch can fail after the external system accepted work b
 
 ## Optional gateway
 
-The TypeScript Worker holds commands and published projections in D1 and small deliverables in R2. It never decides whether a stage succeeded. The executor polls outbound, commits received commands locally before acknowledgment, and retries publication with stable message IDs and monotonic revisions. Previously published views remain available while the executor is offline.
+The TypeScript Worker is a relay. It holds revisioned projection documents, queued commands with their receipts and small blobs in D1 and R2, plus the browser session, PWA assets and Web Push follows. It never decides whether a stage succeeded and has no per-entity routes: the browser reads projections by key and posts generic commands, and the executor publishes documents, polls commands outbound, commits them locally and settles each with a receipt. Publication retries use stable keys and monotonic revisions. Previously published views remain available while the executor is offline.
 
 Browser identity and executor credentials are separate. An executor token cannot sign in a browser user. Hosted production is owner-private; this is not a shared multi-tenant service. The service worker caches only installation assets, not authenticated research content.
 

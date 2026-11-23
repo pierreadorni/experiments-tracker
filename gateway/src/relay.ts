@@ -1,6 +1,5 @@
 import type { Env } from './index';
 import {
-  experimentNotification,
   pushConfigured,
   pushEndpointSchema,
   pushFollowSchema,
@@ -207,7 +206,7 @@ async function follow(request: Request, env: Env, k: string) {
   if (!FOLLOW.test(k)) throw new Refusal(400, 'Only experiments can be followed');
   const projection = await first(
     env,
-    'SELECT revision,payload FROM relay_projections WHERE key=? AND payload IS NOT NULL',
+    'SELECT revision FROM relay_projections WHERE key=? AND payload IS NOT NULL',
     k,
   );
   if (!projection) throw new Refusal(404, 'Unknown projection');
@@ -261,14 +260,10 @@ async function follow(request: Request, env: Env, k: string) {
     ).bind(...mine),
   ];
   if (payload.following) {
-    let initial: Record<string, unknown>;
-    try {
-      initial = experimentNotification(JSON.parse(String(projection.payload))).data;
-    } catch {
-      initial = { title: 'ExperimentTracker', body: 'You are following this experiment', url: '/' };
-    }
-    initial = {
-      ...initial,
+    const initial = {
+      title: 'ExperimentTracker',
+      body: 'You are following this experiment',
+      url: `/?experiment=${encodeURIComponent(k.slice(11))}`,
       alert: true,
       revision: projection.revision,
       experiment_id: k.slice(11),
