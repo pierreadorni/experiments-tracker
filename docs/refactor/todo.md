@@ -630,6 +630,10 @@ Done: `advance_title` queues one small-model `summarize_title` turn per untitled
 
 ### [ ] T5.1 Autopilot as a policy layer on contract 4 (C8) · S · L
 - Design and subcards T5.1a–g: [notes/t5.1-autopilot-c4-design.md](notes/t5.1-autopilot-c4-design.md). Owner approved the defaults 2026-11-22; T5.1b onward follows T5.2a–d.
+- [x] T5.1b: activation creates the lead as a C4 experiment (uuid5 of the run id, `contract.autopilot_lead.run_id`) in the same transaction; policy functions moved to `autopilot_policy.py`; a held run holds the lead's turns.
+- [x] T5.1c: the lead has project tools only (status, create/message/control experiment, request integration, update document, approve objective); compute tools are refused; tool authority follows the lead action's control revision; old approval proofs still verify. Thirteen old tools deleted.
+- [x] T5.1d: `project_update` wakes the lead once per burst (approval request, member completion or failure, owner message, policy revision, calendar boundary, deadlines); healthy member jobs cost no lead turn.
+- [x] T5.1e: project-turn engine deleted (`autopilot_controller.py`, `autopilot_client.py`, workflow/pool wiring). `drain_inventory` reports `autopilot_unsettled_actions` and `autopilot_runs_awaiting_lead`. Startup creates a seeded lead per active run without replay and holds a run with an unsettled old turn. **Install precondition:** `autopilot_unsettled_actions` is `[]` on a fresh offline backup, and the owner reviews the runs awaiting a lead.
 - [x] T5.1a: deleted the C3 Autopilot admission/hold, plan review, stage controls, C3 tick wakes and the always-NULL child-turn authority check (source −176, tests −24). Kept stage-hold projections and the `deferred_stages` authority read for saved members.
 ### [ ] T5.2 Gateway as a thin relay (C9) · S · L
 - Design and subcards T5.2a–i: [notes/t5.2-gateway-relay-design.md](notes/t5.2-gateway-relay-design.md). Owner approved the defaults 2026-11-22.
