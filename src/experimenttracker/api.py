@@ -574,7 +574,18 @@ def create_app(config, *, components=None, config_path=None, current_release=Non
     async def artifact(artifact_id: UUID):
         row = store().one("SELECT * FROM artifacts WHERE id=? AND local_valid=1", (str(artifact_id),))
         if not row:
-            raise HTTPException(404, "Unknown or unavailable artifact")
+            # Autopilot downloads share the blob id space with experiment artifacts.
+            item = (await projections()).autopilot_blob(str(artifact_id))
+            if not item:
+                raise HTTPException(404, "Unknown or unavailable artifact")
+            return Response(
+                item["read"](),
+                media_type=item["media_type"],
+                headers={
+                    "Content-Security-Policy": "sandbox allow-same-origin; default-src 'none'",
+                    "Content-Disposition": f'inline; filename="{item["name"]}"',
+                },
+            )
         experiment_id(row["experiment_id"])
         try:
             path = artifacts.allowed_path(

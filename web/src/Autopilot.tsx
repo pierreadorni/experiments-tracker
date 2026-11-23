@@ -66,6 +66,16 @@ type View = {
   };
   documents?: { name: string; version: number }[];
   files?: { id: string; name: string; created_at: number }[];
+  downloads?: {
+    blob_id: string;
+    kind: 'document' | 'file' | 'handoff';
+    name: string;
+    version?: number;
+    size: number;
+    sha256: string | null;
+    media_type: string;
+    available: boolean;
+  }[];
   experiments?: {
     experiment_id: string;
     phase: string;
@@ -154,7 +164,8 @@ export function Autopilot({
   open: (id: string) => void;
   onActive?: (active: boolean) => void;
 }) {
-  const path = `/api/projects/${encodeURIComponent(projectId)}/autopilot`; // downloads only
+  const download = (kind: string, name?: string) =>
+    view?.downloads?.find((d) => d.kind === kind && (name === undefined || d.name === name));
   const key = projectKey('autopilot', projectId);
   const load = async (): Promise<View> => {
     try {
@@ -988,35 +999,41 @@ export function Autopilot({
               <p className="muted">Documents appear after the first admitted foundation turn.</p>
             )}
             <ul className="autopilot-documents">
-              {view?.documents?.map((d) => (
-                <li key={d.name}>
-                  <FileText size={16} />
-                  <button
-                    className="text-button"
-                    onClick={async () => {
-                      try {
-                        const response = await fetch(
-                          `${path}/documents/${encodeURIComponent(d.name)}/versions/${d.version}?run_id=${run.id}`,
-                          { credentials: 'same-origin' },
-                        );
-                        if (!response.ok) throw new Error('Document is not available');
-                        setDoc({ ...d, content: await response.text() });
-                      } catch (e) {
-                        setError(String(e));
-                      }
-                    }}
-                  >
-                    {label(d.name)} · v{d.version}
-                  </button>
-                  <a
-                    href={`${path}/documents/${encodeURIComponent(d.name)}/versions/${d.version}?run_id=${run.id}`}
-                    download
-                    aria-label={`Download ${d.name}`}
-                  >
-                    <Download size={15} />
-                  </a>
-                </li>
-              ))}
+              {view?.documents?.map((d) => {
+                const file = download('document', d.name);
+                return (
+                  <li key={d.name}>
+                    <FileText size={16} />
+                    <button
+                      className="text-button"
+                      disabled={!file?.available}
+                      title={file?.available ? undefined : 'Document is not available'}
+                      onClick={async () => {
+                        try {
+                          const response = await fetch(`/api/blobs/${file?.blob_id}`, {
+                            credentials: 'same-origin',
+                          });
+                          if (!response.ok) throw new Error('Document is not available');
+                          setDoc({ ...d, content: await response.text() });
+                        } catch (e) {
+                          setError(String(e));
+                        }
+                      }}
+                    >
+                      {label(d.name)} · v{d.version}
+                    </button>
+                    {file?.available && (
+                      <a
+                        href={`/api/blobs/${file.blob_id}`}
+                        download={d.name}
+                        aria-label={`Download ${d.name}`}
+                      >
+                        <Download size={15} />
+                      </a>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
             {doc && (
               <details open>
@@ -1029,16 +1046,29 @@ export function Autopilot({
                 </button>
               </details>
             )}
-            {view?.files?.slice(0, 1).map((file) => (
-              <a key={file.id} className="secondary" href={`${path}/files/${file.id}`} download>
+            {(() => {
+              const paper = download('file');
+              return paper?.available ? (
+                <a className="secondary" href={`/api/blobs/${paper.blob_id}`} download="paper.pdf">
+                  <Download size={16} />
+                  Download compiled paper
+                </a>
+              ) : paper ? (
+                <p className="muted">The compiled paper is unavailable for download.</p>
+              ) : null;
+            })()}
+            {download('handoff')?.available ? (
+              <a
+                className="secondary"
+                href={`/api/blobs/${download('handoff')?.blob_id}`}
+                download="autopilot-handoff.zip"
+              >
                 <Download size={16} />
-                Download compiled paper
+                Download current handoff
               </a>
-            ))}
-            <a className="secondary" href={path + '/handoff'} download="autopilot-handoff.zip">
-              <Download size={16} />
-              Download current handoff
-            </a>
+            ) : (
+              <p className="muted">The handoff archive is not available yet.</p>
+            )}
             {run.handoff && (
               <p className="notice">
                 {run.status === 'handoff_ready'

@@ -5,7 +5,7 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
-from experimenttracker import creation_policy
+from experimenttracker import clock, creation_policy
 from experimenttracker.api import create_app
 from experimenttracker.config import ProjectConfig
 from experimenttracker.publish.notifications import experiment_notification
@@ -167,3 +167,31 @@ def test_autopilot_notifications_name_the_newest_unresolved_attention_notice():
     assert "notify" not in envelope({"key": "autopilot:p", "revision": 1, "document": {**view, "policy": {}}})
     view["notices"][0]["resolved_at"] = 5
     assert "notify" not in envelope({"key": "autopilot:p", "revision": 1, "document": view})
+
+
+def test_local_blob_alias_serves_autopilot_downloads(served):
+    client, store, tmp_path = served
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF synthetic")
+    now = clock.now()
+    run = str(uuid4())
+    with store.tx() as db:
+        db.execute(
+            "INSERT INTO autopilot_runs(id,project_id,status,created_at,updated_at) VALUES(?,?,?,?,?)",
+            (run, "research", "active", now, now),
+        )
+        db.execute(
+            "INSERT INTO autopilot_documents VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (run, "notes.md", 1, str(uuid4()), "autopilot", None, 1, "hello", "[]", now),
+        )
+        db.execute(
+            "INSERT INTO autopilot_files VALUES(?,?,?,?,?,?,?)",
+            (str(uuid4()), run, str(uuid4()), "paper.pdf", str(pdf), pdf.stat().st_size, now),
+        )
+    items = Projections(store, autopilot=lambda: object()).autopilot_items("research")
+    by_kind = {i["kind"]: i for i in items.values()}
+    doc = client.get("/api/blobs/" + by_kind["document"]["blob_id"], headers=HEADERS)
+    assert doc.status_code == 200 and doc.text == "hello"
+    assert client.get("/api/blobs/" + by_kind["file"]["blob_id"], headers=HEADERS).content == pdf.read_bytes()
+    assert client.get("/api/blobs/" + by_kind["handoff"]["blob_id"], headers=HEADERS).content[:2] == b"PK"
+    assert client.get("/api/blobs/" + str(uuid4()), headers=HEADERS).status_code == 404

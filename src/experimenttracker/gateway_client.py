@@ -32,6 +32,7 @@ from .projects import Projects
 from .publish.commands import Services, dispatch
 from .publish.projections import (
     AGGREGATES,
+    BLOB_MAX,
     TOMBSTONE_DIGEST,
     Projections,
     envelope,
@@ -55,7 +56,7 @@ _ARTIFACT_ELIGIBLE_SQL = (
 )
 
 RELAY_BATCH = 20  # documents per tick, so a backfill cannot starve the old publication
-RELAY_BLOB_MAX = 10 * 1024 * 1024
+RELAY_BLOB_MAX = BLOB_MAX
 RELAY_AGGREGATE_SECONDS = 30  # status carries clocks, so an unchanged view still changes
 RELAY_RETRY_SECONDS = 30
 RELAY_UNSUPPORTED_SECONDS = 300
@@ -557,6 +558,8 @@ class GatewayClient:
                 return
             if key.startswith("experiment:"):
                 await self.relay_upload_blobs(key, built["document"])
+            elif key.startswith("autopilot:"):
+                await self.relay_upload_autopilot_blobs(key, projections, built["document"])
             body = envelope(built)
         await self.relay_request(
             "PUT",
@@ -600,6 +603,37 @@ class GatewayClient:
             if response.get("sha256") != row["sha256"] or response.get("size") != row["size"]:
                 raise ValueError("relay blob verification response mismatch")
             self.relay_blobs.add((row["id"], row["sha256"]))
+
+    async def relay_upload_autopilot_blobs(self, key, projections, document):
+        items = projections.autopilot_items(key.partition(":")[2])
+        for entry in document.get("downloads", []):
+            item = items.get(entry["blob_id"])
+            if not item or not item["available"]:
+                if entry["size"] > RELAY_BLOB_MAX:  # recorded, never retried
+                    self.operation_errors["relay:blob:" + entry["blob_id"]] = (
+                        f"download exceeds the {RELAY_BLOB_MAX}-byte relay blob limit"
+                    )
+                continue
+            if (item["blob_id"], item["sha256"]) in self.relay_blobs:
+                continue
+            content = await asyncio.to_thread(item["read"])
+            if len(content) != item["size"] or hashlib.sha256(content).hexdigest() != item["sha256"]:
+                raise ValueError("autopilot download changed before upload")
+            response = await self.relay_request(
+                "PUT",
+                "/api/executor/relay/blobs/" + quote(item["blob_id"], safe=":"),
+                content=content,
+                headers={
+                    "Content-Type": item["media_type"],
+                    "x-sha256": item["sha256"],
+                    "x-size": str(item["size"]),
+                    "x-owner-key": key,
+                    "x-name": quote(item["name"]),
+                },
+            )
+            if response.get("sha256") != item["sha256"] or response.get("size") != item["size"]:
+                raise ValueError("relay blob verification response mismatch")
+            self.relay_blobs.add((item["blob_id"], item["sha256"]))
 
     @staticmethod
     def artifact_bytes(row, root):

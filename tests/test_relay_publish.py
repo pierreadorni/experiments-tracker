@@ -9,7 +9,7 @@ import pytest
 from test_gateway_client import publication_client, publication_experiment
 
 from experimenttracker import artifacts, clock
-from experimenttracker.publish.projections import TOMBSTONE_DIGEST, wire, wire_digest
+from experimenttracker.publish.projections import TOMBSTONE_DIGEST, Projections, wire, wire_digest
 from experimenttracker.store import encode
 
 SAMPLES = [
@@ -353,4 +353,78 @@ async def test_conversation_knowledge_reports_and_maintenance_publish_by_their_o
         db.execute("UPDATE experiments SET deleted_at=? WHERE id=?", (clock.now(), eid))
     await client.publish_relay()
     assert worker.projections[key]["digest"] == TOMBSTONE_DIGEST
+    await client.close()
+
+
+def seed_autopilot_downloads(store, pid, pdf):
+    run, now = str(uuid4()), clock.now()
+    with store.tx() as db:
+        db.execute(
+            "INSERT INTO autopilot_runs(id,project_id,status,created_at,updated_at) VALUES(?,?,?,?,?)",
+            (run, pid, "active", now, now),
+        )
+        for version in (1, 2):
+            db.execute(
+                "INSERT INTO autopilot_documents VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (
+                    run,
+                    "paper.tex",
+                    version,
+                    str(uuid4()),
+                    "autopilot",
+                    None,
+                    1,
+                    f"draft {version}",
+                    "[]",
+                    now,
+                ),
+            )
+        db.execute(
+            "INSERT INTO autopilot_files VALUES(?,?,?,?,?,?,?)",
+            (str(uuid4()), run, str(uuid4()), "paper.pdf", str(pdf), pdf.stat().st_size, now),
+        )
+    return run
+
+
+async def test_autopilot_downloads_are_uploaded_before_the_document_and_oversize_is_recorded(
+    config, runtime, tmp_path
+):
+    store, _, _, _ = runtime
+    pid = next(iter(store.projects))
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF-1.4 synthetic")
+    run = seed_autopilot_downloads(store, pid, pdf)
+    worker = Worker()
+    client = relay_client(config, store, tmp_path, worker)
+    stub = type("A", (), {"view": lambda self, p: {"run": {"id": run}, "documents": []}})()
+    projections = Projections(store, autopilot=lambda: stub)
+    key = f"autopilot:{pid}"
+    await client.relay_put(key, projections, None)
+    document = worker.projections[key]["document"]
+    by_kind = {d["kind"]: d for d in document["downloads"]}
+    assert set(by_kind) == {"document", "file", "handoff"}
+    assert by_kind["document"]["version"] == 2 and by_kind["document"]["available"]
+    assert by_kind["file"]["sha256"] == hashlib.sha256(pdf.read_bytes()).hexdigest()
+    assert {d["blob_id"] for d in document["downloads"]} == set(worker.blobs)
+    assert set(worker.blobs.values()) == {key}
+    assert all("read" not in d and "path" not in d for d in document["downloads"])
+    order = [c[1] for c in worker.calls]
+    assert max(i for i, c in enumerate(order) if c.startswith("blobs/")) < order.index(f"projections/{key}")
+    # The ids are stable across builds, and a new document version is a new id.
+    again = {d["blob_id"] for d in projections.build(key)["document"]["downloads"]}
+    assert again == set(worker.blobs)
+    with store.tx() as db:
+        db.execute('UPDATE autopilot_runs SET handoff=\'{"summary":"x"}\' WHERE id=?', (run,))
+        db.execute("UPDATE autopilot_documents SET version=3 WHERE version=2")
+    assert {d["blob_id"] for d in projections.build(key)["document"]["downloads"]} != again
+    # An oversize paper is listed unavailable, recorded once and never uploaded.
+    pdf.write_bytes(b"x" * (11 * 1024 * 1024))
+    with store.tx() as db:
+        db.execute("UPDATE autopilot_files SET size=?", (pdf.stat().st_size,))
+    document = projections.build(key)["document"]
+    paper = next(d for d in document["downloads"] if d["kind"] == "file")
+    assert not paper["available"] and paper["sha256"] is None
+    await client.relay_upload_autopilot_blobs(key, projections, document)
+    assert "relay:blob:" + paper["blob_id"] in client.operation_errors
+    assert [c[1] for c in worker.calls].count("blobs/" + paper["blob_id"]) == 1  # the small version only
     await client.close()

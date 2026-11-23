@@ -10,16 +10,27 @@ no executor-local paths.
 """
 
 import hashlib
+import io
 import json
 import math
 import re
+import zipfile
 from decimal import Decimal
-from uuid import UUID
+from pathlib import Path
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from .. import clock
 from ..knowledge import Knowledge
 from ..store import public_projection
 from .notifications import autopilot_notification, experiment_notification
+
+BLOB_MAX = 10 * 1024 * 1024  # the Worker's relay blob cap
+_FILE_SHA = {}  # (path, size, mtime_ns) -> sha256, so an unchanged paper is hashed once
+
+
+def _blob_id(kind, *parts):
+    return str(uuid5(NAMESPACE_URL, ":".join(("autopilot", kind, *map(str, parts)))))
+
 
 # Executor-local locations that private rows or catalogs may hold.
 LOCAL_FIELDS = frozenset({"path", "folder", "checkout", "state_dir", "job_output_root"})
@@ -240,7 +251,135 @@ class Projections:
             return None
         if not self.store.one("SELECT 1 FROM autopilot_runs WHERE project_id=?", (pid,)):
             return None
-        return self.autopilot().view(pid)
+        view = self.autopilot().view(pid)
+        if view.get("run"):
+            view = {**view, "downloads": [self._public_item(i) for i in self.autopilot_items(pid).values()]}
+        return view
+
+    @staticmethod
+    def _public_item(item):
+        return {k: v for k, v in item.items() if k != "read"}
+
+    def autopilot_items(self, pid):
+        """Downloadable bytes of the current run, by stable blob id: each latest working document,
+        the newest compiled paper and the handoff archive. ``read`` returns the bytes."""
+        run = self.store.one(
+            "SELECT * FROM autopilot_runs WHERE project_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1",
+            (pid,),
+        )
+        if not run:
+            return {}
+        items = {}
+
+        def add(blob_id, kind, name, size, sha, media_type, read, **extra):
+            ok = sha is not None and size <= BLOB_MAX
+            items[blob_id] = {
+                "blob_id": blob_id,
+                "kind": kind,
+                "name": name,
+                "size": size,
+                "sha256": sha if ok else None,
+                "media_type": media_type,
+                "available": ok,
+                **extra,
+                "read": read,
+            }
+
+        documents = self.store.rows(
+            "SELECT name,MAX(version) AS version FROM autopilot_documents WHERE run_id=? GROUP BY name ORDER BY name",
+            (run["id"],),
+        )
+        contents = {}
+        for doc in documents:
+            row = self.store.one(
+                "SELECT content FROM autopilot_documents WHERE run_id=? AND name=? AND version=?",
+                (run["id"], doc["name"], doc["version"]),
+            )
+            data = row["content"].encode()
+            contents[(doc["name"], doc["version"])] = data
+            add(
+                _blob_id("document", run["id"], doc["name"], doc["version"]),
+                "document",
+                doc["name"],
+                len(data),
+                hashlib.sha256(data).hexdigest(),
+                "text/plain; charset=utf-8",
+                lambda data=data: data,
+                version=doc["version"],
+            )
+        paper = self.store.one(
+            "SELECT * FROM autopilot_files WHERE run_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1",
+            (run["id"],),
+        )
+        if paper:
+            path = Path(paper["path"])
+            size = sha = None
+            try:
+                if path.is_file() and not path.is_symlink():
+                    stat = path.stat()
+                    size = stat.st_size
+                    if size == paper["size"] and size <= BLOB_MAX:
+                        mark = (str(path), size, stat.st_mtime_ns)
+                        if mark not in _FILE_SHA:
+                            _FILE_SHA[mark] = hashlib.sha256(path.read_bytes()).hexdigest()
+                        sha = _FILE_SHA[mark]
+            except OSError:
+                sha = None
+            add(
+                _blob_id("file", paper["id"]),
+                "file",
+                "paper.pdf",
+                size if size is not None else paper["size"],
+                sha,
+                "application/pdf",
+                lambda path=path: path.read_bytes(),
+            )
+        handoff = json.loads(run["handoff"]) if run["handoff"] else {}
+        included = handoff.get("documents") or documents
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
+
+            def put(name, content):  # fixed timestamps: the same state gives the same bytes
+                bundle.writestr(zipfile.ZipInfo(name, (1980, 1, 1, 0, 0, 0)), content, zipfile.ZIP_DEFLATED)
+
+            put(
+                "handoff.json",
+                run["handoff"] or '{"incomplete":true,"summary":"Working draft; no handoff judgment yet"}',
+            )
+            for doc in included:
+                data = contents.get((doc["name"], doc["version"]))
+                if data is None:
+                    row = self.store.one(
+                        "SELECT content FROM autopilot_documents WHERE run_id=? AND name=? AND version=?",
+                        (run["id"], doc["name"], doc["version"]),
+                    )
+                    data = row["content"].encode() if row else b""
+                put(doc["name"], data)
+            put(
+                "BUILD.txt",
+                "Working source draft. Compile paper.tex with pdflatex -no-shell-escape.\n"
+                "Missing results remain TODOs; researcher review is required.\n",
+            )
+        data = archive.getvalue()
+        sha = hashlib.sha256(data).hexdigest()
+        add(
+            _blob_id("handoff", run["id"], sha),
+            "handoff",
+            "autopilot-handoff.zip",
+            len(data),
+            sha,
+            "application/zip",
+            lambda data=data: data,
+        )
+        return items
+
+    def autopilot_blob(self, blob_id):
+        """The available download item with this id, or None; for the local ``/api/blobs`` alias."""
+        for key in self.autopilot_keys():
+            item = self.autopilot_items(key.partition(":")[2]).get(blob_id)
+            if item:
+                return item if item["available"] else None
+        return None
 
     def build(self, key, *, last_acked=0):
         """Return ``{key, revision, updated_at, document}``, or None for an absent or deleted key."""
