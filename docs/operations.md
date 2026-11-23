@@ -142,11 +142,14 @@ export PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/path/to/chrome   # if Playwright's d
 node web/scripts/research-owner-acceptance.mjs   # starts the fixture and runs research-owner-smoke.mjs
 ```
 
-`autopilot-smoke.mjs` and `cancellation-smoke.mjs` run against the same fixture:
+`autopilot-smoke.mjs`, `cancellation-smoke.mjs` and `maintenance-smoke.mjs` (the update
+install flow, with the maintenance projection and command receipts mocked) run against the
+same fixture:
 start `uv run --locked python web/scripts/research-owner-fixture.py --root EMPTY_DIR
 --port PORT`, then set `ET_UI_URL=http://127.0.0.1:PORT` and either
-`ET_C4_FIXTURE_ROOT=EMPTY_DIR` (Autopilot) or `ET_TOKEN_FILE=EMPTY_DIR/api-token`
-(cancellation, which uses Playwright's default browser). Stop the fixture afterwards.
+`ET_C4_FIXTURE_ROOT=EMPTY_DIR` (Autopilot, maintenance) or
+`ET_TOKEN_FILE=EMPTY_DIR/api-token` (cancellation). All of them honour
+`PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`. Stop the fixture afterwards.
 
 Keep generated configuration, credentials and installation records (host
 discovery, deployment identities, acceptance notes, the Site identity in

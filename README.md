@@ -1,6 +1,6 @@
 # ExperimentTracker
 
-Turn a research brief into a reviewed plan, Slurm jobs, and a working report. ExperimentTracker keeps track of agent conversations, compute attempts, metrics, figures, and follow-up notes so work can continue across executor restarts.
+Turn a research brief into Slurm jobs and a working report. A coding agent does the research in your project checkout and asks you questions in an Inbox; ExperimentTracker keeps conversations, compute attempts, metrics, figures and notes so work continues across executor restarts. An optional Autopilot runs a lead experiment that proposes and schedules follow-ups within a budget you set.
 
 This is an early, self-hosted tool for a single researcher with a trusted coding agent and access to a Linux Slurm environment. It was developed on one installation; adapting it to another cluster is part of setup. A local synthetic demo works without Slurm, a ChatGPT login, or hosting credentials.
 
@@ -32,17 +32,17 @@ Give your agent this instruction:
 
 ## How it works
 
-The Python executor owns a SQLite database on local disk and one ownership lock. It connects to a pinned project-local Codex App Server using managed ChatGPT authentication. An agent prepares the experiment; the backend validates resources against current Slurm capabilities, records dispatch intents and submits jobs. Optional owner limits constrain resources and concurrency.
+A Python executor owns a SQLite database on local disk under one ownership lock. It runs a pinned project-local Codex App Server with managed ChatGPT authentication, and validates and submits Slurm jobs from saved dispatch intents within current cluster capabilities and optional owner limits. New experiments use execution contract 4: the agent works in a research session and the executor keeps the jobs, results and checkpoints. Large scientific data stays in your research environment; exports collect small published objects and do not promise reproducibility.
 
-New brief-driven experiments use execution contract 3: bounded declared source copies per attempt, direct references to producing outputs, explicit reuse with rationale, metrics before independent figures, and versioned working reports. Large scientific data stays in the research environment. Exports collect small published objects; they do not promise reproducibility. Historical/demo contracts retain their original behavior.
+The optional hosted relay (a thin Cloudflare Worker with D1 and R2) only queues your commands and serves published views. The executor polls it outbound, and the browser never controls the scheduler directly. The local interface works over an SSH tunnel without a relay.
 
-The optional TypeScript gateway holds commands and published views in D1 and small artifacts in R2. The executor polls outbound; the browser never controls scheduler state directly. The local interface works over an SSH tunnel without deploying a gateway. See [architecture and portability](docs/architecture.md).
+Read [architecture](docs/architecture.md) for the research loop, Autopilot and relay, and [operations](docs/operations.md) for stop, recovery, backups, updates and checks.
 
 ## Current limits
 
 - Linux/POSIX executor; native Windows and macOS execution are not tested.
 - Saved execution identifiers and some UI/prompt wording still say `acacia` (local Slurm) and `jean-zay` (a site-specific SSH adapter). Read the adaptation guide before using another cluster.
-- Managed ChatGPT authentication, explicit included-usage permission and fresh quota windows are required for live agent work. There is no API-billed fallback.
+- Live agent work uses a managed ChatGPT login under fresh quota windows. API billing is possible only when you configure it explicitly under a spend budget; no billed backend ships yet, and it is never an automatic fallback.
 - This is trusted single-owner software. Agent and scheduler restrictions are workflow controls, not an OS security boundary or tenant isolation.
 - Synthetic integration checks do not establish live Slurm, managed account, private hosting or physical phone acceptance on your installation.
 

@@ -104,7 +104,7 @@ Edit the generated file privately; every path is absolute.
 | `job_output_root` | Visible on compute nodes. |
 | `backup_dir` | Retained storage independent of the state disk. |
 | `projects`, `projects_root` | Authorized research checkouts (Git, with an initial commit). |
-| `codex.executable`, `codex.expected_version` | This checkout's `tools/codex/.../codex` and `0.160.1` (the generated default still says `0.156.1`). |
+| `codex.executable`, `codex.expected_version` | The generated defaults: this checkout's `tools/codex/.../codex` and the locked version (`0.160.1`). Keep them in step when the lockfile changes. |
 | `slurm.partition`, `account`, `qos` | Verified authorized defaults. |
 | `slurm.limits`, `slurm.max_concurrent_jobs` | Optional owner ceilings; the cap defaults to 1, `null` removes it. |
 | `port` | An unused loopback port. |

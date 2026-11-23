@@ -7,7 +7,13 @@ if (target.protocol !== 'http:' || !['127.0.0.1', 'localhost'].includes(target.h
   throw new Error('Cancellation smoke requires a loopback demo');
 const output = path.resolve(process.env.ET_SCREENSHOTS || '/tmp/et-cancellation-screenshots');
 await mkdir(output, { recursive: true });
-const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
+const browser = await chromium.launch({
+  headless: true,
+  args: ['--no-sandbox'],
+  ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
+    ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH }
+    : {}),
+});
 const page = await browser.newPage({
   viewport: { width: 1440, height: 1050 },
   reducedMotion: 'reduce',

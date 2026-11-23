@@ -25,7 +25,7 @@ def test_live_preflight_only_inspects_filesystem_and_runtime_version(config, mon
 
     def run(command, **kwargs):
         calls.append(command)
-        return SimpleNamespace(stdout="nfs\n" if command[0] == "stat" else "codex-cli 0.156.1\n")
+        return SimpleNamespace(stdout="nfs\n" if command[0] == "stat" else "codex-cli 0.160.1\n")
 
     monkeypatch.setattr("experimenttracker.doctor.subprocess.run", run)
     monkeypatch.setattr("experimenttracker.doctor.shutil.which", lambda name: "/bin/" + name)
