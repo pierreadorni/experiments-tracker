@@ -10,10 +10,12 @@ SQLite, so no managed turn is sent.
 import asyncio
 from uuid import uuid4
 
-from helpers import role_step, seed_saved_contract3
-from test_iteration_autopilot import activated
+from helpers import prepare_branch, role_step, seed_saved_contract3
+from test_iteration_autopilot import activated, command
 
 from experimenttracker.agent_pool import WEEKLY_PLENTY_REASON
+from experimenttracker.autopilot_policy import lead_id
+from experimenttracker.research.session import first_turn
 
 
 def snapshot(five=0, week=0):
@@ -109,27 +111,29 @@ def test_weekly_synthesis_needs_plenty_while_owner_turns_do_not(runtime):
     assert wf.agent_pool.quota(origin="weekly").admitted
 
 
-async def test_a_changed_control_revision_between_selection_and_binding_refuses(runtime, monkeypatch):
+async def test_a_run_paused_between_selection_and_binding_refuses_the_lead(runtime, monkeypatch):
     service, run = activated(runtime, monkeypatch)
     store, _, agent, wf = runtime
     wf.agent_ready = True
     wf.gate.update(await agent.quota())
-    agent.resolved_model = "demo"
-    agent.models = [{"id": "demo", "reasoning_efforts": ["medium"], "default_effort": "medium"}]
-    with store.tx() as db:
-        service.legacy_input(db, run["id"], "synthetic-input", "experiment_change", {"synthetic": True})
+    lead = lead_id(run["id"])
+    await prepare_branch(wf, lead)
+    action = first_turn(store, lead)
     entered, release = asyncio.Event(), asyncio.Event()
     hold_session(agent, entered, release)
-    await role_step(wf.research)
+    # The cached selection filter admits and claims the lead's saved first turn.
+    await role_step(wf.research_dispatch)
     await entered.wait()
-    with store.tx() as db:
-        db.execute("UPDATE autopilot_runs SET control_revision=control_revision+1 WHERE id=?", (run["id"],))
+    reservation = wf.agent_pool.lookup("agent_actions", action["id"])
+    task = wf.agent_pool.slots[reservation.slot].agent_task
+    command(service, "pause")
     release.set()
-    await wf.research.task
-    # Current authority is re-checked after session setup, before saved intent.
-    (row,) = store.rows("SELECT * FROM autopilot_actions WHERE run_id=?", (run["id"],))
-    assert (row["state"], row["thread_id"], row["turn_id"]) == ("superseded", None, None)
+    await task
+    await asyncio.sleep(0)  # drain the done callback that releases the never-sent claim
+    # The run's current status is re-checked after session setup, before saved intent.
+    row = store.one("SELECT * FROM agent_actions WHERE id=?", (action["id"],))
+    assert (row["state"], row["thread_id"], row["turn_id"]) == ("pending", None, None)
+    assert wf.agent_pool.quota(eid=lead).reason == "autopilot_paused"
     assert agent.calls == 0
-    assert wf.agent_pool.lookup("autopilot_actions", row["id"]) is None
-    assert wf.research.task is None
-    await wf.research.close()
+    assert wf.agent_pool.lookup("agent_actions", action["id"]) is None
+    await wf.close()

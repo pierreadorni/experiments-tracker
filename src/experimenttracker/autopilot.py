@@ -1,6 +1,7 @@
 """Project authority and research state, advanced by the existing SQLite owner."""
 
 import json
+import logging
 import math
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
@@ -9,6 +10,11 @@ from .autopilot_budget import WEEK, Budget
 from .autopilot_models import AutopilotCommand, AutopilotPolicy
 from .autopilot_policy import calendar
 from .store import Conflict, encode
+
+log = logging.getLogger(__name__)
+# The retired engine's existing run hold for saved decisions that need the owner; it
+# now also holds a run whose saved project turn is not terminal at the lead cutover.
+CUTOVER_HOLD = "research_decision_needs_attention"
 
 DOCUMENTS = {
     "research_plan",
@@ -160,16 +166,95 @@ class Autopilot:
 
         wakeups.project_update(self.store, db, run_id, source_id)
 
-    def legacy_input(self, db, run_id, identity, kind, document=None):
-        """Feed the saved project-turn engine an answer to its own question (removed in T5.1e)."""
-        run = self.run(run_id=run_id)
-        seq = run["input_cursor"] + 1
-        added = db.execute(
-            "INSERT OR IGNORE INTO autopilot_inputs VALUES(?,?,?,?,?,?)",
-            (run_id, seq, identity, kind, encode(document or {}), clock.now()),
-        ).rowcount
-        if added:
-            db.execute("UPDATE autopilot_runs SET input_cursor=? WHERE id=?", (seq, run_id))
+    def create_lead(self, db, run, policy):
+        """Create the run's one lead experiment; its id derives from the run, so it is created once."""
+        self.store.command(
+            autopilot_policy.lead_request_id(run["id"]),
+            "create",
+            {
+                "brief": autopilot_policy.lead_brief(policy),
+                "recipe_id": "agent_experiment_v1",
+                "project_id": run["project_id"],
+                "execution_contract": 4,
+                "autopilot_lead": {"run_id": run["id"]},
+                "model": policy.model,
+                "reasoning_effort": policy.reasoning_effort,
+            },
+            origin=autopilot_policy.LEAD_ORIGIN,
+            experiment_id=autopilot_policy.lead_id(run["id"]),
+            _db=db,
+        )
+
+    def cutover(self):
+        """Give each open run saved before T5.1b its lead, once, without replaying old turns (OWNER 8).
+
+        The lead's first checkpoint carries the run's saved central argument and
+        uncertainty. A run with a saved project turn that is not terminal keeps no
+        reconciler, so it gets no lead: it stays on hold, visible in its view, until
+        that turn is settled by a release that still reads it.
+        """
+        from .research.checkpoints import EVENT_KIND
+        from .research.prompt import MAX_CHECKPOINT_BYTES
+
+        for run in self.store.rows(
+            "SELECT * FROM autopilot_runs WHERE status IN ('active','paused','handoff_ready','handoff_incomplete') "
+            "ORDER BY created_at,id"
+        ):
+            lead = autopilot_policy.lead_id(run["id"])
+            if self.store.one("SELECT 1 FROM experiments WHERE id=?", (lead,)):
+                continue
+            unsettled = [
+                row["id"]
+                for row in self.store.rows(
+                    "SELECT id FROM autopilot_actions WHERE run_id=? AND state IN "
+                    "('pending','dispatching','running','uncertain','received') ORDER BY id",
+                    (run["id"],),
+                )
+            ]
+            try:
+                with self.store.tx() as db:
+                    if unsettled:
+                        if run["hold_reason"] != CUTOVER_HOLD:
+                            db.execute(
+                                "UPDATE autopilot_runs SET hold_reason=? WHERE id=?",
+                                (CUTOVER_HOLD, run["id"]),
+                            )
+                            self.emit(db, run["id"], "lead_cutover_held", {"action_ids": unsettled})
+                        continue
+                    self.create_lead(db, run, self.policy(run))
+                    seed = "\n\n".join(
+                        f"{name}: {run[key]}"
+                        for name, key in (
+                            ("Central argument", "central_argument"),
+                            ("Uncertainty", "uncertainty"),
+                        )
+                        if run[key]
+                    )
+                    if seed:
+                        markdown = (
+                            "Carried over from this run's earlier project decisions.\n\n" + seed
+                        ).encode()
+                        markdown = markdown[:MAX_CHECKPOINT_BYTES].decode("utf-8", "ignore")
+                        self.store.emit(
+                            db,
+                            lead,
+                            EVENT_KIND,
+                            {
+                                "request_id": str(uuid5(NAMESPACE_URL, "autopilot-lead-seed:" + run["id"])),
+                                "experiment_id": lead,
+                                "action_id": None,
+                                "version": 1,
+                                "bytes": len(markdown.encode()),
+                                "markdown": markdown,
+                            },
+                        )
+                    # The retired engine's holds no longer apply; its saved questions stay answerable.
+                    db.execute("UPDATE autopilot_runs SET hold_reason=NULL WHERE id=?", (run["id"],))
+                    self.emit(
+                        db, run["id"], "lead_cutover", {"experiment_id": lead, "hold": run["hold_reason"]}
+                    )
+            except Conflict as exc:
+                log.warning("Autopilot run %s keeps no lead yet: %s", run["id"], exc)
 
     def view(self, project_id, now=None):
         now = clock.now() if now is None else now
@@ -226,8 +311,9 @@ class Autopilot:
             "messages": self.store.rows(
                 "SELECT seq,kind,document,created_at FROM autopilot_inputs WHERE run_id=? "
                 "AND kind IN ('message','answer') UNION ALL "
-                "SELECT -rowid,'message',json_object('text',json_extract(payload,'$.text'),'author',author),"
-                "created_at FROM autopilot_requests WHERE run_id=? AND json_extract(payload,'$.kind')='message' "
+                "SELECT -rowid,json_extract(payload,'$.kind'),json_object('text',json_extract(payload,'$.text'),"
+                "'author',author),created_at FROM autopilot_requests WHERE run_id=? "
+                "AND json_extract(payload,'$.kind') IN ('message','answer') "
                 "AND request_id NOT IN (SELECT identity FROM autopilot_inputs WHERE run_id=?) "
                 "ORDER BY created_at DESC LIMIT 30",
                 (run["id"], run["id"], run["id"]),
@@ -367,22 +453,7 @@ class Autopilot:
                     )
                     # The lead is a contract 4 experiment created in this transaction;
                     # its id derives from the run, so a replay never creates another.
-                    self.store.command(
-                        autopilot_policy.lead_request_id(run_id),
-                        "create",
-                        {
-                            "brief": autopilot_policy.lead_brief(policy),
-                            "recipe_id": "agent_experiment_v1",
-                            "project_id": project_id,
-                            "execution_contract": 4,
-                            "autopilot_lead": {"run_id": run_id},
-                            "model": policy.model,
-                            "reasoning_effort": policy.reasoning_effort,
-                        },
-                        origin=autopilot_policy.LEAD_ORIGIN,
-                        experiment_id=autopilot_policy.lead_id(run_id),
-                        _db=db,
-                    )
+                    self.create_lead(db, run, policy)
                 elif body.kind in ("pause", "resume", "stop", "complete"):
                     allowed = {
                         "pause": {"active", "handoff_ready", "handoff_incomplete"},
@@ -414,30 +485,10 @@ class Autopilot:
                             (clock.now(), body.input_id, run_id),
                         ).rowcount:
                             raise Conflict("input request is not pending")
-                    pending_action = (
-                        self.store.one(
-                            "SELECT * FROM autopilot_actions WHERE run_id=? AND pending_request IS NOT NULL ORDER BY created_at DESC LIMIT 1",
-                            (run_id,),
-                        )
-                        if body.kind == "answer"
-                        else None
-                    )
-                    pending = json.loads(pending_action["pending_request"]) if pending_action else None
-                    if pending and pending["id"] == body.input_id and not pending.get("expired"):
-                        from .models import request_answer
-
-                        request_answer(pending, body.text)
-                        pending["answer"] = body.text
-                        db.execute(
-                            "UPDATE autopilot_actions SET pending_request=? WHERE id=?",
-                            (encode(pending), pending_action["id"]),
-                        )
-                    if body.kind == "answer":
-                        self.legacy_input(
-                            db, run_id, request_id, "answer", {"text": body.text, "author": origin}
-                        )
-                    else:
-                        self.update(db, run_id, f"message:{request_id}")
+                    # An answer resolves a question the retired project-turn engine saved; like a
+                    # message it reaches the run's lead, which has no other copy of that question.
+                    self.update(db, run_id, f"message:{request_id}")
+                    if body.kind == "message":
                         db.execute(
                             "UPDATE autopilot_runs SET control_revision=control_revision+1 WHERE id=?",
                             (run_id,),
@@ -510,23 +561,6 @@ class Autopilot:
         if not row:
             raise KeyError("document version is unavailable")
         return {**row, "sources": json.loads(row["sources"])}
-
-    def context(self, run):
-        view = self.view(run["project_id"])
-        view["changes"] = self.store.rows(
-            "SELECT * FROM autopilot_inputs WHERE run_id=? AND seq>? ORDER BY seq LIMIT 100",
-            (run["id"], run["consumed_cursor"]),
-        )
-        view["instructions"] = self.policy(run).instructions
-        view["project_guidance"] = self.store.one(
-            "SELECT instructions,revision FROM project_preferences WHERE project_id=?", (run["project_id"],)
-        )
-        view["accepted_tool_results"] = self.store.rows(
-            "SELECT request_id,author,result FROM autopilot_requests WHERE run_id=? AND author LIKE 'agent:%' AND state='applied' ORDER BY created_at DESC LIMIT 100",
-            (run["id"],),
-        )
-        # Full documents and experiment details are fetched on demand.
-        return view
 
     def validate_sources(self, run, sources):
         for source in sources:
@@ -627,7 +661,8 @@ class Autopilot:
             row["text"]
             for row in self.store.rows(
                 "SELECT json_extract(payload,'$.text') AS text FROM autopilot_requests WHERE run_id=? "
-                "AND json_extract(payload,'$.kind')='message' ORDER BY created_at DESC,rowid DESC LIMIT 5",
+                "AND json_extract(payload,'$.kind') IN ('message','answer') "
+                "ORDER BY created_at DESC,rowid DESC LIMIT 5",
                 (run["id"],),
             )
         ]

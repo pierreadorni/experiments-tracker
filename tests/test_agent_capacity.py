@@ -12,13 +12,15 @@ import json
 from uuid import uuid4
 
 import pytest
-from helpers import seed_saved_contract4
+from helpers import prepare_branch, seed_saved_contract4
 from test_iteration_autopilot import activated
 from test_knowledge import completed
 
 from experimenttracker.agent_pool import EXPERIMENT_PRIORITY, experiment_owner, project_owner
+from experimenttracker.autopilot_policy import lead_id
 from experimenttracker.codex_client import DemoAgent
 from experimenttracker.config import ProjectConfig
+from experimenttracker.research.session import first_turn
 from experimenttracker.workflow import Workflow
 
 
@@ -38,20 +40,18 @@ class GatedAgent(DemoAgent):
         self.closes = 0
 
     async def begin(self, thread, prompt, schema, *, workspace=None, effort="low", project_workspace=None):
-        # A stage prompt carries PAYLOAD, a project decision carries PROJECT.
-        marker = "\nPAYLOAD:\n" if "\nPAYLOAD:\n" in prompt else "\nPROJECT:\n"
-        phase = json.loads(prompt.split(marker, 1)[1]).get("phase")
-        if phase in ("plan", "prepare", "discuss", "project_chat", "project_synthesize"):
+        # A stage prompt carries PAYLOAD; a contract 4 research turn has none.
+        if "\nPAYLOAD:\n" in prompt:
+            phase = json.loads(prompt.split("\nPAYLOAD:\n", 1)[1]).get("phase")
             turn = await super().begin(thread, prompt, schema, workspace=workspace, effort=effort)
         else:
-            # A saved project decision has no deterministic demo shape of its own.
+            phase = "research"
             self.calls += 1
-            turn = f"decision-{self.calls}"
+            turn = f"research-{self.calls}"
             self.results[(thread, turn)] = {
-                "summary": "Synthetic checkpoint",
-                "central_argument": "No real science in this fixture",
-                "uncertainty": "Real retrieval remains a live prerequisite",
-                "outcome": "wait",
+                "status": "wait",
+                "summary": "Synthetic turn",
+                "next": "timer:3600",
             }
         type(self).begun.append((id(self), phase, thread, turn))
         return turn
@@ -160,8 +160,8 @@ async def test_unknown_saved_turns_count_once_and_readback_needs_no_capacity(run
     await wf.close()
 
 
-async def test_priority_orders_research_before_a_weekly_project_turn(runtime, monkeypatch):
-    service, run = activated(runtime, monkeypatch)
+async def test_priority_orders_a_lead_turn_before_a_weekly_project_turn(runtime, monkeypatch):
+    _, run = activated(runtime, monkeypatch)
     wf = await pooled(runtime, sessions=1)
     store = wf.store
     # Weekly synthesis belongs to a project the activated research run does not own.
@@ -179,21 +179,24 @@ async def test_priority_orders_research_before_a_weekly_project_turn(runtime, mo
     weekly = memory.enqueue(project.id, {"request_id": str(uuid4()), "kind": "synthesize"}, origin="weekly")[
         "request_id"
     ]
-    with store.tx() as db:
-        service.legacy_input(db, run["id"], "synthetic-input", "experiment_change", {"synthetic": True})
+    lead = lead_id(run["id"])
+    await prepare_branch(wf, lead)
+    action = store.one("SELECT * FROM agent_actions WHERE experiment_id=?", (lead,)) or first_turn(
+        store, lead
+    )
     # Both roles offer a prepared turn; the single admission orders them by class,
     # not by the step that happened to prepare one of them first.
-    await wf.research.advance()
     await wf.supervisor.advance()
-    assert sorted(proposal.role for proposal in wf.agent_pool.proposals) == ["research", "supervisor"]
+    await wf.research_dispatch.advance()
+    assert sorted(proposal.role for proposal in wf.agent_pool.proposals) == ["stage", "supervisor"]
     wf.agent_pool.admit()
-    (decision,) = store.rows("SELECT * FROM autopilot_actions WHERE run_id=?", (run["id"],))
-    assert reserved(wf, "autopilot_actions", decision["id"]).connection.slot == 0
+    reservation = reserved(wf, "agent_actions", action["id"])
+    assert reservation.connection.slot == 0 and reservation.owner == experiment_owner(lead)
     assert wf.agent_pool.turn_capacity() == 0
     # The weekly turn keeps its saved place; only the higher class used the connection.
     assert wf.agent_pool.lookup("project_turns", weekly) is None and wf.supervisor.task is None
     GatedAgent.gate.set()
-    await wf.research.task
+    await wf.agent_pool.slots[0].agent_task
     assert store.one("SELECT state FROM project_turns WHERE id=?", (weekly,))["state"] == "queued"
     await wf.close()
 

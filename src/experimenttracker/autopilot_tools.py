@@ -68,11 +68,6 @@ class ApproveObjective(Request):
     objective: str = Field(min_length=1, max_length=2000)
 
 
-class Compile(Request):
-    # Read only by the project-turn engine's compile adapter, which T5.1e deletes.
-    expected_revision: int = Field(ge=0)
-
-
 MODELS = {
     "project_status": ProjectStatus,
     "create_experiment": CreateExperiment,

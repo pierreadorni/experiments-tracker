@@ -6,12 +6,11 @@ saved thread/turn proves on that same process; nothing else is guessed, and the
 retired research fallback stays gone.
 """
 
-import json
 from uuid import uuid4
 
 import pytest
 from helpers import seed_saved_contract4
-from test_iteration_autopilot import activated, command
+from test_iteration_autopilot import activated
 
 from experimenttracker import clock
 from experimenttracker.agent_pool import experiment_owner, project_owner
@@ -79,11 +78,6 @@ def request(thread, turn):
     }
 
 
-def project_pending(service, action_id):
-    row = service.store.one("SELECT pending_request FROM autopilot_actions WHERE id=?", (action_id,))
-    return json.loads(row["pending_request"])
-
-
 async def test_each_slot_receives_only_its_own_turn_s_callbacks(runtime):
     wf = await pooled(runtime)
     store, first, second = wf.store, wf.agent_pool.slots[0], wf.agent_pool.slots[1]
@@ -137,39 +131,19 @@ async def test_every_saved_role_routes_its_request_to_the_owning_experiment(runt
     await wf.close()
 
 
-async def test_managed_project_request_routes_to_its_saved_run_turn(runtime, monkeypatch):
-    service, run = activated(runtime, monkeypatch)
+async def test_unmatched_old_and_supervisor_requests_fail_closed(runtime, monkeypatch):
+    _, run = activated(runtime, monkeypatch)
     wf = await pooled(runtime)
-    slot, store = wf.agent_pool.slots[1], wf.store
-    action_id = str(uuid4())
+    slot, store = wf.agent_pool.slots[0], wf.store
+    # A saved turn of the retired project-turn engine is never a routed owner.
     with store.tx() as db:
         db.execute(
             "INSERT INTO autopilot_actions(id,run_id,cursor,control_revision,state,thread_id,turn_id,created_at,updated_at) "
             "VALUES(?,?,0,?,'running','project-thread','project-turn',0,0)",
-            (action_id, run["id"], run["control_revision"]),
+            (str(uuid4()), run["id"], run["control_revision"]),
         )
-    row = store.one("SELECT * FROM autopilot_actions WHERE id=?", (action_id,))
-    claim(wf, slot, row, "research", source_table="autopilot_actions", owner=project_owner("test-project"))
-    await wf._request(slot, request("project-thread", "project-turn"), slot.agent.start_count)
-    pending = project_pending(service, action_id)
-    assert pending["rpc_id"] == 7 and slot.agent.replies == []
-    command(service, "answer", input_id=pending["id"], text="Synthetic fixture only.")
-    await wf.research.reply_inputs()
-    assert [entry["id"] for entry in slot.agent.replies] == [pending["id"]]
-    assert project_pending(service, action_id)["expired"] is True
-    await wf.close()
-
-
-async def test_unmatched_old_and_supervisor_requests_fail_closed(runtime, monkeypatch):
-    wf = await pooled(runtime)
-    slot, store, asked = wf.agent_pool.slots[0], wf.store, []
-
-    async def research_request(*args):
-        asked.append(args)
-
-    monkeypatch.setattr(wf.research, "request", research_request)
-    # The retired fallback read this holder; it must not steer any request now.
-    wf.research.active_id = "saved-project-turn"
+    with pytest.raises(NeedsAttention):
+        await wf._request(slot, request("project-thread", "project-turn"), slot.agent.start_count)
     eid = create(store)
     old = live_action(store, eid, thread="old", turn="old-turn")
     with pytest.raises(NeedsAttention):
@@ -188,7 +162,6 @@ async def test_unmatched_old_and_supervisor_requests_fail_closed(runtime, monkey
     claim(wf, slot, row, "supervisor", source_table="project_turns", owner=project_owner("test-project"))
     with pytest.raises(NeedsAttention):
         await wf._request(slot, request("supervisor", "supervisor-turn"), slot.agent.start_count)
-    assert asked == []
     assert store.rows("SELECT * FROM autopilot_notices") == []
     assert not store.rows("SELECT * FROM experiments WHERE pending_request IS NOT NULL")
     await wf.close()

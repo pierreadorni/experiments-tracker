@@ -77,7 +77,7 @@ async def test_maintenance_gate_skips_gated_work_and_completes_the_control_pass(
     calls, launches, advanced = [], [], []
     record_steps(monkeypatch, workflow, CONTROL_FRAGMENTS + GATED_CONTROL_FRAGMENTS, calls)
     monkeypatch.setattr(workflow.maintenance, "launch", lambda: launches.append("launch"))
-    monkeypatch.setattr(workflow.research, "advance", recorder(advanced, "advance"))
+    monkeypatch.setattr(workflow.supervisor, "advance", recorder(advanced, "advance"))
     runner = Runner(workflow)
 
     assert await runner.run_once("control") is True
@@ -85,9 +85,9 @@ async def test_maintenance_gate_skips_gated_work_and_completes_the_control_pass(
     assert launches == ["launch"]  # launch stays after a gated-but-successful control pass
 
     # A gated task is skipped, and the skip counts as success: the gate is intended.
-    assert await runner.run_once("research") is True
+    assert await runner.run_once("supervisor") is True
     assert advanced == []
-    assert "research" in runner.last_success
+    assert "supervisor" in runner.last_success
 
 
 async def test_successful_passes_record_the_families_they_really_served(runtime, monkeypatch):
@@ -189,19 +189,15 @@ async def test_failing_task_is_isolated_and_recovers_on_its_next_pass(runtime, m
     assert runner.health()[1] is None
 
 
-async def test_primary_agent_lock_excludes_control_research_and_supervisor(runtime, monkeypatch):
+async def test_primary_agent_lock_excludes_control_and_supervisor(runtime, monkeypatch):
     _, _, _, workflow = runtime
     gate = FakeGate()
-    started = {"research": asyncio.Event(), "supervisor": asyncio.Event()}
+    started = {"supervisor": asyncio.Event()}
     order = []
 
     async def parked_draining(now):
         order.append("control")
         await gate.wait()
-
-    async def step_research():
-        started["research"].set()
-        order.append("research")
 
     async def step_supervisor():
         started["supervisor"].set()
@@ -211,7 +207,6 @@ async def test_primary_agent_lock_excludes_control_research_and_supervisor(runti
         order.append("observe")
 
     monkeypatch.setattr(workflow, "step_control_after_observe", parked_draining)
-    monkeypatch.setattr(workflow, "step_research", step_research)
     monkeypatch.setattr(workflow, "step_supervisor", step_supervisor)
     monkeypatch.setattr(workflow, "step_observe", step_observe)
     runner = Runner(workflow)
@@ -219,21 +214,19 @@ async def test_primary_agent_lock_excludes_control_research_and_supervisor(runti
     control = asyncio.create_task(runner.run_once("control"))
     async with asyncio.timeout(5):
         await gate.entered.wait()
-    research = asyncio.create_task(runner.run_once("research"))
     supervisor = asyncio.create_task(runner.run_once("supervisor"))
     try:
-        # Both agent-owned steps wait for the primary-agent slot control holds.
-        for name in ("research", "supervisor"):
-            with pytest.raises(TimeoutError):
-                async with asyncio.timeout(0.2):
-                    await started[name].wait()
+        # The agent-owned step waits for the primary-agent slot control holds.
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(0.2):
+                await started["supervisor"].wait()
         # Observation never takes that lock, so it completes while control holds it.
         assert await runner.run_once("observe") is True
         assert order == ["control", "observe"]
     finally:
         gate.release.set()
-    await asyncio.gather(control, research, supervisor)
-    assert order == ["control", "observe", "research", "supervisor"]
+    await asyncio.gather(control, supervisor)
+    assert order == ["control", "observe", "supervisor"]
 
 
 async def test_stop_waits_for_a_threaded_pass_before_the_store_closes(runtime, monkeypatch):
@@ -286,12 +279,12 @@ async def test_heartbeat_is_the_oldest_counted_success_and_excludes_backup(runti
     runner = Runner(workflow)
 
     assert runner.health() == (None, None)
-    for name in ("control", "observe", "watchdog", "research", "supervisor", "retention"):
+    for name in ("control", "observe", "watchdog", "supervisor", "retention"):
         assert await runner.run_once(name) is True
         clock.advance(1)
     tick, error = runner.health()
     assert error is None
-    assert tick == clock.now() - 6  # the first counted success, from the control pass
+    assert tick == clock.now() - 5  # the first counted success, from the control pass
 
     assert await runner.run_once("backup") is True
     clock.advance(120)

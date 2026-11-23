@@ -15,7 +15,6 @@ STEPS = (
     "step_watchdog",
     "step_control_finish",
     "step_supervisor",
-    "step_research",
     "step_retention",
     "step_backup",
 )
@@ -86,7 +85,6 @@ def test_health_counted_steps_name_the_step_methods():
     assert set(HEALTH_COUNTED_STEPS) == {
         "control",
         "observe",
-        "research",
         "supervisor",
         "watchdog",
         "retention",

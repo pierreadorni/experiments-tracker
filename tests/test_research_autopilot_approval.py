@@ -13,7 +13,7 @@ from experimenttracker.research import wakeups
 from experimenttracker.research.autopilot_approval import OrchestratorApproval, approved
 from experimenttracker.research.owner_tool import AskOwnerQuestion, ask_owner
 from experimenttracker.research.session import first_turn, follow_up_turn
-from experimenttracker.store import Conflict, encode
+from experimenttracker.store import encode
 
 
 def test_orchestrator_approval_parser_requires_exact_shape():
@@ -186,38 +186,9 @@ def test_autopilot_approval_proof_is_exact_and_separate_from_owner_answer(runtim
             ),
         )
     assert approved(store, eid, request_id, objective, now=now) is None
+    # A drained installation keeps only terminal project turns; a completed one's proof verifies.
     with store.tx() as db:
-        db.execute(
-            "UPDATE autopilot_actions SET result=? WHERE id=?",
-            (
-                encode(
-                    {
-                        "summary": "Objective approved",
-                        "central_argument": "The bounded comparison is worthwhile.",
-                        "uncertainty": "Results remain unknown.",
-                        "outcome": "continue",
-                    }
-                ),
-                action_id,
-            ),
-        )
-    from experimenttracker.autopilot_controller import ResearchController
-
-    wake_id = wakeups.wakeup_id(eid, wakeups.ORCHESTRATOR_APPROVAL, request_id)
-    with store.tx() as db:
-        db.execute(
-            "INSERT INTO agent_wakeups(id,experiment_id,reason,due_at,created_at) VALUES(?,?,?,?,?)",
-            (wake_id, eid, encode({"event": "wrong", "source_id": request_id}), now + 60, now),
-        )
-    controller = ResearchController(runtime[3])
-    row = store.one("SELECT * FROM autopilot_actions WHERE id=?", (action_id,))
-    with pytest.raises(Conflict, match="reused for a different event"):
-        controller.complete(row)
-    assert store.one("SELECT state FROM autopilot_actions WHERE id=?", (action_id,))["state"] == "running"
-    assert store.experiment(eid)["pending_request"].get("answer") is None
-    with store.tx() as db:
-        db.execute("DELETE FROM agent_wakeups WHERE id=?", (wake_id,))
-    controller.complete(store.one("SELECT * FROM autopilot_actions WHERE id=?", (action_id,)))
+        db.execute("UPDATE autopilot_actions SET state='completed' WHERE id=?", (action_id,))
 
     proof = OrchestratorApproval.model_validate(result["approval"])
     assert approved(store, eid, request_id, objective, now=now) == proof

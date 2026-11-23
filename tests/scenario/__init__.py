@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from experimenttracker import clock as engine_clock
 from experimenttracker.codex_client import NeedsAttention, TerminalTurnError
+from experimenttracker.research.prompt import LEAD_ROLE
 from experimenttracker.slurm import ResourceUnavailable, SubmissionUncertain
 
 
@@ -383,8 +384,8 @@ def shared_fake_slots():
             }
 
         def payload(self, prompt):
-            """The engine's own prompt markers: a research context or a plan-title request."""
-            if "\nPROJECT:\n" in prompt:
+            """The engine's own prompt markers: an Autopilot lead's turn or a plan-title request."""
+            if prompt.startswith("RESEARCH TURN\n") and LEAD_ROLE in prompt:
                 return {"phase": "research"}
             if "Plan title:" in prompt:
                 return {"phase": "title"}
@@ -456,13 +457,13 @@ def engine_tasks(workflow):
     """The engine's own unfinished task handles, read from the real workflow seams.
 
     Each role publishes its dispatch task in the flag that role reads: stage, title,
-    monitor, conversation and analysis turns on their slot's ``agent_task``, research
-    and the project supervisor on their controllers. Handles are deduplicated by task
+    monitor, conversation, analysis and research turns on their slot's ``agent_task``,
+    the project supervisor on its controller. Handles are deduplicated by task
     identity, so a turn both the pool and a role recorded is awaited once.
     """
     owner = workflow
     handles = [task for slot in owner.agent_pool.slots for task in (slot.agent_task, slot.quota_task)]
-    handles += [owner.backup_task, owner.research.task, owner.supervisor.task]
+    handles += [owner.backup_task, owner.supervisor.task]
     handles.extend(task for task, _ in owner.output_checks.values())
     handles.extend(owner.evidence_checks.values())
     return list(dict.fromkeys(task for task in handles if task is not None and not task.done()))

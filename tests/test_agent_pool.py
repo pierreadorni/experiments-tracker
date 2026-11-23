@@ -13,11 +13,13 @@ import json
 from uuid import uuid4
 
 import pytest
-from helpers import IterationAgent, role_step, seed_saved_contract3, wait_until
+from helpers import IterationAgent, prepare_branch, role_step, seed_saved_contract3, wait_until
 from test_iteration_autopilot import activated
 
 from experimenttracker.agent_pool import experiment_owner, project_owner
+from experimenttracker.autopilot_policy import lead_id
 from experimenttracker.codex_client import DemoAgent
+from experimenttracker.research.session import first_turn
 from experimenttracker.workflow import Workflow
 
 
@@ -109,42 +111,33 @@ def test_finished_task_settles_from_its_source_row(runtime, state, retained):
     assert (kept.slot, kept.thread_id, kept.turn_id) == (None, "saved-thread", "saved-turn")
 
 
-async def test_research_admission_claims_the_project_run_and_retains_received(runtime, monkeypatch):
+async def test_lead_admission_claims_its_own_experiment_owner(runtime, monkeypatch):
     store, _, agent, wf = runtime
-    service, run = activated(runtime, monkeypatch)
+    _, run = activated(runtime, monkeypatch)
     wf.agent_ready = True
     wf.gate.update(await agent.quota())
-    agent.resolved_model = "demo"
-    agent.models = [{"id": "demo", "reasoning_efforts": ["medium"], "default_effort": "medium"}]
+    lead = lead_id(run["id"])
+    await prepare_branch(wf, lead)
+    action = first_turn(store, lead)
+    agent.results[("lead-thread", "lead-turn")] = {"status": "wait", "summary": "Synthetic", "next": "owner"}
+
+    async def session(thread, workspace, **kwargs):
+        return thread or "lead-thread", "demo"
 
     async def begin(thread, prompt, schema, **kwargs):
         agent.calls += 1
-        agent.results[(thread, f"research-{agent.calls}")] = {
-            "summary": "Synthetic checkpoint",
-            "central_argument": "No real science in fixture",
-            "uncertainty": "Real retrieval remains a live prerequisite",
-            "outcome": "wait",
-        }
-        return f"research-{agent.calls}"
+        return "lead-turn"
 
+    monkeypatch.setattr(agent, "session", session)
     monkeypatch.setattr(agent, "begin", begin)
-    with store.tx() as db:
-        service.legacy_input(db, run["id"], "synthetic-input", "experiment_change", {"synthetic": True})
-    await role_step(wf.research)
-    (row,) = store.rows("SELECT * FROM autopilot_actions WHERE run_id=?", (run["id"],))
-    claimed(wf, "autopilot_actions", row["id"], "research", project_owner("test-project"))
-    await wf.research.task
-    await wait_until(
-        lambda: saved(store, "autopilot_actions", row["id"])["state"] == "received",
-        ticks=lambda: asyncio.sleep(0.01),
-    )
-    # A received result keeps owner exclusion without a live connection.
-    resume = saved(store, "autopilot_actions", row["id"])
-    reservation = wf.agent_pool.lookup("autopilot_actions", row["id"])
-    assert reservation.slot is None and reservation.role == "research"
-    assert (reservation.thread_id, reservation.turn_id) == (resume["thread_id"], "research-1")
+    await role_step(wf.research_dispatch)
+    # The lead is a contract 4 experiment, so its turn is owned like any experiment's.
+    reservation = claimed(wf, "agent_actions", action["id"], "stage", experiment_owner(lead))
+    await wf.agent_pool.slots[reservation.slot].agent_task
+    await until_released(wf, "agent_actions", action["id"])
+    assert saved(store, "agent_actions", action["id"])["turn_id"] == "lead-turn"
     assert agent.calls == 1
-    await wf.research.close()
+    await wf.close()
 
 
 async def test_supervisor_admission_claims_the_project_turn(runtime):
@@ -184,7 +177,7 @@ async def test_start_reconstructs_saved_turns_before_connecting_the_agent(runtim
             "VALUES(?,?,'{}','local','running','turn-thread','turn-id',0,0)",
             (turn_id, "test-project"),
         )
-    service, run = activated(runtime, monkeypatch)
+    _, run = activated(runtime, monkeypatch)
     research_id = str(uuid4())
     with store.tx() as db:
         db.execute(
@@ -202,15 +195,13 @@ async def test_start_reconstructs_saved_turns_before_connecting_the_agent(runtim
 
     monkeypatch.setattr(Workflow, "connect_agent", connect)
     await resume.start()
-    assert connecting["keys"] == sorted(
-        [("agent_actions", action_id), ("project_turns", turn_id), ("autopilot_actions", research_id)]
-    )
+    # A saved turn of the retired project-turn engine is never an owner again.
+    assert connecting["keys"] == sorted([("agent_actions", action_id), ("project_turns", turn_id)])
     assert len(resume.agent_pool.slots) == sessions
     # Reconstructed ownership has no live connection and keeps the exact saved turn.
     assert {r.key: (r.role, r.slot, r.thread_id, r.turn_id) for r in resume.agent_pool.occupied()} == {
         ("agent_actions", action_id): ("conversation", None, "action-thread", "action-turn"),
         ("project_turns", turn_id): ("supervisor", None, "turn-thread", "turn-id"),
-        ("autopilot_actions", research_id): ("research", None, "run-thread", "run-turn"),
     }
     assert {r.owner for r in resume.agent_pool.occupied()} == {
         experiment_owner(eid),

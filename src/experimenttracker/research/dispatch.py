@@ -160,15 +160,16 @@ class ResearchDispatch:
                 return
             thread_id = self._thread(expected, experiment)
             saved_thread = experiment["thread_id"]
+            # A follow-up, or a first turn seeded at the T5.1e cutover, fills its checkpoint.
+            checkpoint = latest_checkpoint(self.store, eid)
+            markdown = checkpoint["markdown"] if checkpoint else None
             seeded = False
-            if thread_id is not None:
-                checkpoint = latest_checkpoint(self.store, eid)
-                markdown = checkpoint["markdown"] if checkpoint else None
+            if thread_id is not None or markdown:
                 rendered = with_checkpoint(prompt, markdown)
                 seeded = bool(markdown and rendered != prompt)
                 prompt = rendered
             # Never drop the old session when there is no checkpoint to carry forward.
-            rotate = seeded and self._context_full(eid, thread_id)
+            rotate = seeded and thread_id is not None and self._context_full(eid, thread_id)
             target = None if rotate else thread_id
             runtime_config = self.workflow.controller.session_config(eid)
             session_options = {"runtime_config": runtime_config} if runtime_config else {}

@@ -3,7 +3,7 @@
 The shared multi-slot fixture keeps one explicit fake backend, so these cases are
 decided by the production selector, dispatch paths, quota gate and shutdown sequence:
 a cached selection admits and then a fresh denial refuses the saved turn, a denied
-research decision keeps its pending action and the run's existing hold, denied quota
+Autopilot lead turn keeps its pending action under its run's reserves, denied quota
 evidence interrupts every occupied role through the process that holds it, and closing
 with every configured slot occupied stops admissions, keeps the exact saved identities
 and never declares a remote turn stopped. Synthetic mechanism acceptance only: no live
@@ -20,15 +20,16 @@ from uuid import uuid4
 import pytest
 from test_knowledge import completed
 
+from experimenttracker.autopilot_policy import lead_id
 from experimenttracker.codex_client import TransportError
 from scenario import FakeGate
 from scenario.test_mixed_role_overlap import (
-    DECISION,
     EXPERIMENT_PHASE,
     activated,
     begin_turns,
     create,
     experiment_turn,
+    lead_turn,
     live_both,
     research_turn,
     saved,
@@ -81,10 +82,9 @@ async def both_occupied(scenario, wf, second="weekly"):
         )["request_id"]
         table, phase, turn, match = "project_turns", "project_synthesize", synthesize_turn, {"id": identity}
     else:
-        service, run = activated(scenario)
-        with store.tx() as db:
-            service.legacy_input(db, run["id"], "synthetic-input", "experiment_change", {"synthetic": True})
-        table, phase, turn, match = "autopilot_actions", "research", research_turn, {"run_id": run["id"]}
+        _, run = activated(scenario)
+        table, phase, turn = "agent_actions", "research", research_turn
+        match = {"experiment_id": lead_id(run["id"]), "phase": "research"}
     plan_gate, project_gate = scenario.gate(EXPERIMENT_PHASE), scenario.gate(phase)
     scenario.agent.script(EXPERIMENT_PHASE, turn=experiment_turn, turns=1)
     scenario.agent.script(phase, turn=turn, turns=1)
@@ -179,78 +179,64 @@ async def test_a_fresh_denial_after_the_cached_admit_never_reaches_begin(multi_s
     await wf.close()
 
 
-async def test_a_denied_research_turn_keeps_its_pending_decision_and_hold(multi_scenario, monkeypatch):
+async def test_a_denied_lead_turn_keeps_its_pending_action(multi_scenario, monkeypatch):
     scenario = multi_scenario
     wf = await scenario.started()
     store, backend, slots = scenario.store, scenario.agent_backend, scenario.slots
-    service, run = activated(scenario)
-    with store.tx() as db:
-        service.legacy_input(db, run["id"], "synthetic-input", "experiment_change", {"synthetic": True})
     session_gate = FakeGate()
     hold_session(monkeypatch, scenario, session_gate)
     scenario.agent.script("research", turn=research_turn, turns=1)
+    _, run = activated(scenario)
+    lead = lead_id(run["id"])
 
     # The cached selection filter admits and the pool claims a connection before the
     # dispatch waits inside its session setup.
     await scenario.run(session_gate.entered.is_set, gates=[session_gate])
-    claimed = saved(store, "autopilot_actions", run_id=run["id"])
-    reservation = wf.agent_pool.lookup("autopilot_actions", claimed["id"])
+    claimed = lead_turn(store, run)
+    reservation = wf.agent_pool.lookup("agent_actions", claimed["id"])
     assert (claimed["state"], claimed["turn_id"], reservation.connection is not None) == (
         "pending",
         None,
         True,
     )
+    task = wf.agent_pool.slots[reservation.slot].agent_task
     assert (backend.turns_started, slots.named("begin")) == (0, [])
 
-    # Fresh denied evidence arrives while the session setup waits: the binding admission
-    # refuses, records the run hold it already used and leaves this decision pending.
+    # Fresh denied evidence arrives while the session setup waits: the run's reserves
+    # refuse at the binding admission and leave this exact action pending.
     denied(scenario)
     wf.gate.update(quota_payload(DENIED))
     session_gate.release.set()
-    await wf.research.task
+    await task
     await asyncio.sleep(0)  # drain the done callback that releases the never-sent claim
 
-    pending = saved(store, "autopilot_actions", run_id=run["id"])
+    pending = lead_turn(store, run)
     assert pending["id"] == claimed["id"]
     assert (pending["state"], pending["thread_id"], pending["turn_id"]) == ("pending", None, None)
-    held = saved(store, "autopilot_runs", id=run["id"])
-    quota = wf.agent_pool.quota(run=held)
-    assert not quota.admitted and held["hold_reason"] == quota.reason
-    assert [
-        json.loads(event["payload"])["reason"]
-        for event in store.rows(
-            "SELECT payload FROM autopilot_events WHERE run_id=? AND kind='inference_hold'", (run["id"],)
-        )
-    ] == [quota.reason]
+    assert not wf.agent_pool.quota(eid=lead).admitted
     assert (backend.turns_started, slots.named("begin")) == (0, [])
     assert not store.rows(
         "SELECT seq FROM events WHERE kind IN ('agent_dispatch_intent','agent_turn_started')"
     )
     # The never-sent claim, the busy flag it published and its configured turn are released.
-    assert wf.agent_pool.lookup("autopilot_actions", pending["id"]) is None
-    assert (wf.research.task, wf.research.active_id) == (None, None)
+    assert wf.agent_pool.lookup("agent_actions", pending["id"]) is None
+    slot = wf.agent_pool.slots[reservation.slot]
+    assert (slot.agent_task, slot.active_action) == (None, None)
     assert wf.agent_pool.turn_capacity() == 2
 
-    # A denial neither retries nor replaces the decision: fresh admitted quota sends that
-    # exact saved action once, and the hold clears with the ordinary admission.
+    # A denial neither retries nor replaces the action: fresh admitted quota sends that
+    # exact saved action once.
     backend.used_percent = backend.weekly_used_percent = 0
     research_gate = scenario.gate("research")
-    running = await scenario.run(
-        lambda: saved(store, "autopilot_actions", run_id=run["id"], state="running"),
-        gates=[research_gate],
-    )
+    running = await scenario.run(lambda: lead_turn(store, run, state="running"), gates=[research_gate])
     assert running["id"] == claimed["id"]
     assert begin_turns(scenario, "research") == [running["turn_id"]]
     assert (backend.turns_started, len(slots.named("begin"))) == (1, 1)
-    assert saved(store, "autopilot_runs", id=run["id"])["hold_reason"] is None
 
     research_gate.release.set()
-    await turn_task(wf, "autopilot_actions", running)
-    applied = await scenario.run(
-        lambda: saved(store, "autopilot_actions", run_id=run["id"], state="completed")
-    )
-    assert applied["id"] == claimed["id"]
-    assert saved(store, "autopilot_runs", id=run["id"])["central_argument"] == DECISION["central_argument"]
+    await turn_task(wf, "agent_actions", running)
+    applied = await scenario.run(lambda: lead_turn(store, run, id=claimed["id"], state="completed"))
+    assert json.loads(applied["result"])["summary"] == "Synthetic lead turn."
     await wf.close()
 
 
@@ -423,14 +409,13 @@ async def test_shutdown_with_every_slot_occupied_closes_each_transport_once(
     # Shutdown stops admissions before any role and before any transport closes.
     observed = []
     for owner, name in (
-        (wf.research, "research"),
         (wf.supervisor, "supervisor"),
         (wf.controller, "controller"),
     ):
         record_close(monkeypatch, wf, owner, name, observed, slots)
     await wf.close()
 
-    assert observed == [(name, True, True, 0) for name in ("research", "supervisor", "controller")]
+    assert observed == [(name, True, True, 0) for name in ("supervisor", "controller")]
     assert plan_task.cancelled()
     assert [call["slot"] for call in slots.named("close")] == [0, 1]
     assert [call["instance"] for call in slots.named("close")] == [
@@ -447,7 +432,7 @@ async def test_shutdown_with_every_slot_occupied_closes_each_transport_once(
         reservation = wf.agent_pool.lookup(table, row["id"])
         assert reservation is not None and reservation.connection is not None
     assert wf.agent_pool.turn_capacity() == 0
-    pending = [wf.research.task, wf.supervisor.task, *(slot.agent_task for slot in wf.agent_pool.slots)]
+    pending = [wf.supervisor.task, *(slot.agent_task for slot in wf.agent_pool.slots)]
     assert [task for task in pending if task is not None and not task.done()] == []
     assert (backend.turns_started, len(slots.named("begin"))) == (2, 2)
 

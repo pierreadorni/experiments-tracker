@@ -172,3 +172,45 @@ def test_unreadable_authority_cannot_look_empty(tmp_path):
         )
     with pytest.raises(ValueError, match="foreign-key check"):
         hosted_inventory(broken, "e")
+
+
+def test_local_inventory_lists_unsettled_project_turns_and_runs_awaiting_a_lead(tmp_path):
+    store = Store(tmp_path / "owner.sqlite")
+    try:
+        with store.tx() as db:
+            db.executemany(
+                "INSERT INTO autopilot_runs(id,project_id,status,central_argument,created_at,updated_at) "
+                "VALUES(?,?,?,?,1,1)",
+                (
+                    ("open", "a", "active", "private argument"),
+                    ("led", "b", "paused", None),
+                    ("done", "c", "completed", None),
+                ),
+            )
+            db.execute(
+                "INSERT INTO experiments(id,brief,recipe_id,contract,phase,created_at,updated_at) "
+                "VALUES('lead','private brief','fixture','{\"autopilot_lead\":{\"run_id\":\"led\"}}','preparing',1,1)"
+            )
+            db.executemany(
+                "INSERT INTO autopilot_actions(id,run_id,cursor,control_revision,state,input,thread_id,turn_id,"
+                "created_at,updated_at) VALUES(?,?,0,0,?,'private',?,?,1,1)",
+                (
+                    ("lost", "open", "uncertain", "th", None),
+                    ("old", "open", "completed", "th", "turn"),
+                    ("sent", "led", "running", "th", "turn"),
+                    ("ended", "done", "failed", None, None),
+                ),
+            )
+        store.backup(tmp_path / "backup")
+    finally:
+        store.close()
+
+    report = local_inventory(tmp_path / "backup" / "workflow.sqlite")
+    assert [(row["id"], row["state"], row["turn_id"]) for row in report["autopilot_unsettled_actions"]] == [
+        ("lost", "uncertain", None),
+        ("sent", "running", "turn"),
+    ]
+    assert [(row["id"], row["has_central_argument"]) for row in report["autopilot_runs_awaiting_lead"]] == [
+        ("open", 1)
+    ]
+    assert "private" not in str(report)

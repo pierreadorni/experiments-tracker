@@ -30,7 +30,7 @@ INTEGRATION_SECONDS = 15  # Between drained integration requests (Git and checks
 # agent draining continue before it, and these steps stay skipped after it. Integration
 # joins them because it fast-forwards the project base checkout. The control task
 # applies the same gate to its own advancement region.
-GATED = ("watchdog", "research", "supervisor", "integration", "retention", "backup")
+GATED = ("watchdog", "supervisor", "integration", "retention", "backup")
 # Cancelling a task that awaits ``asyncio.to_thread`` leaves its thread running, so the
 # retention and integration loops are awaited instead of cancelled: the store must never
 # close while a pass they own can still write or fast-forward a checkout.
@@ -40,7 +40,7 @@ THREADED = ("retention", "integration")
 class Runner:
     """Owns the named periodic loops, their stop event and their in-memory health.
 
-    ``control``, ``research`` and ``supervisor`` hold one primary-agent lock: they
+    ``control`` and ``supervisor`` hold one primary-agent lock: they
     mutate dispatch state, so their check-then-act regions stay exclusive across
     awaits. Observation, the watchdog, integration, retention and backup never take it.
     """
@@ -58,7 +58,6 @@ class Runner:
             "control": self.control,
             "observe": self.observe,
             "watchdog": self.watchdog,
-            "research": self.research,
             "supervisor": self.supervisor,
             "integration": self.integration,
             "retention": self.retention,
@@ -72,7 +71,6 @@ class Runner:
             "control": pacing,
             "observe": self.workflow.config.scheduler_seconds,
             "watchdog": pacing,
-            "research": pacing,
             "supervisor": pacing,
             "integration": INTEGRATION_SECONDS,
             "retention": RETENTION_SECONDS,
@@ -165,10 +163,6 @@ class Runner:
 
     async def watchdog(self):
         await self.workflow.step_watchdog(clock.now())
-
-    async def research(self):
-        async with self.lock:
-            await self.workflow.step_research()
 
     async def supervisor(self):
         async with self.lock:

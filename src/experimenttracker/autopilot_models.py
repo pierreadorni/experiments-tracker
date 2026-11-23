@@ -91,10 +91,3 @@ class AutopilotCommand(StrictModel):
     experiment_id: UUID | None = None
     control: Literal["defer", "resume", "abandon", "steer"] | None = None
     input_id: str | None = Field(default=None, max_length=100)
-
-
-class ProjectDecision(StrictModel):
-    summary: str = Field(min_length=1, max_length=8000)
-    central_argument: str = Field(min_length=1, max_length=4000)
-    uncertainty: str = Field(min_length=1, max_length=4000)
-    outcome: Literal["continue", "pivot", "wait", "request_guidance", "handoff"]

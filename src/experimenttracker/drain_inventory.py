@@ -1,4 +1,4 @@
-"""Read-only T4.8 evidence from offline SQLite backups."""
+"""Read-only T4.8 and T5.1e drain evidence from offline SQLite backups."""
 
 import argparse
 import json
@@ -175,6 +175,26 @@ def local_inventory(path: Path):
                 + """SELECT a.intent_id, j.experiment_id, a.run_id, a.state FROM autopilot_allocations a
                     JOIN jobs j ON j.intent_id=a.intent_id JOIN c3 ON c3.id=j.experiment_id
                     WHERE a.state!='settled' ORDER BY a.intent_id"""
+            ),
+            # T5.1e: the project-turn engine has no reconciler, so this list must be
+            # empty before that release starts; a run listed here keeps no lead.
+            "autopilot_unsettled_actions": rows(
+                """SELECT a.id, a.run_id, r.project_id, a.state, a.thread_id, a.turn_id,
+                    a.pending_request IS NOT NULL AS has_pending_request, a.updated_at
+                    FROM autopilot_actions a JOIN autopilot_runs r ON r.id=a.run_id
+                    WHERE a.state IN ('pending','dispatching','running','uncertain','received')
+                    ORDER BY a.id"""
+            ),
+            # Open runs that startup gives a lead, seeded from these saved fields.
+            "autopilot_runs_awaiting_lead": rows(
+                """SELECT r.id, r.project_id, r.status, r.hold_reason,
+                    r.central_argument IS NOT NULL AS has_central_argument,
+                    r.uncertainty IS NOT NULL AS has_uncertainty
+                    FROM autopilot_runs r
+                    WHERE r.status IN ('active','paused','handoff_ready','handoff_incomplete')
+                    AND NOT EXISTS (SELECT 1 FROM experiments e WHERE CASE WHEN json_valid(e.contract)
+                        THEN json_extract(e.contract,'$.autopilot_lead.run_id') END = r.id)
+                    ORDER BY r.id"""
             ),
             "local_unapplied_commands": rows(
                 """SELECT request_id, experiment_id, kind, origin, state FROM commands

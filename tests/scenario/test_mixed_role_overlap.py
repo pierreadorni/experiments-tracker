@@ -1,7 +1,7 @@
 """Mixed-role overlap and serialization through the real engine (T1.6c-1).
 
 Several configured slots and one explicit shared fake backend prove that an
-experiment, a research decision, weekly supervision and a discussion run at the same
+experiment, an Autopilot lead turn, weekly supervision and a discussion run at the same
 time on distinct connections and process generations, while one slot and one typed
 owner serialize. Synthetic mechanism acceptance only: no live scheduler, managed
 account, socket runtime or research.
@@ -20,12 +20,6 @@ from experimenttracker.autopilot import Autopilot
 from experimenttracker.autopilot_policy import lead_id
 from experimenttracker.workspaces import initialize_project
 
-DECISION = {
-    "summary": "Synthetic checkpoint.",
-    "central_argument": "No real science in this fixture.",
-    "uncertainty": "Real retrieval remains a live prerequisite.",
-    "outcome": "wait",
-}
 EXPERIMENT_PHASE = "experiment_research"
 
 
@@ -34,7 +28,8 @@ def experiment_turn(payload, workspace):
 
 
 def research_turn(payload, workspace):
-    return DECISION
+    """The Autopilot lead's turn end; the lead is a contract 4 research experiment."""
+    return {"status": "wait", "summary": "Synthetic lead turn.", "next": "timer:3600"}
 
 
 def synthesize_turn(payload, workspace):
@@ -111,10 +106,12 @@ def activated(scenario):
     service = Autopilot(scenario.store, scenario.config)
     command(service, "configure", policy=policy(now=scenario.clock.now()).model_dump())
     command(service, "activate")
-    run = service.run("test-project")
-    # Hold the lead: these scenarios exercise the project-turn engine until T5.1e.
-    scenario.store.update(lead_id(run["id"]), pause_agent=True)
-    return service, run
+    return service, service.run("test-project")
+
+
+def lead_turn(store, run, **where):
+    """The saved research action of the run's lead experiment."""
+    return saved(store, "agent_actions", experiment_id=lead_id(run["id"]), phase="research", **where)
 
 
 def connection_evidence(scenario, wf, source_table, row):
@@ -145,8 +142,6 @@ def live_both(scenario, wf, left, right):
 def turn_task(wf, source_table, row):
     """The dispatch task that holds this saved turn's live connection."""
     slot = wf.agent_pool.slots[wf.agent_pool.lookup(source_table, row["id"]).connection.slot]
-    if source_table == "autopilot_actions":
-        return wf.research.task
     if source_table == "project_turns":
         return wf.supervisor.task
     return slot.agent_task
@@ -158,46 +153,46 @@ def begin_turns(scenario, phase):
     ]
 
 
-async def test_two_slots_overlap_an_experiment_and_a_research_decision(multi_scenario):
+async def test_two_slots_overlap_an_experiment_and_a_lead_turn(multi_scenario):
     scenario = multi_scenario
     wf = await scenario.started()
     store, backend = scenario.store, scenario.agent_backend
-    service, run = activated(scenario)
-    with store.tx() as db:
-        service.legacy_input(db, run["id"], "synthetic-input", "experiment_change", {"synthetic": True})
     experiment_gate, research_gate = scenario.gate(EXPERIMENT_PHASE), scenario.gate("research")
     scenario.agent.script(EXPERIMENT_PHASE, turn=experiment_turn, turns=1)
     scenario.agent.script("research", turn=research_turn, turns=1)
+    _, run = activated(scenario)
     eid = create(store)
 
     def both_running():
         turn = saved(store, "agent_actions", experiment_id=eid, phase="research", state="running")
-        decision = saved(store, "autopilot_actions", run_id=run["id"], state="running")
-        return (turn, decision) if turn and decision else None
+        lead = lead_turn(store, run, state="running")
+        return (turn, lead) if turn and lead else None
 
-    turn, decision = await scenario.run(both_running, gates=[experiment_gate, research_gate])
-    live_both(scenario, wf, ("agent_actions", turn), ("autopilot_actions", decision))
+    turn, lead = await scenario.run(both_running, gates=[experiment_gate, research_gate])
+    live_both(scenario, wf, ("agent_actions", turn), ("agent_actions", lead))
+    # The lead is an experiment owner of its own, never the project's owner.
+    assert wf.agent_pool.lookup("agent_actions", lead["id"]).owner == experiment_owner(lead_id(run["id"]))
     assert backend.turns_started == 2
 
-    # The experiment's own saved turn finishes while research stays live.
+    # The experiment's own saved turn finishes while the lead stays live.
     experiment_gate.release.set()
     await turn_task(wf, "agent_actions", turn)
     await scenario.run(
         lambda: saved(store, "agent_actions", id=turn["id"], state="completed"),
         gates=[research_gate],
     )
-    assert saved(store, "autopilot_actions", id=decision["id"])["state"] == "running"
+    assert saved(store, "agent_actions", id=lead["id"])["state"] == "running"
 
-    # Then the research decision applies its own saved result to its own run.
+    # Then the lead settles its own saved turn through C4 settlement.
     research_gate.release.set()
-    await turn_task(wf, "autopilot_actions", decision)
+    await turn_task(wf, "agent_actions", lead)
     applied = await scenario.run(
-        lambda: saved(store, "autopilot_actions", id=decision["id"], state="completed"),
+        lambda: saved(store, "agent_actions", id=lead["id"], state="completed"),
         gates=[research_gate],
     )
-    assert json.loads(applied["result"])["summary"] == DECISION["summary"]
-    assert saved(store, "autopilot_runs", id=run["id"])["central_argument"] == DECISION["central_argument"]
+    assert json.loads(applied["result"])["summary"] == "Synthetic lead turn."
     assert begin_turns(scenario, "research") == [applied["turn_id"]]
+    assert not store.rows("SELECT * FROM autopilot_actions")
 
     # A closed socket is not a finished turn: the next generation is a new process,
     # and the next admitted turn records exactly that generation.
@@ -330,7 +325,7 @@ async def test_one_slot_serializes_mixed_roles_without_a_hidden_agent(scenario):
     # One configured connection: the weekly turn keeps its saved place, nothing else starts.
     scenario.one_session()
     assert saved(store, "project_turns", id=identity)["state"] in ("queued", "waiting")
-    assert scenario.workflow.supervisor.task is None and scenario.workflow.research.task is None
+    assert scenario.workflow.supervisor.task is None
     assert scenario.agent_backend.turns_started == 1 and scenario.agent.start_count == 1
 
     experiment_gate.release.set()
@@ -402,7 +397,7 @@ async def test_same_experiment_serializes_steering_while_a_spare_slot_serves_sup
     await wf.close()
 
 
-async def test_one_typed_project_owner_serializes_research_and_weekly_synthesis(multi_scenario):
+async def test_a_lead_turn_runs_beside_the_project_s_weekly_synthesis(multi_scenario):
     scenario = multi_scenario
     wf = await scenario.started()
     store = scenario.store
@@ -420,37 +415,26 @@ async def test_one_typed_project_owner_serializes_research_and_weekly_synthesis(
     )
     connection_evidence(scenario, wf, "project_turns", weekly)
 
-    # Research and supervision of one project share the typed project owner, so the
-    # free connection may not start the pending research action on the same owner.
-    service, run = activated(scenario)
-    with store.tx() as db:
-        service.legacy_input(db, run["id"], "synthetic-input", "experiment_change", {"synthetic": True})
-    pending = await scenario.run(
-        lambda: saved(store, "autopilot_actions", run_id=run["id"], state="pending"),
-        gates=[synthesis_gate],
+    # The retired project-turn engine shared the typed project owner with supervision.
+    # The lead is an experiment owner, so the free connection starts its first turn.
+    _, run = activated(scenario)
+    lead = await scenario.run(
+        lambda: lead_turn(store, run, state="running"), gates=[synthesis_gate, research_gate]
     )
-    await wf.tick(force_observe=True)  # the pass that prepares the research proposal
-    [proposal] = wf.agent_pool.proposals
-    assert proposal.key == ("autopilot_actions", pending["id"])
-    wf.agent_pool.admit()  # the selection that sees one free turn and one busy owner
-    assert wf.agent_pool.turn_capacity() == 1 and wf.research.task is None
-    assert wf.agent_pool.lookup("autopilot_actions", pending["id"]) is None
-    assert saved(store, "project_turns", id=identity)["state"] == "running"
+    live_both(scenario, wf, ("project_turns", weekly), ("agent_actions", lead))
+    assert wf.agent_pool.lookup("project_turns", identity).owner == project_owner("test-project")
+    assert wf.agent_pool.lookup("agent_actions", lead["id"]).owner == experiment_owner(lead_id(run["id"]))
+    assert begin_turns(scenario, "research") == [lead["turn_id"]]
 
-    # Settling the weekly turn hands the shared owner's next turn to research, once.
     synthesis_gate.release.set()
     await turn_task(wf, "project_turns", weekly)
     assert (
         await scenario.run(
-            lambda: saved(store, "project_turns", id=identity, state="completed"), gates=[synthesis_gate]
+            lambda: saved(store, "project_turns", id=identity, state="completed"), gates=[research_gate]
         )
     )["report_version"] == 1
-    research = await scenario.run(
-        lambda: saved(store, "autopilot_actions", id=pending["id"], state="running"),
-        gates=[research_gate],
-    )
-    connection_evidence(scenario, wf, "autopilot_actions", research)
-    assert begin_turns(scenario, "research") == [research["turn_id"]]
     research_gate.release.set()
-    await turn_task(wf, "autopilot_actions", research)
+    await turn_task(wf, "agent_actions", lead)
+    await scenario.run(lambda: lead_turn(store, run, id=lead["id"], state="completed"))
+    assert begin_turns(scenario, "research") == [lead["turn_id"]]
     await wf.close()

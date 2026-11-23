@@ -162,22 +162,18 @@ async def test_shutdown_stops_admissions_before_roles_and_closes_each_transport_
     await asyncio.sleep(0)
     observed = []
 
-    async def research_close():
-        observed.append(("research", wf.closing, wf.agent_pool.closing))
-
     async def supervisor_close():
         observed.append(("supervisor", wf.closing, wf.agent_pool.closing))
 
     async def controller_close():
         observed.append(("controller", wf.closing, wf.agent_pool.closing))
 
-    monkeypatch.setattr(wf.research, "close", research_close)
     monkeypatch.setattr(wf.supervisor, "close", supervisor_close)
     monkeypatch.setattr(wf.controller, "close", controller_close)
     await wf.close()
 
     # Admissions stopped before the first role and before any transport closed.
-    assert observed == [("research", True, True), ("supervisor", True, True), ("controller", True, True)]
+    assert observed == [("supervisor", True, True), ("controller", True, True)]
     assert [entry.agent.closes for entry in wf.agent_pool.slots] == [1, 1]
     assert slot.agent_task.cancelled()
     # A withdrawn turn keeps its saved uncertainty and its saved identities.

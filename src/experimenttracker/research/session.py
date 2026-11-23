@@ -134,7 +134,17 @@ def first_turn(store, eid):
             "SELECT 1 FROM agent_actions WHERE experiment_id=? AND phase=?", (eid, _RESEARCH_PHASE)
         ).fetchone():
             return None
-        return _queue(store, db, experiment, _owner_constraints(db, contract))
+        # A lead created at the T5.1e cutover starts from its seeded checkpoint.
+        seeded = db.execute(
+            "SELECT 1 FROM events WHERE experiment_id=? AND kind='research_checkpoint_saved'", (eid,)
+        ).fetchone()
+        return _queue(
+            store,
+            db,
+            experiment,
+            _owner_constraints(db, contract),
+            checkpoint=DEFERRED_CHECKPOINT if seeded else None,
+        )
 
 
 def _queue(

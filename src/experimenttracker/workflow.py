@@ -8,6 +8,7 @@ import sys
 import time
 from functools import partial
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 from . import (
@@ -23,7 +24,7 @@ from . import (
     resolver,
 )
 from .agent_pool import TITLE_PRIORITY, AgentPool, experiment_owner
-from .autopilot_controller import ResearchController
+from .autopilot import Autopilot
 from .cancellation import process_cancellations
 from .codex_client import CodexAgent, NeedsAttention
 from .controller import Controller, ControllerDecision
@@ -79,7 +80,6 @@ TERMINAL_BAD = {
 HEALTH_COUNTED_STEPS = (
     "control",
     "observe",
-    "research",
     "supervisor",
     "watchdog",
     "retention",
@@ -157,7 +157,8 @@ class Workflow:
         self.integration_resolver = IntegrationResolver(self)
         self.supervisor = ProjectSupervisor(self)
         self.controller = Controller(self)
-        self.research = ResearchController(self)
+        # The Autopilot service; callers read it as ``research.service``.
+        self.research = SimpleNamespace(service=Autopilot(store, config))
         self.research_dispatch = ResearchDispatch(self, partial(settle_research_turn, self))
         self.resolver = TurnResolver(self)
         self.submission_lock = asyncio.Lock()
@@ -407,6 +408,8 @@ class Workflow:
         # backend family, the watchdog gives that family one interval from this time.
         self.started_at = clock.now()
         self.store.archive_legacy_experiments()
+        # Open Autopilot runs saved before the lead get one now (OWNER 8, T5.1e).
+        self.research.service.cutover()
         # A database saved before the obligation source hooks keeps the same open
         # responsibilities once ticking starts; a second start re-saves nothing.
         obligation_backfill.backfill(self.store)
@@ -490,7 +493,7 @@ class Workflow:
                     (clock.now(), encode(payload), decision.admitted, decision.reason),
                 )
             slot.last_quota_refresh = clock.now()
-            await self.research.interrupt_holds()
+            await self.interrupt_autopilot_holds()
             if not decision.admitted:
                 await self.supervisor.interrupt()
                 await self.agent_pool.interrupt_occupied("quota_hold")
@@ -515,9 +518,7 @@ class Workflow:
         params = message.get("params", {})
         connection = self.agent_pool.connection(slot, start_count)
         owner = self.agent_pool.live_owner(connection, params.get("threadId"), params.get("turnId"))
-        if owner and owner.source_table == "autopilot_actions":
-            pending = await self.research.request(message, owner)
-        elif owner and owner.source_table == "agent_actions":
+        if owner and owner.source_table == "agent_actions":
             action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (owner.action_id,))
             if not action:
                 raise NeedsAttention("request has no owned agent turn on this connection")
@@ -568,7 +569,6 @@ class Workflow:
         # proposal prepared after this point is selected by the next pass.
         self.agent_pool.admit()
         await self.step_supervisor()
-        await self.step_research()
         await self.step_retention(now)
         await self.step_backup(now)
 
@@ -594,16 +594,15 @@ class Workflow:
         await self.step_control_advance()
         await self.step_control_finish()
         # The manual adapter and the production runner both select once per pass, after
-        # every role has offered its prepared proposals to the pool. Supervisor and
-        # research proposals prepared after this point are selected by the next pass.
+        # every role has offered its prepared proposals to the pool. Supervisor
+        # proposals prepared after this point are selected by the next pass.
         self.agent_pool.admit()
 
     async def step_control_before_observe(self):
         """Intake: legacy archive, input replies, cancellations, projects and reserve."""
         self.store.archive_legacy_experiments()
         self.research.service.tick()
-        await self.research.reply_inputs()
-        await self.research.interrupt_holds()
+        await self.interrupt_autopilot_holds()
         await process_cancellations(self)
         await early_repair.reconcile_cancellations(self)
         self.projects.tick()
@@ -800,9 +799,23 @@ class Workflow:
         """Advance the project supervisor; the next control pass selects its proposal."""
         await self.supervisor.advance()
 
-    async def step_research(self):
-        """Advance the research controller; the next control pass selects its proposal."""
-        await self.research.advance()
+    async def interrupt_autopilot_holds(self):
+        """Interrupt a live member turn its run's authority or reserves no longer admit."""
+        service, pool = self.research.service, self.agent_pool
+        for reservation in pool.live():
+            if reservation.source_table != "agent_actions":
+                continue
+            action = self.store.one("SELECT * FROM agent_actions WHERE id=?", (reservation.action_id,))
+            if not action or not service.member(action["experiment_id"]) or not action["turn_id"]:
+                continue
+            reason = service.authority(
+                action["experiment_id"], action["phase"], action["phase"].removeprefix("agent:")
+            )
+            if not reason and not pool.quota(eid=action["experiment_id"]).admitted:
+                reason = "quota_hold"
+            if reason and action["interrupt_reason"] != reason:
+                pool.hold(action, reason)
+                await pool.interrupt(reservation)
 
     async def step_retention(self, now):
         """Prune outbox payloads in bounded batches when the retention window is due."""
@@ -1715,7 +1728,6 @@ class Workflow:
         # must not claim a turn whose transport this call is about to close.
         self.closing = True
         self.agent_pool.closing = True
-        await self.research.close()
         await self.supervisor.close()
         await self.controller.close()
         # Threads only read/seal filesystem evidence; drain them before releasing ownership.

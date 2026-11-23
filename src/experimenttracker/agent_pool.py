@@ -48,7 +48,7 @@ UNSETTLED_STATES_SQL = "('dispatching','running','uncertain','received')"
 # Turns whose identity can outlive the process that sent them, so each may still
 # occupy one configured turn of the managed account until it is read back.
 SAVED_OWNED_STATES = "('dispatching','running','uncertain')"
-TURN_DEBT_SOURCES = ("agent_actions", "project_turns", "autopilot_actions")
+TURN_DEBT_SOURCES = ("agent_actions", "project_turns")
 
 # A saved row in one of these states proves its turn is over, so the claim of a task
 # that has not run its release callback yet no longer holds a configured turn.
@@ -60,7 +60,7 @@ WEEKLY_PLENTY_REASON = "weekly synthesis requires plentiful subscription quota"
 TITLED_PHASES = {"title": "title", "summarize_title": "title"}
 
 # Tables whose saved thread/turn identity can be matched to a callback.
-ROUTED_SOURCES = ("agent_actions", "autopilot_actions", "project_turns")
+ROUTED_SOURCES = ("agent_actions", "project_turns")
 
 
 def experiment_owner(eid):
@@ -291,7 +291,7 @@ class AgentPool:
             if not self.unchanged(proposal):
                 continue
             slot = self.free_connection(proposal)
-            if slot is None or not self.owner_free(proposal.owner, proposal.key):
+            if slot is None or not self.owner_free(proposal.owner):
                 continue
             self.start(proposal, slot)
 
@@ -356,7 +356,7 @@ class AgentPool:
                 return slot
         return None
 
-    def owner_free(self, owner, candidate=None):
+    def owner_free(self, owner):
         """A live claim or a saved unsettled row keeps its owner's next turn out.
 
         The claim covers the moment before a dispatch saves its intent; the source
@@ -373,17 +373,9 @@ class AgentPool:
                 f"SELECT 1 FROM agent_actions WHERE experiment_id=? AND state IN {UNSETTLED_STATES_SQL}",
                 (identity,),
             )
-        if self.store.one(
+        return not self.store.one(
             f"SELECT 1 FROM project_turns WHERE project_id=? AND state IN {UNSETTLED_STATES_SQL}",
             (identity,),
-        ):
-            return False
-        action_id = candidate[1] if candidate and candidate[0] == "autopilot_actions" else None
-        return not self.store.one(
-            "SELECT 1 FROM autopilot_actions a JOIN autopilot_runs r ON r.id=a.run_id "
-            f"WHERE r.project_id=? AND a.state IN {UNSETTLED_STATES_SQL} "
-            "AND (? IS NULL OR a.id<>?)",
-            (identity, action_id, action_id),
         )
 
     def start(self, proposal, slot):
@@ -402,9 +394,7 @@ class AgentPool:
 
     def occupy(self, proposal, slot, task):
         """Publish the claimed task in the busy flag its own role still reads."""
-        if proposal.source_table == "autopilot_actions":
-            self.workflow.research.task, self.workflow.research.active_id = task, proposal.row["id"]
-        elif proposal.source_table == "project_turns":
+        if proposal.source_table == "project_turns":
             self.workflow.supervisor.task, self.workflow.supervisor.active_id = task, proposal.row["id"]
         else:
             slot.agent_task, slot.active_action = task, proposal.row["id"]
@@ -451,12 +441,8 @@ class AgentPool:
 
     def release_flag(self, reservation, task):
         """Clear the busy flag of a released never-sent claim, where its role reads it."""
-        if reservation.source_table in ("autopilot_actions", "project_turns"):
-            owner = (
-                self.workflow.research
-                if reservation.source_table == "autopilot_actions"
-                else self.workflow.supervisor
-            )
+        if reservation.source_table == "project_turns":
+            owner = self.workflow.supervisor
             if owner.task is task:
                 owner.task, owner.active_id = None, None
             return
@@ -572,11 +558,6 @@ class AgentPool:
             f"SELECT id,project_id,thread_id,turn_id FROM project_turns WHERE state IN {SAVED_OWNED_STATES}"
         ):
             self._saved("project_turns", row, "supervisor", project_owner(row["project_id"]))
-        for row in self.store.rows(
-            "SELECT a.id,r.project_id,a.thread_id,a.turn_id FROM autopilot_actions a "
-            f"JOIN autopilot_runs r ON r.id=a.run_id WHERE a.state IN {SAVED_OWNED_STATES}"
-        ):
-            self._saved("autopilot_actions", row, "research", project_owner(row["project_id"]))
 
     def _saved(self, source_table, row, role, owner):
         self.reservations[(source_table, row["id"])] = Reservation(
