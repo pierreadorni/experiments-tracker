@@ -154,7 +154,14 @@ class Autopilot:
             (str(uuid4()), run_id, run["revision"], kind, encode(detail or {}), now),
         )
 
-    def wake(self, db, run_id, identity, kind, document=None):
+    def update(self, db, run_id, source_id):
+        """Wake the run's lead with one debounced ``project_update`` (see ``research.wakeups``)."""
+        from .research import wakeups
+
+        wakeups.project_update(self.store, db, run_id, source_id)
+
+    def legacy_input(self, db, run_id, identity, kind, document=None):
+        """Feed the saved project-turn engine an answer to its own question (removed in T5.1e)."""
         run = self.run(run_id=run_id)
         seq = run["input_cursor"] + 1
         added = db.execute(
@@ -215,9 +222,15 @@ class Autopilot:
                 "SELECT id,cursor,result,created_at FROM autopilot_actions WHERE run_id=? AND state='completed' AND result IS NOT NULL ORDER BY created_at DESC LIMIT 20",
                 (run["id"],),
             ),
+            # Saved inputs, then owner messages that wake a lead (which have no input row).
             "messages": self.store.rows(
-                "SELECT * FROM autopilot_inputs WHERE run_id=? AND kind IN ('message','answer') ORDER BY seq DESC LIMIT 30",
-                (run["id"],),
+                "SELECT seq,kind,document,created_at FROM autopilot_inputs WHERE run_id=? "
+                "AND kind IN ('message','answer') UNION ALL "
+                "SELECT -rowid,'message',json_object('text',json_extract(payload,'$.text'),'author',author),"
+                "created_at FROM autopilot_requests WHERE run_id=? AND json_extract(payload,'$.kind')='message' "
+                "AND request_id NOT IN (SELECT identity FROM autopilot_inputs WHERE run_id=?) "
+                "ORDER BY created_at DESC LIMIT 30",
+                (run["id"], run["id"], run["id"]),
             ),
             "actions": self.store.rows(
                 "SELECT id,state,error,interrupt_reason,created_at FROM autopilot_actions WHERE run_id=? ORDER BY created_at DESC LIMIT 20",
@@ -338,7 +351,7 @@ class Autopilot:
                         db.execute(
                             "UPDATE autopilot_runs SET status='active',handoff=NULL WHERE id=?", (run_id,)
                         )
-                    self.wake(db, run_id, request_id, "policy_revision")
+                    self.update(db, run_id, f"policy:{revision}")
                 elif body.kind == "activate":
                     if run["status"] != "draft":
                         raise Conflict("only a draft can be activated")
@@ -370,7 +383,6 @@ class Autopilot:
                         experiment_id=autopilot_policy.lead_id(run_id),
                         _db=db,
                     )
-                    self.wake(db, run_id, request_id, "activation")
                 elif body.kind in ("pause", "resume", "stop", "complete"):
                     allowed = {
                         "pause": {"active", "handoff_ready", "handoff_incomplete"},
@@ -392,8 +404,7 @@ class Autopilot:
                         "UPDATE autopilot_runs SET status=?,control_revision=control_revision+1 WHERE id=?",
                         (state, run_id),
                     )
-                    if body.kind == "resume":
-                        self.wake(db, run_id, request_id, "resume")
+                    # A resumed run admits the lead's saved, unconsumed wakeups again.
                 elif body.kind in ("message", "answer"):
                     if not body.text.strip():
                         raise Conflict("message is empty")
@@ -421,8 +432,12 @@ class Autopilot:
                             "UPDATE autopilot_actions SET pending_request=? WHERE id=?",
                             (encode(pending), pending_action["id"]),
                         )
-                    self.wake(db, run_id, request_id, body.kind, {"text": body.text, "author": origin})
-                    if body.kind == "message":
+                    if body.kind == "answer":
+                        self.legacy_input(
+                            db, run_id, request_id, "answer", {"text": body.text, "author": origin}
+                        )
+                    else:
+                        self.update(db, run_id, f"message:{request_id}")
                         db.execute(
                             "UPDATE autopilot_runs SET control_revision=control_revision+1 WHERE id=?",
                             (run_id,),
@@ -587,7 +602,7 @@ class Autopilot:
         return {"versions": {document.name: current + 1}}
 
     def project_status(self, run, document=None):
-        """The lead's bounded read: run status text, pending objectives and versions."""
+        """The lead's bounded read: run status, owner messages, pending objectives and versions."""
         result = {
             "status": autopilot_policy.project_status(self.store.db, run["id"]),
             "pending_objectives": [],
@@ -608,6 +623,14 @@ class Autopilot:
                 )
             },
         }
+        result["messages"] = [
+            row["text"]
+            for row in self.store.rows(
+                "SELECT json_extract(payload,'$.text') AS text FROM autopilot_requests WHERE run_id=? "
+                "AND json_extract(payload,'$.kind')='message' ORDER BY created_at DESC,rowid DESC LIMIT 5",
+                (run["id"],),
+            )
+        ]
         for row in self.store.rows(
             "SELECT e.id,e.pending_request FROM experiments e JOIN autopilot_members m "
             "ON m.experiment_id=e.id WHERE m.run_id=? AND e.pending_request IS NOT NULL LIMIT 20",
@@ -805,7 +828,11 @@ class Autopilot:
         wakeups.record(self.store, eid, wakeups.ORCHESTRATOR_APPROVAL, request_id, db=db)
 
     def tick(self, now=None):
-        """Calendar, current reports and result wakeups never require inference."""
+        """Calendar boundaries, reports and the deadline wake the lead; none needs inference.
+
+        Each boundary is one idempotent ``autopilot_transitions`` row per policy
+        revision, saved with its lead wakeup, so a restart never wakes it twice.
+        """
         now = clock.now() if now is None else now
         for run in self.store.rows(
             "SELECT * FROM autopilot_runs WHERE status IN ('active','paused','handoff_ready','handoff_incomplete')"
@@ -827,32 +854,20 @@ class Autopilot:
                             encode({"foundation": run["foundation"], "uncertainty": run["uncertainty"]}),
                         ),
                     ).rowcount:
-                        self.wake(
-                            db,
-                            run["id"],
-                            f"phase:{run['policy_revision']}:{phase}",
-                            "phase_boundary",
-                            {"phase": phase},
-                        )
+                        self.update(db, run["id"], f"phase:{run['policy_revision']}:{phase}")
                         self.emit(db, run["id"], "phase_boundary", {"phase": phase, "nominal_at": boundary})
                 db.execute("UPDATE autopilot_runs SET phase=? WHERE id=?", (schedule["phase"], run["id"]))
                 if run["next_report_at"] and now >= run["next_report_at"]:
                     # One current report covers missed intervals, never a backlog of model turns.
                     interval = math.floor((now - run["next_report_at"]) / WEEK)
                     due = run["next_report_at"] + interval * WEEK
-                    self.wake(
-                        db,
-                        run["id"],
-                        f"report:{due}",
-                        "weekly_report",
-                        {"covers_since": run["next_report_at"], "due_at": due},
-                    )
+                    self.update(db, run["id"], f"report:{due}")
                     db.execute(
                         "UPDATE autopilot_runs SET next_report_at=? WHERE id=?", (due + WEEK, run["id"])
                     )
                     self.emit(db, run["id"], "weekly_report_due")
                 if run["next_review_at"] and now >= run["next_review_at"]:
-                    self.wake(db, run["id"], f"review:{run['next_review_at']}", "scheduled_review")
+                    self.update(db, run["id"], f"review:{run['next_review_at']}")
                     db.execute("UPDATE autopilot_runs SET next_review_at=NULL WHERE id=?", (run["id"],))
                 if schedule["handoff_due"] and run["handoff"] is None:
                     docs = self.store.rows(
@@ -885,3 +900,4 @@ class Autopilot:
                         ("handoff:" + run["id"], run["id"], handoff["summary"], now),
                     )
                     self.emit(db, run["id"], "deadline_handoff", handoff)
+                    self.update(db, run["id"], "handoff")

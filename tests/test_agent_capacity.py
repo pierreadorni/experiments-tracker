@@ -180,7 +180,7 @@ async def test_priority_orders_research_before_a_weekly_project_turn(runtime, mo
         "request_id"
     ]
     with store.tx() as db:
-        service.wake(db, run["id"], "synthetic-input", "experiment_change", {"synthetic": True})
+        service.legacy_input(db, run["id"], "synthetic-input", "experiment_change", {"synthetic": True})
     # Both roles offer a prepared turn; the single admission orders them by class,
     # not by the step that happened to prepare one of them first.
     await wf.research.advance()

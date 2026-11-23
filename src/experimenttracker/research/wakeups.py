@@ -1,7 +1,7 @@
 """C7 event wake queue: durable exact events coalesced into one 60-second window.
 
 Only a supported event wakes a contract 4 experiment: an answered, satisfied owner
-request or a saved terminal job. An ambient tick, an unanswered, expired or
+request, a saved terminal job, or a project update of an Autopilot lead. An ambient tick, an unanswered, expired or
 unsatisfied request and a healthy job are refused. Each event keeps one
 ``agent_wakeups`` row whose ID derives from the exact experiment, event and source,
 so a replay adopts the saved row. Arrivals share the first arrival's due time and are
@@ -30,7 +30,14 @@ OWNER_REQUEST_ANSWERED = "owner_request_answered"
 ORCHESTRATOR_APPROVAL = "orchestrator_approval"
 JOB_TERMINAL = "job_terminal"
 RESEARCH_TIMER = "research_timer"
-SUPPORTED_EVENTS = frozenset({OWNER_REQUEST_ANSWERED, ORCHESTRATOR_APPROVAL, JOB_TERMINAL, RESEARCH_TIMER})
+# A run event the Autopilot lead must see: a member approval request or terminal
+# turn, an owner message, a policy revision, a calendar boundary, a weekly report,
+# a scheduled review or the handoff deadline. Healthy member jobs never wake it.
+PROJECT_UPDATE = "project_update"
+SUPPORTED_EVENTS = frozenset(
+    {OWNER_REQUEST_ANSWERED, ORCHESTRATOR_APPROVAL, JOB_TERMINAL, RESEARCH_TIMER, PROJECT_UPDATE}
+)
+_DEBOUNCED = (OWNER_REQUEST_ANSWERED, ORCHESTRATOR_APPROVAL, JOB_TERMINAL, PROJECT_UPDATE)
 _NAMESPACE = UUID("0f4e1a2b-3c5d-4e6f-8a9b-1c2d3e4f5a6b")
 _TERMINAL_PHASES = frozenset({"complete", "failed", "cancelled"})
 # The terminal values saved in jobs.state; stage states are a different vocabulary.
@@ -179,6 +186,11 @@ def record(store, eid, event, source_id, *, delay=None, db=None, now=None):
         ).fetchone()
         if job is None or job["state"] not in _TERMINAL_JOB_STATES:
             raise Conflict("only this experiment's saved terminal job is an event")
+    elif event == PROJECT_UPDATE:
+        from ..autopilot_policy import lead_run_id
+
+        if lead_run_id(json.loads(experiment["contract"])) is None:
+            raise Conflict("a project update wakes only an Autopilot lead")
     else:
         from .prompt import timer_delay
 
@@ -203,9 +215,9 @@ def record(store, eid, event, source_id, *, delay=None, db=None, now=None):
     if event != RESEARCH_TIMER:
         pending = db.execute(
             "SELECT * FROM agent_wakeups WHERE experiment_id=? AND state='pending' AND due_at>? "
-            "AND CASE WHEN json_valid(reason) THEN json_extract(reason,'$.event') END IN (?,?,?) "
+            "AND CASE WHEN json_valid(reason) THEN json_extract(reason,'$.event') END IN (?,?,?,?) "
             "ORDER BY due_at,created_at,id LIMIT 1",
-            (eid, now, OWNER_REQUEST_ANSWERED, ORCHESTRATOR_APPROVAL, JOB_TERMINAL),
+            (eid, now, *_DEBOUNCED),
         ).fetchone()
         if pending is not None:
             due_at = pending["due_at"]
@@ -222,6 +234,30 @@ def record(store, eid, event, source_id, *, delay=None, db=None, now=None):
     )
     wakeup_obligations.sync_wakeup(db, wakeup)
     return _evidence(db.execute("SELECT * FROM agent_wakeups WHERE id=?", (wakeup,)).fetchone())
+
+
+def project_update(store, db, run_id, source_id, *, now=None):
+    """Wake a run's lead once per exact project event, in the caller's transaction.
+
+    A draft, stopped or completed run, or a lead that is missing, deleted or terminal,
+    records nothing. A paused run's wakeups are saved and stay unconsumed until the
+    run admits the lead's next turn again.
+    """
+    from ..autopilot_policy import lead_id
+
+    run = db.execute("SELECT status FROM autopilot_runs WHERE id=?", (run_id,)).fetchone()
+    if run is None or run["status"] in ("draft", "stopped", "completed"):
+        return None
+    lead = db.execute("SELECT phase,deleted_at FROM experiments WHERE id=?", (lead_id(run_id),)).fetchone()
+    if lead is None or lead["deleted_at"] is not None or lead["phase"] in _TERMINAL_PHASES:
+        return None
+    return record(store, lead_id(run_id), PROJECT_UPDATE, source_id, db=db, now=now)
+
+
+def member_update(store, db, eid, source_id, *, now=None):
+    """Wake the lead of the run this experiment belongs to; any other experiment is skipped."""
+    member = db.execute("SELECT run_id FROM autopilot_members WHERE experiment_id=?", (eid,)).fetchone()
+    return None if member is None else project_update(store, db, member["run_id"], source_id, now=now)
 
 
 def supersede_timer(db, eid, predecessor_id):

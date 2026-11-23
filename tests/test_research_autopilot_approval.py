@@ -8,6 +8,7 @@ from test_iteration_autopilot import activated
 from experimenttracker.autopilot import Autopilot
 from experimenttracker.autopilot_budget import WEEK
 from experimenttracker.autopilot_models import AutopilotPolicy
+from experimenttracker.autopilot_policy import lead_id
 from experimenttracker.research import wakeups
 from experimenttracker.research.autopilot_approval import OrchestratorApproval, approved
 from experimenttracker.research.owner_tool import AskOwnerQuestion, ask_owner
@@ -31,8 +32,8 @@ def test_orchestrator_approval_parser_requires_exact_shape():
     assert OrchestratorApproval.parse("not JSON") is None
 
 
-async def test_c4_approval_request_schedules_project_turn_with_exact_objective(runtime, monkeypatch):
-    store, _, agent, wf = runtime
+def test_c4_approval_request_wakes_the_lead_with_a_project_update(runtime, monkeypatch):
+    store = runtime[0]
     service, run = activated(runtime, monkeypatch)
     eid = seed_saved_contract4(store, "Synthetic C4 scheduling fixture")
     action_id, request_id = str(uuid4()), uuid4()
@@ -58,30 +59,17 @@ async def test_c4_approval_request_schedules_project_turn_with_exact_objective(r
             objective=objective,
         ),
     )
-    scheduled = service.run(run_id=run["id"])
-    assert scheduled["input_cursor"] == run["input_cursor"] + 1
-    wake = store.one(
-        "SELECT document FROM autopilot_inputs WHERE run_id=? ORDER BY seq DESC LIMIT 1", (run["id"],)
-    )
-    assert json.loads(wake["document"]) == {
-        "experiment_id": eid,
-        "request_id": str(request_id),
-        "objective": objective,
+    # The retired project-turn engine gets no input; the lead gets one project update.
+    assert service.run(run_id=run["id"])["input_cursor"] == run["input_cursor"]
+    (wake,) = store.rows("SELECT * FROM agent_wakeups WHERE experiment_id=?", (lead_id(run["id"]),))
+    assert json.loads(wake["reason"]) == {
+        "event": wakeups.PROJECT_UPDATE,
+        "source_id": f"approval:{eid}:{request_id}",
     }
-    wf.agent_ready = True
-    wf.gate.update(await agent.quota())
-    agent.resolved_model = "demo"
-    agent.models = [{"id": "demo", "reasoning_efforts": ["medium"], "default_effort": "medium"}]
-    await wf.research.advance()
-    project_action = store.one(
-        "SELECT * FROM autopilot_actions WHERE run_id=? AND cursor=? ORDER BY created_at DESC LIMIT 1",
-        (run["id"], scheduled["input_cursor"]),
-    )
-    assert project_action["state"] == "pending"
-    prompt = wf.research.prompt(project_action)
-    assert str(request_id) in prompt
-    assert objective in prompt
-    assert "PENDING C4 OBJECTIVES" in prompt
+    status = service.project_status(service.run(run_id=run["id"]))
+    assert status["pending_objectives"] == [
+        {"experiment_id": eid, "approval_request_id": str(request_id), "objective": objective}
+    ]
 
 
 def test_autopilot_approval_proof_is_exact_and_separate_from_owner_answer(runtime, monkeypatch):

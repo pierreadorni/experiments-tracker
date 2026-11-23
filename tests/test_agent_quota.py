@@ -117,7 +117,7 @@ async def test_a_changed_control_revision_between_selection_and_binding_refuses(
     agent.resolved_model = "demo"
     agent.models = [{"id": "demo", "reasoning_efforts": ["medium"], "default_effort": "medium"}]
     with store.tx() as db:
-        service.wake(db, run["id"], "synthetic-input", "experiment_change", {"synthetic": True})
+        service.legacy_input(db, run["id"], "synthetic-input", "experiment_change", {"synthetic": True})
     entered, release = asyncio.Event(), asyncio.Event()
     hold_session(agent, entered, release)
     await role_step(wf.research)

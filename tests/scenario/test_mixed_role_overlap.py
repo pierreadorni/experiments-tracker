@@ -164,7 +164,7 @@ async def test_two_slots_overlap_an_experiment_and_a_research_decision(multi_sce
     store, backend = scenario.store, scenario.agent_backend
     service, run = activated(scenario)
     with store.tx() as db:
-        service.wake(db, run["id"], "synthetic-input", "experiment_change", {"synthetic": True})
+        service.legacy_input(db, run["id"], "synthetic-input", "experiment_change", {"synthetic": True})
     experiment_gate, research_gate = scenario.gate(EXPERIMENT_PHASE), scenario.gate("research")
     scenario.agent.script(EXPERIMENT_PHASE, turn=experiment_turn, turns=1)
     scenario.agent.script("research", turn=research_turn, turns=1)
@@ -424,7 +424,7 @@ async def test_one_typed_project_owner_serializes_research_and_weekly_synthesis(
     # free connection may not start the pending research action on the same owner.
     service, run = activated(scenario)
     with store.tx() as db:
-        service.wake(db, run["id"], "synthetic-input", "experiment_change", {"synthetic": True})
+        service.legacy_input(db, run["id"], "synthetic-input", "experiment_change", {"synthetic": True})
     pending = await scenario.run(
         lambda: saved(store, "autopilot_actions", run_id=run["id"], state="pending"),
         gates=[synthesis_gate],

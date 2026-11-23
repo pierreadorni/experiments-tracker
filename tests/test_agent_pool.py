@@ -129,7 +129,7 @@ async def test_research_admission_claims_the_project_run_and_retains_received(ru
 
     monkeypatch.setattr(agent, "begin", begin)
     with store.tx() as db:
-        service.wake(db, run["id"], "synthetic-input", "experiment_change", {"synthetic": True})
+        service.legacy_input(db, run["id"], "synthetic-input", "experiment_change", {"synthetic": True})
     await role_step(wf.research)
     (row,) = store.rows("SELECT * FROM autopilot_actions WHERE run_id=?", (run["id"],))
     claimed(wf, "autopilot_actions", row["id"], "research", project_owner("test-project"))

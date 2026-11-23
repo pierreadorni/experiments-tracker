@@ -83,7 +83,7 @@ async def both_occupied(scenario, wf, second="weekly"):
     else:
         service, run = activated(scenario)
         with store.tx() as db:
-            service.wake(db, run["id"], "synthetic-input", "experiment_change", {"synthetic": True})
+            service.legacy_input(db, run["id"], "synthetic-input", "experiment_change", {"synthetic": True})
         table, phase, turn, match = "autopilot_actions", "research", research_turn, {"run_id": run["id"]}
     plan_gate, project_gate = scenario.gate(EXPERIMENT_PHASE), scenario.gate(phase)
     scenario.agent.script(EXPERIMENT_PHASE, turn=experiment_turn, turns=1)
@@ -185,7 +185,7 @@ async def test_a_denied_research_turn_keeps_its_pending_decision_and_hold(multi_
     store, backend, slots = scenario.store, scenario.agent_backend, scenario.slots
     service, run = activated(scenario)
     with store.tx() as db:
-        service.wake(db, run["id"], "synthetic-input", "experiment_change", {"synthetic": True})
+        service.legacy_input(db, run["id"], "synthetic-input", "experiment_change", {"synthetic": True})
     session_gate = FakeGate()
     hold_session(monkeypatch, scenario, session_gate)
     scenario.agent.script("research", turn=research_turn, turns=1)

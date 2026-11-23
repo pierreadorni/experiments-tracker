@@ -108,6 +108,40 @@ def project_status(db, run_id, now=None):
     return "\n".join(lines)
 
 
+# Owner message text in a lead's event line; project_status returns the full text.
+MAX_MESSAGE_LINE = 600
+
+
+def update_line(db, run_id, source_id):
+    """One lead event line for a saved ``project_update`` source identity."""
+    kind, _, rest = source_id.partition(":")
+    if kind == "message":
+        row = db.execute(
+            "SELECT json_extract(payload,'$.text') AS text FROM autopilot_requests WHERE request_id=? AND run_id=?",
+            (rest, run_id),
+        ).fetchone()
+        text = (row["text"] if row else None) or ""
+        if len(text) > MAX_MESSAGE_LINE:
+            text = text[:MAX_MESSAGE_LINE] + " [truncated; project_status has the full text]"
+        return f"Owner message to the run: {text}"
+    lines = {
+        "approval": "Member {} requests approval {}; see project_status pending objectives",
+        "complete": "Member {} completed",
+        "failed": "Member {} research turn {} failed",
+        "policy": "Owner revised the Autopilot policy (revision {})",
+        "guidance": "Owner changed the project guidance (revision {})",
+        "phase": "Calendar boundary under policy revision {}: the {} phase ended",
+        "report": "Weekly report due at {}",
+        "review": "Scheduled review due at {}",
+        "handoff": "Handoff deadline reached{}",
+    }
+    template = lines.get(kind)
+    parts = rest.split(":") if rest else []
+    if template is None or template.count("{}") != max(len(parts), 1):
+        return f"Project update: {source_id}"
+    return template.format(*(parts or [""]))
+
+
 def member_authority(service, eid, phase="compute", stage=None, now=None):
     member = service.member(eid)
     if not member:

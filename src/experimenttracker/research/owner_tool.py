@@ -21,6 +21,7 @@ from ..config import StrictModel
 from ..core import action_obligations, request_obligations
 from ..maintenance import blocked
 from ..store import Conflict, encode
+from . import wakeups
 from .approval import REQUEST_EVENT
 from .prompt import MAX_APPROVAL_CONTEXT_BYTES, approval_context
 
@@ -207,26 +208,8 @@ def ask_owner(store, expected_action, question):
                     "objective": question.objective,
                 },
             )
-            from ..autopilot import Autopilot
-
-            orchestrator = Autopilot(store)
-            if orchestrator.enabled(project_id):
-                member = db.execute(
-                    "SELECT run_id FROM autopilot_members WHERE experiment_id=? AND project_id=?",
-                    (experiment["id"], project_id),
-                ).fetchone()
-                if member:
-                    orchestrator.wake(
-                        db,
-                        member["run_id"],
-                        request_id,
-                        "experiment_approval_requested",
-                        {
-                            "experiment_id": experiment["id"],
-                            "request_id": request_id,
-                            "objective": question.objective,
-                        },
-                    )
+            # A member's approval request wakes its Autopilot lead, debounced with other updates.
+            wakeups.member_update(store, db, experiment["id"], f"approval:{experiment['id']}:{request_id}")
         before = request_obligations.saved_pending(db, experiment["id"])
         now = clock.now()
         db.execute(

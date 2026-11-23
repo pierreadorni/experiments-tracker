@@ -453,10 +453,15 @@ async def test_controller_coalesces_late_inputs_and_quarantines_unknown_turn(run
         }
         # Result arrives during the turn; it must remain behind the saved input cursor.
         with store.tx() as db:
-            service.wake(db, run["id"], "late-synthetic-result", "experiment_change", {"synthetic": True})
+            service.legacy_input(
+                db, run["id"], "late-synthetic-result", "experiment_change", {"synthetic": True}
+            )
         return identity
 
     monkeypatch.setattr(agent, "begin", begin)
+    # A saved input of a run that predates the lead (activation no longer writes one).
+    with store.tx() as db:
+        service.legacy_input(db, run["id"], "saved-synthetic-input", "experiment_change", {"synthetic": True})
     await role_step(wf.research)
     await wf.research.task
     await role_step(wf.research)
@@ -599,7 +604,8 @@ def test_project_guidance_change_wakes_and_invalidates_stale_authority(runtime, 
     assert changed["control_revision"] > run["control_revision"]
     assert service.context(changed)["project_guidance"]["instructions"].startswith("Retain negative")
     assert service.store.one(
-        "SELECT 1 FROM autopilot_inputs WHERE run_id=? AND kind='project_guidance'", (run["id"],)
+        "SELECT 1 FROM agent_wakeups WHERE experiment_id=? AND json_extract(reason,'$.source_id')=?",
+        (lead_id(run["id"]), "guidance:1"),
     )
     with pytest.raises(Conflict, match="authority changed"):
         tool(service, identity, "update_document", name="claims", base_version=0, text="Old context")

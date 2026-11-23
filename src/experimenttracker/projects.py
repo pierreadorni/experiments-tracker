@@ -187,9 +187,7 @@ class Projects:
                             "UPDATE autopilot_runs SET control_revision=control_revision+1 WHERE id=?",
                             (run["id"],),
                         )
-                        service.wake(
-                            db, run["id"], row["request_id"], "project_guidance", {"revision": revision}
-                        )
+                        service.update(db, run["id"], f"guidance:{revision}")
                         service.emit(db, run["id"], "project_guidance_changed", {"revision": revision})
                     db.execute(
                         "UPDATE project_settings_requests SET state='applied',result=? WHERE request_id=?",

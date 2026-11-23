@@ -228,6 +228,12 @@ def _job_events(db, experiment, predecessor, due):
             events.append(f"Timer due for completed research action {predecessor['id']}")
             bind.append(item["wakeup_id"])
             continue
+        if item["event"] == wakeups.PROJECT_UPDATE:
+            lead = autopilot_policy.lead_run_id(experiment["contract"])
+            if lead:
+                events.append(autopilot_policy.update_line(db, lead, item["source_id"]))
+                bind.append(item["wakeup_id"])
+            continue
         if item["event"] != wakeups.JOB_TERMINAL:
             continue
         job = db.execute(

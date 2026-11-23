@@ -245,12 +245,17 @@ def _settle(store, expected, *, turn_id, state, result, error, turn=None):
                     delay=delay,
                     db=db,
                 )
+        eid = expected["experiment_id"]
+        if state == "failed":
+            # A failed member turn needs its Autopilot lead; any other experiment is skipped.
+            wakeups.member_update(store, db, eid, f"failed:{eid}:{expected['id']}")
         if turn is not None and turn.status == "done" and not _terminal(experiment):
             db.execute(
                 "UPDATE experiments SET phase='complete' WHERE id=? AND phase NOT IN ('cancelled','complete','failed') AND deleted_at IS NULL",
-                (expected["experiment_id"],),
+                (eid,),
             )
-            store.emit(db, expected["experiment_id"], "state_changed", {"phase": "complete"})
+            store.emit(db, eid, "state_changed", {"phase": "complete"})
+            wakeups.member_update(store, db, eid, f"complete:{eid}")
             if turn.integrate is not None and turn.integrate.value:
                 store.request_completion_integration(expected["experiment_id"], _db=db)
         store.emit(

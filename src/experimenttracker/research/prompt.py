@@ -30,6 +30,13 @@ MAX_APPROVAL_CONTEXT_BYTES = 5500
 # An Autopilot lead's project status shares the same turn budget.
 MAX_PROJECT_STATUS_BYTES = 1600
 
+# The Autopilot lead's role, rendered whole ahead of its bounded project status.
+LEAD_ROLE = (
+    "You lead this project's Autopilot run. Coordinate member experiments through the\n"
+    "project tools; you never run compute, and members submit their own jobs.\n"
+    "Project updates in RECENT EVENTS name what changed; project_status has the details.\n"
+)
+
 DEFERRED_CHECKPOINT = "[saved notebook text is not copied into a follow-up turn]"
 
 _TRUNCATED = " [truncated]"
@@ -304,7 +311,7 @@ def turn_prompt(
         budget -= 128
     status = ""
     if project_status is not None:
-        header = "\nPROJECT STATUS\n"
+        header = "\nPROJECT STATUS\n" + LEAD_ROLE
         status_budget = min(budget - 512, MAX_PROJECT_STATUS_BYTES) - len(header.encode()) - 1
         status = header + _fit(_printable(_text(project_status, "project status")), status_budget) + "\n"
         budget -= len(status.encode())
