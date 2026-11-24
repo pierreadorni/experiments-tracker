@@ -76,29 +76,37 @@ old backup cannot undo work already submitted.
 Shared source lives on GitHub `main`. A push changes no installation: it does not
 restart the executor, migrate state, submit work or publish the Worker.
 
-To prepare a release, commit it and start a one-shot background preparation:
+To prepare a release, commit it and run the preparation in the foreground
+(background it from your own shell if you like):
 
 ```sh
 .venv/bin/python -m experimenttracker.maintenance prepare \
   --config /absolute/path/to/.local/live.yaml --commit FULL_COMMIT_SHA \
-  --summary 'What changes' --detach
+  --summary 'What changes'
 ```
 
 It extracts the commit into `state_dir/releases/COMMIT`, installs locked
 dependencies there (never into the running owner) and runs `make check`, outside
-NSS-isolating sandboxes. A failed check cannot produce a ready release, and
-preparation never grants install authority.
+NSS-isolating sandboxes. Only a passing check registers the release as ready; a
+failure registers it as failed. Repeating it for a ready commit changes nothing,
+and preparation never grants install authority.
 
 The owner installs from **Executor & quota → Application updates → Install
-update…**. The executor then holds new dispatch and waits up to 24 hours for a safe
-boundary (no uncertain turns or submissions, unfinished transfers or open owner
-requests), takes and verifies a backup, stops the owner through its loopback API,
-starts the release once and checks that saved jobs, actions and pause controls
-survived before dispatch resumes. Slurm jobs are never cancelled or resubmitted. A
-failure before shutdown leaves the old owner running; a later failure holds new work
-as **Update needs attention**. Nothing is retried blindly or restored
-automatically. Evidence lives in `state_dir/maintenance/REQUEST_UUID/`,
-`state_dir/release-preparation/` and `backup_dir/maintenance/`.
+update…**. The executor then holds new dispatch and waits up to 2 hours for a safe
+boundary (no running or uncertain turns, no uncertain submissions and no unfinished
+transfers; an unanswered question does not hold it, and survives the restart). If
+none comes, the install is refused and dispatch resumes. Otherwise it takes and
+verifies a backup, stops the owner through its loopback API, starts the release
+once and checks its health (a new boot of the expected commit, one healthy tick, a
+ready agent, no executor error) before dispatch resumes. Saved identities are
+protected by the migration test (`tests/test_schema_identities.py`), not at
+handover. Slurm jobs are never cancelled or resubmitted. A failure before shutdown
+leaves the old owner running; a later failure holds new work as **Update needs
+attention**. While the owner is down the UI shows the last published step, and
+**Update may need attention** if no executor has reported for 10 minutes. Nothing
+is retried blindly or restored automatically. Evidence lives in
+`state_dir/maintenance/REQUEST_UUID/`, `state_dir/releases/COMMIT/prepare.log` and
+`backup_dir/maintenance/`.
 
 Before installing a release that changes the engine, check a fresh offline backup:
 

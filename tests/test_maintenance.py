@@ -94,18 +94,39 @@ def test_install_idempotency_conflicts_and_dispatch_gate(config, runtime):
     assert store.one("SELECT COUNT(*) AS n FROM maintenance")["n"] == 1
 
 
-def test_receipt_detects_changed_software_and_is_immutable(config, runtime):
+def test_ready_release_is_immutable_and_needs_a_passing_receipt(config, runtime):
     store, *_ = runtime
     manager = ready(config, store)
+    # Re-registering the same ready receipt is a no-op; any other state is refused.
+    manager.register(ReleaseUpdate(commit_id=COMMIT, summary="Synthetic update", state="ready"))
     with pytest.raises(Conflict, match="immutable"):
-        manager.register(
-            ReleaseUpdate(commit_id=COMMIT, summary="Overwrite", state="testing", preparer_pid=os.getpid())
-        )
-    (release_root(config, COMMIT) / "src/example.py").write_text("changed\n")
-    with pytest.raises(ValueError, match="changed"):
-        verify_release(config, COMMIT)
+        manager.register(ReleaseUpdate(commit_id=COMMIT, summary="Overwrite", state="failed"))
+    with pytest.raises(ValueError):
+        ReleaseUpdate(commit_id=COMMIT, summary="Old preparer", state="testing")
+    other = "b" * 40
+    root = release(config, other)
+    receipt = json.loads((root / "release.json").read_text())
+    (root / "release.json").write_text(encode({**receipt, "checks": "make check failed"}))
+    with pytest.raises(ValueError, match="no matching successful check"):
+        verify_release(config, other)
     with pytest.raises(ValueError, match="invalid release"):
         release_root(config, "../untrusted")
+
+
+def test_only_uncertain_or_settling_work_holds_an_install(config, runtime):
+    """T5.5a: an unanswered question no longer holds an install; a submission still does."""
+    store, _, _, workflow = runtime
+    eid = seed_saved_contract3(store, "Synthetic question")
+    store.update(eid, pending_request={"id": str(uuid4()), "question": "Synthetic?"})
+    assert blockers(workflow) == []
+    with store.tx() as db:
+        db.execute("INSERT INTO stages(experiment_id,id,ordinal,updated_at) VALUES(?,'train',9,0)", (eid,))
+        db.execute(
+            "INSERT INTO jobs(intent_id,experiment_id,stage_id,state,script_hash,resources,snapshot_hash,created_at) VALUES(?,?,'train','submitting','source','{}','snapshot',0)",
+            (str(uuid4()), eid),
+        )
+    assert blockers(workflow) == ["scheduler submission needs reconciliation"]
+    assert store.experiment(eid)["pending_request"] is not None
 
 
 def test_failure_after_shutdown_keeps_dispatch_held(config, runtime):
@@ -113,7 +134,7 @@ def test_failure_after_shutdown_keeps_dispatch_held(config, runtime):
     manager = ready(config, store)
     command = InstallCommand(request_id=uuid4(), release_id=COMMIT)
     manager.install(command)
-    for state in ("backing_up", "verifying_backup", "restarting", "starting", "verifying"):
+    for state in ("backing_up", "restarting", "starting", "verifying"):
         manager.step(StepUpdate(request_id=command.request_id, state=state))
     manager.step(
         StepUpdate(request_id=command.request_id, state="failed", error="Synthetic recovery failure")
@@ -138,6 +159,8 @@ def test_failure_before_shutdown_releases_dispatch_and_backup_is_private(config,
         assert identities(reader) == before
     finally:
         reader.close()
+    with pytest.raises(ValueError):
+        StepUpdate(request_id=command.request_id, state="verifying_backup")
     assert (config.backup_dir / "workflow.sqlite").stat().st_mode & 0o777 == 0o600
 
 
@@ -355,50 +378,3 @@ def test_real_demo_process_handover_without_model_or_scheduler(config, tmp_path)
             initial.terminate()
         initial.wait(timeout=15)
         log.close()
-
-
-def test_dead_release_preparer_never_stays_ready_or_testing(config, runtime, monkeypatch):
-    store, *_ = runtime
-    manager = Maintenance(config, store)
-    manager.register(
-        ReleaseUpdate(
-            commit_id=COMMIT, summary="Synthetic preparation", state="testing", preparer_pid=os.getpid()
-        )
-    )
-    monkeypatch.setattr("experimenttracker.maintenance.process_identity", lambda pid: None)
-    manager.launch()
-    assert manager.status()["release"]["state"] == "failed"
-    assert "Preparation stopped" in manager.status()["release"]["error"]
-
-
-def test_progress_reaches_the_relay_with_a_monotonic_scrubbed_document(config, monkeypatch):
-    import httpx
-
-    from experimenttracker.config import GatewayConfig
-    from experimenttracker.maintenance import publish_progress
-
-    credential = config.api_token_file.parent / "executor-token"
-    credential.write_text("e" * 40)
-    config.gateway = GatewayConfig(url="https://synthetic.test", credential_file=credential)
-    sent = []
-
-    def get(url, **kwargs):
-        sent.append(("GET", url, kwargs["headers"]["x-executor-id"]))
-        return httpx.Response(
-            200,
-            json={"schema_version": 1, "revisions": {"maintenance": [2**60, "d"]}},
-            request=httpx.Request("GET", url),
-        )
-
-    def put(url, **kwargs):
-        sent.append(("PUT", url, json.loads(kwargs["content"])))
-        return httpx.Response(200, json={"schema_version": 1}, request=httpx.Request("PUT", url))
-
-    monkeypatch.setattr(httpx, "get", get)
-    monkeypatch.setattr(httpx, "put", put)
-    publish_progress(config, {"error": f"failed in {config.state_dir}/x"})
-    assert [call[0] for call in sent] == ["GET", "PUT"]
-    assert sent[1][1].endswith("/api/executor/relay/projections/maintenance")
-    body = sent[1][2]
-    assert body["key"] == "maintenance" and body["revision"] == 2**60 + 1
-    assert str(config.state_dir) not in json.dumps(body)

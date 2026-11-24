@@ -28,7 +28,9 @@ from .store import Conflict, Store, encode
 
 COMMIT = r"^[0-9a-f]{40}$"
 ACTIVE = "state NOT IN ('complete','failed','cancelled')"
-STEPS = ("waiting", "backing_up", "verifying_backup", "restarting", "starting", "verifying")
+STEPS = ("waiting", "backing_up", "restarting", "starting", "verifying")
+# Running agent turns settle before a restart; waiting longer refuses and releases the hold.
+BOUNDARY_SECONDS = 2 * 3600
 
 
 class InstallCommand(StrictModel):
@@ -40,15 +42,12 @@ class InstallCommand(StrictModel):
 class ReleaseUpdate(StrictModel):
     commit_id: str = Field(pattern=COMMIT)
     summary: str = Field(min_length=1, max_length=2000)
-    state: str = Field(pattern=r"^(preparing|testing|ready|failed)$")
-    preparer_pid: int | None = Field(default=None, ge=1)
+    state: str = Field(pattern=r"^(ready|failed)$")
 
 
 class StepUpdate(StrictModel):
     request_id: UUID
-    state: str = Field(
-        pattern=r"^(waiting|backing_up|verifying_backup|restarting|starting|verifying|complete|failed)$"
-    )
+    state: str = Field(pattern=r"^(waiting|backing_up|restarting|starting|verifying|complete|failed)$")
     error: str | None = Field(default=None, max_length=1000)
 
 
@@ -64,7 +63,11 @@ def release_root(config, commit):
 
 
 def software_files(root):
-    """Bounded software-only receipt; never reads project/research directories."""
+    """Bounded software-only receipt; never reads project/research directories.
+
+    Compatibility (T5.5c): a release before T5.5 rehashes these files when it registers
+    or installs this release, so the receipt keeps them until T5.5e deletes the shim.
+    """
     paths = []
     for name in ("src", "recipes", "web/dist", "gateway/dist"):
         directory = root / name
@@ -88,22 +91,21 @@ def verify_release(config, commit):
     receipt = json.loads((root / "release.json").read_text())
     if receipt["commit_id"] != commit or receipt["checks"] != "make check passed":
         raise ValueError("release has no matching successful check receipt")
-    if receipt["files"] != software_files(root):
-        raise ValueError("tested release software changed")
     if not (root / ".venv/bin/python").is_file() or not (root / "web/dist/index.html").is_file():
         raise ValueError("release runtime or frontend missing")
     return receipt
 
 
 def identities(store):
+    """Compatibility shim (T5.5b): only ``/internal`` serves this, for the coordinator of
+    a release before T5.5 that compares it across the handover. T5.5e deletes it; the
+    schema identity test (tests/test_schema_identities.py) replaces the comparison."""
     result = {
         "jobs": store.rows("SELECT intent_id,job_id FROM jobs ORDER BY intent_id"),
         "actions": store.rows("SELECT id,thread_id,turn_id FROM agent_actions ORDER BY id"),
         "project_turns": store.rows("SELECT id,thread_id,turn_id FROM project_turns ORDER BY id"),
         "pauses": store.rows("SELECT id,pause_agent,pause_compute FROM experiments ORDER BY id"),
     }
-    # Saved turns of the retired project-turn engine; a handover compares these with
-    # the identities the previous release listed, so they stay in the same shape.
     turns = store.rows("SELECT id,thread_id,turn_id FROM autopilot_actions ORDER BY id")
     if turns:
         result["autopilot_turns"] = turns
@@ -122,16 +124,11 @@ def blockers(workflow):
             "project work is active or uncertain",
             "SELECT 1 FROM project_turns WHERE state IN ('dispatching','running','uncertain')",
         ),
-        (
-            "an input or approval request is unresolved",
-            "SELECT 1 FROM experiments WHERE pending_request IS NOT NULL",
-        ),
         ("scheduler submission needs reconciliation", "SELECT 1 FROM jobs WHERE state='submitting'"),
         (
             "a transfer is unfinished",
             "SELECT 1 FROM execution_transfers WHERE state NOT IN ('complete','failed','cancelled')",
         ),
-        ("restart steering is pending", "SELECT 1 FROM steering WHERE mode='restart' AND state='pending'"),
     ):
         if store.one(query):
             reasons.append(label)
@@ -155,11 +152,6 @@ class Maintenance:
         self.config_path = config_path
         self.current = current or os.environ.get("ET_RELEASE_COMMIT")
         self.boot_id = str(os.getpid()) + ":" + str(time.time_ns())
-        self.config_identity = (
-            hashlib.sha256(config_path.read_bytes()).hexdigest()
-            if config_path and config_path.exists()
-            else None
-        )
 
     def status(self, workflow=None):
         release = self.store.one("SELECT * FROM releases ORDER BY updated_at DESC LIMIT 1")
@@ -182,13 +174,6 @@ class Maintenance:
 
     def register(self, update):
         receipt = verify_release(self.config, update.commit_id) if update.state == "ready" else None
-        if update.state in ("preparing", "testing"):
-            if not update.preparer_pid or not process_identity(update.preparer_pid):
-                raise ValueError("preparation requires an existing local process identity")
-            receipt = {
-                "preparer_pid": update.preparer_pid,
-                "process_identity": process_identity(update.preparer_pid),
-            }
         with self.store.tx() as db:
             prior = db.execute("SELECT * FROM releases WHERE commit_id=?", (update.commit_id,)).fetchone()
             if prior and prior["state"] == "ready":
@@ -268,19 +253,6 @@ class Maintenance:
 
     def launch(self):
         """Persist launch intent before Popen; an uncertain launch is never retried."""
-        for release in self.store.rows("SELECT * FROM releases WHERE state IN ('preparing','testing')"):
-            preparer = json.loads(release["receipt"] or "{}")
-            pid = preparer.get("preparer_pid")
-            if not pid or process_identity(pid) != preparer.get("process_identity"):
-                with self.store.tx() as db:
-                    db.execute(
-                        "UPDATE releases SET state='failed',error=?,updated_at=? WHERE commit_id=?",
-                        (
-                            "Preparation stopped before a successful test receipt. Inspect the protected preparation log.",
-                            clock.now(),
-                            release["commit_id"],
-                        ),
-                    )
         row = self.store.one(f"SELECT * FROM maintenance WHERE {ACTIVE}")
         if not row or row["state"] == "blocked" or not self.config_path:
             return
@@ -308,24 +280,19 @@ class Maintenance:
                 (encode({"coordinator_launch": True}), row["request_id"]),
             )
         try:
-            with (directory / "coordinator.log").open("ab") as log:
-                os.chmod(log.name, 0o600)
-                child = subprocess.Popen(
-                    [
-                        sys.executable,
-                        "-m",
-                        "experimenttracker.maintenance",
-                        "run",
-                        "--config",
-                        str(self.config_path),
-                        "--request",
-                        row["request_id"],
-                    ],
-                    stdin=subprocess.DEVNULL,
-                    stdout=log,
-                    stderr=log,
-                    start_new_session=True,
-                )
+            child = spawn(
+                [
+                    sys.executable,
+                    "-m",
+                    "experimenttracker.maintenance",
+                    "run",
+                    "--config",
+                    str(self.config_path),
+                    "--request",
+                    row["request_id"],
+                ],
+                directory / "coordinator.log",
+            )
             with self.store.tx() as db:
                 db.execute(
                     "UPDATE maintenance SET detail=? WHERE request_id=?",
@@ -358,41 +325,18 @@ def process_identity(pid):
         return None
 
 
-def publish_progress(config, status):
-    """Independent outbound progress path, available while the executor is stopped."""
-    if not config.gateway.url:
-        return
-    headers = {"Authorization": "Bearer " + config.gateway.credential_file.read_text().strip()}
-    if config.gateway.sites_credential_file:
-        headers["OAI-Sites-Authorization"] = (
-            "Bearer " + config.gateway.sites_credential_file.read_text().strip()
+def spawn(command, log_path, **options):
+    """Start a detached one-shot process that outlives its parent session, logging privately."""
+    with log_path.open("ab") as log:
+        os.chmod(log.name, 0o600)
+        return subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=log,
+            start_new_session=True,
+            **options,
         )
-    from .publish.projections import aggregate_revision, envelope, local_roots, scrub_local, wire
-
-    headers["x-executor-id"] = config.executor_id
-    base = config.gateway.url.rstrip("/") + "/api/executor/relay/"
-    try:
-        manifest = httpx.get(base + "revisions", headers=headers, timeout=15, follow_redirects=False)
-        manifest.raise_for_status()
-        last = manifest.json().get("revisions", {}).get("maintenance", [0])[0]
-        body = envelope(
-            {
-                "key": "maintenance",
-                "revision": aggregate_revision(last),
-                "document": scrub_local(status, local_roots(config)),
-            }
-        )
-        response = httpx.put(
-            base + "projections/maintenance",
-            headers={**headers, "Content-Type": "application/json"},
-            content=wire(body).encode(),
-            timeout=15,
-            follow_redirects=False,
-        )
-        response.raise_for_status()
-    except (httpx.HTTPError, ValueError, LookupError):
-        # SQLite remains authoritative; the resumed bridge republishes the outcome.
-        print("Gateway progress delivery unavailable; local maintenance state retained.", flush=True)
 
 
 def connect(config):
@@ -424,40 +368,28 @@ def verify_backup(path):
             raise ValueError("backup integrity or foreign-key check failed")
 
 
-def prepare(config, config_path, commit, summary, repository):
+def prepare(config, commit, summary, repository):
+    """Extract, install and test one commit in the foreground; register only ready or failed."""
     commit = subprocess.check_output(
         ["git", "-C", str(repository), "rev-parse", "--verify", commit + "^{commit}"], text=True
     ).strip()
     directory = config.state_dir / "release-preparation"
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    with (directory / (commit + ".lock")).open("a+") as guard:
+    with (directory / (commit + ".lock")).open("a+") as guard, connect(config) as client:
         fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        root = release_root(config, commit)
-        if root.exists() and not (root / "release.json").exists():
-            root.rename(root.with_name(commit + ".incomplete-" + str(time.time_ns())))
-        _prepare(config, config_path, commit, summary, repository)
-
-
-def _prepare(config, config_path, commit, summary, repository):
-    commit = subprocess.check_output(
-        ["git", "-C", str(repository), "rev-parse", "--verify", commit + "^{commit}"], text=True
-    ).strip()
-    root = release_root(config, commit)
-    with connect(config) as client:
 
         def publish(state):
-            rpc(
-                client,
-                "POST",
-                "/releases",
-                json={"commit_id": commit, "summary": summary, "state": state, "preparer_pid": os.getpid()},
-            )
+            rpc(client, "POST", "/releases", json={"commit_id": commit, "summary": summary, "state": state})
 
-        if root.exists():
+        root = release_root(config, commit)
+        if (root / "release.json").exists():
+            # Repeating a ready commit re-registers the same receipt: a no-op.
             verify_release(config, commit)
             publish("ready")
+            print(f"Tested release ready: {commit}", flush=True)
             return
-        publish("preparing")
+        if root.exists():
+            root.rename(root.with_name(commit + ".incomplete-" + str(time.time_ns())))
         root.mkdir(parents=True, mode=0o700)
         try:
             archive = root / "source.tar"
@@ -484,10 +416,9 @@ def _prepare(config, config_path, commit, summary, repository):
                     ["npm", "ci", "--prefix", "web"],
                     ["npm", "ci", "--prefix", "gateway"],
                     ["npm", "ci", "--prefix", "tools/codex"],
+                    ["make", "check"],
                 ):
                     subprocess.run(command, cwd=root, stdout=log, stderr=log, check=True)
-                publish("testing")
-                subprocess.run(["make", "check"], cwd=root, stdout=log, stderr=log, check=True)
             receipt = {
                 "commit_id": commit,
                 "checks": "make check passed",
@@ -505,7 +436,11 @@ def _prepare(config, config_path, commit, summary, repository):
 
 
 def run(config, config_path, request_id):
-    """One-shot coordinator. No inference, forced kills, retries of process starts or restores."""
+    """One-shot coordinator. No inference, forced kills, retries of process starts or restores.
+
+    While the owner is down the UI shows the last published state; the new owner
+    publishes the outcome once it serves.
+    """
     from .cli import OwnershipLock
 
     directory = config.state_dir / "maintenance" / request_id
@@ -513,13 +448,9 @@ def run(config, config_path, request_id):
     with (directory / "coordinator.lock").open("a+") as guard:
         fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
         with connect(config) as client:
-            progress = None
 
             def step(state, error=None):
-                nonlocal progress
                 rpc(client, "POST", "/step", json={"request_id": request_id, "state": state, "error": error})
-                progress = rpc(client, "GET", "")
-                publish_progress(config, {k: v for k, v in progress.items() if k != "schema_version"})
 
             try:
                 current = rpc(client, "GET", "/internal")
@@ -529,19 +460,15 @@ def run(config, config_path, request_id):
                         "coordinator requires the exact waiting request; inspect saved outcome before recovery"
                     )
                 release = op["release_id"]
-                config_identity = hashlib.sha256(config_path.read_bytes()).hexdigest()
-                if current["config_identity"] != config_identity:
-                    raise ValueError("configuration changed since owner startup")
                 verify_release(config, release)
-                deadline = clock.monotonic() + 86400
+                deadline = clock.monotonic() + BOUNDARY_SECONDS
                 while current["maintenance"]["blockers"]:
                     if clock.monotonic() > deadline:
                         raise TimeoutError(
-                            "safe boundary not reached within 24 hours; executor remains running"
+                            "safe boundary not reached within 2 hours; executor remains running"
                         )
                     time.sleep(5)
                     current = rpc(client, "GET", "/internal")
-                    publish_progress(config, current["maintenance"])
                 step("backing_up")
                 reader = Store.read_only(config.state_dir / "workflow.sqlite")
                 try:
@@ -549,11 +476,7 @@ def run(config, config_path, request_id):
                     reader.backup(config.backup_dir / "maintenance" / request_id)
                 finally:
                     reader.close()
-                step("verifying_backup")
-                backup = config.backup_dir / "maintenance" / request_id / "workflow.sqlite"
-                verify_backup(backup)
-                if hashlib.sha256(config_path.read_bytes()).hexdigest() != config_identity:
-                    raise ValueError("configuration changed while preparing restart")
+                verify_backup(config.backup_dir / "maintenance" / request_id / "workflow.sqlite")
                 step("restarting")
                 old_boot = current["boot_id"]
                 rpc(client, "POST", "/stop", json={"request_id": request_id, "release_id": release})
@@ -571,12 +494,7 @@ def run(config, config_path, request_id):
                 try:
                     store = Store(config.state_dir / "workflow.sqlite")
                     try:
-                        baseline = identities(store)
-                        (directory / "identities.json").write_text(encode(baseline))
-                        (directory / "identities.json").chmod(0o600)
                         root = release_root(config, release)
-                        if hashlib.sha256(config_path.read_bytes()).hexdigest() != config_identity:
-                            raise ValueError("configuration changed during shutdown")
                         receipt = verify_release(config, release)
                         saved = store.one("SELECT receipt FROM releases WHERE commit_id=?", (release,))
                         if not saved or saved["receipt"] != encode(receipt):
@@ -591,30 +509,21 @@ def run(config, config_path, request_id):
                         store.close()
                 finally:
                     lock.close()
-                progress["operation"]["state"] = "starting"
-                progress["observed_at"] = clock.now()
-                publish_progress(config, {k: v for k, v in progress.items() if k != "schema_version"})
-                with (directory / "executor.log").open("ab") as log:
-                    os.chmod(log.name, 0o600)
-                    env = {**os.environ, "ET_RELEASE_COMMIT": release, "PYTHONPATH": str(root / "src")}
-                    child = subprocess.Popen(
-                        [
-                            str(root / ".venv/bin/python"),
-                            "-m",
-                            "experimenttracker.cli",
-                            "--config",
-                            str(config_path),
-                            "serve",
-                            "--release",
-                            release,
-                        ],
-                        cwd=root,
-                        env=env,
-                        stdin=subprocess.DEVNULL,
-                        stdout=log,
-                        stderr=log,
-                        start_new_session=True,
-                    )
+                child = spawn(
+                    [
+                        str(root / ".venv/bin/python"),
+                        "-m",
+                        "experimenttracker.cli",
+                        "--config",
+                        str(config_path),
+                        "serve",
+                        "--release",
+                        release,
+                    ],
+                    directory / "executor.log",
+                    cwd=root,
+                    env={**os.environ, "ET_RELEASE_COMMIT": release, "PYTHONPATH": str(root / "src")},
+                )
                 (directory / "launch.json").write_text(encode({"pid": child.pid, "release_id": release}))
                 (directory / "launch.json").chmod(0o600)
                 deadline = clock.monotonic() + 300
@@ -631,12 +540,13 @@ def run(config, config_path, request_id):
                         )
                     time.sleep(1)
                 step("verifying")
+                # Health: a new boot of the expected commit, one healthy tick, a ready agent.
                 while not new["last_tick"] or new["last_tick"] < new["started_at"] or not new["agent_ready"]:
                     if clock.monotonic() > deadline:
                         raise TimeoutError("replacement did not finish a healthy executor cycle")
                     time.sleep(1)
                     new = rpc(client, "GET", "/internal")
-                if new["executor_error"] or new["identities"] != baseline:
+                if new["executor_error"]:
                     raise ValueError("recovery check failed; dispatch remains held for operator inspection")
                 step("complete")
             except Exception:
@@ -660,8 +570,6 @@ def run(config, config_path, request_id):
                                             request_id,
                                         ),
                                     )
-                            progress = Maintenance(config, store).status()
-                            publish_progress(config, progress)
                         finally:
                             store.close()
                     finally:
@@ -681,7 +589,6 @@ def main():
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--request", type=UUID)
     parser.add_argument("--commit", default="HEAD")
-    parser.add_argument("--detach", action="store_true", help="prepare in a one-shot background process")
     parser.add_argument("--summary", default="Tested application update")
     parser.add_argument("--repository", type=Path, default=Path.cwd())
     args = parser.parse_args()
@@ -689,50 +596,8 @@ def main():
 
     config_path = args.config.resolve()
     config = load_config(config_path)
-    if args.action == "prepare" and args.detach:
-        commit = subprocess.check_output(
-            ["git", "-C", str(args.repository.resolve()), "rev-parse", "--verify", args.commit + "^{commit}"],
-            text=True,
-        ).strip()
-        directory = config.state_dir / "release-preparation"
-        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        with connect(config) as client:
-            rpc(
-                client,
-                "POST",
-                "/releases",
-                json={
-                    "commit_id": commit,
-                    "summary": args.summary,
-                    "state": "preparing",
-                    "preparer_pid": os.getpid(),
-                },
-            )
-        with (directory / (commit + ".log")).open("ab") as log:
-            os.chmod(log.name, 0o600)
-            child = subprocess.Popen(
-                [
-                    sys.executable,
-                    "-m",
-                    "experimenttracker.maintenance",
-                    "prepare",
-                    "--config",
-                    str(config_path),
-                    "--commit",
-                    commit,
-                    "--summary",
-                    args.summary,
-                    "--repository",
-                    str(args.repository.resolve()),
-                ],
-                stdin=subprocess.DEVNULL,
-                stdout=log,
-                stderr=log,
-                start_new_session=True,
-            )
-        print(encode({"state": "preparing", "commit_id": commit, "pid": child.pid}))
-    elif args.action == "prepare":
-        prepare(config, config_path, args.commit, args.summary, args.repository.resolve())
+    if args.action == "prepare":
+        prepare(config, args.commit, args.summary, args.repository.resolve())
     elif args.request:
         run(config, config_path, str(args.request))
     else:

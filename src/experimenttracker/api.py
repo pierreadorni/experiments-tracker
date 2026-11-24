@@ -212,11 +212,11 @@ def create_app(config, *, components=None, config_path=None, current_release=Non
             "schema_version": 1,
             "maintenance": app.state.workflow.maintenance.status(app.state.workflow),
             "boot_id": app.state.workflow.maintenance.boot_id,
-            "config_identity": app.state.workflow.maintenance.config_identity,
             "last_tick": last_tick,
             "started_at": app.state.started_at,
             "executor_error": executor_error,
             "agent_ready": app.state.workflow.agent_ready,
+            # Compatibility for a pre-T5.5 coordinator; T5.5e deletes it.
             "identities": identities(store()),
         }
 

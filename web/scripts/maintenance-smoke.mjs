@@ -44,7 +44,9 @@ let state = {
 // What the next POST /api/commands and receipt poll answer with.
 let outcome = { state: 'applied', error: null };
 let sentCommand;
-const fresh = () => ({ ...state, observed_at: Date.now() / 1000 });
+// Seconds the published observation lags behind now (a down owner publishes nothing).
+let lag = 0;
+const fresh = () => ({ ...state, observed_at: Date.now() / 1000 - lag });
 await page.route(/\/api\/projections\/maintenance$/, (route) =>
   route.fulfill({
     json: { key: 'maintenance', revision: 1, updated_at: Date.now() / 1000, document: fresh() },
@@ -115,6 +117,12 @@ try {
   assert.ok(await install.isDisabled(), 'Install stays disabled while installing');
   await page.screenshot({ path: path.join(output, 'applied.png') });
 
+  // Stale: the owner went down mid-handover and nothing has been republished for 11 minutes.
+  state = { ...state, operation: { ...state.operation, state: 'restarting' } };
+  lag = 660;
+  await panel.getByText('Update may need attention', { exact: true }).waitFor({ timeout: 15000 });
+  lag = 0;
+
   // Rejected: a later release is refused by the executor and the reason is shown.
   state = {
     ...state,
@@ -135,7 +143,7 @@ try {
 
   assert.deepEqual(errors, []);
   console.log(
-    'Maintenance UI passed ready release, exact-release command, pending, applied and rejected receipt checks. Install was mocked.',
+    'Maintenance UI passed ready release, exact-release command, pending, applied, stale handover and rejected receipt checks. Install was mocked.',
   );
 } finally {
   await browser.close();

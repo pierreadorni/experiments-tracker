@@ -20,12 +20,9 @@ export type MaintenanceStatus = {
   observed_at?: number;
 };
 const labels: Record<string, string> = {
-  preparing: 'Preparing update',
-  testing: 'Testing update',
   ready: 'Update available',
   waiting: 'Waiting for a safe restart',
   backing_up: 'Backing up database',
-  verifying_backup: 'Verifying backup',
   restarting: 'Stopping executor',
   starting: 'Starting updated executor',
   verifying: 'Checking recovery',
@@ -34,10 +31,17 @@ const labels: Record<string, string> = {
   failed: 'Update stopped',
   cancelled: 'Update cancelled',
 };
-export function updateLabel(status: MaintenanceStatus): string {
+// The coordinator publishes nothing while the owner is down; the restarted owner
+// republishes. A handover still unreported after this long needs a look.
+const HANDOVER_STALE_SECONDS = 600;
+export function updateLabel(status: MaintenanceStatus, now = Date.now() / 1000): string {
   const operation = status.operation;
-  if (operation && !['complete', 'failed', 'cancelled'].includes(operation.state))
-    return labels[operation.state] || operation.state;
+  if (operation && !['complete', 'failed', 'cancelled'].includes(operation.state)) {
+    const unreported =
+      operation.state !== 'blocked' &&
+      Boolean(status.observed_at && now - status.observed_at > HANDOVER_STALE_SECONDS);
+    return unreported ? 'Update may need attention' : labels[operation.state] || operation.state;
+  }
   if (status.pending?.state === 'pending') return 'Install request queued';
   if (status.pending?.state === 'rejected') return 'Install request rejected';
   if (operation?.state === 'failed') return labels.failed;
@@ -119,9 +123,7 @@ export function ExecutorUpdate({
     : error
       ? 'Update status unavailable'
       : 'Checking for updates…';
-  const spinning =
-    (installing && operation?.state !== 'blocked') ||
-    ['preparing', 'testing'].includes(status.release?.state || '');
+  const spinning = installing && operation?.state !== 'blocked';
   if (compact)
     return (
       <button className="text-button executor-update-link" onClick={onOpen}>
@@ -207,8 +209,9 @@ export function ExecutorUpdate({
               executor restart.
             </p>
             <p>
-              This authorizes waiting for active agent work to settle, backing up and verifying the
-              database, restarting, and checking recovery. New work waits during installation.
+              This authorizes waiting up to two hours for active agent work to settle, backing up
+              and verifying the database, restarting, and checking recovery. New work waits during
+              installation.
             </p>
             {stale && <p>The executor will recheck current activity before stopping.</p>}
             <div className="delete-dialog-actions">
