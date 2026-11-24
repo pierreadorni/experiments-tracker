@@ -1296,7 +1296,7 @@ class Workflow:
         """Commit this experiment's exact saved named branch; None for other workspaces."""
         if not self.workspaces.branch(exp["id"]):
             return None
-        return await asyncio.to_thread(self.workspaces.commit_branch, exp["id"], message)
+        return await self.finish_threaded(self.workspaces.commit_branch, exp["id"], message)
 
     def prepared_python(self, exp, plan, runtime=None):
         if self.is_remote(exp):

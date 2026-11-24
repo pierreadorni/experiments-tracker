@@ -152,7 +152,9 @@ class ResearchDispatch:
             if self._live(eid) is None:
                 return
             # No shared or main-checkout fallback: only the named worktree is verified.
-            workspace = Path(await asyncio.to_thread(self.workflow.workspaces.branch_checkout, eid))
+            workspace = Path(
+                await self.workflow.finish_threaded(self.workflow.workspaces.branch_checkout, eid)
+            )
             # Checkout runs Git, so re-read the row, pause and thread before a session.
             expected = self._unchanged(expected)
             experiment = self._live(eid)
@@ -179,7 +181,10 @@ class ResearchDispatch:
             if rotate and resumed == thread_id:
                 raise NeedsAttention("research rotation did not return a new thread")
             # The session is another await, so verify the exact worktree and thread again.
-            if Path(await asyncio.to_thread(self.workflow.workspaces.branch_checkout, eid)) != workspace:
+            if (
+                Path(await self.workflow.finish_threaded(self.workflow.workspaces.branch_checkout, eid))
+                != workspace
+            ):
                 raise NeedsAttention("the saved research worktree changed during the session")
             if blocked(self.store) or not self.workflow.agent_pool.quota(eid=eid).admitted:
                 return

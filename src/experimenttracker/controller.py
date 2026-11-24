@@ -235,7 +235,7 @@ class Controller:
         if kind in ("plan", "prepare"):
             wf.validate_resource_plan(exp, parsed)
         if kind == "prepare":
-            runtime = await asyncio.to_thread(wf.workspaces.shared_runtime, exp["id"])
+            runtime = await wf.finish_threaded(wf.workspaces.shared_runtime, exp["id"])
             python = wf.prepared_python(exp, parsed, runtime)
             for name in parsed.files:
                 source = artifacts.allowed_path(wf.working_directory(exp) / name, wf.working_directory(exp))
@@ -464,13 +464,13 @@ class Controller:
         if research_result:
             require_research_write(wf, exp, action)
             request = RegisterResult.model_validate(args)
-            return await asyncio.to_thread(register_research_result, wf, exp, action, request)
+            return await wf.finish_threaded(register_research_result, wf, exp, action, request)
         if name == "register_figure":
             require_research_write(wf, exp, action)
             request = RegisterFigure.model_validate(args)
             # The copy and hash are bounded filesystem work; keep the controller
             # loop free while the handler repeats its own saved-turn gates.
-            return await asyncio.to_thread(register_figure, wf, exp, action, request)
+            return await wf.finish_threaded(register_figure, wf, exp, action, request)
         if name == "job_status":
             # Discussion turns on saved legacy records keep a read-only status view.
             requested = args.get("intent_ids")

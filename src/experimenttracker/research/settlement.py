@@ -183,7 +183,7 @@ async def _commit(workflow, eid, action_id):
     if receipt is not None:
         return receipt
     # commit_branch records its workspace intent and runs Git; keep the wait off the loop.
-    outcome = await asyncio.to_thread(workflow.workspaces.commit_branch, eid, message)
+    outcome = await workflow.finish_threaded(workflow.workspaces.commit_branch, eid, message)
     return outcome["commit"]
 
 

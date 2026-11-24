@@ -409,3 +409,39 @@ async def test_cancelled_threaded_call_finishes_before_the_caller_returns(runtim
     with pytest.raises(asyncio.CancelledError):
         await task
     assert done.is_set()
+
+
+@pytest.mark.parametrize("site", ["settlement_commit", "workflow_commit"])
+async def test_cancelled_workspace_commit_finishes_before_the_caller_returns(runtime, monkeypatch, site):
+    """T5.5p: a shutdown that cancels a loop mid-commit waits for the Git and store write."""
+    import threading
+
+    from experimenttracker.research import settlement
+
+    store, _, _, wf = runtime
+    eid = create_c4(store)
+    entered, release, done = threading.Event(), threading.Event(), threading.Event()
+
+    def commit_branch(experiment_id, message):
+        entered.set()
+        release.wait(5)
+        done.set()
+        return {"commit": "c" * 40}
+
+    monkeypatch.setattr(wf.workspaces, "commit_branch", commit_branch)
+    monkeypatch.setattr(wf.workspaces, "branch", lambda experiment_id: "synthetic")
+    call = (
+        settlement._commit(wf, eid, str(uuid4()))
+        if site == "settlement_commit"
+        else wf.commit_branch(store.experiment(eid), "synthetic")
+    )
+    task = asyncio.create_task(call)
+    assert await asyncio.to_thread(entered.wait, 5)
+    task.cancel()
+    await asyncio.sleep(0.05)
+    assert not task.done() and not done.is_set()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert done.is_set()
+    await wf.close()
