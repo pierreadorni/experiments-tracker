@@ -134,9 +134,9 @@ Stop and ask if: acceptance conflicts with existing tests in a way the card does
 
 ## Order
 
-**Phase 5 is nearly done; Phase 6 is next.** Contract 4 is the only engine for new
+**Phase 5 is done; Phase 6 is next.** Contract 4 is the only engine for new
 experiments, Autopilot runs as a lead experiment and the Worker is a thin relay
-(T5.1, T5.2, T5.3, T5.4 done; T5.2j and T5.5 open). Phase 6 (selectable Codex or
+(T5.1–T5.5 done; T5.5e removes compatibility shims after the next install). Phase 6 (selectable Codex or
 Claude agent backends, C14) follows [the plan](notes/t6-agent-backends.md); its owner
 decisions (T6.0) block T6.5 onward. See [the task cards](todo.md#phase-5--simplification).
 

@@ -42,6 +42,12 @@ executor no longer publishes to or polls the old routes.
 Commit: the T5.2h/T5.2i commits or later. Publish after step 3. Old D1 tables stay
 in place, unused.
 
+## Step 5 — simplified self-update (T5.5)
+
+Commit: the T5.5a–d commit or later. Install it through the existing update flow:
+the installed release's coordinator still compares identities and rehashes the
+receipt, and this release keeps both shims for it. Then T5.5e can delete them.
+
 ## Rollback
 
 Each step rolls back to the previous release. Rolling back the Worker past step 2
