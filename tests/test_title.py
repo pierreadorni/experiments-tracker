@@ -24,13 +24,17 @@ def test_title_output_is_bounded_and_prompt_includes_brief():
     assert "avoid adding claims about results" in prompt
 
 
-@pytest.mark.parametrize("request_owner", [None, "research", "title"])
+@pytest.mark.parametrize(
+    ("request_owner", "edit_title"), [(None, False), ("research", False), ("title", False), (None, True)]
+)
 async def test_an_untitled_contract_four_experiment_gets_one_small_title_turn(
-    runtime, config, tmp_path, monkeypatch, request_owner
+    runtime, config, tmp_path, monkeypatch, request_owner, edit_title
 ):
     import asyncio
     from types import SimpleNamespace
+    from uuid import uuid4
 
+    from test_commands import run, services
     from test_research_create import create, git_project
 
     store, _, agent, workflow = runtime
@@ -85,13 +89,25 @@ async def test_an_untitled_contract_four_experiment_gets_one_small_title_turn(
         store.update(eid, pending_request=pending)
     await workflow.agent_task
     workflow.agent_task = None
+    if edit_title:
+        request_id = str(uuid4())
+        command = {
+            "request_id": request_id,
+            "kind": "edit_title",
+            "target": f"experiment:{eid}",
+            "payload": {"request_id": request_id, "title": "  Owner’s corrected title  "},
+        }
+        svc = services(store, workflow)
+        first = run(svc, command)
+        assert first["state"] == "applied"
+        assert run(svc, command)["result"] == first["result"]
     await workflow.advance_title()
 
     assert len(calls) == 1 and "Measure a project-specific method." in calls[0]
     saved = store.one("SELECT state FROM agent_actions WHERE id=?", (queued[0]["id"],))
     assert saved["state"] == "completed"
     experiment = store.experiment(eid)
-    assert experiment["title"] == "Project method study"
+    assert experiment["title"] == ("Owner’s corrected title" if edit_title else "Project method study")
     if request_owner == "title":
         pending["expired"] = True
     assert experiment["pending_request"] == pending

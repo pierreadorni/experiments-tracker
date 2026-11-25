@@ -1,3 +1,4 @@
+import { useRef, useState } from 'react';
 import { Badge } from '../Badge';
 import { Conversation } from '../Conversation';
 import { Description } from '../Description';
@@ -26,6 +27,7 @@ import {
   FileText,
   MessageSquare,
   Pause,
+  Pencil,
   Play,
   Plus,
   Trash2,
@@ -93,6 +95,14 @@ export function ExperimentDetail(
     tab,
     theme,
   } = props;
+  const [titleDraft, setTitleDraft] = useState<{ id: string; value: string } | null>(null);
+  const actionsTrigger = useRef<HTMLButtonElement>(null);
+  const editingTitle = titleDraft?.id === exp.id ? titleDraft : null;
+  const titlePending = exp.pending_commands?.some((command) => command.kind === 'edit_title');
+  const closeTitleEditor = () => {
+    setTitleDraft(null);
+    actionsTrigger.current?.focus();
+  };
   return (
     <>
       <button className="back" onClick={() => setSelected(null)}>
@@ -102,28 +112,22 @@ export function ExperimentDetail(
       <div className="detail-heading">
         <div className="title-row">
           <h1>{experimentTitle(exp)}</h1>
-          <ExperimentActions>
+          <ExperimentActions triggerRef={actionsTrigger}>
             <button
               className="text-button"
-              disabled={
-                busy ||
-                !stageExecutionAvailable ||
-                exp.pending_commands?.some((c) => c.action === 'summarize_title') ||
-                exp.agent_actions.some(
-                  (a) =>
-                    ['title', 'summarize_title'].includes(a.phase) &&
-                    ['pending', 'dispatching', 'running', 'uncertain'].includes(a.state),
-                )
+              disabled={busy || !status?.experiment_title_editing || titlePending}
+              title={
+                status?.experiment_title_editing
+                  ? undefined
+                  : 'Install the executor update to enable title editing'
               }
-              onClick={() =>
-                void act(async () => {
-                  await send('action', experimentKey(exp.id), {
-                    action: 'summarize_title',
-                  });
-                })
-              }
+              onClick={() => {
+                setError(null);
+                setTitleDraft({ id: exp.id, value: experimentTitle(exp).slice(0, 100) });
+              }}
             >
-              Summarize title
+              <Pencil size={15} />
+              Edit title
             </button>
             {!['complete', 'cancelled'].includes(exp.phase) && (
               <button
@@ -179,21 +183,51 @@ export function ExperimentDetail(
             )}
           </ExperimentActions>
         </div>
-        {exp.agent_actions
-          .filter((a) => a.phase === 'summarize_title')
-          .slice(-1)
-          .filter((a) => a.state !== 'completed' && a.state !== 'superseded')
-          .map((a) => (
-            <p key={a.id} role="status" className="muted small">
-              {a.state === 'pending'
-                ? 'Title summary queued; waiting for the managed summary model and quota.'
-                : a.state === 'uncertain'
-                  ? 'Title summary needs reconciliation before another request.'
-                  : a.state === 'failed'
-                    ? `Title summary failed: ${a.error || 'Please try again.'}`
-                    : 'Summarizing the experiment title…'}
-            </p>
-          ))}
+        {editingTitle && (
+          <form
+            className="title-editor"
+            onSubmit={async (event) => {
+              event.preventDefault();
+              const title = editingTitle.value.trim();
+              if (!title || busy || titlePending) return;
+              const saved = await act(async () => {
+                await send('edit_title', experimentKey(exp.id), { title });
+              });
+              if (saved) closeTitleEditor();
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape' && !busy) closeTitleEditor();
+            }}
+          >
+            <label htmlFor="experiment-title">Experiment title</label>
+            <input
+              id="experiment-title"
+              autoFocus
+              required
+              maxLength={100}
+              value={editingTitle.value}
+              onFocus={(event) => event.currentTarget.select()}
+              onChange={(event) => setTitleDraft({ id: exp.id, value: event.target.value })}
+              disabled={busy}
+            />
+            <div className="title-editor-buttons">
+              <button
+                type="button"
+                className="text-button"
+                onClick={closeTitleEditor}
+                disabled={busy}
+              >
+                Cancel
+              </button>
+              <button
+                className="primary"
+                disabled={!editingTitle.value.trim() || busy || titlePending}
+              >
+                Save title
+              </button>
+            </div>
+          </form>
+        )}
         <div className="detail-meta">
           <Badge exp={exp} />
           {leadRunId(exp.contract) && <span>Autopilot lead</span>}
@@ -244,27 +278,29 @@ export function ExperimentDetail(
               .pending_commands!.map((c) =>
                 c.action
                   ? pretty(c.action)
-                  : c.kind === 'create'
-                    ? 'New experiment'
-                    : c.kind === 'note'
-                      ? 'Note delivery'
-                      : c.kind === 'delete'
-                        ? 'Delete experiment'
-                        : c.kind === 'plan_review'
-                          ? 'Plan review'
-                          : c.kind === 'steer'
-                            ? 'Steering instruction'
-                            : c.kind === 'discuss'
-                              ? 'Conversation message'
-                              : c.kind === 'integrate'
-                                ? 'Integration request'
-                                : c.kind === 'revert_integration'
-                                  ? 'Integration revert'
-                                  : c.kind === 'approve_integration'
-                                    ? 'Integration approval'
-                                    : c.kind === 'dont_merge'
-                                      ? 'Don’t merge update'
-                                      : 'Answer delivery',
+                  : c.kind === 'edit_title'
+                    ? 'Edit title'
+                    : c.kind === 'create'
+                      ? 'New experiment'
+                      : c.kind === 'note'
+                        ? 'Note delivery'
+                        : c.kind === 'delete'
+                          ? 'Delete experiment'
+                          : c.kind === 'plan_review'
+                            ? 'Plan review'
+                            : c.kind === 'steer'
+                              ? 'Steering instruction'
+                              : c.kind === 'discuss'
+                                ? 'Conversation message'
+                                : c.kind === 'integrate'
+                                  ? 'Integration request'
+                                  : c.kind === 'revert_integration'
+                                    ? 'Integration revert'
+                                    : c.kind === 'approve_integration'
+                                      ? 'Integration approval'
+                                      : c.kind === 'dont_merge'
+                                        ? 'Don’t merge update'
+                                        : 'Answer delivery',
               )
               .join(' · ')}
             . Saved on the gateway; acacia has not applied these commands yet.

@@ -264,6 +264,7 @@ export type Status = {
   heartbeat_received_at?: number | null;
   research_loop_projects?: string[];
   experiment_cancellation?: boolean;
+  experiment_title_editing?: boolean;
   implementation_repair?: boolean;
   branch_integration?: boolean;
   quota_reserve?: { five_hour_percent: number; weekly_percent: number };

@@ -1,6 +1,7 @@
 import { useRef } from 'react';
 import { ArrowRight, Beaker, Check, ChevronRight, Plus, Search, X } from 'lucide-react';
 import { Badge } from '../Badge';
+import { Select } from '../Select';
 import { date, experimentTitle, terminal } from '../format';
 import { leadRunId } from '../lead';
 import { experimentStatus } from '../progress';
@@ -167,28 +168,22 @@ export function ExperimentList({
           </div>
         </div>
         <div className="experiment-control">
-          <label htmlFor="experiment-status">Status</label>
-          <select
-            id="experiment-status"
+          <span>Status</span>
+          <Select
+            label="Status"
             value={filter}
-            onChange={(event) => setFilter(event.target.value as ExperimentFilter)}
-          >
-            {filters.map((value) => (
-              <option key={value}>{value}</option>
-            ))}
-          </select>
+            options={filters.map((value) => ({ value, label: value }))}
+            onChange={(value) => setFilter(value as ExperimentFilter)}
+          />
         </div>
         <div className="experiment-control">
-          <label htmlFor="experiment-sort">Sort by</label>
-          <select
-            id="experiment-sort"
+          <span>Sort by</span>
+          <Select
+            label="Sort by"
             value={sort}
-            onChange={(event) => setSort(event.target.value as ExperimentSort)}
-          >
-            {sorts.map((value) => (
-              <option key={value}>{value}</option>
-            ))}
-          </select>
+            options={sorts.map((value) => ({ value, label: value }))}
+            onChange={(value) => setSort(value as ExperimentSort)}
+          />
         </div>
       </div>
       <div className="experiment-results">

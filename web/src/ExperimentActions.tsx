@@ -1,10 +1,15 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { MoreHorizontal } from 'lucide-react';
 
-export function ExperimentActions({ children }: { children: ReactNode }) {
+export function ExperimentActions({
+  children,
+  triggerRef,
+}: {
+  children: ReactNode;
+  triggerRef: RefObject<HTMLButtonElement | null>;
+}) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
-  const trigger = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if (!open) return;
     root.current?.querySelector<HTMLElement>('.action-menu button:not(:disabled)')?.focus();
@@ -22,7 +27,7 @@ export function ExperimentActions({ children }: { children: ReactNode }) {
         if (event.key === 'Escape') {
           event.stopPropagation();
           setOpen(false);
-          trigger.current?.focus();
+          triggerRef.current?.focus();
         }
       }}
       onBlur={(event) => {
@@ -30,7 +35,7 @@ export function ExperimentActions({ children }: { children: ReactNode }) {
       }}
     >
       <button
-        ref={trigger}
+        ref={triggerRef}
         className="icon-button"
         aria-label="Experiment actions"
         aria-expanded={open}
@@ -38,7 +43,18 @@ export function ExperimentActions({ children }: { children: ReactNode }) {
       >
         <MoreHorizontal size={21} />
       </button>
-      {open && <div className="action-menu">{children}</div>}
+      {open && (
+        <div
+          className="action-menu"
+          onClick={(event) => {
+            if (!(event.target as Element).closest('button:not(:disabled)')) return;
+            setOpen(false);
+            triggerRef.current?.focus();
+          }}
+        >
+          {children}
+        </div>
+      )}
     </div>
   );
 }

@@ -435,7 +435,7 @@ button.secondary:focus-visible {
 .experiment-control > label {
   margin: 0;
 }
-.experiment-control select,
+.experiment-control .select-trigger,
 .experiment-search-field {
   min-width: 0;
   min-height: 44px;
@@ -443,16 +443,23 @@ button.secondary:focus-visible {
   border-radius: 7px;
   background: var(--field, #fffefa);
 }
-.experiment-control select {
+.experiment-control .select-trigger {
   width: 100%;
+  margin: 0;
   padding-inline: 10px;
   color: var(--text, #292b26);
-  font-size: 15px;
-  cursor: pointer;
 }
-.experiment-control select:hover,
+.experiment-control .select-trigger:hover,
 .experiment-search-field:hover {
   border-color: var(--muted);
+}
+.experiment-control .select-menu {
+  left: 0;
+  min-width: max(100%, 185px);
+}
+.experiment-control:last-child .select-menu {
+  right: 0;
+  left: auto;
 }
 .experiment-search-field {
   display: flex;
@@ -2029,7 +2036,7 @@ progress::-moz-progress-bar {
     padding: 10px 12px;
     font-size: 14px;
   }
-  .experiment-control select,
+  .experiment-control .select-trigger,
   .experiment-search-field input {
     font-size: 16px;
   }
@@ -2230,6 +2237,9 @@ progress::-moz-progress-bar {
 }
 .action-menu {
   position: absolute;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   right: 0;
   top: calc(100% + 5px);
   width: max-content;
@@ -2241,6 +2251,26 @@ progress::-moz-progress-bar {
   box-shadow: 0 8px 24px var(--shadow, #343e2214);
   z-index: 40;
   animation: menu-in 140ms ease-out;
+}
+.action-menu button {
+  justify-content: flex-start;
+  text-align: left;
+}
+.title-editor {
+  display: grid;
+  gap: 8px;
+  max-width: 44rem;
+  margin-block: 12px;
+}
+.title-editor input {
+  width: 100%;
+  min-height: 44px;
+  font-size: 16px;
+}
+.title-editor-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
 }
 .progress-panel .section-heading {
   font-size: 15px;

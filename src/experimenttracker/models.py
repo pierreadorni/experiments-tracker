@@ -143,6 +143,19 @@ class ActionCommand(StrictModel):
     ]
 
 
+class EditTitleCommand(StrictModel):
+    schema_version: Literal[1] = 1
+    request_id: UUID
+    title: str = Field(min_length=1, max_length=100, pattern=r"^[^\r\n]+$")
+
+    @model_validator(mode="after")
+    def nonempty(self):
+        self.title = self.title.strip()
+        if not self.title:
+            raise ValueError("title must contain text")
+        return self
+
+
 class AnswerCommand(StrictModel):
     schema_version: Literal[1] = 1
     request_id: UUID

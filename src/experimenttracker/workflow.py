@@ -303,6 +303,7 @@ class Workflow:
         contract_three_archived = 3 not in legacy_archive.SUPPORTED_EXECUTION_CONTRACTS
         return {
             "experiment_cancellation": True,
+            "experiment_title_editing": True,
             "implementation_repair": not contract_three_archived,
             "branch_integration": True,
             "execution_contract_3_archived": contract_three_archived,
@@ -1057,7 +1058,7 @@ class Workflow:
     def title_applicable(exp, action, *, dispatch=False):
         # Contract 4 queues one small-model title turn at creation; the frozen contract-3
         # plan-review title turn is archived.
-        if exp["deleted_at"] or not Workflow.title_runnable(exp):
+        if exp["deleted_at"] or exp["contract"].get("owner_edited_title") or not Workflow.title_runnable(exp):
             return False
         if action["phase"] == "summarize_title":
             return True
@@ -1100,7 +1101,11 @@ class Workflow:
                 return
             self.root(eid).mkdir(parents=True, exist_ok=True)
             thread_id, _ = await slot.agent.session(None, self.root(eid), model=saved["model"])
-            if blocked(self.store) or self.store.experiment(eid)["phase"] == "cancelled":
+            exp = self.store.experiment(eid)
+            if blocked(self.store) or exp["phase"] == "cancelled":
+                return
+            if not self.title_applicable(exp, action, dispatch=True):
+                self._action_state(action["id"], "superseded", expected=expected)
                 return
             if not self.agent_pool.quota(eid=eid).admitted:
                 return

@@ -906,6 +906,15 @@ class Store:
         if all(previous[k] == v for k, v in fields.items()):
             return
         with self.tx() as db:
+            if (
+                "title" in fields
+                and db.execute(
+                    "SELECT json_extract(contract,'$.owner_edited_title') FROM experiments WHERE id=?", (eid,)
+                ).fetchone()[0]
+            ):
+                fields.pop("title")
+                if not fields:
+                    return
             before = request_obligations.saved_pending(db, eid) if "pending_request" in fields else None
             before_review = review_obligations.saved_review(db, eid) if "plan_review" in fields else None
             db.execute(
@@ -1399,7 +1408,7 @@ class Store:
                         )
                 if (
                     exp["phase"] == "cancelled"
-                    and kind not in ("note", "delete")
+                    and kind not in ("note", "delete", "edit_title")
                     and not (kind == "action" and payload["action"] == "cancel")
                 ):
                     raise Conflict("experiment has been cancelled")
@@ -1475,6 +1484,12 @@ class Store:
                         "INSERT INTO notes VALUES(?,?,?,?,?)",
                         (request_id, eid, "researcher", payload["text"], now),
                     )
+                elif kind == "edit_title":
+                    contract = {**exp["contract"], "owner_edited_title": True}
+                    db.execute(
+                        "UPDATE experiments SET title=?,contract=? WHERE id=?",
+                        (payload["title"], encode(contract), eid),
+                    )
                 elif kind == "action":
                     action = payload["action"]
                     if action in ("retry_agent", "repair_implementation"):
@@ -1482,6 +1497,8 @@ class Store:
                     if action == "cancel":
                         self.cancel_experiment(db, eid, now)
                     elif action == "summarize_title":
+                        if exp["contract"].get("owner_edited_title"):
+                            raise Conflict("the owner has edited this title")
                         if db.execute(
                             "SELECT 1 FROM agent_actions WHERE experiment_id=? AND phase IN ('title','summarize_title') "
                             "AND state IN ('pending','dispatching','running','uncertain')",
