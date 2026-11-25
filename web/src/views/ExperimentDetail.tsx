@@ -237,8 +237,10 @@ export function ExperimentDetail(
             {date(exp.created_at)}
           </span>
         </div>
-        {experimentTitle(exp) !== exp.brief && <Description key={exp.id} text={exp.brief} />}
-        <FollowExperiment key={exp.id} id={exp.id} />
+        {experimentTitle(exp) !== exp.brief && (
+          <Description key={`description:${exp.id}`} text={exp.brief} />
+        )}
+        <FollowExperiment key={`follow:${exp.id}`} id={exp.id} />
       </div>
       {exp.reference_experiment_id && (
         <p className="reference-link">
