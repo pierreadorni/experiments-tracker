@@ -637,7 +637,7 @@ Install and publish order for Phase 5: [notes/t5-rollout.md](notes/t5-rollout.md
 - [x] T5.1d: `project_update` wakes the lead once per burst (approval request, member completion or failure, owner message, policy revision, calendar boundary, deadlines); healthy member jobs cost no lead turn.
 - [x] T5.1e: project-turn engine deleted (`autopilot_controller.py`, `autopilot_client.py`, workflow/pool wiring). `drain_inventory` reports `autopilot_unsettled_actions` and `autopilot_runs_awaiting_lead`. Startup creates a seeded lead per active run without replay and holds a run with an unsettled old turn. **Install precondition:** `autopilot_unsettled_actions` is `[]` on a fresh offline backup, and the owner reviews the runs awaiting a lead.
 - [x] T5.1f: Autopilot view shows the saved policy, run status, reserves, allowance and a link to the lead (uuid5 derived client-side, checked against Python); saved backlog, decisions, files and historical turns render only when present; the lead is marked in experiment lists. `autopilot-smoke.mjs` rewritten for the relay and the lead model. Needs an owner-authorized Worker/asset publish.
-- [-] T5.1g: deferred by owner decision 7 (C4 stays CPU-only).
+- [-] T5.1g: deferred by owner decision 7. C4 GPU admission is enabled without a budget by T5.6.
 - [x] T5.1a: deleted the C3 Autopilot admission/hold, plan review, stage controls, C3 tick wakes and the always-NULL child-turn authority check (source −176, tests −24). Kept stage-hold projections and the `deferred_stages` authority read for saved members.
 ### [x] T5.2 Gateway as a thin relay (C9) · S · L
 - Design and subcards T5.2a–i: [notes/t5.2-gateway-relay-design.md](notes/t5.2-gateway-relay-design.md). Owner approved the defaults 2026-11-22.
@@ -670,6 +670,13 @@ Install and publish order for Phase 5: [notes/t5-rollout.md](notes/t5-rollout.md
 - [ ] T5.5e: once the installed release includes T5.5, delete the compatibility shims kept for a pre-T5.5 coordinator and owner: `identities` in `/api/maintenance/internal` and `maintenance.identities`, and the `files` list in the release receipt (`software_files`).
 
 ---
+
+### [x] T5.6 Contract-4 GPU admission without a budget · S · S
+- **Why:** owner decision 7 (2026-11-22) kept C4 CPU-only until a GPU-week budget was wired. C4 is the only engine for new experiments, and the owner's research is GPU work, so a CPU-only C4 cannot be used for it. On 2026-11-25 the owner asked for GPU admission with no budget control, as C3 had in practice.
+- **Change:** `research/admission.py` no longer refuses `gpus_per_job > 0`. Admission still applies the optional owner `slurm.limits` (`gpus_per_job`, partitions, accounts, QOS, walltime, …), the experiment and concurrent job limits, and `sbatch --test-only`. `Slurm.submission_args` already maps GPUs to `--gres`, and Jean Zay SBATCH directives already check GPU count and type against the structured request. The synthetic demo scheduler still refuses GPUs.
+- **Not done:** no GPU-hour or GPU-week accounting. `slurm.limits.gpu_hours_per_experiment` is not checked by C4, and the Autopilot `weekly_gpu_hours` budget is not applied to member jobs (T5.1g stays deferred). Slurm association limits are the only bound beyond the owner resource limits.
+- **Tests:** `tests/test_research_admission.py` admits a 2-GPU typed request and refuses it under an owner `gpus_per_job` limit.
+- **Live:** taking it into use needs an owner install and restart. The first live GPU job is owner-authorized evidence, separate from these tests.
 
 ## Phase 6 — Selectable agent backends: Codex or Claude Agent SDK (C14)
 

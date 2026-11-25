@@ -133,6 +133,11 @@ def test_admission_requires_real_owner_approval_and_preserves_argv(runtime):
     request = preflight(workflow, eid, action, request)
     assert request.request_id != request.approval_request_id
     assert request.command[-1] == "a b"
+    gpu = {**payload(approval_id, objective), "resources": {"gpus_per_job": 2, "gpu_type": "a100"}}
+    assert preflight(workflow, eid, action, gpu).resources.gpus_per_job == 2
+    workflow.config.slurm.limits.gpus_per_job = 1
+    with pytest.raises(ValueError, match="gpus_per_job exceeds the executor policy"):
+        preflight(workflow, eid, action, gpu)
     workflow.config.slurm.limits.cpus_per_job = 1
     with pytest.raises(ValueError, match="executor policy"):
         preflight(workflow, eid, action, request)

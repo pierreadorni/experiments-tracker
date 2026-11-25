@@ -121,8 +121,9 @@ ignored. See [config.example.yaml](../config.example.yaml) and
 [config.py](../src/experimenttracker/config.py).
 
 The agent picks resources from fresh cluster capabilities; the backend validates
-each request with `sbatch --test-only`. Contract-4 jobs are CPU-only until GPU
-budget accounting is wired.
+each request with `sbatch --test-only`. GPU requests are admitted within the
+optional owner limits in `slurm.limits` (for example `gpus_per_job`); there is no
+GPU-hour budget, so Slurm's association limits are the only accounting.
 
 ## 5. Preflight and first live experiment
 

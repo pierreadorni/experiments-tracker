@@ -208,8 +208,6 @@ def _check(workflow, experiment_id, action, request, db, *, remote_source=False,
         raise ValueError("an existing job intent has uncertain outcome")
     limits = workflow.config.slurm
     limits.limits.validate_request(request.resources)
-    if request.resources.gpus_per_job:
-        raise ValueError("research submission is CPU-only until GPU budget accounting is wired")
     if (
         limits.max_jobs_per_experiment is not None
         and db.execute(

@@ -34,7 +34,8 @@ timer), `needs_owner` (needs an open `ask_owner`) or `done` (needs a published
 report and an integrate decision). An experiment must have its objective approved,
 by the owner or by Autopilot within its envelope, before `submit_job` succeeds.
 Jobs run from an exported commit with per-attempt output directories outside the
-repository; contract-4 jobs are CPU-only for now.
+repository. Contract-4 jobs may request GPUs within the optional owner resource
+limits; no GPU-hour budget is applied.
 
 Agents wake only on events: a job's terminal state, an answer, an owner message,
 an integration result or their own timer, debounced by 60 seconds. Healthy jobs
@@ -82,8 +83,9 @@ revisions, calendar boundaries, deadlines).
 
 The policy (calendar, open-experiment limit, approval envelope, subscription
 reserves) is data checked where work is admitted, not a second engine. Pausing or
-revising a run holds the lead's turns. The GPU-week budget is deferred while
-contract 4 is CPU-only. Project documents are versioned and published; missing
+revising a run holds the lead's turns. The GPU-week budget is not enforced on
+contract 4 (T5.1g deferred), so member GPU jobs are bounded only by Slurm and the
+owner resource limits. Project documents are versioned and published; missing
 results stay TODO. Handoff readiness is the lead's judgment for researcher review,
 never scientific certification or submission.
 
