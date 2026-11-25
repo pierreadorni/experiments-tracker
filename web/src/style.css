@@ -420,53 +420,110 @@ button.secondary:focus-visible {
   color: var(--muted);
   margin-top: 12px;
 }
-.toolbar {
+.experiment-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(144px, 180px) minmax(144px, 180px);
+  gap: 12px;
+}
+.experiment-control {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+.experiment-control > label {
+  margin: 0;
+}
+.experiment-control select,
+.experiment-search-field {
+  min-width: 0;
+  min-height: 44px;
+  border: 1px solid var(--border, #d8d8d0);
+  border-radius: 7px;
+  background: var(--field, #fffefa);
+}
+.experiment-control select {
+  width: 100%;
+  padding-inline: 10px;
+  color: var(--text, #292b26);
+  font-size: 15px;
+  cursor: pointer;
+}
+.experiment-control select:hover,
+.experiment-search-field:hover {
+  border-color: var(--muted);
+}
+.experiment-search-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-inline-start: 12px;
+}
+.experiment-search-field:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.experiment-search-field > svg {
+  flex: none;
+}
+.experiment-search-field input {
+  align-self: stretch;
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  padding: 0 8px 0 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+  color: var(--text, #292b26);
+  font-size: 15px;
+}
+.experiment-search-field input::placeholder {
+  color: var(--muted);
+}
+.experiment-search-field input::-webkit-search-cancel-button {
+  appearance: none;
+}
+.experiment-search-field button {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 44px;
+  min-height: 44px;
+  margin-block: -1px;
+  border-radius: 6px;
+}
+.experiment-search-field button:hover {
+  background: var(--hover, #eeeee7);
+  color: var(--text, #292b26);
+}
+.experiment-search-field button:focus-visible {
+  outline-offset: -3px;
+}
+.experiment-results {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 22px;
-  margin: 0 0 16px;
-}
-.filters {
-  display: flex;
-  align-items: center;
-  gap: 22px;
-}
-.filters button {
-  display: inline-flex;
-  gap: 8px;
-  padding: 9px 0;
-  color: var(--muted);
-  border-bottom: 2px solid transparent;
-}
-.filters button.chosen {
-  color: var(--text, #31372c);
-  font-weight: 550;
-  border-bottom-color: var(--accent);
-}
-.filters span {
+  gap: 10px;
+  min-height: 48px;
   color: var(--muted);
   font-size: 14px;
   font-variant-numeric: tabular-nums;
 }
-.search {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  border-radius: 7px;
-  color: var(--muted);
-  padding: 5px 9px;
-  transition: background 180ms;
+.experiment-results button {
+  min-height: 44px;
+  font-size: inherit;
 }
-.search:focus-within {
-  background: var(--focus, #e9ecdf);
-}
-.search input {
-  background: transparent;
-  border: 0;
-  box-shadow: none;
-  width: 190px;
-  padding: 5px 0;
+@media (max-width: 670px), (min-width: 761px) and (max-width: 900px) {
+  .experiment-controls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+  .experiment-search {
+    grid-column: 1 / -1;
+  }
 }
 .experiment-list {
   border-top: 1px solid var(--line);
@@ -1856,17 +1913,6 @@ progress::-moz-progress-bar {
   .content {
     padding-inline: 30px;
   }
-  .toolbar {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 10px;
-  }
-  .search {
-    padding-left: 0;
-  }
-  .search input {
-    width: 230px;
-  }
 }
 @media (max-width: 900px) {
   .tabs .secondary-tab {
@@ -1983,22 +2029,9 @@ progress::-moz-progress-bar {
     padding: 10px 12px;
     font-size: 14px;
   }
-  .filters {
-    width: 100%;
-    justify-content: space-between;
-    gap: 8px;
-  }
-  .filters button {
-    gap: 5px;
-  }
-  .search {
-    width: 100%;
-    padding: 5px 10px;
-    background: var(--surface, #f0efe9);
-  }
-  .search input {
-    width: 100%;
-    min-width: 0;
+  .experiment-control select,
+  .experiment-search-field input {
+    font-size: 16px;
   }
   .experiment-row {
     gap: 10px;

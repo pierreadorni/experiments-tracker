@@ -1,158 +1,265 @@
+import { useRef } from 'react';
+import { ArrowRight, Beaker, Check, ChevronRight, Plus, Search, X } from 'lucide-react';
 import { Badge } from '../Badge';
-import { date, experimentTitle } from '../format';
-import { ArrowRight, Beaker, Check, ChevronRight, Plus, Search } from 'lucide-react';
-import { usePendingCommands } from '../relay';
+import { date, experimentTitle, terminal } from '../format';
 import { leadRunId } from '../lead';
+import { experimentStatus } from '../progress';
+import { usePendingCommands } from '../relay';
+import type { Experiment } from '../types';
 import type { ViewProps } from './props';
 
-export function ExperimentList(
-  props: Pick<
-    ViewProps,
-    | 'active'
-    | 'attention'
-    | 'choose'
-    | 'completed'
-    | 'experiments'
-    | 'filter'
-    | 'projectId'
-    | 'search'
-    | 'setCreating'
-    | 'setFilter'
-    | 'setSearch'
-    | 'visibleExperiments'
-  >,
-) {
-  const {
-    active,
-    attention,
-    choose,
-    completed,
-    experiments,
-    filter,
-    projectId,
-    search,
-    setCreating,
-    setFilter,
-    setSearch,
-    visibleExperiments,
-  } = props;
-  // A hosted create has no projection until the executor applies it, so the queue shows it.
+const filters = ['All', 'Active', 'Complete', 'Attention', 'Cancelled'] as const;
+const sorts = ['Newest first', 'Oldest first', 'Last updated', 'Title (A–Z)'] as const;
+export type ExperimentFilter = (typeof filters)[number];
+export type ExperimentSort = (typeof sorts)[number];
+
+const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+const waiting = 'Waiting for the executor';
+
+type Row = {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  experiment?: Experiment;
+};
+
+function matchesStatus(row: Row, filter: ExperimentFilter) {
+  const { experiment } = row;
+  if (filter === 'All') return true;
+  if (!experiment) return filter === 'Active';
+  switch (filter) {
+    case 'Active':
+      return !terminal.includes(experiment.phase);
+    case 'Complete':
+      return experiment.phase === 'complete';
+    case 'Cancelled':
+      return experiment.phase === 'cancelled';
+    case 'Attention':
+      return (
+        experiment.phase === 'failed' ||
+        experiment.plan_review?.state === 'awaiting_review' ||
+        [
+          'needs_attention',
+          'agent_dispatch_uncertain',
+          'submission_uncertain',
+          'agent_unavailable',
+          'agent_session_unavailable',
+          'cancellation_unconfirmed',
+        ].includes(experiment.hold_reason || '')
+      );
+  }
+}
+
+function matchesSearch(row: Row, terms: string[]) {
+  if (terms.length === 0) return true;
+  const { experiment } = row;
+  const text = (
+    experiment
+      ? [
+          row.title,
+          experiment.brief,
+          experiment.analysis?.title,
+          experiment.analysis?.summary,
+          experimentStatus(experiment),
+          experiment.id,
+        ].join(' ')
+      : `${row.title} ${waiting}`
+  ).toLowerCase();
+  return terms.every((term) => text.includes(term));
+}
+
+function compareRows(a: Row, b: Row, sort: ExperimentSort) {
+  const newest = b.createdAt - a.createdAt || a.id.localeCompare(b.id);
+  switch (sort) {
+    case 'Oldest first':
+      return a.createdAt - b.createdAt || newest;
+    case 'Last updated':
+      return b.updatedAt - a.updatedAt || newest;
+    case 'Title (A–Z)':
+      return collator.compare(a.title, b.title) || newest;
+    default:
+      return newest;
+  }
+}
+
+type ListProps = Pick<ViewProps, 'choose' | 'experiments' | 'projectId' | 'setCreating'> & {
+  filter: ExperimentFilter;
+  search: string;
+  sort: ExperimentSort;
+  setFilter: (value: ExperimentFilter) => void;
+  setSearch: (value: string) => void;
+  setSort: (value: ExperimentSort) => void;
+};
+
+export function ExperimentList({
+  choose,
+  experiments,
+  filter,
+  projectId,
+  search,
+  setCreating,
+  setFilter,
+  setSearch,
+  setSort,
+  sort,
+}: ListProps) {
+  const searchInput = useRef<HTMLInputElement>(null);
+  // Hosted creates appear as waiting rows until the executor applies them.
   const creates = usePendingCommands().filter(
     (c) => c.kind === 'create' && (!c.payload?.project_id || c.payload.project_id === projectId),
   );
+  const rows: Row[] = [
+    ...experiments.map((experiment) => ({
+      id: experiment.id,
+      title: experimentTitle(experiment),
+      createdAt: experiment.created_at,
+      updatedAt: experiment.updated_at ?? experiment.created_at,
+      experiment,
+    })),
+    ...creates.map((command) => ({
+      id: command.request_id,
+      title: typeof command.payload?.brief === 'string' ? command.payload.brief : 'New experiment',
+      createdAt: command.received_at,
+      updatedAt: command.received_at,
+    })),
+  ];
+  const terms = search.toLowerCase().match(/\S+/g) || [];
+  const isFiltered = filter !== 'All' || terms.length > 0;
+  const visible = rows
+    .filter((row) => matchesStatus(row, filter) && matchesSearch(row, terms))
+    .sort((a, b) => compareRows(a, b, sort));
+  const resultCount = isFiltered ? `${visible.length} of ${rows.length}` : rows.length;
+
+  function clearSearch() {
+    setSearch('');
+    searchInput.current?.focus();
+  }
+
   return (
     <>
       <div className="page-heading">
-        <div>
-          <h1>Experiments</h1>
-        </div>
+        <h1>Experiments</h1>
         <button className="primary" onClick={() => setCreating(true)}>
           <Plus size={18} />
           New experiment
         </button>
       </div>
-      <div className="toolbar">
-        <div className="filters">
-          {['All', 'Active', 'Complete', 'Attention'].map((f) => (
-            <button
-              key={f}
-              className={filter === f ? 'chosen' : ''}
-              aria-pressed={filter === f}
-              onClick={() => setFilter(f)}
-            >
-              {f}
-              <span>
-                {f === 'All'
-                  ? experiments.length
-                  : f === 'Active'
-                    ? active.length
-                    : f === 'Complete'
-                      ? completed.length
-                      : attention.length}
-              </span>
-            </button>
-          ))}
-        </div>
-        <label className="search">
-          <Search size={16} />
-          <input
-            aria-label="Search experiments"
-            placeholder="Search experiments"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-        </label>
-      </div>
-      <div className="experiment-list">
-        {creates.map((c) => (
-          <div className="experiment-row" key={c.request_id} role="status">
-            <span className="experiment-icon">
-              <Beaker size={20} />
-            </span>
-            <div className="row-description">
-              <strong>
-                {typeof c.payload?.brief === 'string' ? c.payload.brief : 'New experiment'}
-              </strong>
-              <small>Waiting for the executor · {date(c.received_at)}</small>
-            </div>
-          </div>
-        ))}
-        {visibleExperiments.map((e) => (
-          <button className="experiment-row" key={e.id} onClick={() => choose(e.id)}>
-            <span className={`experiment-icon ${e.phase === 'complete' ? 'complete-icon' : ''}`}>
-              {e.phase === 'complete' ? <Check size={20} /> : <Beaker size={20} />}
-            </span>
-            <div className="row-description">
-              <strong>{experimentTitle(e)}</strong>
-              {e.phase === 'complete' && e.analysis?.summary && (
-                <span className="row-finding">{e.analysis.summary}</span>
-              )}
-              <small>
-                {leadRunId(e.contract) && (
-                  <>
-                    Autopilot lead <span>·</span>{' '}
-                  </>
-                )}
-                {Boolean(e.contract.synthetic_demo) && (
-                  <>
-                    Synthetic experiment <span>·</span>{' '}
-                  </>
-                )}
-                {date(e.created_at)}
-              </small>
-            </div>
-            <div className="row-status">
-              <Badge exp={e} />
-            </div>
-            <ChevronRight size={18} />
-          </button>
-        ))}
-        {experiments.length > 0 && visibleExperiments.length === 0 && (
-          <div className="empty" role="status">
-            <Search size={36} />
-            <h3>No matching experiments.</h3>
-            <p>
-              {search
-                ? `No experiments match “${search}” in ${filter.toLowerCase()}.`
-                : `No experiments in ${filter.toLowerCase()} for this project.`}
-            </p>
+      <div className="experiment-controls">
+        <div className="experiment-control experiment-search">
+          <label htmlFor="experiment-search">Search</label>
+          <div className="experiment-search-field">
+            <Search size={16} aria-hidden="true" />
+            <input
+              id="experiment-search"
+              ref={searchInput}
+              type="search"
+              aria-label="Search experiments"
+              placeholder="Search experiments"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+            />
             {search && (
-              <button className="text-button" onClick={() => setSearch('')}>
-                Clear search
+              <button type="button" aria-label="Clear search" onClick={clearSearch}>
+                <X size={16} aria-hidden="true" />
               </button>
             )}
-            <button
-              className="text-button"
-              onClick={() => {
-                setSearch('');
-                setFilter('All');
-              }}
-            >
-              Show all experiments <ArrowRight size={16} />
+          </div>
+        </div>
+        <div className="experiment-control">
+          <label htmlFor="experiment-status">Status</label>
+          <select
+            id="experiment-status"
+            value={filter}
+            onChange={(event) => setFilter(event.target.value as ExperimentFilter)}
+          >
+            {filters.map((value) => (
+              <option key={value}>{value}</option>
+            ))}
+          </select>
+        </div>
+        <div className="experiment-control">
+          <label htmlFor="experiment-sort">Sort by</label>
+          <select
+            id="experiment-sort"
+            value={sort}
+            onChange={(event) => setSort(event.target.value as ExperimentSort)}
+          >
+            {sorts.map((value) => (
+              <option key={value}>{value}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+      <div className="experiment-results">
+        <span role="status">
+          {resultCount} {rows.length === 1 ? 'experiment' : 'experiments'}
+        </span>
+        {isFiltered && (
+          <button
+            className="text-button"
+            onClick={() => {
+              setFilter('All');
+              clearSearch();
+            }}
+          >
+            Clear filters
+          </button>
+        )}
+      </div>
+      <div className="experiment-list">
+        {visible.map(({ id, title, experiment: e, createdAt, updatedAt }) =>
+          e ? (
+            <button className="experiment-row" key={`experiment:${id}`} onClick={() => choose(id)}>
+              <span className={`experiment-icon ${e.phase === 'complete' ? 'complete-icon' : ''}`}>
+                {e.phase === 'complete' ? <Check size={20} /> : <Beaker size={20} />}
+              </span>
+              <div className="row-description">
+                <strong>{title}</strong>
+                {e.phase === 'complete' && e.analysis?.summary && (
+                  <span className="row-finding">{e.analysis.summary}</span>
+                )}
+                <small>
+                  {leadRunId(e.contract) && (
+                    <>
+                      Autopilot lead <span>·</span>{' '}
+                    </>
+                  )}
+                  {Boolean(e.contract.synthetic_demo) && (
+                    <>
+                      Synthetic experiment <span>·</span>{' '}
+                    </>
+                  )}
+                  {sort === 'Last updated' ? `Updated ${date(updatedAt)}` : date(createdAt)}
+                </small>
+              </div>
+              <div className="row-status">
+                <Badge exp={e} />
+              </div>
+              <ChevronRight size={18} />
             </button>
+          ) : (
+            <div className="experiment-row" key={`pending:${id}`}>
+              <span className="experiment-icon">
+                <Beaker size={20} />
+              </span>
+              <div className="row-description">
+                <strong>{title}</strong>
+                <small>
+                  {waiting} · {date(createdAt)}
+                </small>
+              </div>
+            </div>
+          ),
+        )}
+        {rows.length > 0 && visible.length === 0 && (
+          <div className="empty">
+            <Search size={36} />
+            <h3>No matching experiments.</h3>
+            <p>Try a different search or status.</p>
           </div>
         )}
-        {experiments.length === 0 && creates.length === 0 && (
+        {rows.length === 0 && (
           <div className="empty">
             <Beaker size={36} />
             <h3>No experiments yet.</h3>

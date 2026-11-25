@@ -10,10 +10,8 @@ export type Page = 'experiments' | 'inbox' | 'settings' | 'memory';
 // The slice of App state and handlers the extracted views read; each view picks what it uses.
 export interface ViewProps {
   act: (fn: () => Promise<void>) => Promise<boolean>;
-  active: Experiment[];
   answer: string;
   appearance: ReactNode;
-  attention: Experiment[];
   autopilotActive: boolean;
   brief: string;
   busy: boolean;
@@ -30,7 +28,6 @@ export interface ViewProps {
   executorOnline: boolean;
   exp: Experiment | undefined;
   experiments: Experiment[];
-  filter: string;
   mobileNavigation: boolean;
   modalRef: RefObject<HTMLElement | null>;
   model: string;
@@ -47,7 +44,6 @@ export interface ViewProps {
   reportOptions: ReturnType<typeof availableReports>;
   researchLoopInputError: string | null;
   scopedInbox: InboxEntry[];
-  search: string;
   setAnswer: SetState<string>;
   setAuth: SetState<boolean | null>;
   setAutopilotActive: SetState<boolean>;
@@ -59,7 +55,6 @@ export interface ViewProps {
   setDeleteTarget: SetState<Experiment | null>;
   setEffort: SetState<string>;
   setError: SetState<string | null>;
-  setFilter: SetState<string>;
   setModel: SetState<string>;
   setNavOpen: SetState<boolean>;
   setNote: SetState<string>;
@@ -68,7 +63,6 @@ export interface ViewProps {
   setProjectSettingsOpen: SetState<boolean>;
   setReferenceId: SetState<string>;
   setReportChoice: SetState<string | null>;
-  setSearch: SetState<string>;
   setSelected: SetState<string | null>;
   setStatus: SetState<Status | null>;
   setTab: SetState<string>;
@@ -79,6 +73,5 @@ export interface ViewProps {
   tab: string;
   theme: Theme;
   token: string;
-  visibleExperiments: Experiment[];
   workspaceMode: string;
 }

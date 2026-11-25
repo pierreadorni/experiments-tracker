@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { experimentTitle, terminal } from './format';
+import { experimentTitle } from './format';
 import { readLastProject, rememberProject } from './lastProject';
 import { SessionLoading, SignIn } from './views/Login';
 import { Sidebar } from './views/Sidebar';
 import { Topbar } from './views/Topbar';
 import { KnowledgePage } from './views/KnowledgePage';
-import { ExperimentList } from './views/ExperimentList';
+import { ExperimentList, type ExperimentFilter, type ExperimentSort } from './views/ExperimentList';
 import { ExperimentDetail } from './views/ExperimentDetail';
 import { InboxPage } from './views/InboxPage';
 import { Settings } from './views/Settings';
@@ -77,8 +77,9 @@ export function App() {
   );
   const [autopilotActive, setAutopilotActive] = useState(false);
   const [tab, setTab] = useState('Progress');
-  const [filter, setFilter] = useState('All');
+  const [filter, setFilter] = useState<ExperimentFilter>('All');
   const [search, setSearch] = useState('');
+  const [sort, setSort] = useState<ExperimentSort>('Newest first');
   const [creating, setCreating] = useState(false);
   const [creatingProject, setCreatingProject] = useState(() =>
     new URLSearchParams(location.search).has('projectRequest'),
@@ -341,32 +342,7 @@ export function App() {
   );
   const report = exp ? currentReport(exp, reportChoice) : undefined;
   const reportOptions = exp ? availableReports(exp) : [];
-  const active = experiments.filter((e) => !terminal.includes(e.phase));
-  const attention = experiments.filter(
-    (e) =>
-      e.phase === 'failed' ||
-      e.plan_review?.state === 'awaiting_review' ||
-      [
-        'needs_attention',
-        'agent_dispatch_uncertain',
-        'submission_uncertain',
-        'agent_unavailable',
-        'agent_session_unavailable',
-        'cancellation_unconfirmed',
-      ].includes(e.hold_reason || ''),
-  );
   const completed = experiments.filter((e) => e.phase === 'complete');
-  const visibleExperiments = experiments.filter(
-    (experiment) =>
-      (!search ||
-        `${experiment.title || ''} ${experiment.brief}`
-          .toLowerCase()
-          .includes(search.toLowerCase())) &&
-      (filter === 'All' ||
-        (filter === 'Active' && !terminal.includes(experiment.phase)) ||
-        (filter === 'Complete' && experiment.phase === 'complete') ||
-        (filter === 'Attention' && attention.includes(experiment))),
-  );
   const executorOnline = Boolean(
     status?.last_tick && Date.now() / 1000 - status.last_tick < 60 && !offline,
   );
@@ -463,10 +439,7 @@ export function App() {
           )}
           {page === 'experiments' && !exp && (
             <ExperimentList
-              active={active}
-              attention={attention}
               choose={choose}
-              completed={completed}
               experiments={experiments}
               filter={filter}
               projectId={projectId}
@@ -474,7 +447,8 @@ export function App() {
               setCreating={setCreating}
               setFilter={setFilter}
               setSearch={setSearch}
-              visibleExperiments={visibleExperiments}
+              sort={sort}
+              setSort={setSort}
             />
           )}
 
