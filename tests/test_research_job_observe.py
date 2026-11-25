@@ -107,17 +107,29 @@ async def test_workflow_routes_contract4_saved_jobs_before_contract3_logic(runti
 
 
 @pytest.mark.asyncio
-async def test_workflow_routes_healthy_contract4_without_wakeup(runtime):
+async def test_workflow_publishes_active_scheduler_changes_without_wakeup(runtime):
     store, _, _, workflow = runtime
-    exp, job = saved_job(store)
-    workflow.scheduler_for = lambda *_: FakeScheduler(
-        SimpleNamespace(state="RUNNING", exit_code=None, ended_at=None)
-    )
+    exp, _ = saved_job(store)
+    scheduler = FakeScheduler(SimpleNamespace(state="PENDING"))
+    workflow.scheduler_for = lambda *_: scheduler
 
     await workflow.observe_jobs()
+    projected = store.projection(exp["id"])
+    assert projected["jobs"][0]["scheduler_state"] == "PENDING"
+    queued_revision = projected["revision"]
 
+    scheduler.observed = SimpleNamespace(state="RUNNING", started_at=9)
+    await workflow.observe_jobs()
+    await workflow.observe_jobs()
+
+    projected = store.projection(exp["id"])
+    assert projected["revision"] == queued_revision + 1
+    job = projected["jobs"][0]
+    assert job["state"] == "submitted"
+    assert job["scheduler_state"] == "RUNNING"
+    assert job["started_at"] == 9
+    assert job["observed_at"] is not None
     assert store.rows("SELECT * FROM agent_wakeups WHERE experiment_id=?", (exp["id"],)) == []
-    assert store.one("SELECT state FROM jobs WHERE intent_id=?", (job["intent_id"],))["state"] == "submitted"
 
 
 @pytest.mark.asyncio
@@ -302,8 +314,11 @@ async def test_remote_running_preview_persists_without_waking(runtime):
 
     await job_observe.observe_remote(workflow, exp, job)
 
-    saved = store.one("SELECT tensorboard,state FROM jobs WHERE intent_id=?", (job["intent_id"],))
+    saved = store.one(
+        "SELECT tensorboard,state,scheduler_state FROM jobs WHERE intent_id=?", (job["intent_id"],)
+    )
     assert saved["state"] == "submitted"
+    assert saved["scheduler_state"] == "RUNNING"
     assert json.loads(saved["tensorboard"])["scalar"]["points"] == [[1, 2.0]]
     assert scheduler.preview_calls == 1
     assert store.rows("SELECT * FROM agent_wakeups") == []

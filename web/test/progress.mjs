@@ -95,6 +95,15 @@ test('experiment badges distinguish queued compute from running and respect term
   );
   assert.equal(experimentStatus({ ...base, phase: 'complete' }), 'complete');
   assert.equal(experimentStatus({ ...base, phase: 'preparing', jobs: [] }), 'preparing');
+  assert.equal(
+    experimentStatus({
+      ...base,
+      contract: { ...base.contract, execution_contract: 4 },
+      phase: 'preparing',
+      jobs: [{ ...job, scheduler_state: 'RUNNING' }],
+    }),
+    'running',
+  );
   assert.equal(experimentStatus({ ...base, jobs: [{ ...job, state: 'complete' }, job] }), 'queued');
   assert.equal(
     experimentStatus({

@@ -84,7 +84,8 @@ export function experimentStatus(exp: Experiment): string {
     return repair.title === 'Repair experiment' ? 'repairing' : 'adjusting resources';
   const jobs = exp.jobs.filter((job) => ['submitting', 'submitted'].includes(job.state));
   if (!jobs.length) return pretty(exp.phase);
-  if (jobs.some((job) => job.scheduler_state === 'RUNNING')) return pretty(exp.phase);
+  if (jobs.some((job) => job.scheduler_state === 'RUNNING'))
+    return exp.contract?.execution_contract === 4 ? 'running' : pretty(exp.phase);
   if (jobs.some((job) => job.scheduler_state === 'COMPLETING')) return 'finishing';
   if (jobs.some((job) => job.state === 'submitting')) return 'submitting';
   if (jobs.some((job) => ['PENDING', 'CONFIGURING'].includes(job.scheduler_state || '')))
