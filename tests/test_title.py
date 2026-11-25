@@ -1,6 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
+from experimenttracker.research.session import first_turn
 from experimenttracker.title import TitleSummary, luna_title_model, title_prompt
 
 
@@ -23,8 +24,9 @@ def test_title_output_is_bounded_and_prompt_includes_brief():
     assert "avoid adding claims about results" in prompt
 
 
+@pytest.mark.parametrize("request_owner", [None, "research", "title"])
 async def test_an_untitled_contract_four_experiment_gets_one_small_title_turn(
-    runtime, config, tmp_path, monkeypatch
+    runtime, config, tmp_path, monkeypatch, request_owner
 ):
     import asyncio
     from types import SimpleNamespace
@@ -74,6 +76,13 @@ async def test_an_untitled_contract_four_experiment_gets_one_small_title_turn(
     assert store.rows("SELECT * FROM obligations WHERE target=?", (queued[0]["id"],))
     workflow.agent_pool.admit()
     assert workflow.agent_task is not None
+    pending = None
+    if request_owner is not None:
+        action = first_turn(store, eid) if request_owner == "research" else queued[0]
+        pending = {"id": "owner-request", "action_id": action["id"], "expired": False}
+        if request_owner == "title":
+            pending["rpc_id"] = 7
+        store.update(eid, pending_request=pending)
     await workflow.agent_task
     workflow.agent_task = None
     await workflow.advance_title()
@@ -81,7 +90,11 @@ async def test_an_untitled_contract_four_experiment_gets_one_small_title_turn(
     assert len(calls) == 1 and "Measure a project-specific method." in calls[0]
     saved = store.one("SELECT state FROM agent_actions WHERE id=?", (queued[0]["id"],))
     assert saved["state"] == "completed"
-    assert store.experiment(eid)["title"] == "Project method study"
+    experiment = store.experiment(eid)
+    assert experiment["title"] == "Project method study"
+    if request_owner == "title":
+        pending["expired"] = True
+    assert experiment["pending_request"] == pending
 
 
 async def test_no_title_turn_is_queued_without_a_small_model(runtime, config, tmp_path):

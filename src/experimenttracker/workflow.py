@@ -417,14 +417,21 @@ class Workflow:
         await self.refresh_cluster()
         self.agent_pool.reconstruct()
         await self.connect_agent()
-        # A request belongs to its original connection. Never replay an obsolete RPC ID after restart.
+        # Never replay an obsolete RPC ID after restart.
         for row in self.store.rows(
-            "SELECT id,pending_request,contract FROM experiments WHERE pending_request IS NOT NULL"
+            "SELECT id,pending_request,contract,phase,deleted_at "
+            "FROM experiments WHERE pending_request IS NOT NULL"
         ):
             pending = json.loads(row["pending_request"])
-            # A durable contract-4 owner question has no live RPC to expire; its
-            # saved answer is consumed by the next research turn (T4.3).
             if self._durable_owner_question(row["id"], json.loads(row["contract"]), pending):
+                # Older title turns could expire a durable request from a different action.
+                if (
+                    pending.get("expired")
+                    and row["deleted_at"] is None
+                    and row["phase"] not in ("complete", "failed", "cancelled")
+                ):
+                    pending["expired"] = False
+                    self.store.update(row["id"], pending_request=pending)
                 continue
             pending["expired"] = True
             self.store.update(row["id"], pending_request=pending, hold_reason="expired_agent_request")
@@ -1137,7 +1144,7 @@ class Workflow:
                 self.store.update(eid, hold_reason="agent_dispatch_uncertain", error=str(exc))
         finally:
             pending = self.store.experiment(eid)["pending_request"]
-            if pending:
+            if pending and pending.get("action_id") == action["id"] and pending.get("rpc_id") is not None:
                 pending["expired"] = True
                 self.store.update(eid, pending_request=pending)
 

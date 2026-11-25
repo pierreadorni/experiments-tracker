@@ -79,6 +79,30 @@ async def test_startup_preserves_saved_contract_four_questions(runtime, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_startup_restores_expired_research_approval_for_owner(runtime, monkeypatch):
+    store, _, _, workflow = runtime
+    eid = question(store)
+    pending = saved_pending(store, eid)
+    pending.update(
+        kind="approval",
+        method="item/commandExecution/requestApproval",
+        expired=True,
+    )
+    pending["params"]["objective"] = "Measure the approved baseline."
+    store.update(eid, pending_request=pending)
+    isolate_start(monkeypatch, workflow)
+
+    await workflow.start()
+
+    assert saved_pending(store, eid) == {**pending, "expired": False}
+    assert store.rows("SELECT * FROM agent_wakeups WHERE experiment_id=?", (eid,)) == []
+    assert store.rows("SELECT * FROM jobs WHERE experiment_id=?", (eid,)) == []
+    answer(store, eid, "accept")
+    assert saved_pending(store, eid)["answer"] == "accept"
+    assert len(store.rows("SELECT * FROM agent_wakeups WHERE experiment_id=?", (eid,))) == 1
+
+
+@pytest.mark.asyncio
 async def test_startup_still_expires_old_rpcs_and_contract_three_requests(runtime, monkeypatch):
     store, _, _, workflow = runtime
     answered = question(store)
