@@ -8,6 +8,46 @@ from experimenttracker.codex_client import AppServer, CodexAgent, NeedsAttention
 from experimenttracker.config import CodexConfig
 
 
+@pytest.mark.parametrize(
+    ("advertises_sol", "configured_model", "expected"),
+    [
+        (True, None, "gpt-6.2-sol"),
+        (True, "gpt-6.2-astra", "gpt-6.2-astra"),
+        (False, None, "gpt-6.1-sol"),
+    ],
+)
+async def test_catalog_default(tmp_path, advertises_sol, configured_model, expected):
+    agent = CodexAgent(CodexConfig(model=configured_model), tmp_path)
+    ids = ["gpt-6.1-sol", "gpt-6.2-astra"]
+    if advertises_sol:
+        ids.append("gpt-6.2-sol")
+
+    async def start():
+        pass
+
+    async def rpc(method, params):
+        if method == "account/read":
+            return {"account": {"type": "chatgpt"}}
+        assert method == "model/list"
+        return {
+            "data": [
+                {
+                    "model": model,
+                    "displayName": model,
+                    "supportedReasoningEfforts": [{"reasoningEffort": "medium"}],
+                    "defaultReasoningEffort": "medium",
+                    "isDefault": model == "gpt-6.1-sol",
+                }
+                for model in ids
+            ]
+        }
+
+    agent.server = SimpleNamespace(start=start, rpc=rpc)
+    await agent.start()
+    assert [model["id"] for model in agent.models] == ids
+    assert agent.resolved_model == expected
+
+
 @pytest.mark.parametrize("method", ["thread/start", "thread/resume", "turn/start"])
 async def test_startup_rpc_uses_startup_window_and_names_timeout(tmp_path, method):
     config = CodexConfig().model_copy(update={"rpc_timeout_seconds": 0.001, "session_timeout_seconds": 0.05})

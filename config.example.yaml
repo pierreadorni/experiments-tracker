@@ -30,7 +30,7 @@ projects:
   #   integration: {require_approval: true}
 codex:
   executable: /YOUR/CHECKOUT/tools/codex/node_modules/.bin/codex
-  expected_version: 0.160.1
+  expected_version: 0.171.0
   model: null
   turn_timeout_seconds: 1800  # inactivity, refreshed by real progress
   turn_max_seconds: null    # optional owner ceiling per turn

@@ -154,10 +154,7 @@ export function App() {
   useEffect(() => {
     const models = status?.models || [];
     if (!model && models.length) {
-      const choice =
-        models.find((m) => m.id === 'gpt-6.1-sol') ||
-        models.find((m) => m.id === status?.default_model) ||
-        models[0];
+      const choice = models.find((m) => m.id === status?.default_model) || models[0];
       setModel(choice.id);
       setEffort(choice.reasoning_efforts.includes('medium') ? 'medium' : choice.default_effort);
     }

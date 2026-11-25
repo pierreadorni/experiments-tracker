@@ -255,7 +255,11 @@ class CodexAgent:
             if not model.get("hidden")
         ]
         self.models_observed_at = clock.now()
-        if not self.resolved_model:
+        if self.config.model:
+            self.resolved_model = self.config.model
+        elif any(model["id"] == "gpt-6.2-sol" for model in self.models):
+            self.resolved_model = "gpt-6.2-sol"
+        else:
             defaults = [m["model"] for m in catalog.get("data", []) if m.get("isDefault")]
             if len(defaults) != 1:
                 raise RpcError("model catalog has no unambiguous default; configure codex.model")

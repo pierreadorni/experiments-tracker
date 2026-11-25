@@ -68,10 +68,7 @@ export function Conversation({
   const option = catalog.find((m) => m.id === model);
   useEffect(() => {
     if (model || !catalog.length) return;
-    const choice =
-      catalog.find((m) => m.id === 'gpt-6.1-sol') ||
-      catalog.find((m) => m.id === status?.default_model) ||
-      catalog[0];
+    const choice = catalog.find((m) => m.id === status?.default_model) || catalog[0];
     setModel(choice.id);
     setEffort(choice.reasoning_efforts.includes('medium') ? 'medium' : choice.default_effort);
   }, [catalog, model, status?.default_model]);

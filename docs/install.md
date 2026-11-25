@@ -77,7 +77,7 @@ Containers, other schedulers and multi-user hosting are adaptations, not support
 
 ```sh
 make setup
-./tools/codex/node_modules/.bin/codex --version     # pinned 0.160.1
+./tools/codex/node_modules/.bin/codex --version     # pinned 0.171.0
 ./tools/codex/node_modules/.bin/codex login status
 ```
 
@@ -87,6 +87,11 @@ the managed ChatGPT login under fresh quota windows. The adapter checks an exact
 version; review generated protocol schemas and run the tests before changing it.
 No API-billed backend exists yet; one may be added only when the owner configures
 it explicitly with a spend budget.
+
+The tracker prefers GPT-6.2 Sol when the managed catalog advertises it.
+Set `codex.model` to override that default. When upgrading an existing
+installation, point `codex.executable` at the new release's pinned binary
+and set `codex.expected_version` to `0.171.0` for the owner-authorized restart.
 
 ## 4. Live configuration
 
@@ -104,7 +109,7 @@ Edit the generated file privately; every path is absolute.
 | `job_output_root` | Visible on compute nodes. |
 | `backup_dir` | Retained storage independent of the state disk. |
 | `projects`, `projects_root` | Authorized research checkouts (Git, with an initial commit). |
-| `codex.executable`, `codex.expected_version` | The generated defaults: this checkout's `tools/codex/.../codex` and the locked version (`0.160.1`). Keep them in step when the lockfile changes. |
+| `codex.executable`, `codex.expected_version` | The generated defaults: this checkout's `tools/codex/.../codex` and the locked version (`0.171.0`). Keep them in step when the lockfile changes. |
 | `slurm.partition`, `account`, `qos` | Verified authorized defaults. |
 | `slurm.limits`, `slurm.max_concurrent_jobs` | Optional owner ceilings; the cap defaults to 1, `null` removes it. |
 | `port` | An unused loopback port. |

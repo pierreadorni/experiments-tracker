@@ -83,7 +83,7 @@ class SlurmConfig(JobResources):
 
 class CodexConfig(StrictModel):
     executable: str = "codex"
-    expected_version: str = "0.160.1"
+    expected_version: str = "0.171.0"
     model: str | None = None
     # This is an inactivity window, refreshed by actual agent/tool progress.
     turn_timeout_seconds: int = Field(default=1800, ge=10)
