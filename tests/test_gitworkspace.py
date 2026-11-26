@@ -183,7 +183,7 @@ def test_pin_keeps_orphaned_commit_reachable_through_gc(tmp_path):
 def test_schema_adds_experiment_branches(tmp_path):
     store = Store(tmp_path / "workflow.sqlite")
     try:
-        assert store.one("SELECT MAX(version) AS version FROM schema_version")["version"] == 25
+        assert store.one("SELECT MAX(version) AS version FROM schema_version")["version"] == 26
         columns = [row["name"] for row in store.rows("PRAGMA table_info(experiment_branches)")]
         assert (
             columns

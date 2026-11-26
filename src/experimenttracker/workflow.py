@@ -1236,6 +1236,8 @@ class Workflow:
         self.store.notify(eid, "recovery_exhausted", f"Experiment stopped: {error}")
 
     async def observe_jobs(self):
+        from .research import job_observe
+
         for job in self.store.rows(
             "SELECT j.* FROM jobs j JOIN experiments e ON e.id=j.experiment_id "
             "WHERE (j.state IN ('submitting','submitted') OR "
@@ -1253,19 +1255,16 @@ class Workflow:
                 if exp["contract"].get("execution_contract") == 4:
                     if exp["deleted_at"] is not None or exp["phase"] in ("complete", "failed", "cancelled"):
                         continue
-                    from .research import job_observe
-
                     expected_route = exp["contract"].get("execution", {}).get("context", "acacia")
                     manifest = json.loads(job.get("execution_manifest") or "{}")
                     saved_route = (manifest.get("execution") or {}).get("context")
                     if saved_route is not None and saved_route != expected_route:
-                        raise RuntimeError("saved execution route is incompatible with the experiment route")
+                        raise ValueError("saved execution route is incompatible with the experiment route")
                     if expected_route != "acacia":
                         if expected_route != "jean-zay" or saved_route != expected_route:
-                            raise RuntimeError(
+                            raise ValueError(
                                 "saved remote execution route is missing, invalid, or incompatible"
                             )
-                        manifest = json.loads(job.get("execution_manifest") or "{}")
                         job_observe.validate_remote_route(
                             exp,
                             job["intent_id"],
@@ -1286,23 +1285,30 @@ class Workflow:
                             job = await resolver.resolve(self, exp, job)
                         if job:
                             await job_observe.observe_remote(self, exp, job)
+                            job_observe.set_observation_error(self.store, job, None)
                     else:
                         if not job["job_id"]:
                             job = await resolver.resolve(self, exp, job)
                         if job:
                             await job_observe.observe(self, exp, job)
+                            job_observe.set_observation_error(self.store, job, None)
                     continue
                 if (
                     legacy_archive.execution_frozen(exp)
                     and exp["deleted_at"] is None
                     and exp["phase"] != "cancelled"
                 ):
-                    await legacy_archive.settle_job(self, exp, job)
+                    try:
+                        await legacy_archive.settle_job(self, exp, job)
+                    except Exception as exc:
+                        log.warning(
+                            "Archived job check failed for %s (%s)", job["intent_id"], type(exc).__name__
+                        )
                     continue
                 # Live contract 3 observation was retired with its stage engine; any
                 # other saved job is left untouched for operator inspection.
             except Exception as exc:
-                self.store.update(eid, hold_reason="executor_unavailable", error=str(exc))
+                job_observe.record_observation_error(self.store, job, exc)
 
     async def commit_branch(self, exp, message):
         """Commit this experiment's exact saved named branch; None for other workspaces."""

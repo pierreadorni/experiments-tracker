@@ -6,6 +6,7 @@ neither submits jobs nor advances the experiment graph.
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 
 from .. import clock
@@ -16,6 +17,8 @@ from ..tfevents import read_previews
 from ..tfevents import selection as tensorboard_selection
 from . import wakeups
 from .remote_route import validate_remote_route
+
+log = logging.getLogger(__name__)
 
 _TERMINAL_BAD = frozenset(
     {
@@ -30,6 +33,45 @@ _TERMINAL_BAD = frozenset(
         "REVOKED",
     }
 )
+
+
+def set_observation_error(store, job, error):
+    """Publish a changed observation diagnostic for this exact active job."""
+    if job["observation_error"] == error:
+        return False
+    with store.tx() as db:
+        saved = job_obligations.locked_job(db, job, "state")
+        if (
+            saved is None
+            or saved["state"] not in ("submitting", "submitted")
+            or saved["observation_error"] == error
+        ):
+            return False
+        changed = db.execute(
+            "UPDATE jobs SET observation_error=? WHERE intent_id=? "
+            "AND EXISTS (SELECT 1 FROM experiments WHERE id=jobs.experiment_id "
+            "AND deleted_at IS NULL AND phase NOT IN ('complete','failed','cancelled') "
+            "AND json_extract(contract,'$.execution_contract')=4)",
+            (error, job["intent_id"]),
+        )
+        if not changed.rowcount:
+            return False
+        store.emit(db, job["experiment_id"], "job_observation_changed", {"intent_id": job["intent_id"]})
+        return True
+
+
+def record_observation_error(store, job, exc):
+    """Classify failures without publishing exception contents or local paths."""
+    if isinstance(exc, TimeoutError):
+        message = "The job check timed out."
+    elif isinstance(exc, OSError):
+        message = "The executor could not access a resource needed to check this job."
+    elif isinstance(exc, ValueError):
+        message = "The executor could not validate the saved job information or its result delivery."
+    else:
+        message = "The executor could not finish checking this job."
+    if set_observation_error(store, job, f"{message} The executor will retry the check."):
+        log.warning("Job check failed for %s (%s)", job["intent_id"], type(exc).__name__)
 
 
 def _record_active(workflow, job, observed):
@@ -78,7 +120,7 @@ def _settle_terminal(workflow, job, *, state, scheduler_state, exit_code, ended_
             return None
         db.execute(
             "UPDATE jobs SET state=?,scheduler_state=?,exit_code=?,observed_at=?,"
-            "ended_at=COALESCE(?,ended_at),error=? WHERE intent_id=?",
+            "ended_at=COALESCE(?,ended_at),error=?,observation_error=NULL WHERE intent_id=?",
             (state, scheduler_state, exit_code, clock.now(), ended_at, error, job["intent_id"]),
         )
         job_obligations.sync_backend(db, job["intent_id"], before=before)
@@ -106,7 +148,10 @@ async def observe(workflow, experiment, job):
         if job_obligations.locked_job(db, job, "state") is None:
             return None
     observed = await workflow.scheduler_for(experiment, job).observe(job["job_id"])
-    await _observe_tensorboard(workflow, job)
+    try:
+        await _observe_tensorboard(workflow, job)
+    except Exception as exc:
+        log.debug("Optional job preview unavailable for %s (%s)", job["intent_id"], type(exc).__name__)
     if observed.state == "COMPLETED":
         if observed.exit_code is None:
             return None
@@ -213,11 +258,10 @@ async def observe_remote(workflow, experiment, job):
     }:
         try:
             preview = await scheduler.fetch_event_preview(job)
-        except Exception:
-            pass
-        else:
             if preview is not None:
                 _publish_tensorboard(workflow, job, preview)
+        except Exception as exc:
+            log.debug("Optional job preview unavailable for %s (%s)", job["intent_id"], type(exc).__name__)
     if observed.state == "COMPLETED" and observed.exit_code == "0:0":
         # Accounting may expose the exit status before its terminal timestamp.
         if observed.ended_at is None:

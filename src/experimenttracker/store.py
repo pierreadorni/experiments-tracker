@@ -153,7 +153,7 @@ class Store:
         reader.db = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, check_same_thread=False)
         reader.db.row_factory = sqlite3.Row
         version = reader.db.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-        if version not in (12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25):
+        if version not in (12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26):
             reader.close()
             raise RuntimeError("start the owner to migrate this database before detailed inspection")
         return reader
@@ -501,7 +501,20 @@ class Store:
                     merged_commit TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL)""")
                 db.execute("INSERT INTO schema_version VALUES(25)")
             version = 25
-        if version != 25:
+        if version == 25:
+            with self.tx() as db:
+                db.execute("ALTER TABLE jobs ADD COLUMN observation_error TEXT")
+                holds = db.execute(
+                    "SELECT id FROM experiments WHERE hold_reason='executor_unavailable' AND deleted_at IS NULL "
+                    "AND phase NOT IN ('complete','failed','cancelled') "
+                    "AND json_extract(contract,'$.execution_contract')=4"
+                ).fetchall()
+                for hold in holds:
+                    db.execute("UPDATE experiments SET hold_reason=NULL,error=NULL WHERE id=?", (hold["id"],))
+                    self.emit(db, hold["id"], "state_changed", {"hold_reason": None, "error": None})
+                db.execute("INSERT INTO schema_version VALUES(26)")
+            version = 26
+        if version != 26:
             raise RuntimeError("unsupported database schema version")
 
     def continue_action(self, action, *, request_id=None, feedback=None, _db=None):
@@ -681,6 +694,9 @@ class Store:
             if discussion:
                 result["agent_actions"].append(discussion)
         for job in result["jobs"]:
+            observation_error = job.pop("observation_error", None)
+            if observation_error and job["state"] in ("submitting", "submitted"):
+                job["error"] = observation_error
             job.pop("execution_root", None)
             manifest = job.pop("execution_manifest", None)
             if all_revisions:

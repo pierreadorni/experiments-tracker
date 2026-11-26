@@ -393,7 +393,7 @@ async def test_workflow_routes_remote_c4_through_cadenced_result_delivery(runtim
     assert len(store.rows("SELECT * FROM agent_wakeups WHERE experiment_id=?", (exp["id"],))) == 1
 
 
-async def test_remote_result_validation_failure_holds_without_marking_job_failed(runtime):
+async def test_remote_result_validation_failure_does_not_mark_job_failed(runtime):
     store, _, _, workflow = runtime
     exp, job = await remote_job(store, workflow)
     scheduler = FakeRemoteScheduler(
@@ -404,7 +404,8 @@ async def test_remote_result_validation_failure_holds_without_marking_job_failed
     await workflow.observe_jobs()
 
     assert store.one("SELECT state FROM jobs WHERE intent_id=?", (job["intent_id"],))["state"] == "submitted"
-    assert store.experiment(exp["id"])["hold_reason"] == "executor_unavailable"
+    assert store.experiment(exp["id"])["hold_reason"] is None
+    assert "validate the saved job" in store.projection(exp["id"])["jobs"][0]["error"]
     assert store.rows("SELECT * FROM agent_wakeups") == []
 
 
@@ -486,7 +487,8 @@ async def test_workflow_rejects_invalid_saved_remote_route_without_rpc_or_c3(run
     assert scheduler.delivery_calls == 0
     saved = store.one("SELECT state FROM jobs WHERE intent_id=?", (job["intent_id"],))
     assert saved["state"] == "submitted"
-    assert store.experiment(exp["id"])["hold_reason"] == "executor_unavailable"
+    assert store.experiment(exp["id"])["hold_reason"] is None
+    assert "validate the saved job" in store.projection(exp["id"])["jobs"][0]["error"]
     assert store.rows("SELECT * FROM agent_wakeups") == []
 
 
@@ -520,3 +522,92 @@ async def test_scheduler_uncertainty_is_not_a_terminal_retry(runtime):
         await job_observe.observe(workflow, exp, job)
     assert store.rows("SELECT * FROM agent_wakeups") == []
     assert store.one("SELECT state FROM jobs WHERE intent_id=?", (job["intent_id"],))["state"] == "submitted"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("remote", [False, True])
+async def test_job_check_timeout_does_not_change_hold_and_terminal_failure_wakes_agent(runtime, remote):
+    store, _, _, workflow = runtime
+    if remote:
+        exp, job = await remote_job(store, workflow)
+        scheduler = FakeRemoteScheduler(TimeoutError())
+    else:
+        exp, job = saved_job(store)
+        scheduler = FakeScheduler(TimeoutError())
+    eid = exp["id"]
+    workflow.scheduler_for = lambda *_: scheduler
+    store.update(eid, hold_reason="plan_review", error="Review the objective")
+
+    await workflow.observe_jobs()
+    view = store.projection(eid)
+    assert view["hold_reason"] == "plan_review"
+    assert view["error"] == "Review the objective"
+    assert view["jobs"][0]["error"] == "The job check timed out. The executor will retry the check."
+    assert view["jobs"][0]["state"] == "submitted"
+    assert view["jobs"][0]["job_id"] == "42"
+    assert not store.rows("SELECT * FROM agent_wakeups")
+    assert not store.rows("SELECT * FROM inbox")
+    await workflow.observe_jobs()
+    assert store.projection(eid)["revision"] == view["revision"]
+
+    scheduler.observed = SimpleNamespace(state="FAILED", exit_code="1:0", ended_at=9)
+    await workflow.observe_jobs()
+    await workflow.observe_jobs()
+    saved = store.one("SELECT * FROM jobs WHERE intent_id=?", (job["intent_id"],))
+    assert (saved["state"], saved["job_id"], saved["error"], saved["observation_error"]) == (
+        "failed",
+        "42",
+        "FAILED: 1:0",
+        None,
+    )
+    assert store.experiment(eid)["hold_reason"] == "plan_review"
+    wakes = store.rows("SELECT reason FROM agent_wakeups WHERE experiment_id=?", (eid,))
+    assert [json.loads(wake["reason"]) for wake in wakes] == [
+        {"event": wakeups.JOB_TERMINAL, "source_id": job["intent_id"]}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_observation_recovery_clears_only_the_successfully_checked_job(runtime):
+    store, _, _, workflow = runtime
+    exp, job = saved_job(store)
+    with store.tx() as db:
+        db.execute(
+            "INSERT INTO jobs(intent_id,experiment_id,stage_id,attempt,state,job_id,script_hash,resources,"
+            "snapshot_hash,created_at,execution_manifest) VALUES(?,?,?,2,'submitted','43','manual','{}',"
+            "'synthetic',2,?)",
+            ("second-observe-job", exp["id"], job["stage_id"], job["execution_manifest"]),
+        )
+    schedulers = {"42": FakeScheduler(TimeoutError()), "43": FakeScheduler(TimeoutError())}
+    workflow.scheduler_for = lambda _, saved: schedulers[saved["job_id"]]
+
+    await workflow.observe_jobs()
+    schedulers["42"].observed = SimpleNamespace(state="RUNNING")
+    await workflow.observe_jobs()
+
+    jobs = {row["job_id"]: row for row in store.projection(exp["id"])["jobs"]}
+    assert jobs["42"]["error"] is None
+    assert jobs["42"]["scheduler_state"] == "RUNNING"
+    assert "timed out" in jobs["43"]["error"]
+    assert jobs["43"]["scheduler_state"] is None
+    assert not store.rows("SELECT * FROM agent_wakeups")
+
+
+@pytest.mark.asyncio
+async def test_optional_preview_failure_does_not_delay_terminal_observation(runtime, monkeypatch):
+    store, _, _, workflow = runtime
+    exp, job = saved_job(store)
+    scheduler = FakeScheduler(SimpleNamespace(state="COMPLETED", exit_code="0:0", ended_at=9))
+    workflow.scheduler_for = lambda *_: scheduler
+
+    async def unavailable_preview(*_):
+        raise OSError("synthetic preview issue")
+
+    monkeypatch.setattr(job_observe, "_observe_tensorboard", unavailable_preview)
+
+    await workflow.observe_jobs()
+
+    saved = store.one("SELECT * FROM jobs WHERE intent_id=?", (job["intent_id"],))
+    assert saved["state"] == "complete"
+    assert saved["observation_error"] is None
+    assert len(store.rows("SELECT * FROM agent_wakeups WHERE experiment_id=?", (exp["id"],))) == 1

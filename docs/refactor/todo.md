@@ -678,6 +678,31 @@ Install and publish order for Phase 5: [notes/t5-rollout.md](notes/t5-rollout.md
 - **Tests:** `tests/test_research_admission.py` admits a 2-GPU typed request and refuses it under an owner `gpus_per_job` limit.
 - **Live:** taking it into use needs an owner install and restart. The first live GPU job is owner-authorized evidence, separate from these tests.
 
+### [x] T5.7 Recover from job observation errors (C1, C7) · F+R · M
+
+- **Why:** The job observer writes `executor_unavailable` to the experiment for any
+  exception. A scheduler query timeout can save an empty error. A later successful
+  observation does not clear the warning, and the observer can overwrite a separate
+  experiment hold. The latest live case continued to record job outcomes, but the
+  saved error did not identify the failed operation or job.
+- **Change:** Replace the catch-all experiment hold write with observation error
+  handling tied to the affected saved job in the nullable SQLite
+  column `jobs.observation_error`. The existing job error display shows it. Preserve the last known job state and
+  exact submission identity. Retry observation on the existing cadence and clear
+  the diagnostic when that job is observed successfully. Keep meaningful, bounded
+  diagnostics for persistent scheduler, connection, or configuration failures.
+  Optional preview failures must not delay scheduler settlement. The migration clears
+  old observation holds on active C4 experiments and emits a projection refresh.
+- **Agent and owner:** Keep confirmed terminal job failures on the existing
+  `JOB_TERMINAL` wake path to the experiment's agent. An observation error is
+  executor work and must not generate a job failure, agent turn, owner question,
+  or resubmission. Keep existing owner approvals and unrelated holds intact.
+- **Checks:** With synthetic local and remote schedulers, exercise a message-less
+  timeout followed by recovery, a terminal failure after a missed poll, an
+  unrelated owner hold, and two jobs where one recovers while the other still
+  cannot be observed. Verify that a terminal failure produces one wake and that
+  neither an observation error nor its recovery changes submission identities.
+
 ## Phase 6 — Selectable agent backends: Codex or Claude Agent SDK (C14)
 
 Plan, owner decisions and design: [notes/t6-agent-backends.md](notes/t6-agent-backends.md).
@@ -701,6 +726,7 @@ owner authorization (T6.9).
 
 ## Log
 
+- **T5.7 (2026-11-26):** Job observation diagnostics recover per exact saved job, and terminal outcomes still queue the research agent once. SQLite migration 26 preserves saved identities and replaces obsolete active C4 observation holds. Isolated Node 24 `make check` passed with 1,216 Python, 44 web and 20 gateway tests. Production source +80/−14, tests +122/−9.
 - **T5.5p, T5.5a–d (2026-11-24):** `86fe98d`, `6251ec8`. With the owner's decisions recorded, the self-update is a tested release, an authorized restart and a health check. Production Python +12/−7 (T5.5p) and +76/−211 (`maintenance.py`, `api.py`); web +24/−13; tests +36/−0 and +86/−55 plus a 297-line frozen SQL fixture. Isolated Node 24 `make check`: **1,205 Python, 44 web and 20 gateway tests passed**, gateway build and types passed, and `maintenance-smoke.mjs` passed against the research-owner fixture (install mocked). The real two-process demo handover test passes. No live install, restart or Worker publish.
 - **T4.8 activation and close (2026-11-22):** with owner authorization, a fresh protected online backup and drain inventory on acacia showed no open C3 actions, transfers, steering, wakeups, obligations, undelivered events or unapplied commands. Release `542f092` was prepared (`make check` passed) and the owner installed it: maintenance request `6cb53c0c` is `complete` and the executor runs `542f092` with C3 archived. The current Worker was published by the owner. The Worker then dropped the `plan-review` route and the `retry_agent` and `repair_implementation` actions; the executor still refuses them with a saved receipt. Gateway Node 24 build, typecheck and 49 tests passed. Gateway source +3/−61; gateway tests +1/−201. Open follow-ups, not blockers: remote submit-limit waits and automatic titles on C4. Evidence is in the ignored `.local/installation/`.
 - **T4.8 retirement slice 6b, dead `iteration.py` helpers:** deletes `complete`, `reuse`, `copy_small`, `bounded_bytes` and `SOURCE_BUDGET`, which nothing called after slice 4. `enabled`, `runnable`, `manifest_mode`, `metadata` and `check_stage` stay: workflow, conversation and the C4 observation tests still use them. Ruff passed, and all 1,192 Python tests passed in per-file shards. Source +0/−138; tests +0/−0. Still open: C3 `hold_reason` writers and the C3 branches in `audit.py` and `reporting.py`, then closing T4.8 after owner activation.

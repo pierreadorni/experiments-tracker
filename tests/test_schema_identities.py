@@ -38,11 +38,23 @@ def saved(store):
 
 def test_migrations_from_version_25_preserve_saved_identities(tmp_path):
     path = tmp_path / "workflow.sqlite"
+    first, second = (eid for eid, *_ in EXPECTED["pauses"])
     with sqlite3.connect(path) as db:
         db.executescript(FIXTURE.read_text())
+        db.execute("UPDATE experiments SET hold_reason='executor_unavailable',error='' WHERE id=?", (first,))
+        db.execute(
+            "UPDATE experiments SET hold_reason='plan_review',error='Review needed' WHERE id=?", (second,)
+        )
     store = Store(path)
     try:
         assert saved(store) == EXPECTED
+        assert store.rows("SELECT hold_reason,error FROM experiments ORDER BY id") == [
+            {"hold_reason": None, "error": None},
+            {"hold_reason": "plan_review", "error": "Review needed"},
+        ]
+        assert store.one("SELECT kind FROM events JOIN outbox USING(id) WHERE experiment_id=?", (first,)) == {
+            "kind": "state_changed"
+        }
         assert store.db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert not store.db.execute("PRAGMA foreign_key_check").fetchall()
     finally:
