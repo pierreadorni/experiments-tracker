@@ -83,7 +83,6 @@ test('the old executor and browser routes are gone', async () => {
     ['GET', '/api/maintenance'],
     ['POST', '/api/projects'],
     ['GET', '/api/projects/demo/knowledge'],
-    ['GET', `/api/artifacts/${randomUUID()}`],
     ['GET', '/api/autopilot'],
   ])
     assert.equal(

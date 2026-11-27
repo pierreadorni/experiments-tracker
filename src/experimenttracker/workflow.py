@@ -1657,6 +1657,29 @@ class Workflow:
             "state": "completed",
         }
 
+    def research_result_receipts(self, eid):
+        """Load registered results with their saved producer scope."""
+        receipts = [
+            json.loads(event["payload"])
+            for event in self.store.rows(
+                "SELECT payload FROM events WHERE experiment_id=? AND kind='research_result_registered' "
+                "ORDER BY seq",
+                (eid,),
+            )
+        ]
+        if any(
+            receipt.get("experiment_id") != eid
+            or not receipt.get("intent_id")
+            or not receipt.get("action_id")
+            or not self.store.one(
+                "SELECT 1 FROM jobs WHERE intent_id=? AND experiment_id=?",
+                (receipt.get("intent_id"), eid),
+            )
+            for receipt in receipts
+        ):
+            raise ValueError("registered research result has invalid producer scope")
+        return receipts
+
     async def advance_reports(self):
         rows = self.store.rows(
             "SELECT r.* FROM report_versions r JOIN experiments e ON e.id=r.experiment_id "
@@ -1684,25 +1707,7 @@ class Workflow:
                     )
                     report_options = {}
                     if exp["contract"].get("execution_contract") == 4:
-                        report_options["result_receipts"] = [
-                            json.loads(event["payload"])
-                            for event in self.store.rows(
-                                "SELECT payload FROM events WHERE experiment_id=? AND kind='research_result_registered' "
-                                "ORDER BY seq",
-                                (eid,),
-                            )
-                        ]
-                    if any(
-                        receipt.get("experiment_id") != eid
-                        or not receipt.get("intent_id")
-                        or not receipt.get("action_id")
-                        or not self.store.one(
-                            "SELECT 1 FROM jobs WHERE intent_id=? AND experiment_id=?",
-                            (receipt.get("intent_id"), eid),
-                        )
-                        for receipt in report_options.get("result_receipts", ())
-                    ):
-                        raise ValueError("registered research result has invalid producer scope")
+                        report_options["result_receipts"] = self.research_result_receipts(eid)
                     name, files = await asyncio.to_thread(
                         reporting.build_report,
                         exp,

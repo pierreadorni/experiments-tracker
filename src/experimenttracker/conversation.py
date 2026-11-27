@@ -31,20 +31,31 @@ class Conversation:
 
     def prompt(self, exp, message):
         root = self.workflow.root(exp["id"])
-        artifacts.verify_snapshot(root, exp["snapshot"])
+        research = exp["contract"].get("execution_contract") == 4
         records = self.store.rows(
             "SELECT * FROM artifacts WHERE experiment_id=?"
             + ("" if iteration.enabled(exp) else " AND evidence_revision=?"),
             (exp["id"],) if iteration.enabled(exp) else (exp["id"], exp["evidence_revision"]),
         )
-        evidence = reporting.Evidence(exp, root, records)
-        if not iteration.enabled(exp):
-            for record in records:
-                evidence.read(record["id"])
         current = self.store.one(
             "SELECT version,document FROM report_versions WHERE experiment_id=? AND state='ready' ORDER BY version DESC LIMIT 1",
             (exp["id"],),
         )
+        report = json.loads(current["document"]) if current else None
+        if research:
+            evidence = reporting.Evidence(
+                exp, root, records, result_receipts=self.workflow.research_result_receipts(exp["id"])
+            )
+            results = {"metrics": list(evidence.metrics.values())}
+            analysis = {"summary": report["standfirst"]} if report else {}
+        else:
+            artifacts.verify_snapshot(root, exp["snapshot"])
+            evidence = reporting.Evidence(exp, root, records)
+            if not iteration.enabled(exp):
+                for record in records:
+                    evidence.read(record["id"])
+            results = artifacts.read_json(root / "results.json", root)
+            analysis = exp["analysis"]
         history = self.store.rows(
             "SELECT text,reply,error,report_version FROM discussions WHERE experiment_id=? AND seq<? ORDER BY seq DESC LIMIT 20",
             (exp["id"], message["seq"]),
@@ -64,15 +75,17 @@ class Conversation:
             "history": list(reversed(history)),
             "manifest": exp["snapshot"],
             "evidence_revision": exp["evidence_revision"],
-            "results": artifacts.read_json(root / "results.json", root),
-            "analysis": exp["analysis"],
+            "results": results,
+            "analysis": analysis,
             "artifacts": [{k: a[k] for k in ("id", "name", "path", "size", "sha256")} for a in records],
             "base_report_version": current["version"] if current else 1,
-            "current_report_document": json.loads(current["document"]) if current else None,
+            "current_report_document": report,
             "analysis_workspace": str(discussion_outputs.workspace(root, message["id"])),
             "python": sys.executable,
-            "experiment_python": str(self.workflow.experiment_python(exp)),
+            "experiment_python": sys.executable if research else str(self.workflow.experiment_python(exp)),
         }
+        if research:
+            payload["metric_source_ids"] = evidence.metric_source_ids
         instruction = (
             "You are discussing this completed experiment with its researcher. The latest message is your instruction. "
             "When project_context.access is read-write, the researcher authorizes edits in the selected "
@@ -228,7 +241,9 @@ class Conversation:
         if exp["snapshot"] != payload["manifest"] or exp["evidence_revision"] != payload["evidence_revision"]:
             raise ValueError("discussion's saved scientific context changed")
         root = self.workflow.root(exp["id"])
-        artifacts.verify_snapshot(root, exp["snapshot"])
+        research = exp["contract"].get("execution_contract") == 4
+        if not research:
+            artifacts.verify_snapshot(root, exp["snapshot"])
         records = self.store.rows(
             "SELECT * FROM artifacts WHERE experiment_id=?"
             + ("" if iteration.enabled(exp) else " AND evidence_revision=?"),
@@ -237,12 +252,14 @@ class Conversation:
         generated, files = discussion_outputs.prepare(
             exp, root, action["phase"].split(":", 1)[1], action, reply, payload
         )
-        evidence = reporting.Evidence(exp, root, records + generated)
+        evidence = reporting.Evidence(
+            exp, root, records + generated, metric_source_ids=payload.get("metric_source_ids")
+        )
         for saved in payload["artifacts"]:
             current = evidence.records.get(saved["id"])
             if not current or any(current[k] != saved[k] for k in ("name", "sha256", "size")):
                 raise ValueError("discussion evidence identity changed")
-            if not iteration.enabled(exp):
+            if not research and not iteration.enabled(exp):
                 evidence.read(saved["id"])
         if not set(reply.evidence_ids) <= {a["id"] for a in payload["artifacts"] + generated}:
             raise CorrectableReply("discussion cites evidence outside its saved context")

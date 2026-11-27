@@ -533,13 +533,14 @@ async function run(request: Request, env: Env, p: string, url: URL): Promise<Res
     if (!row) return null;
     return reply(receipt(row));
   }
-  if ((match = p.match(/^\/api\/blobs\/([^/]+)$/)) && m === 'GET')
+  // Saved report HTML uses /api/artifacts for its figures and source links.
+  if ((match = p.match(/^\/api\/(?:blobs|artifacts)\/([^/]+)$/)) && m === 'GET')
     return getBlob(env, param(match[1]));
   throw new Refusal(404, 'Unknown endpoint');
 }
 
 export async function relayRoute(request: Request, env: Env, p: string): Promise<Response | null> {
-  if (!/^\/api\/(executor\/relay\/|projections|commands|blobs\/|session$|push\/follows)/.test(p))
+  if (!/^\/api\/(executor\/relay\/|projections|commands|(?:blobs|artifacts)\/|session$|push\/follows)/.test(p))
     return null;
   try {
     return await run(request, env, p, new URL(request.url));

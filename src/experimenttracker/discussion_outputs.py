@@ -104,7 +104,7 @@ def prepare(exp, root, identity, action, reply, payload):
             "turn_id": action["turn_id"],
             "experiment_id": exp["id"],
             "evidence_revision": exp["evidence_revision"],
-            "source_snapshot_sha256": exp["snapshot"]["snapshot_hash"],
+            "source_snapshot_sha256": (exp["snapshot"] or {}).get("snapshot_hash"),
             "source_artifacts": [
                 {k: a[k] for k in ("id", "name", "sha256", "size")}
                 for a in payload["artifacts"]

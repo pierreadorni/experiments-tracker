@@ -7,13 +7,18 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from helpers import role_step, wait_until
+from helpers import role_step, seed_saved_contract4, wait_until
 from legacy_fixture import load_legacy_completed
+from test_research_report_tool import document as research_document
+from test_research_result_tool import active_turn, add_saved_job, request
 
+from experimenttracker import reporting
 from experimenttracker.agent_pool import experiment_owner
 from experimenttracker.api import create_app
 from experimenttracker.codex_client import NeedsAttention, TransportError
 from experimenttracker.config import ProjectConfig
+from experimenttracker.research.demo_fixture import result_bytes
+from experimenttracker.research.result_tool import register_result
 from experimenttracker.store import Conflict, encode
 from experimenttracker.workflow import Workflow
 
@@ -216,6 +221,65 @@ async def response(workflow, store, identity, state="completed"):
         ticks=lambda: workflow.tick(force_observe=True),
         describe=lambda: store.one("SELECT * FROM discussions WHERE id=?", (identity,)),
     )
+
+
+async def test_completed_research_chat_revises_report_from_registered_results(runtime, monkeypatch):
+    store, scheduler, agent, workflow = runtime
+    eid = seed_saved_contract4(store, "Compare two synthetic measurements.")
+    action = active_turn(store, eid)
+    intent = str(uuid4())
+    root = workflow.root(eid)
+    attempt = root / "attempts" / intent
+    attempt.mkdir(parents=True)
+    add_saved_job(store, eid, intent, attempt)
+    (attempt / "results.json").write_bytes(result_bytes())
+    result = register_result(workflow, store.experiment(eid), action, request(intent))
+    workflow._action_state(action["id"], "completed", result={"status": "done"})
+    store.working_report(eid, research_document(), str(uuid4()))
+    await workflow.advance_reports()
+    store.update(eid, phase="complete")
+    original = (root / "report.html").read_bytes()
+
+    begin = agent.begin
+
+    async def add_figure(thread, prompt, schema, *, workspace, **kwargs):
+        sent = json.loads(prompt.split("\nPAYLOAD:\n", 1)[1])
+        assert sent["message"] == "Please revise the report and include a plot."
+        assert sent["context"]["metric_preview"]["total"] == 2
+        turn = await begin(thread, prompt, schema, workspace=workspace, **kwargs)
+        figure = b'<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>'
+        (workspace / "plot.svg").write_bytes(figure)
+        reply = agent.results[thread, turn]
+        reply["generated_artifacts"] = [
+            {
+                "name": "plot.svg",
+                "sha256": hashlib.sha256(figure).hexdigest(),
+                "evidence_ids": [result["artifact_id"]],
+            }
+        ]
+        reply["presentation"]["blocks"].append(
+            {
+                "kind": "figure",
+                "caption": "Extra figure",
+                "alt": "Extra figure",
+                "artifact_id": "generated:plot.svg",
+            }
+        )
+        return turn
+
+    monkeypatch.setattr(agent, "begin", add_figure)
+    identity = send(store, eid, "Please revise the report and include a plot.")
+    row = await response(workflow, store, identity)
+    assert row["report_version"] == 2
+    await workflow.advance_reports()
+    version = store.one("SELECT state FROM report_versions WHERE experiment_id=? AND version=2", (eid,))
+    assert version["state"] == "ready"
+    figure_id = reporting.artifact_id(store.experiment(eid), f"discussion-{identity}-plot.svg")
+    assert f"/api/artifacts/{figure_id}" in (root / "report-v2.html").read_text()
+    assert (root / "report.html").read_bytes() == original
+    assert store.experiment(eid)["phase"] == "complete"
+    assert scheduler.submissions == 0 and agent.calls == 1
+    await workflow.close()
 
 
 async def test_ordered_evidence_discussion_and_report_edit_do_not_repeat_science(runtime):

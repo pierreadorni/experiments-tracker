@@ -150,14 +150,19 @@ test('tombstone hides the key and its blobs', async () => {
   const k = experiment(),
     bytes = new TextEncoder().encode('figure bytes');
   await put(k, 1, { ok: true });
-  assert.equal((await blob('fig-1', bytes, k)).status, 200);
-  const served = await browser('/api/blobs/fig-1');
-  assert.equal(served.status, 200);
-  assert.equal(new Uint8Array(await served.arrayBuffer()).length, bytes.length);
-  assert.match(served.headers.get('content-security-policy'), /sandbox/);
+  assert.equal((await blob('fig-1', bytes, k, { 'content-type': 'image/png' })).status, 200);
+  const paths = ['/api/blobs/fig-1', '/api/artifacts/fig-1'];
+  for (const path of paths) {
+    const served = await browser(path);
+    assert.equal(served.status, 200);
+    assert.deepEqual(new Uint8Array(await served.arrayBuffer()), bytes);
+    assert.equal(served.headers.get('content-type'), 'image/png');
+    assert.match(served.headers.get('content-security-policy'), /sandbox/);
+    assert.equal((await call(path, 'GET', undefined, machine)).status, 401);
+  }
   assert.equal((await put(k, 2, null)).status, 200);
   assert.equal((await browser(`/api/projections/${k}`)).status, 404);
-  assert.equal((await browser('/api/blobs/fig-1')).status, 404);
+  for (const path of paths) assert.equal((await browser(path)).status, 404);
   const listed = await (await browser('/api/projections?prefix=experiment:&limit=100')).json();
   assert.ok(!listed.items.some((i) => i.key === k));
   assert.equal((await put(k, 1, { ok: true })).status, 409, 'older than tombstone');
