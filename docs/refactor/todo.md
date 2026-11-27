@@ -703,6 +703,33 @@ Install and publish order for Phase 5: [notes/t5-rollout.md](notes/t5-rollout.md
   cannot be observed. Verify that a terminal failure produces one wake and that
   neither an observation error nor its recovery changes submission identities.
 
+### [ ] T5.8 Render experiment report prose as Markdown with LaTeX (C7) · F+R · M
+
+- **Why:** Report prose and captions currently render as escaped text. Support
+  Markdown and equations in the local and hosted report views and in offline
+  evidence downloads.
+- **Change:** Add an explicit Markdown opt-in to the saved report document and
+  document it in the `update_report` authoring guidance. At publication, render
+  Markdown paragraphs and inline Markdown in captions using `remark-math` and
+  KaTeX or an equivalent locked renderer. Support inline `$...$` and display
+  equations delimited by `$$` on their own lines. Preserve ordered figure and
+  plot blocks, figure and table numbering, alt text, metric-backed cells, and
+  evidence links resolved from validated `evidence_ids`.
+- **Compatibility:** Keep publishing the existing versioned HTML artifact for
+  the sandboxed viewer and ZIP exporter. Leave published bytes intact and use
+  plain-text rendering for saved documents without the opt-in, including queued
+  reports. Preserve report replay, readiness, and evidence link rewriting. Keep
+  raw HTML and remote image embeds disabled and KaTeX's `trust` setting off.
+  Display unsupported or malformed equations as readable source. Try native
+  MathML first to avoid font dependencies. If browser checks require KaTeX CSS
+  and fonts, include them with the report export so it renders offline.
+- **Checks:** Publish a synthetic report with prose before and after a figure,
+  a caption equation, a wide display equation, a metric-backed table, and source
+  citations. Check the loopback and hosted-path fixtures at desktop and narrow
+  widths. Open the extracted ZIP offline and follow its local evidence links.
+  Cover malformed math, literal dollar signs, rendering replay, and archived and
+  queued plain-text reports.
+
 ## Phase 6 — Selectable agent backends: Codex or Claude Agent SDK (C14)
 
 Plan, owner decisions and design: [notes/t6-agent-backends.md](notes/t6-agent-backends.md).
